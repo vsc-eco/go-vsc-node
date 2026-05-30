@@ -9,6 +9,8 @@ This folder holds the **scope document**, the **formal math PDF**, and this READ
 
 **Code:** [`modules/incentive-pendulum`](../../modules/incentive-pendulum) in the `go-vsc-node` tree.
 
+> **The implementation supersedes `Magi.pdf`.** Equilibrium moved from \(s=0.5\) to **\(s=1.0\)** (\(T/V=1.5\), keeping \(E=\tfrac23T\)). Hard cliff is now **\(s \ge 3\)**; equilibrium split **60/40** node/LP; yield ratio **\(2s^2/(3-s)\)**; §9 redirect **direction corrected** (low \(s\)→LPs, high \(s\)→nodes); bands are **derived from `s_eq` + yield-ratio thresholds** in [`params.go`](../../modules/incentive-pendulum/params.go). Several file paths below are also stale from the earlier float→integer rewrite (`pendulum.go`→`pendulum_int.go`, `fees.go`→`fees_int.go`, `collateral.go`→`collateral_int.go`).
+
 ---
 
 ## Normative sources
@@ -28,7 +30,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | §2 CLP fee \(x^2Y/(x+X)^2\) | `CLPFee` in [`fees.go`](../../modules/incentive-pendulum/fees.go) |
 | §3 CLP/total fee mix, pendulum share of fees | `PendulumFeeFraction`; micro-case test |
 | §5 Stabilizer \(m(s,r)\), cap, push 1.0 / 0.7 | `StabilizerMultiplier`, `QuoteSwapFees` |
-| §6–§7 Split, yields, \(2s^2/(1-s)\) | `Split`, `YieldRatio`, tests |
+| §6–§7 Split, yields, \(2s^2/(c-s)\) (\(c=3\)) | `SplitInt`, `YieldRatioBps`, tests |
 | §8 Table 2 behaviour | `TestTable2Behaviour` in [`pendulum_test.go`](../../modules/incentive-pendulum/pendulum_test.go) |
 | §9 Redirect *recommendation* (not execution) | `ProtocolFeeRedirectRecommended`, `ProtocolFeeRedirectToNodes` |
 | Oracle participation slashing (window evidence) | `SlashParams`, `OracleEvidence`, `SlashBps` in [`slashing.go`](../../modules/incentive-pendulum/slashing.go) |
@@ -55,7 +57,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 | Split LP vs nodes from LP/stake geometry | `Split`, `PendulumBolt.Evaluate` |
 | Single-side HBD, vault aggregation \(V \approx 2\sum P_{\text{HBD}}\) | `PoolPendulumLiquidity`, `SumPendulumVault` |
 | Global pool eligibility (current) | `PendulumBolt` defaults to DAO-owner-only pools (`hive:vsc.dao`, normalized) |
-| Target **1.5×** overcollateral as **input** | \(u = T/E\) passed as `SplitInputs.U` / derived in `Evaluate`; **not enforced** as an invariant. |
+| Target **1.5×** overcollateral | Now the **equilibrium**: \(s_{eq}=1.0\) with \(E=\tfrac23T\) gives \(T/V=u/s_{eq}=1.5\). The pendulum drives toward it via the fee split (it is the equal-yield fixed point), rather than being a passed-in input. |
 
 ---
 
@@ -65,7 +67,7 @@ Where the two differ (e.g. reward floors/ceilings), the implemented library foll
 |-------|-----|
 | **Internal market** for HBD | Out of library; no DEX ops in this repo. |
 | **User pools via DAO approval** | Planned: DAO-voted `(runtime, code_hash)` allowlist for eligibility; not yet wired. |
-| **Min/max 90% / 10%** and **neither side 0%** | **Intentionally omitted** in code: these rules **conflict** with **from the PDF** §6.1 (0% LP at \(s \ge 1\)). Implemented behaviour follows **from the PDF**. |
+| **Min/max 90% / 10%** and **neither side 0%** | **Intentionally omitted** in code: these rules **conflict** with the closed-form §6.1 (0% LP at \(s \ge c\), \(c=3\)). Implemented behaviour follows the generalized closed form. |
 
 ---
 
@@ -96,10 +98,10 @@ go test ./modules/incentive-pendulum -fuzz=FuzzSplitConservesR -fuzztime=10s
 
 | Test file | What it covers |
 |-----------|------------------|
-| [`pendulum_test.go`](../../modules/incentive-pendulum/pendulum_test.go) | PDF **Table 2** behaviour (\(u=1.5\), \(w=2/3\)); hard cliff \(s \ge 1\); **§7** yield ratio identity; CLP fee sanity; **§3** pendulum fee fraction micro-trade; stabilizer **\(m=1\)** at \(s=0.5\). |
+| [`pendulum_int_test.go`](../../modules/incentive-pendulum/pendulum_int_test.go) | 60/40 split at equilibrium \(s=1.0\); hard cliff \(s \ge 3\); conservation; `params_test.go` pins the derived band edges and the faithfulness check (\(s_{eq}=0.5\) reproduces the old \(c=1\) / 0.30–0.70 bands); stabilizer **\(m=1\)** at \(s=1.0\). |
 | [`property_test.go`](../../modules/incentive-pendulum/property_test.go) | **Conservation:** `FinalNodeShare + FinalPoolShare = R` over a grid; cliff case; **§7** `nodeYield/poolYield` vs `YieldRatio(s)`; **§5** charged total ≥ base subtotal, `AccrueToPendulumR == CLP`; `SumPendulumVault`; `PendulumBolt.Evaluate` with safe-growth \(s\); missing `T` handling; **`FuzzSplitConservesR`** on random valid inputs. |
 | [`slashing_test.go`](../../modules/incentive-pendulum/slashing_test.go) | Slashing schedule invariants: compliant witness = 0 bps, additive penalties (signature deficit/update/equivocation), and cap enforcement. |
-| [`collateral_test.go`](../../modules/incentive-pendulum/collateral_test.go) | **§11** band flags (`IdealZone`, `SafeGrowth`, `WarningZone`, `ExtremeLow`, `UnderSecured`); `EffectiveBondHBD` edge cases. |
+| [`collateral_int_test.go`](../../modules/incentive-pendulum/collateral_int_test.go) | Curve-derived band flags (`IdealZone`, `SafeGrowth`, `WarningZone`, `ExtremeLow`, `ExtremeHigh`, `UnderSecured`); corrected redirect direction; `EffectiveBondHBDInt` edge cases. |
 | [`integration_test.go`](../../modules/incentive-pendulum/integration_test.go) | End-to-end: signature window → `FeedTrust` → `TrustedHivePrice` → `MovingAverageRing` → `PendulumBolt.Evaluate` split conservation. |
 
 ### Package `oracle` (`modules/incentive-pendulum/oracle`)

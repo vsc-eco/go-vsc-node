@@ -39,14 +39,15 @@ func defaultArgs(assetIn, assetOut string) wasm_context.PendulumSwapFeeArgs {
 }
 
 func balancedGeometry() pendulumoracle.GeometryOutputs {
-	// V=500_000, E=1_000_000, T=1_000_000, P=250_000 → s = V/E = 0.5.
+	// V=1_000_000, E=1_000_000, P=500_000, T=1_000_000 → s = V/E = 1.0 (the new
+	// equilibrium). Not a cliff (cliff is V ≥ 3E).
 	return pendulumoracle.GeometryOutputs{
 		OK:   true,
-		V:    500_000,
-		P:    250_000,
+		V:    1_000_000,
+		P:    500_000,
 		E:    1_000_000,
 		T:    1_000_000,
-		SBps: pendulum.BpsScale / 2, // s = 0.5 → 5000 bps
+		SBps: pendulum.BpsScale, // s = 1.0 → 10000 bps
 	}
 }
 
@@ -165,12 +166,12 @@ func TestSwapASSET1InAccruesNodeBucket(t *testing.T) {
 	}
 }
 
-// TestUnderSecuredCliffRoutesAllToNodes locks in the V≥E cliff: when the vault
-// outweighs the bond, the entire pendulum pot routes to nodes per SplitInt.
+// TestUnderSecuredCliffRoutesAllToNodes locks in the V≥3E cliff: when the vault
+// outweighs the bond past the cliff, the entire pendulum pot routes to nodes.
 func TestUnderSecuredCliffRoutesAllToNodes(t *testing.T) {
 	geo := balancedGeometry()
-	geo.V = geo.E + 1 // V > E → cliff
-	geo.SBps = pendulum.BpsScale * 11 / 10
+	geo.V = geo.E*3 + 1 // V > 3E → cliff
+	geo.SBps = pendulum.BpsScale * 31 / 10
 	a, acc := newApplier(t, geo, []string{"contract:pool-1"})
 
 	args := wasm_context.PendulumSwapFeeArgs{
@@ -310,14 +311,14 @@ func TestReserveConservationHBDIn(t *testing.T) {
 // units in this scenario), nowhere near baseCLP·(m−1).
 func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 	args := wasm_context.PendulumSwapFeeArgs{
-		AssetIn:  "hbd", // HBD-in raises s; with s already > 0.5, this exacerbates → push=1.0.
+		AssetIn:  "hbd", // HBD-in raises s; with s ≥ s_eq, this exacerbates → push=1.0.
 		AssetOut: "hive",
 		X:        10_000,
 		XReserve: 1_000_000,
 		YReserve: 1_000_000,
 	}
 
-	// Baseline: s = 0.5 → m = 1.0 → totalFee == baseCLP + baseProtocol.
+	// Baseline: s = 1.0 (s_eq) → m = 1.0 → totalFee == baseCLP + baseProtocol.
 	aBase, accBase := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 	resBase := aBase.ApplySwapFees("contract:pool-1", "tx-1", 100, args, accBase.fn)
 	if resBase.IsErr() {
@@ -325,16 +326,16 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 	}
 	outBase := resBase.Unwrap()
 	if outBase.MultiplierBps != pendulum.BpsScale {
-		t.Fatalf("expected m == 1.0 at s=0.5, got %d bps", outBase.MultiplierBps)
+		t.Fatalf("expected m == 1.0 at s=1.0, got %d bps", outBase.MultiplierBps)
 	}
 
-	// Off-equilibrium: s = 0.7 with V=700_000 (P=350_000=V/2 keeps geometry
+	// Off-equilibrium: s = 1.2 with V=1_200_000 (P=600_000=V/2 keeps geometry
 	// consistent). At r = x/X = 1% and r0 = 1% → r/r0 = 1.0 → inner = 2.0.
-	// tail = K · |s−0.5| · inner · push = 1 · 0.2 · 2 · 1 = 0.4 → m = 1.4.
+	// tail = K · |s−s_eq| · inner · push = 1 · 0.2 · 2 · 1 = 0.4 → m = 1.4.
 	geoHigh := balancedGeometry()
-	geoHigh.V = 700_000
-	geoHigh.P = 350_000
-	geoHigh.SBps = pendulum.BpsScale * 70 / 100
+	geoHigh.V = 1_200_000
+	geoHigh.P = 600_000
+	geoHigh.SBps = pendulum.BpsScale * 120 / 100
 	aHigh, accHigh := newApplier(t, geoHigh, []string{"contract:pool-1"})
 	resHigh := aHigh.ApplySwapFees("contract:pool-1", "tx-2", 100, args, accHigh.fn)
 	if resHigh.IsErr() {
@@ -342,7 +343,7 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 	}
 	outHigh := resHigh.Unwrap()
 	if outHigh.MultiplierBps != pendulum.BpsScale*14/10 {
-		t.Fatalf("expected m == 1.4 at s=0.7, r=1%%, got %d bps", outHigh.MultiplierBps)
+		t.Fatalf("expected m == 1.4 at s=1.2, r=1%%, got %d bps", outHigh.MultiplierBps)
 	}
 
 	// Reserves identical in both runs → grossOut, baseCLP, baseProtocol all
@@ -401,11 +402,11 @@ func TestAccrualErrorPropagates(t *testing.T) {
 
 // TestExacerbatesFromSnapshot pins the truth table for the auto-derived
 // stabilizer hint: HBD-in raises s, HBD-out lowers it; "exacerbates"
-// means the swap moves s away from 0.5.
+// means the swap moves s away from the target s_eq = 1.0.
 func TestExacerbatesFromSnapshot(t *testing.T) {
-	half := pendulum.BpsScale / 2          // 0.5 in bps
-	low := pendulum.BpsScale * 30 / 100    // 0.3 in bps
-	high := pendulum.BpsScale * 70 / 100   // 0.7 in bps
+	target := pendulum.TargetSBps         // 1.0 in bps
+	low := pendulum.BpsScale * 80 / 100   // 0.8 in bps (below target)
+	high := pendulum.BpsScale * 120 / 100 // 1.2 in bps (above target)
 
 	cases := []struct {
 		name  string
@@ -417,8 +418,8 @@ func TestExacerbatesFromSnapshot(t *testing.T) {
 		{"s_low_hbd_out_exacerbates", low, false, true},
 		{"s_high_hbd_in_exacerbates", high, true, true},
 		{"s_high_hbd_out_corrective", high, false, false},
-		{"s_at_half_hbd_in_exacerbates", half, true, true},
-		{"s_at_half_hbd_out_exacerbates", half, false, true},
+		{"s_at_target_hbd_in_exacerbates", target, true, true},
+		{"s_at_target_hbd_out_exacerbates", target, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

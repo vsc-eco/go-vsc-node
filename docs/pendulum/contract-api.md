@@ -36,7 +36,7 @@ The contract supplies only the swap inputs. The SDK derives `gross_out`, both ba
 | `x_reserve` | string-int | Pool reserve of `asset_in` **before** the swap. Must be `> 0`.                                       |
 | `y_reserve` | string-int | Pool reserve of `asset_out` **before** the swap. Must be `> 0`.                                      |
 
-The stabilizer push direction is **not** an input. The SDK derives it from the snapshot's `s` and the swap direction (HBD-in raises `s = 2P/E`; HBD-out lowers it). A trade is "exacerbating" iff it moves `s` away from 0.5; otherwise it's corrective (push = 0.7×). At exactly `s = 0.5` any nonzero swap exacerbates by definition.
+The stabilizer push direction is **not** an input. The SDK derives it from the snapshot's `s` and the swap direction (HBD-in raises `s = 2P/E`; HBD-out lowers it). A trade is "exacerbating" iff it moves `s` away from the equilibrium target `s_eq = 1.0`; otherwise it's corrective (push = 0.7×). At exactly `s = 1.0` any nonzero swap exacerbates by definition.
 
 **Output** (`PendulumSwapFeeOutput`):
 

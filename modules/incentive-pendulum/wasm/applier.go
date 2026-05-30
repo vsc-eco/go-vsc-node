@@ -186,8 +186,8 @@ func (a *Applier) ApplySwapFees(
 	// SDK has all inputs, so accepting a contract-supplied hint would be a
 	// pure non-determinism vector with no information gain. HBD-in raises
 	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
-	// corrective when its direction matches the move toward s = 0.5; any
-	// move away (including any move at exactly s = 0.5) is exacerbating.
+	// corrective when its direction matches the move toward the target s_eq;
+	// any move away (including any move at exactly s = s_eq) is exacerbating.
 	rTradeBps, err := tradeRatioBps(args.X, args.XReserve)
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
@@ -367,18 +367,19 @@ func tradeRatioBps(x, X int64) (int64, error) {
 //
 //	s = V/E = 2P/E. HBD-in raises P (and therefore s); HBD-out lowers it.
 //
-// The trade exacerbates the imbalance whenever it moves s away from 0.5
-// (the equilibrium target the StabilizerMultiplier penalizes deviations
-// from). At exactly s = 0.5 any nonzero swap exacerbates by definition.
+// The trade exacerbates the imbalance whenever it moves s away from the
+// equilibrium target s_eq (the point the StabilizerMultiplier penalizes
+// deviations from). At exactly s = s_eq any nonzero swap exacerbates by
+// definition.
 func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
-	const half = pendulum.BpsScale / 2
+	target := pendulum.TargetSBps
 	switch {
-	case sBps == half:
+	case sBps == target:
 		return true
-	case sBps < half:
+	case sBps < target:
 		// We want s to rise. HBD-in raises s (corrective); HBD-out lowers it.
 		return !hbdIn
-	default: // sBps > half
+	default: // sBps > target
 		// We want s to fall. HBD-out lowers s (corrective); HBD-in raises it.
 		return hbdIn
 	}
@@ -386,21 +387,22 @@ func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
 
 // splitFractionsBps returns (f_node, f_node_protocol) as basis points. fNode
 // applies to the CLP pot; fNodeProtocol applies to the protocol+surplus pot
-// with PDF §9 redirect cliffs at s ∈ {0.3, 0.7}.
+// with §9 redirect cliffs at the safe-band edges (pendulum.RedirectLo/HiBps).
 func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
 	scale := big.NewInt(pendulum.BpsScale)
 
-	if V.Cmp(E) >= 0 {
-		// Cliff: all to nodes.
+	cE := pendulum.CliffTimesE(E)
+	if V.Cmp(cE) >= 0 {
+		// Under-secured cliff: all to nodes.
 		return pendulum.BpsScale, pendulum.BpsScale
 	}
 
-	// denom = T·V² + P·E·(E − V)
+	// denom = T·V² + P·E·(c·E − V)
 	tvSquared := new(big.Int).Mul(V, V)
 	tvSquared.Mul(tvSquared, T)
-	eMinusV := new(big.Int).Sub(E, V)
+	cEMinusV := new(big.Int).Sub(cE, V)
 	peTerm := new(big.Int).Mul(P, E)
-	peTerm.Mul(peTerm, eMinusV)
+	peTerm.Mul(peTerm, cEMinusV)
 	denom := new(big.Int).Add(tvSquared, peTerm)
 	if denom.Sign() == 0 {
 		return pendulum.BpsScale, pendulum.BpsScale
@@ -416,14 +418,18 @@ func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
 		fNode = pendulum.BpsScale
 	}
 
-	// PDF §9: protocol leg redirects past extreme s.
-	const sLowBps = pendulum.BpsScale * 30 / 100  // 0.3
-	const sHighBps = pendulum.BpsScale * 70 / 100 // 0.7
+	// §9: protocol leg redirects to the rebalancing side past the safe band.
+	// Direction corrected vs the PDF's literal "nodes if s<low, pools if
+	// s>high" (which compensated the starved side and so *dampened*
+	// restoration): below RedirectLo liquidity is starved → fund LPs
+	// (fNodeProtocol=0) to attract it; above RedirectHi liquidity is in excess
+	// → route to nodes (fNodeProtocol=BpsScale) to shed it. Edges are the
+	// safe-band edges (params.go).
 	fNodeProtocol := fNode
-	if sBps < sLowBps {
-		fNodeProtocol = pendulum.BpsScale
-	} else if sBps > sHighBps {
+	if sBps < pendulum.RedirectLoBps {
 		fNodeProtocol = 0
+	} else if sBps > pendulum.RedirectHiBps {
+		fNodeProtocol = pendulum.BpsScale
 	}
 	return fNode, fNodeProtocol
 }

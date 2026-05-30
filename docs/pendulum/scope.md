@@ -11,7 +11,7 @@
 #### Distribution is based on the ratio between
 
 - LP value/Stake value
-- The system targets optimal capital efficiency at 1.5× overcollateralization.
+- The system targets optimal capital efficiency at 1.5× overcollateralization. In the implementation this is the **equilibrium**: \(s_{eq}=V/E=1.0\) with \(E=\tfrac23T\) gives total-stake : liquidity \(T/V=1.5\), the equal-yield fixed point the fee split drives toward.
 
 #### LP Value Measurement
 - Single-Side LP Tracking (HBD Side). We track HBD value via internal market.
@@ -29,7 +29,7 @@ For simplicity, the system tracks only one side of the liquidity pool, specifica
  
 If one asset rapidly changes USD value:
 - The assumed 1:1 valuation may temporarily diverge.
-- This can affect measured overcollateralization. Economic security is established after 1:1 LP/Colateral ratio is reached.
+- This can affect measured overcollateralization. The 1:1 LP/effective-bond ratio (\(V=E\), \(s=1.0\)) is the healthy **equilibrium**, not a limit; the under-secured cliff sits further out at \(s=3\) (\(V=3E\)).
 #### Mitigation
 - Stablecoin pairs reduce this risk significantly.
 - Overcollateralization operates within a range, providing tolerance.

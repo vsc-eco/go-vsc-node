@@ -65,8 +65,9 @@ func DefaultStabilizerParamsBps() StabilizerParamsBps {
 	}
 }
 
-// StabilizerMultiplierBps returns m(s, r) = 1 + K · |s − 0.5| · (1 + r/R0) · push,
-// capped at p.CapBps. All inputs and the result use the bps scale.
+// StabilizerMultiplierBps returns m(s, r) = 1 + K · |s − s_eq| · (1 + r/R0) · push,
+// capped at p.CapBps, where s_eq = TargetSBps is the equilibrium target. All
+// inputs and the result use the bps scale.
 //
 // Each chained product is a MulDivFloor through BpsScale, so the multiplier
 // accumulates at most ~3 bps of integer-floor rounding. The cap clamps the
@@ -84,8 +85,7 @@ func StabilizerMultiplierBps(sBps, rBps int64, p StabilizerParamsBps) (int64, er
 		r0 = 1
 	}
 
-	half := BpsScale / 2
-	diff := sBps - half
+	diff := sBps - TargetSBps
 	if diff < 0 {
 		diff = -diff
 	}

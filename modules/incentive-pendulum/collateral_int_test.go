@@ -74,6 +74,9 @@ func TestEffectiveBondHBDInt_FractionClampedToOne(t *testing.T) {
 }
 
 func TestCollateralFromSVBps_Bands(t *testing.T) {
+	// Bands are the curve-derived yield-ratio level sets (params.go), asymmetric
+	// around s_eq = 1.0: extremeLo<3631, warnLo<4601, safe[5600,15427],
+	// ideal[8829,11232], warnHi>17061, extremeHi>21097, cliff≥30000.
 	cases := []struct {
 		s        int64 // bps
 		under    bool
@@ -81,58 +84,62 @@ func TestCollateralFromSVBps_Bands(t *testing.T) {
 		safe     bool
 		warn     bool
 		extremeL bool
+		extremeH bool
 	}{
-		{10_000, true, false, false, true, false}, // s=1.0
-		{5_000, false, true, true, false, false},  // s=0.5
-		{4_500, false, true, true, false, false},
-		{5_500, false, true, true, false, false},
-		{4_400, false, false, true, false, false},
-		{5_600, false, false, true, false, false},
-		{7_600, false, false, false, true, false},
-		{2_400, false, false, false, true, false},
-		{1_900, false, false, false, true, true},
+		{10_000, false, true, true, false, false, false},  // s=1.0 equilibrium: ideal+safe
+		{8_829, false, true, true, false, false, false},   // ideal lower edge
+		{11_232, false, true, true, false, false, false},  // ideal upper edge
+		{8_828, false, false, true, false, false, false},  // just below ideal → safe only
+		{5_600, false, false, true, false, false, false},  // safe lower edge
+		{15_427, false, false, true, false, false, false}, // safe upper edge
+		{4_600, false, false, false, true, false, false},  // warning low
+		{17_062, false, false, false, true, false, false}, // warning high
+		{3_630, false, false, false, true, true, false},   // extreme low
+		{21_098, false, false, false, true, false, true},  // extreme high
+		{30_000, true, false, false, true, false, true},   // cliff: under-secured (also warn + extreme-high)
 	}
 	for _, tc := range cases {
 		r := CollateralFromSVBps(tc.s)
-		if r.UnderSecured != tc.under || r.IdealZone != tc.ideal || r.SafeGrowth != tc.safe || r.WarningZone != tc.warn || r.ExtremeLow != tc.extremeL {
+		if r.UnderSecured != tc.under || r.IdealZone != tc.ideal || r.SafeGrowth != tc.safe ||
+			r.WarningZone != tc.warn || r.ExtremeLow != tc.extremeL || r.ExtremeHigh != tc.extremeH {
 			t.Errorf("s=%d got %+v", tc.s, r)
 		}
 	}
 }
 
 func TestCollateralFromSVBps_RedirectFlags(t *testing.T) {
-	// |s-0.5| > 0.2 triggers redirect. s=0.2 → starved nodes (s<0.3); s=0.8 → starved pools.
-	r := CollateralFromSVBps(2_000)
-	if !r.ProtocolRedirectRecommended || !r.ProtocolRedirectToNodes {
-		t.Errorf("s=0.2: got %+v", r)
-	}
-	r = CollateralFromSVBps(8_000)
+	// Redirect fires outside the safe band [5600,15427]. Direction is corrected:
+	// starved liquidity (s low) → LPs (toNodes=false); excess (s high) → nodes.
+	r := CollateralFromSVBps(5_000) // below safe-lo
 	if !r.ProtocolRedirectRecommended || r.ProtocolRedirectToNodes {
-		t.Errorf("s=0.8: got %+v", r)
+		t.Errorf("s=0.5 (low): want recommended + toLPs; got %+v", r)
 	}
-	r = CollateralFromSVBps(5_000)
+	r = CollateralFromSVBps(20_000) // above safe-hi
+	if !r.ProtocolRedirectRecommended || !r.ProtocolRedirectToNodes {
+		t.Errorf("s=2.0 (high): want recommended + toNodes; got %+v", r)
+	}
+	r = CollateralFromSVBps(10_000) // equilibrium, inside safe band
 	if r.ProtocolRedirectRecommended {
-		t.Errorf("s=0.5: redirect should not trigger; got %+v", r)
+		t.Errorf("s=1.0: redirect should not trigger; got %+v", r)
 	}
 }
 
 func TestProtocolFeeRedirectBps_BandTransitions(t *testing.T) {
-	// |s-0.5| > 0.2 triggers redirect. Sample either side of the cliffs in bps.
+	// Redirect recommended when s leaves the safe band: s<5600 or s>15427.
 	cases := []struct {
 		sBps int64
 		want bool
 	}{
 		{0, true},
-		{1_000, true},
-		{2_900, true},
-		{3_000, false}, // boundary closed at 0.3
-		{3_100, false},
-		{5_000, false},
-		{6_900, false},
-		{7_000, false}, // boundary closed at 0.7
-		{7_100, true},
-		{9_500, true},
-		{10_000, true},
+		{3_000, true},
+		{5_599, true},
+		{5_600, false}, // safe-lo edge closed
+		{5_601, false},
+		{10_000, false},
+		{15_427, false}, // safe-hi edge closed
+		{15_428, true},
+		{20_000, true},
+		{30_000, true},
 	}
 	for _, c := range cases {
 		got := ProtocolFeeRedirectRecommendedBps(c.sBps)

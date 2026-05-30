@@ -57,9 +57,9 @@ func TestCLPFeeInt_ZeroOrNegativeInputs(t *testing.T) {
 }
 
 func TestStabilizerMultiplierBps_AtEquilibrium(t *testing.T) {
-	// At s = 0.5 (5000 bps), |s - 0.5| = 0, so m == 1 (10000 bps) regardless of r.
+	// At s = s_eq = 1.0 (10000 bps), |s - s_eq| = 0, so m == 1 regardless of r.
 	p := DefaultStabilizerParamsBps()
-	got, err := StabilizerMultiplierBps(5_000, 500, p)
+	got, err := StabilizerMultiplierBps(10_000, 500, p)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -69,17 +69,18 @@ func TestStabilizerMultiplierBps_AtEquilibrium(t *testing.T) {
 }
 
 func TestStabilizerMultiplierBps_OnGrid(t *testing.T) {
-	// m(s, r) = 1 + K·|s−0.5|·(1 + r/R0)·push, capped at Cap.
-	// Defaults: K=1.0, R0=0.01, Cap=2.0, Push=1.0.
+	// m(s, r) = 1 + K·|s−s_eq|·(1 + r/R0)·push, capped at Cap. s_eq = 1.0.
+	// Defaults: K=1.0, R0=0.01, Cap=2.0, Push=1.0. Cases pick s at the same
+	// |s−s_eq| deviations the old s=0.5-centered grid used.
 	p := DefaultStabilizerParamsBps()
 	cases := []struct {
 		sBps, rBps int64
 		want       int64
 	}{
-		{1_000, 0, 14_000},     // s=0.1, r=0    → 1 + 0.4·1·1 = 1.4
-		{3_000, 0, 12_000},     // s=0.3, r=0    → 1 + 0.2·1·1 = 1.2
-		{5_000, 5_000, 10_000}, // s=0.5, any r → m == 1 (no deviation)
-		{7_000, 100, 14_000},   // s=0.7, r=0.01 → 1 + 0.2·2·1 = 1.4
+		{6_000, 0, 14_000},      // dev 0.4, r=0   → 1 + 0.4·1·1 = 1.4
+		{8_000, 0, 12_000},      // dev 0.2, r=0   → 1 + 0.2·1·1 = 1.2
+		{10_000, 5_000, 10_000}, // s_eq, any r   → m == 1 (no deviation)
+		{12_000, 100, 14_000},   // dev 0.2, r=0.01 → 1 + 0.2·2·1 = 1.4
 	}
 	for _, c := range cases {
 		got, err := StabilizerMultiplierBps(c.sBps, c.rBps, p)
@@ -95,8 +96,8 @@ func TestStabilizerMultiplierBps_OnGrid(t *testing.T) {
 
 func TestStabilizerMultiplierBps_CapEnforced(t *testing.T) {
 	p := DefaultStabilizerParamsBps()
-	// Force a huge raw multiplier with extreme |s-0.5| and r/r0.
-	got, err := StabilizerMultiplierBps(bpsFromFloat(0.99), bpsFromFloat(10.0), p)
+	// Force a huge raw multiplier with extreme |s−s_eq| and r/r0.
+	got, err := StabilizerMultiplierBps(bpsFromFloat(0.01), bpsFromFloat(10.0), p)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -126,8 +127,8 @@ func TestStabilizerMultiplierBps_OverflowAtFinalAddition(t *testing.T) {
 	p := DefaultStabilizerParamsBps()
 	p.KBps = math.MaxInt64
 	p.CapBps = 0 // disable cap so tail isn't clamped before the addition
-	// sBps = 15000 → |sBps - 5000| = 10000.
-	if _, err := StabilizerMultiplierBps(15_000, 0, p); !errors.Is(err, ErrStabilizerOverflow) {
+	// sBps = 20000 → |sBps − s_eq(10000)| = 10000.
+	if _, err := StabilizerMultiplierBps(20_000, 0, p); !errors.Is(err, ErrStabilizerOverflow) {
 		t.Fatalf("expected ErrStabilizerOverflow, got err=%v", err)
 	}
 }
