@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"vsc-node/modules/common/consensusversion"
 )
 
 // A transaction consuming 1000 RC (1 HBD equivalent) would generate ~0.002 HBD interest for the protocol
@@ -140,6 +142,27 @@ type ConsensusParams struct {
 	// Defaults to 4/5 (80%) when unset.
 	ConsensusVersionActivationNum uint64 `json:"consensusVersionActivationNum,omitempty"`
 	ConsensusVersionActivationDen uint64 `json:"consensusVersionActivationDen,omitempty"`
+
+	// ConsensusVersionFloorEpoch / ...Major / ...Consensus pin a deterministic consensus
+	// version floor WITHOUT an on-chain proposal or stake-readiness guard (the "simple
+	// rollout" path). At/after ConsensusVersionFloorEpoch, every election's version floor
+	// rises to {ConsensusVersionFloorMajor, ConsensusVersionFloorConsensus}, so any witness
+	// announcing a lower major.consensus is excluded from the committee (and, downstream,
+	// from TSS gating). Use this when the operator knows out-of-band that the supermajority
+	// will be upgraded by the activation epoch, so the propose/activation path's stake
+	// readiness guard is unnecessary.
+	//
+	// MUST be a fixed network-wide constant (identical on every node, reindex or not). The
+	// target (Major/Consensus) is read from config — NOT from the node's own RunningVersion —
+	// so the floor is a pure function of config + newEpoch and does not depend on which version
+	// the node itself runs; every node resolves the identical floor (deriving it from
+	// RunningVersion instead could diverge across a mixed-version fleet). A witness whose
+	// announced version is below the resolved floor is simply excluded. Epoch 0 disables the pin
+	// (the floor then moves only via the propose/recovery paths). Set the epoch to the first
+	// post-rollout election epoch (typically PendulumSeedEpoch + 1).
+	ConsensusVersionFloorEpoch     uint64 `json:"consensusVersionFloorEpoch,omitempty"`
+	ConsensusVersionFloorMajor     uint64 `json:"consensusVersionFloorMajor,omitempty"`
+	ConsensusVersionFloorConsensus uint64 `json:"consensusVersionFloorConsensus,omitempty"`
 }
 
 // ───── Named activation predicates (Ethereum ChainConfig style) ─────
@@ -175,6 +198,22 @@ func (cp ConsensusParams) ElectionDupeFixActive(epoch uint64) bool {
 // gate the one-time bootstrap marker write on chains that pre-date settlement.
 func (cp ConsensusParams) PendulumSeedConfigured() bool {
 	return cp.PendulumSeedEpoch != 0
+}
+
+// PinnedVersionFloor returns the config-pinned consensus floor that applies to an election
+// creating newEpoch, or the zero version when no pin applies (ConsensusVersionFloorEpoch is
+// 0, or newEpoch precedes it). Deterministic: a pure function of network config and newEpoch
+// that does not depend on the node's own running version, so every node resolves the identical
+// floor. The election proposer raises its floor to this value and never lowers an already-higher
+// floor.
+func (cp ConsensusParams) PinnedVersionFloor(newEpoch uint64) consensusversion.Version {
+	if cp.ConsensusVersionFloorEpoch == 0 || newEpoch < cp.ConsensusVersionFloorEpoch {
+		return consensusversion.Version{}
+	}
+	return consensusversion.Version{
+		Major:     cp.ConsensusVersionFloorMajor,
+		Consensus: cp.ConsensusVersionFloorConsensus,
+	}
 }
 
 type TssParams struct {

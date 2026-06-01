@@ -439,6 +439,19 @@ func (e *electionProposer) GenerateFullElection(
 		return !included || weight == 0
 	})
 
+	// Config-pinned version floor (simple rollout path): at/after the configured epoch the
+	// floor rises to the configured target WITHOUT an on-chain proposal or stake-readiness
+	// guard. PinnedVersionFloor is a pure function of network config + newEpoch, so every
+	// signer regenerating this election resolves the identical floor → identical members →
+	// identical CID. The propose/activation block below stays dormant unless a proposal is
+	// actually posted; this pin and that block compose (floor only ever rises).
+	if pinned := e.sconf.ConsensusParams().PinnedVersionFloor(newEpoch); pinned.Cmp(floor) > 0 {
+		floor = pinned
+		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+			return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
+		})
+	}
+
 	// Epoch-scheduled version switch with stake-readiness guard. Resolved here (at the
 	// ratified election checkpoint) rather than via a live singleton, so every signer
 	// regenerating this election at the same height computes the identical floor → CID.
