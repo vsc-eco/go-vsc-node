@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -74,7 +75,7 @@ func TestAuditUnfixed_37_NoMaxCommitteeSizeCap(t *testing.T) {
 		nil,                          // hiveConsumer
 	)
 
-	_, data, err := ep.GenerateFullElection(witnessList, 0, 0, 100)
+	_, data, err := ep.GenerateFullElection(witnessList, 0, consensusversion.Version{}, 100)
 	if err != nil {
 		t.Fatalf("audit #37: GenerateFullElection returned error: %v", err)
 	}
