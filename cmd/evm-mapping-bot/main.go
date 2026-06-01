@@ -242,7 +242,7 @@ func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	raw, _ := io.ReadAll(resp.Body)
 
 	var result struct {
-		Result json.RawMessage        `json:"result"`
+		Result json.RawMessage           `json:"result"`
 		Error  *struct{ Message string } `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
@@ -672,7 +672,7 @@ const TransferEventSig = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a
 type detectedDeposit struct {
 	BlockHeight  uint64
 	TxIndex      int
-	LogIndex     int    // -1 for native ETH
+	LogIndex     int // -1 for native ETH
 	TxHash       string
 	DepositType  string // "eth" or "erc20"
 	TokenAddress string
@@ -739,10 +739,30 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 		json.Unmarshal(logsData, &logs)
 
 		for _, log := range logs {
+			// W4-A CRIT #14 + F2 hardening: the contract reader expects the
+			// PER-RECEIPT log position (0..N-1 within the receipt's own logs
+			// list), but eth_getLogs returns the BLOCK-LEVEL logIndex.
+			// Resolve the per-receipt position by finding the SPECIFIC log
+			// in the receipt that matches this block-level index. A tx
+			// emitting two Transfer(token -> vault) logs previously had
+			// both deposits collide on observed-index 0; matching by the
+			// block-level index gives each deposit a distinct per-receipt
+			// position.
+			if log.LogIndex == "" {
+				slog.Warn("eth_getLogs returned a log with no logIndex (non-standard RPC); skipping deposit",
+					"tx", log.TransactionHash, "token", tokenAddr)
+				continue
+			}
+			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
+			if lookupErr != nil {
+				slog.Warn("CRIT #14: per-receipt logIndex lookup failed; skipping deposit",
+					"tx", log.TransactionHash, "token", tokenAddr, "err", lookupErr)
+				continue
+			}
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight:  height,
 				TxIndex:      int(hexToUint64(log.TransactionIndex)),
-				LogIndex:     int(hexToUint64(log.LogIndex)),
+				LogIndex:     perReceiptIdx,
 				TxHash:       log.TransactionHash,
 				DepositType:  "erc20",
 				TokenAddress: tokenAddr,
@@ -751,6 +771,54 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 	}
 
 	return result, nil
+}
+
+// lookupPerReceiptLogIndex resolves the per-receipt logIndex (0..N-1 within
+// the receipt's own Logs list) for a specific log identified by its block-
+// level logIndex. eth_getLogs returns block-level indices; the contract
+// reader expects per-receipt. Without this resolver a multi-Transfer-log
+// tx would map every deposit to per-receipt position 0 (W4-A CRIT #14), or
+// to the first matching position if a naive scan is used (F2-bot variant
+// of the same bug).
+func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic string, blockLogIndex uint64) (int, error) {
+	receiptData, err := rpc.getReceipt(txHash)
+	if err != nil {
+		return -1, fmt.Errorf("getReceipt %s: %w", txHash, err)
+	}
+	var receipt struct {
+		Logs []struct {
+			Address  string   `json:"address"`
+			Topics   []string `json:"topics"`
+			LogIndex string   `json:"logIndex"` // block-level index
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(receiptData, &receipt); err != nil {
+		return -1, fmt.Errorf("decode receipt %s: %w", txHash, err)
+	}
+	wantedAddr := strings.ToLower(strings.TrimPrefix(tokenAddr, "0x"))
+	wantedTopic := strings.ToLower(vaultPaddedTopic)
+	// F2: resolve the per-receipt array position of the SPECIFIC block-level
+	// log (matched by its block-level logIndex), NOT the first matching log.
+	for i, log := range receipt.Logs {
+		// F2 hardening: a non-standard RPC omitting logIndex would make
+		// hexToUint64("")==0 silently match only block index 0 — surface a
+		// distinct, retryable error instead of mis-resolving the position.
+		if log.LogIndex == "" {
+			return -1, fmt.Errorf("receipt %s log lacks logIndex (non-standard RPC); cannot resolve per-receipt index", txHash)
+		}
+		if hexToUint64(log.LogIndex) != blockLogIndex {
+			continue
+		}
+		// Sanity-check the resolved log really is the expected Transfer(token -> vault).
+		if strings.ToLower(strings.TrimPrefix(log.Address, "0x")) != wantedAddr ||
+			len(log.Topics) < 3 ||
+			strings.ToLower(strings.TrimPrefix(log.Topics[0], "0x")) != TransferEventSig ||
+			strings.ToLower(log.Topics[2]) != wantedTopic {
+			return -1, fmt.Errorf("log at block-level index %d in receipt %s is not the expected Transfer(token=%s -> vault)", blockLogIndex, txHash, tokenAddr)
+		}
+		return i, nil
+	}
+	return -1, fmt.Errorf("log with block-level index %d not found in receipt %s for token %s", blockLogIndex, txHash, tokenAddr)
 }
 
 // buildMapPayload constructs the JSON for a "map" contract call.
@@ -1727,9 +1795,9 @@ func handleWithdrawals(
 				cp.mu.Lock()
 				cp.SentWithdrawals[nonceKey] = SentTx{
 					SignedTxHex: candidate,
-					TxHash:     candidateHash,
-					Nonce:      confirmedNonce,
-					SentAt:     time.Now().Unix(),
+					TxHash:      candidateHash,
+					Nonce:       confirmedNonce,
+					SentAt:      time.Now().Unix(),
 				}
 				cp.mu.Unlock()
 				return
@@ -1749,9 +1817,9 @@ func handleWithdrawals(
 	cp.mu.Lock()
 	cp.SentWithdrawals[nonceKey] = SentTx{
 		SignedTxHex: signedTxHex,
-		TxHash:     txHash,
-		Nonce:      confirmedNonce,
-		SentAt:     time.Now().Unix(),
+		TxHash:      txHash,
+		Nonce:       confirmedNonce,
+		SentAt:      time.Now().Unix(),
 	}
 	cp.mu.Unlock()
 }
