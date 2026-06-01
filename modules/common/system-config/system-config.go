@@ -183,19 +183,18 @@ func MainnetConfig() SystemConfig {
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    94601000,
 		consensusParams: params.ConsensusParams{
-			MinStake:             params.CONSENSUS_MINIMUM,
-			MinMembers:           7,
-			MinSpSigners:         6,
-			MinRcLimit:           params.MINIMUM_RC_LIMIT,
-			TssIndexHeight:       params.TSS_INDEX_HEIGHT,
-			ElectionInterval:     params.ELECTION_INTERVAL,
-			ElectionDupeFixEpoch: 1406,
-			// MUST be set to the last pre-rollout mainnet epoch before the
-			// pendulum settlement code ships to mainnet. Left 0 (no seed)
-			// until then — 0 on an established chain deadlocks the proposer's
-			// canHold gate, so this is a deliberate "configure before deploy".
-			PendulumSeedEpoch:        0,
-			EvmAddressChecksumHeight: 0,
+			MinStake:                       params.CONSENSUS_MINIMUM,
+			MinMembers:                     7,
+			MinSpSigners:                   6,
+			MinRcLimit:                     params.MINIMUM_RC_LIMIT,
+			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
+			ElectionInterval:               params.ELECTION_INTERVAL,
+			ElectionDupeFixEpoch:           1406,
+			ConsensusVersionFloorEpoch:     1623,
+			ConsensusVersionFloorMajor:     0,
+			ConsensusVersionFloorConsensus: 1,
+			PendulumSeedEpoch:              1622,
+			EvmAddressChecksumHeight:       106_907_500,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -206,7 +205,10 @@ func MainnetConfig() SystemConfig {
 		},
 		tssParams: params.DefaultTssParams,
 		// Mainnet defaults to empty — eligibility falls back to PendulumBolt's DAO-owner check.
-		pendulumPoolWhitelist: nil,
+		pendulumPoolWhitelist: []string{
+			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp",
+			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM",
+		},
 	}
 	return conf
 }
