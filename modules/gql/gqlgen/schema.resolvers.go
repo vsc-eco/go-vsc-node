@@ -497,9 +497,9 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 			mode = "recovery"
 		}
 		info.ConsensusActivationMode = &mode
-		// Activation is now epoch-scheduled; this field carries the activation EPOCH.
-		h := model.Uint64(act.ActivationEpoch)
-		info.ConsensusActivationHeight = &h
+		// Activation is epoch-scheduled; this field carries the activation epoch.
+		ep := model.Uint64(act.ActivationEpoch)
+		info.ConsensusActivationEpoch = &ep
 		ab := model.Uint64(act.BlockHeight)
 		info.ConsensusActivationAttestedBlock = &ab
 		av := act.Target().Format()

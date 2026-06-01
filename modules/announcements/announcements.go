@@ -188,9 +188,9 @@ var (
 	VersionId string = "go-v0.1.0"
 )
 
-// parseAnnounceVersionComponent retains the historical helper for tests; the canonical
-// build-time version now lives in consensusversion (NodeVersionMajor/NodeProtocolVersion/
-// NodeVersionNonConsensus) and is read via consensusversion.RunningVersion().
+// parseAnnounceVersionComponent retains the historical numeric-component parser for tests.
+// The canonical running version is now a source constant in consensusversion and is read
+// via consensusversion.RunningVersion() (no longer parsed from build-time strings).
 func parseAnnounceVersionComponent(raw, field string) uint64 {
 	return consensusversion.ParseComponent(raw)
 }

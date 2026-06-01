@@ -40,9 +40,13 @@ func TestMaxComponentwise(t *testing.T) {
 	}
 }
 
-func TestRunningVersionDefaultsZero(t *testing.T) {
-	if got := RunningVersion(); got != (Version{}) {
-		t.Fatalf("default running version should be zero, got %+v", got)
+// RunningVersion is compiled in from source constants (not ldflags), so it must equal the
+// pinned current triple. Update this pin in the SAME commit that bumps the constants in
+// version.go.
+func TestRunningVersionIsSourcePinned(t *testing.T) {
+	want := Version{Major: 0, Consensus: 1, NonConsensus: 0}
+	if got := RunningVersion(); got != want {
+		t.Fatalf("running version = %+v, want %+v (source constants in version.go)", got, want)
 	}
 }
 

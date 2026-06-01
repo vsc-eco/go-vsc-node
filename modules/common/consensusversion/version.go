@@ -6,20 +6,34 @@ import (
 	"strconv"
 )
 
-// Build-time node consensus version, settable via -ldflags -X. These are the single
-// source of truth for both the on-chain witness announcement and TSS gossip readiness.
-// Example:
+// Canonical consensus version of THIS source tree, in the major.consensus.non_consensus
+// model. These are the single source of truth for both the on-chain witness announcement
+// and TSS gossip readiness.
 //
-//	-ldflags "-X vsc-node/modules/common/consensusversion.NodeVersionMajor=1 \
-//	          -X vsc-node/modules/common/consensusversion.NodeProtocolVersion=2 \
-//	          -X vsc-node/modules/common/consensusversion.NodeVersionNonConsensus=7"
-var (
-	NodeVersionMajor        string
-	NodeProtocolVersion     string
-	NodeVersionNonConsensus string
+// SOURCE CONSTANTS ON PURPOSE — the version is a property of the code, not of the build
+// environment. It is deliberately NOT injected via -ldflags, so every build of this
+// source advertises the same triple and the advertised version always equals the version
+// the binary actually implements; a build cannot accidentally (or maliciously) claim a
+// version it does not run. Bump these in the SAME commit that changes consensus behavior.
+//
+// Coordination is on Major.Consensus only (the election floor / ConsensusParams);
+// NonConsensus is informational and not coordinated.
+//
+// History:
+//   - 0.0.0 — pre-versioning. Binaries without version support announce this implicitly;
+//     while the election floor is 0.0, 0.0.0 and newer interoperate.
+//   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
+//     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
+//     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
+const (
+	currentMajor        uint64 = 0
+	currentConsensus    uint64 = 1
+	currentNonConsensus uint64 = 0
 )
 
-// ParseComponent parses a build-time version component, defaulting to 0 when empty/invalid.
+// ParseComponent parses a numeric version-component string, defaulting to 0 when
+// empty/invalid. Retained for the announcement payload helper; the running version itself
+// is no longer parsed from build-time strings (see RunningVersion).
 func ParseComponent(raw string) uint64 {
 	if raw == "" {
 		return 0
@@ -31,12 +45,14 @@ func ParseComponent(raw string) uint64 {
 	return v
 }
 
-// RunningVersion returns this binary's consensus triple from build-time vars.
+// RunningVersion returns this binary's consensus triple, compiled in from the source
+// constants above (not injected via ldflags), so it is identical for every build of this
+// source tree.
 func RunningVersion() Version {
 	return Version{
-		Major:        ParseComponent(NodeVersionMajor),
-		Consensus:    ParseComponent(NodeProtocolVersion),
-		NonConsensus: ParseComponent(NodeVersionNonConsensus),
+		Major:        currentMajor,
+		Consensus:    currentConsensus,
+		NonConsensus: currentNonConsensus,
 	}
 }
 
