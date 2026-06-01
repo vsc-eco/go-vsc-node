@@ -265,8 +265,8 @@ type LocalNodeInfo {
   active_consensus_executor: String!
   """Scheduled activation mode for the pending switch-over (normal or recovery)."""
   consensus_activation_mode: String
-  """Scheduled activation EPOCH at/after which the version switch may activate."""
-  consensus_activation_height: Uint64
+  """Scheduled activation epoch at/after which the version switch may activate."""
+  consensus_activation_epoch: Uint64
   """Scheduled activation version display (major.consensus)."""
   consensus_activation_version: String
   """Block height where the activation was scheduled (proposal/recovery tx height)."""

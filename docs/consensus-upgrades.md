@@ -67,6 +67,76 @@ what makes TSS gating and executor selection deterministic and replay-correct.
 2. `vsc.recovery_require_version` (recovery multisig) records a **Forced** `ScheduledActivation`
    (activates next epoch, skips the stake-readiness guard) and clears suspension.
 
+## Rollout and exclusion enforcement
+
+Raising the floor is what removes old-code nodes from committee membership. The floor
+is a **single value**: the election-active version baked into each on-chain election,
+read via `ActiveConsensusVersion` / `TssMinimumConsensusVersion`. Old binaries announce
+`{0,0,0}` (the announcement hardcodes `protocol_version: 0` with no `version_major`);
+new binaries announce the triple compiled in via `consensusversion.RunningVersion()`
+(ldflags).
+
+> **The election body encoding is not backward-compatible — this is a coordinated
+> cutover, not a gradual CID-compatible rollout.** `ElectionData` now always encodes
+> `version_major` / `version_non_consensus` (their `refmt` tags carry **no
+> `omitempty`**, so the keys are present in the CID even at `0` — see
+> `TestElectionDataCid`), and rotations additionally carry the pendulum `settlement`
+> record. The election CID is `cbornode.WrapObject(ElectionData)`, and a proposed
+> election is ratified by the **previous** committee recomputing that CID over their
+> own local data (`electionResult.MemberKeys()` → 2/3 BLS). An old-code member
+> recomputes without those keys, gets a different CID, and will not sign; a new-code
+> member rejects an old-code election for the same reason. So old and new binaries
+> **cannot co-ratify from the first block** — not just after the floor rises. The floor
+> filter's job is to drop old-code witnesses from membership so the new-code committee
+> can reach its own quorum; the encoding change is what makes the two binaries
+> mutually exclusive.
+
+Three enforcement points read that floor:
+
+1. **Election committee membership** — `GenerateFullElection` deletes any witness whose
+   announced `ConsensusVersionTriple()` does not `MeetsConsensusMin(floor)`
+   (`modules/election-proposer/election-proposer.go`, the carry-forward filter and the
+   post-activation re-filter after the stake-readiness guard). Old-code witnesses fall
+   out of the next committee.
+2. **TSS ready-set** — sign and reshare admit only peers whose BLS-signed
+   `ReadyAttestation` advertises a version meeting the floor at that height
+   (`modules/tss/tss.go`); the version is inside the signed CID, so re-gossipers cannot
+   forge it. A node also self-gates: it won't broadcast its own readiness when its
+   running version is below the floor.
+3. **Per-member election version** — each member carries its witness-time triple
+   (`HasPerMemberVersion` / `elections.MemberConsensusVersion`), the deterministic
+   snapshot TSS gates against, rather than re-reading live witness records.
+
+Operational implications for a rollout:
+
+- **There is a contested window the moment the committee is split across binaries.**
+  Because the election body diverges immediately (above), old-code and new-code members
+  produce different CIDs and cannot sign the same election. While one binary still holds
+  ≥2/3 of the prior committee, its elections keep ratifying; once the committee is split
+  such that neither binary holds 2/3, *no* election ratifies and elections stall until
+  the floor rises and old witnesses leave the membership. Keep this window short — this
+  is what "transition most nodes within an hour" is really about, not just reaching
+  quorum. (Exactly how a node treats an already-ratified election in the *other* format
+  on ingest — reject vs. accept-verbatim — depends on whether `TxElectionResult` replays
+  the data CID; worth confirming, but it does not change the co-ratification stall.)
+- **A raised-floor election only lands once ≥2/3 of the prior committee is new-code.**
+  The new election is signed by `electionResult.MemberKeys()` (the committee being
+  replaced), so the cutover completes only when the upgraded nodes already hold the
+  ratification supermajority of the *previous* committee.
+- **The stake-readiness guard (`ConsensusVersionActivationNum/Den`, default 80%) is the
+  safety.** The floor will not rise until that fraction of committee stake already
+  announces the target, so it cannot flip the floor before enough nodes are ready — but
+  it does not eliminate the contested window above; it bounds when the floor is allowed
+  to move.
+- **Replay/reindex caveat — verify before mainnet.** Unlike `settlement` (deliberately
+  `omitempty` so nil is omitted and historical bytes still hash identically on replay —
+  see `TestElectionDataCid`), `version_major` / `version_non_consensus` are *not*
+  `omitempty`. A from-genesis reindex with the new binary therefore encodes these keys
+  into every historical `ElectionData`, whose CID then differs from the originally
+  signed on-chain `data`. Confirm the replay/verify path does not recompute and compare
+  those CIDs (or gate the version-field encoding by height) before relying on a full
+  reindex.
+
 ## Data model notes
 
 - `chain_consensus_state` holds only `processing_suspended` and an optional
@@ -85,7 +155,7 @@ what makes TSS gating and executor selection deterministic and replay-correct.
 - `active_consensus_line`
 - `active_consensus_executor`
 - `consensus_activation_mode`
-- `consensus_activation_height`
+- `consensus_activation_epoch`
 - `consensus_activation_version`
 - `consensus_activation_attested_block`
 - `consensus_activation_attested_txid`
