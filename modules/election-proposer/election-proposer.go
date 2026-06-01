@@ -77,11 +77,17 @@ type electionProposer struct {
 	sigMu      sync.Mutex
 	sigRunning bool
 
-	// scoreMapMinSamples is the per-instance floor for the ban filter. See
-	// the documentation on the (removed) package-level default for the why.
-	// Resolved once in New() so the production default (500) is locked at
-	// process start and cannot drift mid-run.
-	scoreMapMinSamples uint64
+	// scoreMapMinSamples and banThresholdPercent are the two knobs of the
+	// per-witness ban rule (see computeBanScores): a witness is banned when,
+	// over the blocks of the epochs it was elected to, it signed fewer than
+	// banThresholdPercent% — but only once that opportunity reaches
+	// scoreMapMinSamples blocks. Both are consensus-critical (they decide
+	// BannedNodes → committee → election CID), so both are resolved once in
+	// New() — the production defaults (500 / 75) are locked at process start and
+	// cannot drift mid-run, and the env overrides are devnet-only so
+	// testnet/mainnet operators cannot diverge them across nodes.
+	scoreMapMinSamples  uint64
+	banThresholdPercent uint64
 
 	// lastAttemptedElectionBh maps epoch → the block height used by the first
 	// proposer for that epoch. All subsequent proposers for the same epoch
@@ -89,8 +95,8 @@ type electionProposer struct {
 	// are byte-identical, making BLS signatures pool across consecutive attempts.
 	// Written under lastAttemptedElectionMu; read by both blockTick (via
 	// HoldElection, under electionMu) and HandleMessage (pubsub goroutine).
-	lastAttemptedElectionBh  map[uint64]uint64
-	lastAttemptedElectionMu  sync.RWMutex
+	lastAttemptedElectionBh map[uint64]uint64
+	lastAttemptedElectionMu sync.RWMutex
 
 	// sigCollectionWindow is the BLS signature collection timeout for
 	// waitForSigs. Resolved once in New() from VSC_ELECTION_SIG_COLLECTION_WINDOW
@@ -118,26 +124,28 @@ func New(
 	hiveConsumer *blockconsumer.HiveConsumer,
 ) ElectionProposer {
 	return &electionProposer{
-		conf:               conf,
-		p2p:                p2p,
-		witnesses:          witnesses,
-		elections:          elections,
-		vscBlocks:          vscBlocks,
-		balanceDb:          balanceDb,
-		da:                 da,
-		txCreator:          txCreator,
-		sconf:              sconf,
-		se:                 se,
-		hiveConsumer:       hiveConsumer,
+		conf:                    conf,
+		p2p:                     p2p,
+		witnesses:               witnesses,
+		elections:               elections,
+		vscBlocks:               vscBlocks,
+		balanceDb:               balanceDb,
+		da:                      da,
+		txCreator:               txCreator,
+		sconf:                   sconf,
+		se:                      se,
+		hiveConsumer:            hiveConsumer,
 		sigChannels:             make(map[uint64]chan *signResponse),
 		scoreMapMinSamples:      resolveScoreMapMinSamples(sconf),
+		banThresholdPercent:     resolveBanThresholdPercent(sconf),
 		lastAttemptedElectionBh: make(map[uint64]uint64),
 		sigCollectionWindow:     resolveSigCollectionWindow(sconf),
 	}
 }
 
-// resolveScoreMapMinSamples returns the per-instance ban-filter sample floor.
-// Production default is 500 (about 25 elections at ElectionInterval=20).
+// resolveScoreMapMinSamples returns the per-instance ban-filter floor: the
+// minimum per-witness block-signing opportunity before a witness can be banned.
+// Production default is 500 blocks.
 // VSC_ELECTION_SCOREMAP_MIN_SAMPLES is honoured ONLY on devnet (NetId
 // "vsc-devnet") so testnet/mainnet operators cannot accidentally diverge
 // the consensus-critical threshold across nodes. Devnet tests rely on the
@@ -154,6 +162,29 @@ func resolveScoreMapMinSamples(sconf systemconfig.SystemConfig) uint64 {
 	n, err := strconv.ParseUint(v, 10, 64)
 	if err != nil {
 		return defaultMinSamples
+	}
+	return n
+}
+
+// resolveBanThresholdPercent returns the per-instance ban threshold: a witness
+// that signed fewer than this percent of the blocks it had the opportunity to
+// sign (see computeBanScores) is excluded from the next committee. Production
+// default is 75. Like the sample floor, VSC_ELECTION_BAN_THRESHOLD_PERCENT is
+// honoured ONLY on devnet (NetId "vsc-devnet") so testnet/mainnet operators
+// cannot accidentally diverge this consensus-critical threshold across nodes.
+// Values outside 1..100 fall back to the default.
+func resolveBanThresholdPercent(sconf systemconfig.SystemConfig) uint64 {
+	const defaultPercent = uint64(67)
+	if sconf == nil || sconf.NetId() != "vsc-devnet" {
+		return defaultPercent
+	}
+	v := os.Getenv("VSC_ELECTION_BAN_THRESHOLD_PERCENT")
+	if v == "" {
+		return defaultPercent
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n < 1 || n > 100 {
+		return defaultPercent
 	}
 	return n
 }
@@ -307,16 +338,17 @@ var REQUIRED_ELECTION_MEMBERS = []string{
 
 const VSC_ELECTION_TX_ID = "vsc.election_result"
 
-// scoreMapMinSamples is the lower bound on (sum of) block-signing samples
-// scoreMap must observe before its BannedNodes list is allowed to filter
-// the next committee. Below this many samples — early epochs, or a node
-// that's still catching up — the score threshold (75%) over a tiny
-// denominator can mis-ban everyone, so we skip the filter and rely on
-// later elections (with more history) to catch persistent delinquency.
+// scoreMapMinSamples is the minimum per-witness opportunity — the number of
+// blocks produced across the epochs a witness was actually elected to — that
+// scoreMap must observe before that witness is eligible for the BannedNodes
+// list. Below this many blocks (a freshly added or briefly-serving witness),
+// the 75% participation threshold over a tiny denominator can mis-ban on noise,
+// so we hold off and rely on later elections (with more of the witness's own
+// history) to catch persistent delinquency.
 //
 // Resolved per-instance via resolveScoreMapMinSamples (see New). The default
-// (500, about 25 elections at ElectionInterval=20) is fixed on testnet and
-// mainnet; only devnet honours the VSC_ELECTION_SCOREMAP_MIN_SAMPLES override.
+// (500 blocks) is fixed on testnet and mainnet; only devnet honours the
+// VSC_ELECTION_SCOREMAP_MIN_SAMPLES override.
 
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
@@ -351,31 +383,33 @@ func (e *electionProposer) GenerateFullElection(
 		firstElection = true
 	}
 
-	// #24: apply the dead-letter BannedNodes filter from scoreMap. Without
+	// #24 + dilution fix: apply the BannedNodes filter from scoreMap. Without
 	// this the per-witness score is computed but never read, so persistent
-	// under-participators are still eligible for the next committee. We
-	// skip on:
+	// under-participators stay eligible for the next committee. scoreMap scores
+	// each witness against only the blocks of the epochs it was actually
+	// elected to (see computeBanScores) and applies the scoreMapMinSamples floor
+	// per-witness, so BannedNodes is already empty until there is enough
+	// per-witness evidence — no separate global sample gate is needed here. We
+	// still skip entirely on:
 	//   - the genesis election (no prior history)
 	//   - missing vscBlocks dependency (test harnesses)
-	//   - early epochs where samples < scoreMapMinSamples (avoids the
-	//     tiny-denominator misban issue when the chain has just started)
 	//   - any error reading scoreMap (degrade to the no-filter behaviour
 	//     rather than blocking election production on a transient DB read)
 	//
-	// Determinism note: scoreMap reads vscBlocks.GetBlocksByElection from
-	// the LOCAL DB. Verifiers in HandleMessage rebuild the election header
-	// via the same path, so divergent block indexing between proposer and
-	// verifier yields divergent CIDs and the BLS aggregate fails (election
-	// retries next slot — safety preserved, liveness affected). The
-	// scoreMapMinSamples=500 floor caps the divergence window. A cleaner
-	// long-term fix would have the proposer publish its BannedNodes set
-	// alongside the election so verifiers re-derive against the proposed
-	// input. Tracked as a follow-up.
+	// Determinism note: scoreMap reads vscBlocks.GetBlocksByElection and
+	// elections.GetElection from the LOCAL DB. Verifiers in HandleMessage
+	// rebuild the election header via the same path, so divergent block
+	// indexing between proposer and verifier yields divergent CIDs and the BLS
+	// aggregate fails (election retries next slot — safety preserved, liveness
+	// affected). The per-witness scoreMapMinSamples floor caps the divergence
+	// window. A cleaner long-term fix would have the proposer publish its
+	// BannedNodes set alongside the election so verifiers re-derive against the
+	// proposed input. Tracked as a follow-up.
 	if !firstElection && e.vscBlocks != nil {
 		sm, smErr := e.scoreMap()
 		if smErr != nil {
 			log.Warn("scoreMap failed; skipping ban filter", "err", smErr)
-		} else if sm.Samples >= e.scoreMapMinSamples && len(sm.BannedNodes) > 0 {
+		} else if len(sm.BannedNodes) > 0 {
 			banned := make(map[string]bool, len(sm.BannedNodes))
 			for _, n := range sm.BannedNodes {
 				banned[n] = true
@@ -383,7 +417,7 @@ func (e *electionProposer) GenerateFullElection(
 			before := len(witnessList)
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				if banned[w.Account] {
-					log.Verbose("skipping banned witness", "account", w.Account, "samples", sm.Samples, "score", sm.Map[w.Account])
+					log.Verbose("skipping banned witness", "account", w.Account, "score", sm.Map[w.Account], "denom", sm.Denoms[w.Account], "samples", sm.Samples)
 					return true
 				}
 				return false
@@ -471,7 +505,11 @@ func (e *electionProposer) GenerateFullElection(
 				readyWeight += wt
 			}
 		}
-		num, den := int64(e.sconf.ConsensusParams().ConsensusVersionActivationNum), int64(e.sconf.ConsensusParams().ConsensusVersionActivationDen)
+		num, den := int64(
+			e.sconf.ConsensusParams().ConsensusVersionActivationNum,
+		), int64(
+			e.sconf.ConsensusParams().ConsensusVersionActivationDen,
+		)
 		if num <= 0 || den <= 0 {
 			num, den = 4, 5 // default 80%
 		}
@@ -912,28 +950,107 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 }
 
 type ScoreMap struct {
-	Map         map[string]uint64
+	Map         map[string]uint64 // blocks signed, per witness
+	Denoms      map[string]uint64 // ban denominator per witness: blocks across the epochs it was elected to
 	BannedNodes []string
 	Members     []string
-	Samples     uint64
+	Samples     uint64 // total blocks across the window (history gauge / logging only)
+}
+
+// epochScores is one windowed election's data, already read from the DB: the
+// committee membership for the epoch and the signer account list of every
+// block produced under it. Kept as plain data so computeBanScores — the ban
+// math — can be unit-tested without mocking elections/vscBlocks.
+type epochScores struct {
+	members []string   // election.Members accounts (the committee for this epoch)
+	blocks  [][]string // Signers of each block produced under this epoch's committee
+}
+
+// computeBanScores is the pure core of scoreMap. For each witness it counts the
+// blocks it signed (score) and the blocks it *could* have signed — those
+// produced across the epochs it was actually elected to (denom). A witness is
+// banned when it signed under thresholdPercent% (75 by default) of its own
+// opportunity, once that opportunity reaches minSamples blocks.
+//
+// Scoring against per-witness opportunity rather than the global block total is
+// the dilution fix. A witness can only sign blocks in epochs it was on the
+// committee, so charging it for epochs it wasn't elected to (the global
+// `samples` total) auto-banned anyone present in fewer than ~3 of the last 4
+// epochs no matter how faithfully it signed while serving — and, because a
+// banned witness is dropped from future committees and then signs nothing,
+// turned a single absent/bad epoch into a self-perpetuating lockout.
+func computeBanScores(window []epochScores, minSamples uint64, thresholdPercent uint64) ScoreMap {
+	samples := uint64(0)
+	witnessMap := map[string]bool{}
+	scoreMap := map[string]uint64{}
+	denomMap := map[string]uint64{}
+
+	for _, epoch := range window {
+		blockCount := uint64(len(epoch.blocks))
+		for _, signers := range epoch.blocks {
+			for _, signer := range signers {
+				scoreMap[signer] += 1
+			}
+		}
+		// A witness's denominator is the blocks of the epochs it was a member
+		// of — the only blocks it had any opportunity to sign.
+		for _, member := range epoch.members {
+			witnessMap[member] = true
+			denomMap[member] += blockCount
+		}
+		samples += blockCount
+	}
+
+	// review4 HIGH #40: sort before iterating so Members and BannedNodes are
+	// deterministic. Map iteration order is randomised by Go; if either slice
+	// is ever consumed by code that depends on order (BLS bitset, slicing at
+	// quorum cutoff, tie-break), divergent ordering would break consensus
+	// across honest nodes.
+	members := make([]string, 0, len(witnessMap))
+	for member := range witnessMap {
+		members = append(members, member)
+	}
+	sort.Strings(members)
+
+	bannedNodes := []string{}
+	for _, member := range members {
+		denom := denomMap[member]
+		// Hold off until the witness has enough of its own opportunity for the
+		// 75% threshold to be meaningful — avoids banning a freshly added or
+		// briefly-serving witness on a noisy handful of blocks. (Because
+		// denom <= samples, this also subsumes the old global sample gate: no
+		// witness can be banned before the chain has minSamples blocks.)
+		if denom < minSamples {
+			continue
+		}
+		if scoreMap[member] < denom*thresholdPercent/100 {
+			bannedNodes = append(bannedNodes, member)
+		}
+	}
+
+	return ScoreMap{
+		Map:         scoreMap,
+		Denoms:      denomMap,
+		Members:     members,
+		Samples:     samples,
+		BannedNodes: bannedNodes,
+	}
 }
 
 func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 	const electionCount = 4
 
 	// #24: must be 0-length slice with cap N, NOT length-N. The old form
-	// pre-pended 4 zero-valued ElectionResults, so the loop below called
-	// GetBlocksByElection(0) four extra times and inflated `samples` by
-	// 4× the count of genesis blocks. Bans were dead code at the time so
-	// it didn't matter; now that committee selection reads BannedNodes
-	// it would over-ban witnesses against a fictionally large denominator.
-	elections := make([]elections.ElectionResult, 0, electionCount)
+	// pre-pended electionCount zero-valued ElectionResults, so the loop below
+	// called GetBlocksByElection(0) that many extra times and inflated the
+	// sample counts with genesis blocks.
+	results := make([]elections.ElectionResult, 0, electionCount)
 	election, err := ep.elections.GetElectionByHeight(math.MaxInt64)
 	if err != nil {
 		return ScoreMap{}, err
 	}
 
-	elections = append(elections, election)
+	results = append(results, election)
 
 	for i := uint64(1); i < electionCount; i++ {
 		// Guard against uint64 underflow on early chains where the latest
@@ -949,54 +1066,33 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 		if prevElection == nil {
 			break
 		}
-		elections = append(elections, *prevElection)
+		results = append(results, *prevElection)
 
 	}
-	samples := uint64(0)
-	witnessMap := map[string]bool{}
-	scoreMap := map[string]uint64{}
 
-	for _, election := range elections {
-		blocks, err := ep.vscBlocks.GetBlocksByElection(election.Epoch)
+	// Read each windowed epoch's committee + block signers into plain data,
+	// then hand off to the pure scorer.
+	window := make([]epochScores, 0, len(results))
+	for _, result := range results {
+		blocks, err := ep.vscBlocks.GetBlocksByElection(result.Epoch)
 		if err != nil {
 			return ScoreMap{}, err
 		}
 
+		es := epochScores{
+			members: make([]string, 0, len(result.Members)),
+			blocks:  make([][]string, 0, len(blocks)),
+		}
+		for _, mbr := range result.Members {
+			es.members = append(es.members, mbr.Account)
+		}
 		for _, block := range blocks {
-			for _, member := range block.Signers {
-				scoreMap[member] += 1
-			}
+			es.blocks = append(es.blocks, block.Signers)
 		}
-		for _, mbr := range election.Members {
-			witnessMap[mbr.Account] = true
-		}
-		samples += uint64(len(blocks))
+		window = append(window, es)
 	}
 
-	// review4 HIGH #40: sort before iterating so Members and BannedNodes are
-	// deterministic. Map iteration order is randomised by Go; if this slice
-	// is ever consumed by code that depends on order (BLS bitset, slicing
-	// at quorum cutoff, tie-break), divergent ordering would break
-	// consensus across honest nodes.
-	members := make([]string, 0, len(witnessMap))
-	for member := range witnessMap {
-		members = append(members, member)
-	}
-	sort.Strings(members)
-
-	bannedNodes := []string{}
-	for _, member := range members {
-		if scoreMap[member] < samples*75/100 {
-			bannedNodes = append(bannedNodes, member)
-		}
-	}
-
-	return ScoreMap{
-		Map:         scoreMap,
-		Members:     members,
-		Samples:     samples,
-		BannedNodes: bannedNodes,
-	}, nil
+	return computeBanScores(window, ep.scoreMapMinSamples, ep.banThresholdPercent), nil
 }
 
 func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
