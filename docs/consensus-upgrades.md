@@ -67,6 +67,31 @@ what makes TSS gating and executor selection deterministic and replay-correct.
 2. `vsc.recovery_require_version` (recovery multisig) records a **Forced** `ScheduledActivation`
    (activates next epoch, skips the stake-readiness guard) and clears suspension.
 
+### Config-pinned floor (simple rollout, no proposal)
+
+For a coordinated rollout where the operator already knows out-of-band that the supermajority
+will be upgraded by the activation epoch, the floor can be pinned directly in network config —
+no `vsc.propose_consensus_version`, no `ScheduledActivation`, no stake-readiness guard.
+
+1. Set on `ConsensusParams`:
+   - `ConsensusVersionFloorEpoch` — the first election epoch at/after which the floor applies
+     (typically `PendulumSeedEpoch + 1`, the first post-rollout election). `0` disables the pin.
+   - `ConsensusVersionFloorMajor` / `ConsensusVersionFloorConsensus` — the target floor (e.g. `0` / `1`).
+2. In `GenerateFullElection`, `ConsensusParams.PinnedVersionFloor(newEpoch)` raises the floor to
+   the configured target once `newEpoch >= ConsensusVersionFloorEpoch`; witnesses below it are
+   excluded exactly as in the proposal path. The floor only ever rises, so this composes with the
+   (dormant) propose/recovery paths.
+3. Determinism: the target comes from **config, not the running binary**, and the gate is a pure
+   function of config + `newEpoch`. So every signer — even one not yet upgraded — regenerates the
+   identical post-cutover election and CID; a node whose own announced version is below the floor
+   simply excludes itself. This is why no stake-readiness guard is needed: the pin does not measure
+   the fleet, it asserts the cutover, and the operator owns that assertion.
+
+Because there is no readiness guard, the contested-window caveat in the next section applies in
+full — if the supermajority is **not** actually upgraded by `ConsensusVersionFloorEpoch`, the
+post-pin election can fail to reach its ratification quorum and elections stall until enough nodes
+are on the new version. Only pin the epoch when that upgrade is genuinely assured.
+
 ## Rollout and exclusion enforcement
 
 Raising the floor is what removes old-code nodes from committee membership. The floor
@@ -124,10 +149,12 @@ Operational implications for a rollout:
   replaced), so the cutover completes only when the upgraded nodes already hold the
   ratification supermajority of the *previous* committee.
 - **The stake-readiness guard (`ConsensusVersionActivationNum/Den`, default 80%) is the
-  safety.** The floor will not rise until that fraction of committee stake already
-  announces the target, so it cannot flip the floor before enough nodes are ready — but
-  it does not eliminate the contested window above; it bounds when the floor is allowed
-  to move.
+  safety — but only on the propose path.** Via `vsc.propose_consensus_version`, the floor
+  will not rise until that fraction of committee stake already announces the target, so it
+  cannot flip the floor before enough nodes are ready (it still does not eliminate the
+  contested window above; it bounds when the floor is allowed to move). The config-pinned
+  floor and the forced-recovery path **bypass this guard** — there the operator asserts the
+  cutover, so the supermajority must genuinely be upgraded by the pinned epoch.
 - **Replay/reindex caveat — verify before mainnet.** Unlike `settlement` (deliberately
   `omitempty` so nil is omitted and historical bytes still hash identically on replay —
   see `TestElectionDataCid`), `version_major` / `version_non_consensus` are *not*
