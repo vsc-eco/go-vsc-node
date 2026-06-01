@@ -523,9 +523,11 @@ func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	}
 
 	dataHash, err := computeEIP712Hash(payload.Data)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute EIP-712 hash: %v", err)
+	}
 
 	sig, err := ethCrypto.Sign(dataHash, e.Priv)
-
 	if err != nil {
 		return "", fmt.Errorf("failed to sign data hash: %v", err)
 	}
