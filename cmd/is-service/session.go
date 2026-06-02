@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	islockinstruction "vsc-node/lib/islock-instruction"
 )
 
 // SessionState is the lifecycle phase of an IS-login session. Mirrors the
@@ -124,6 +126,32 @@ const MaxSessions = 50_000
 // ErrSessionStoreFull is returned by Put when the store is at MaxSessions.
 var ErrSessionStoreFull = errors.New("session store full — global cap reached")
 
+// ErrSidAlreadyExists is returned by PutNew when an entry with the
+// given sid already exists. Round-3 audit R3-005 — handler used to do
+// a Get-then-Put TOCTOU which let two concurrent /session/start with
+// the same sid race past the existence check and silently clobber.
+var ErrSidAlreadyExists = errors.New("sid already exists")
+
+// PutNew inserts a fresh session atomically. Returns ErrSidAlreadyExists
+// if any entry for sess.Sid already exists (regardless of state).
+// Returns ErrSessionStoreFull when the global cap is reached.
+//
+// Callers MUST prefer PutNew over Put for /session/start to close the
+// concurrent-same-sid race (R3-005). Put remains for state-machine
+// transitions where overwrite is intended.
+func (s *SessionStore) PutNew(sess *Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.sessions[sess.Sid]; exists {
+		return ErrSidAlreadyExists
+	}
+	if len(s.sessions) >= MaxSessions {
+		return ErrSessionStoreFull
+	}
+	s.sessions[sess.Sid] = sess
+	return nil
+}
+
 // Put stores or overwrites a session. Returns ErrSessionStoreFull when
 // the global cap is reached for a NEW session id (overwriting an
 // existing sid always succeeds).
@@ -135,6 +163,19 @@ func (s *SessionStore) Put(sess *Session) error {
 	}
 	s.sessions[sess.Sid] = sess
 	return nil
+}
+
+// CountByState returns a map of {state → count} across all live
+// sessions. Used by /healthz for operator visibility into where
+// sessions are getting stuck. Round-3 audit OP-004.
+func (s *SessionStore) CountByState() map[SessionState]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[SessionState]int)
+	for _, sess := range s.sessions {
+		out[sess.State]++
+	}
+	return out
 }
 
 // MutateState atomically applies a state transition. The fn receives a
@@ -153,19 +194,36 @@ func (s *SessionStore) MutateState(sid string, fn func(*Session)) bool {
 
 // Prune removes terminal-state and expired sessions. Returns the
 // deposit addresses of pruned sessions so the caller can Unwatch
-// them. Audit R2-N3: TTL-expired sessions were leaking watcher map
+// them.
+//
+// Round-2 audit R2-N3: TTL-expired sessions were leaking watcher map
 // entries because the prune janitor only touched SessionStore.
+//
+// Round-3 audit R3-CSM-02: Prune now skips sessions in non-terminal
+// in-flight states (Attesting / L2Submitted) even past ExpiresAt. The
+// reconcileL2 polling loop can outrun the 30-min TTL on a slow L2;
+// deleting mid-reconcile produces the L2-credited-but-session-lost
+// divergence the reconciler was designed to prevent.
 func (s *SessionStore) Prune() (removed int, prunedDepositAddrs []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	for sid, sess := range s.sessions {
-		if now.After(sess.ExpiresAt) || sess.State == StateExpired {
-			delete(s.sessions, sid)
-			removed++
-			if sess.DepositAddress != "" {
-				prunedDepositAddrs = append(prunedDepositAddrs, sess.DepositAddress)
-			}
+		expired := now.After(sess.ExpiresAt) || sess.State == StateExpired
+		if !expired {
+			continue
+		}
+		// Carve-out: never prune an in-flight session even if TTL
+		// elapsed. The orchestrator will transition it to a terminal
+		// state itself (ON_CHAIN / FORWARD_FAILED / ATTESTATION_TIMEOUT)
+		// and the NEXT prune cycle will reclaim it.
+		if sess.State == StateAttesting || sess.State == StateL2Submitted {
+			continue
+		}
+		delete(s.sessions, sid)
+		removed++
+		if sess.DepositAddress != "" {
+			prunedDepositAddrs = append(prunedDepositAddrs, sess.DepositAddress)
 		}
 	}
 	return removed, prunedDepositAddrs
@@ -205,23 +263,16 @@ func GenerateSid() (string, error) {
 	return hex.EncodeToString(buf[:]), nil
 }
 
-// BuildAuthInstruction constructs the instruction string the user's IS
-// payment will be sent to: `op=auth;sid=<sid>`. Keep this in sync with
-// the dash-mapping-contract's instruction parser (workstream 5 — once
-// the parser lands, add a parity test).
+// BuildAuthInstruction / BuildCallInstruction delegate to
+// vsc-node/lib/islock-instruction (round-3 audit R3-09 — the shared
+// package is the single source-of-truth that the cross-repo parity
+// test imports directly, replacing hand-mirrored test closures).
 func BuildAuthInstruction(sid string) string {
-	return "op=auth;sid=" + sid
+	return islockinstruction.BuildAuthInstruction(sid)
 }
 
-// BuildCallInstruction is the value-bearing or value-less contract-call
-// case: `op=call;contract=...;method=...;args=...;sid=...[;amount=...]`.
-// amount is in duffs; pass 0 (default) for value-less calls per spec §5.2.4.
 func BuildCallInstruction(contractId, method, argsB64, sid string, amountDuffs int64) string {
-	out := "op=call;contract=" + contractId + ";method=" + method + ";args=" + argsB64 + ";sid=" + sid
-	if amountDuffs > 0 {
-		out += ";amount=" + formatInt(amountDuffs)
-	}
-	return out
+	return islockinstruction.BuildCallInstruction(contractId, method, argsB64, sid, amountDuffs)
 }
 
 // MinDustDuffs is the floor below which the contract rejects an IS payment.

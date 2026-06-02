@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -79,6 +80,9 @@ type Server struct {
 	orch *Orchestrator
 	// broadcasterHealth: optional probe surfaced via /healthz.
 	broadcasterHealth func() (int, bool)
+	// dashdHealth: optional DashdWatcher probe surfaced via /healthz.
+	// Round-3 audit OP-003.
+	dashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
 	// trustedProxies: additional hosts (beyond loopback) that the
 	// clientIP helper trusts for X-Forwarded-For. Empty means
 	// loopback-only (M5 default). Audit TC2-06 plugged the docstring
@@ -117,6 +121,10 @@ type ServerConfig struct {
 	// to surface the libp2p connect-count + degraded flag. Wired by
 	// main when a real broadcaster is configured. Returns (connectedPeers, degraded).
 	BroadcasterHealth func() (int, bool)
+	// DashdHealth surfaces DashdWatcher's consecutive-failure count
+	// via /healthz. Round-3 audit OP-003 — without this the watcher
+	// can be functionally dead while /healthz reports green.
+	DashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
 	// TrustedProxies: literal host/IP strings (loopback always implied)
 	// from which X-Forwarded-For is honoured. Audit TC2-06: M5 docstring
 	// promised this and the field didn't exist; now it does.
@@ -164,6 +172,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		dashd:         cfg.Dashd,
 		orch:              cfg.Orch,
 		broadcasterHealth: cfg.BroadcasterHealth,
+		dashdHealth:       cfg.DashdHealth,
 		trustedProxies:    append([]string(nil), cfg.TrustedProxies...),
 		driveCtx:          driveCtx,
 		driveCancel:       driveCancel,
@@ -304,10 +313,14 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"ok":       true,
 		"sessions": s.sessions.Len(),
 	}
+	// Round-3 audit OP-004: expose per-state session counts so operators
+	// can spot pile-ups in L2_SUBMITTED (reconciler stuck), ATTESTING
+	// (validators not responding), etc.
+	out["sessionsByState"] = s.sessions.CountByState()
+
 	// Broadcaster degraded flag — set by main wiring when libp2p is
 	// configured. Lets ops dashboards surface a zero-peers degraded
-	// state without restart-with-debug (audit
-	// `libp2p-zero-peers-silent-degraded-start`).
+	// state without restart-with-debug.
 	if s.broadcasterHealth != nil {
 		conn, degraded := s.broadcasterHealth()
 		out["connectedPeers"] = conn
@@ -316,6 +329,24 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			out["ok"] = false
 		}
 	}
+
+	// Round-3 audit OP-003: surface DashdWatcher consecutive-failure
+	// count. When fails >= 5 (the same threshold the watcher uses to
+	// escalate to slog.Error), flip /healthz red so synthetic probes
+	// page the operator.
+	if s.dashdHealth != nil {
+		fails, lastErr, _ := s.dashdHealth()
+		out["dashdWatcherConsecutiveFails"] = fails
+		degraded := fails >= 5
+		out["dashdWatcherDegraded"] = degraded
+		if degraded {
+			out["ok"] = false
+			if lastErr != nil {
+				out["dashdWatcherLastErr"] = lastErr.Error()
+			}
+		}
+	}
+
 	if out["ok"].(bool) {
 		writeJSON(w, http.StatusOK, out)
 	} else {
@@ -356,8 +387,26 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if existing, ok := s.sessions.Get(sid); ok && !existing.State.IsTerminal() {
-		writeError(w, http.StatusConflict, "session with this sid already active")
+	// Round-3 audit R3-005: the existence check is done atomically by
+	// PutNew below (TOCTOU between Get and Put let two concurrent same-
+	// sid requests silently clobber each other). No pre-check needed.
+
+	// Round-2 audit D2-DESIGN-08 + Round-3 audit R3-004: reject reserved
+	// delimiters AND control chars in user-supplied instruction fields
+	// — for BOTH OpAuth and OpCall paths (R3-004 caught the original
+	// scoping inside `case OpCall:` letting OpAuth's sid bypass the
+	// check). Without this an attacker can inject duplicate keys via a
+	// polluted sid / args, or embed control chars for slog injection.
+	//
+	// Rule:
+	//   - ';' (FIELD delimiter) is reserved in ALL user fields
+	//   - '=' (KV delimiter) is reserved in Contract/Method/Sid only
+	//     (ArgsB64 legitimately uses '=' for base64 padding; the
+	//     contract parser SplitNs on the first '=' per field)
+	//   - control chars < 0x20 banned everywhere
+	if hasReservedRune(sid, true /*kvReserved*/) {
+		writeError(w, http.StatusBadRequest,
+			"sid contains reserved or control char (';', '=', or rune < 0x20)")
 		return
 	}
 
@@ -373,25 +422,11 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "op=call requires args.contract and args.method")
 			return
 		}
-		// Audit D2-DESIGN-08: reject reserved delimiters in user-
-		// supplied instruction fields. Without this an attacker can
-		// inject duplicate `contract=` / `method=` keys via ArgsB64;
-		// the last-write-wins parser on the contract side then
-		// dispatches to an attacker-chosen target while the IS-service
-		// session log records the original values — audit-trail
-		// divergence.
-		//
-		// We reject ';' (the FIELD delimiter) in all four fields, and
-		// reject '=' (the KV delimiter) in Contract/Method/Sid only —
-		// ArgsB64 legitimately uses '=' as base64 padding, and
-		// ParseInstructionV2 splits on the FIRST '=' per field so
-		// trailing '=' in val is safe.
-		if strings.ContainsRune(req.Args.Contract, ';') || strings.ContainsRune(req.Args.Contract, '=') ||
-			strings.ContainsRune(req.Args.Method, ';') || strings.ContainsRune(req.Args.Method, '=') ||
-			strings.ContainsRune(sid, ';') || strings.ContainsRune(sid, '=') ||
-			strings.ContainsRune(req.Args.ArgsB64, ';') {
+		if hasReservedRune(req.Args.Contract, true) ||
+			hasReservedRune(req.Args.Method, true) ||
+			hasReservedRune(req.Args.ArgsB64, false /*kvAllowed (base64 padding)*/) {
 			writeError(w, http.StatusBadRequest,
-				"args fields contain reserved instruction delimiters (';' in any; '=' in contract/method/sid)")
+				"args fields contain reserved or control char (';' in any; '=' in contract/method; control < 0x20 in all)")
 			return
 		}
 		if req.Args.AmountDuffs > 0 && req.Args.AmountDuffs < MinCallFundingDuffs {
@@ -432,7 +467,11 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        now.Add(s.sessionTTL),
 		State:            StateWaitingForIS,
 	}
-	if err := s.sessions.Put(sess); err != nil {
+	if err := s.sessions.PutNew(sess); err != nil {
+		if err == ErrSidAlreadyExists {
+			writeError(w, http.StatusConflict, "session with this sid already active")
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, "session capacity reached, try again later")
 		return
 	}
@@ -543,8 +582,17 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // missing-field gap). Without this gate any attacker can rotate
 // X-Forwarded-For headers to bypass the per-IP cap (audit
 // `xff-rate-limit-bypass`).
+//
+// Round-3 audit OP-005: parse via net.SplitHostPort so IPv6 brackets
+// strip correctly. The previous hand-rolled splitHostPort returned
+// "[::1]" with brackets, breaking the trusted-proxy comparison
+// against the literal "::1" default.
 func (s *Server) clientIP(r *http.Request) string {
-	hostPart, _, _ := splitHostPort(r.RemoteAddr)
+	hostPart, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// RemoteAddr might just be "host" with no port; use it directly.
+		hostPart = r.RemoteAddr
+	}
 	if s.isTrustedProxy(hostPart) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			if i := strings.Index(fwd, ","); i >= 0 {
@@ -567,6 +615,28 @@ func (s *Server) isTrustedProxy(host string) bool {
 	}
 	for _, p := range s.trustedProxies {
 		if p == host {
+			return true
+		}
+	}
+	return false
+}
+
+// hasReservedRune returns true if s contains any rune reserved by the
+// instruction grammar OR any control char (< 0x20). When kvReserved is
+// true, '=' is also rejected (use this for Contract/Method/Sid where
+// '=' has no legitimate role). For ArgsB64, kvReserved=false because
+// base64 uses '=' for padding — the contract parser splits on the
+// first '=' per field so trailing padding survives.
+// Audit R3-004.
+func hasReservedRune(s string, kvReserved bool) bool {
+	for _, r := range s {
+		if r < 0x20 {
+			return true
+		}
+		if r == ';' {
+			return true
+		}
+		if kvReserved && r == '=' {
 			return true
 		}
 	}

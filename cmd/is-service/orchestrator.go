@@ -43,6 +43,11 @@ type Orchestrator struct {
 	// against. v1 stub returns 0; production wires in the active epoch
 	// from the witness module.
 	epochFor func(ctx context.Context) uint64
+	// validatorSetForEpoch returns the expected {ValidatorDID →
+	// PubkeyHex} map for the given epoch. When nil (or returning nil),
+	// the per-sig verifier falls back to raw signature check only.
+	// Audit R3-07.
+	validatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
 }
 
 // Broadcaster is the p2p publish primitive. Implemented by
@@ -72,6 +77,12 @@ type OrchestratorConfig struct {
 	// EpochFor is the epoch source. nil falls back to a constant 0
 	// (v1 stub — see workstream 5b).
 	EpochFor func(ctx context.Context) uint64
+	// ValidatorSetForEpoch returns the expected {ValidatorDID → PubkeyHex}
+	// for the given epoch. Used by the per-sig verifier (R3-07) to drop
+	// responses whose claimed DID doesn't match the registered pubkey,
+	// avoiding wasted RC on contract-side rejections. nil = no
+	// pre-check (fall back to raw-sig verify only).
+	ValidatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
 }
 
 func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
@@ -94,10 +105,11 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		sessions:          cfg.Sessions,
 		chainID:           cfg.ChainID,
 		quorumThreshold:   cfg.QuorumThreshold,
-		collectTimeout:    cfg.CollectTimeout,
-		submitTimeout:     cfg.SubmitTimeout,
-		reconcileBackoffs: cfg.ReconcileBackoffs,
-		epochFor:          cfg.EpochFor,
+		collectTimeout:       cfg.CollectTimeout,
+		submitTimeout:        cfg.SubmitTimeout,
+		reconcileBackoffs:    cfg.ReconcileBackoffs,
+		epochFor:             cfg.EpochFor,
+		validatorSetForEpoch: cfg.ValidatorSetForEpoch,
 	}
 }
 
@@ -184,8 +196,32 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 	// junk, submits the L2 tx, and the contract rejects after RC is
 	// already spent. Verifying each sig against its claimed PubkeyHex
 	// is one pairing per response; cheap compared to the L2 round-trip.
+	//
+	// Round-3 audit R3-07: ALSO consult the expected-DID→PubkeyHex map
+	// so a peer that produces a real sig under its own BLS key but
+	// claims another validator's DID is dropped here, not at the
+	// contract (which would still cost RC). The expected-set is best-
+	// effort — when nil (e.g. tests, devnet bring-up), we fall back to
+	// raw sig verify.
+	var expected map[string]string
+	if o.validatorSetForEpoch != nil {
+		expected = o.validatorSetForEpoch(ctx, req.Epoch)
+	}
 	verifiedResponses := make([]islock.IsLockAttestationResponse, 0, len(responses))
 	for _, r := range responses {
+		if expected != nil {
+			expectedPk, known := expected[r.ValidatorDID]
+			if !known {
+				slog.Warn("attestation from unknown validator DID; dropping",
+					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
+				continue
+			}
+			if expectedPk != r.PubkeyHex {
+				slog.Warn("attestation PubkeyHex doesn't match registered set; dropping",
+					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
+				continue
+			}
+		}
 		ok, err := islock.VerifyAttestation(req, r)
 		if err != nil || !ok {
 			slog.Warn("attestation per-sig verify failed; dropping",
@@ -256,13 +292,29 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 
 	// L2 mempool-accepted. Persist the L2 txID and transition to
 	// L2_SUBMITTED — but do NOT mint the session token yet.
-	// Round-2 audit D2-DESIGN-06: the spec requires waiting for
-	// block-inclusion before issuing the token. Reconciler polls the
-	// L2 status until terminal.
+	// Round-2 audit D2-DESIGN-06: spec requires block-inclusion before
+	// issuing the token. Reconciler polls L2 status until terminal.
+	//
+	// Round-3 audit R3-CSM-01/R3-002/R3-04: predecessor-state guard
+	// prevents clobbering a session the user already cancelled (which
+	// set StateExpired between BroadcastRequest and now). MutateState
+	// returns false if the session is gone (Prune deleted it — see
+	// R3-CSM-02); we log + bail without issuing the token.
+	var advanced bool
 	o.sessions.MutateState(sid, func(s *Session) {
+		if s.State != StateAttesting {
+			return
+		}
 		s.State = StateL2Submitted
 		s.L2TxId = l2TxID
+		advanced = true
 	})
+	if !advanced {
+		slog.Warn("session was cancelled or pruned during submit; not advancing to L2_SUBMITTED",
+			"sid", sid, "l2TxId", l2TxID, "dashTxid", txid,
+			"note", "L2 tx may still confirm — inspect chain state to recover")
+		return
+	}
 
 	if !o.reconcileL2(ctx, sid, txid, req.ChainId, l2TxID) {
 		// reconcileL2 already set the failed state.
@@ -270,7 +322,11 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 	}
 
 	now := time.Now()
+	advanced = false
 	o.sessions.MutateState(sid, func(s *Session) {
+		if s.State != StateL2Submitted {
+			return
+		}
 		s.State = StateOnChain
 		s.OnChainAt = &now
 		// v1 session token: hex of (sid || dashTxId || chainID). This is a
@@ -280,7 +336,14 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		// the IS service's HSM/KMS once that lands.
 		h := sha256.Sum256([]byte(sid + "|" + txid + "|" + req.ChainId))
 		s.SessionToken = hex.EncodeToString(h[:])
+		advanced = true
 	})
+	if !advanced {
+		slog.Warn("session was cancelled or pruned during reconcile; not minting SessionToken",
+			"sid", sid, "l2TxId", l2TxID, "dashTxid", txid,
+			"note", "L2 tx confirmed but session is no longer eligible — inspect chain state to recover")
+		return
+	}
 
 	slog.Info("session reached ON_CHAIN",
 		"sid", sid, "dashTxid", txid, "l2TxId", l2TxID,

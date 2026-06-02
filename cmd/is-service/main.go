@@ -78,8 +78,20 @@ func main() {
 	var dashd *DashdWatcher
 	if args.dashdRPCURL != "" {
 		client := NewDashdRPCClient(args.dashdRPCURL, args.dashdRPCUser, args.dashdRPCPassword)
+		// Round-3 audit OP-007: probe dashd at startup so a degraded
+		// backend fails-fast instead of accepting user funds against a
+		// silently-dead watcher. Mirrors the libp2p broadcaster's
+		// existing fail-fast.
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, probeErr := client.GetRawMempool(probeCtx)
+		probeCancel()
+		if probeErr != nil {
+			slog.Error("dashd RPC startup probe failed — refusing to start with degraded backend",
+				"rpc", args.dashdRPCURL, "err", probeErr)
+			os.Exit(1)
+		}
 		dashd = NewDashdWatcher(client)
-		slog.Info("dashd watcher configured", "rpc", args.dashdRPCURL)
+		slog.Info("dashd watcher configured + probed", "rpc", args.dashdRPCURL)
 	} else {
 		slog.Info("dashd watcher NOT configured — IS_OBSERVED transitions must be driven externally")
 	}
@@ -192,6 +204,13 @@ func main() {
 		}
 	}
 
+	// Round-3 audit OP-003: /healthz consults DashdWatcher.Health() so
+	// a stalled watcher surfaces as red without operator restart-with-debug.
+	var dashdHealthFn func() (int, error, time.Time)
+	if dashd != nil {
+		dashdHealthFn = dashd.Health
+	}
+
 	trustedProxies := splitCSV(args.trustedProxies)
 	if len(trustedProxies) > 0 {
 		slog.Info("trusted reverse proxies configured", "hosts", trustedProxies)
@@ -207,6 +226,7 @@ func main() {
 		Orch:              orch,
 		Sessions:          sessions,
 		BroadcasterHealth: broadcasterHealth,
+		DashdHealth:       dashdHealthFn,
 		TrustedProxies:    trustedProxies,
 	})
 	if err != nil {
@@ -229,7 +249,9 @@ func main() {
 	// transitions. Stops when ctx is cancelled.
 	if dashd != nil {
 		go func() {
-			if err := dashd.Run(ctx); err != nil && err != context.Canceled {
+			// Round-3 audit OP-011: errors.Is so a future wrap doesn't
+			// turn shutdown into spurious slog.Error.
+			if err := dashd.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Error("dashd watcher failed", "err", err)
 			}
 		}()
@@ -293,14 +315,18 @@ func main() {
 			slog.Error("graceful shutdown failed", "err", err)
 			os.Exit(1)
 		}
-		// Drain deadline: configurable, >= orchestrator collect+submit
-		// budget. Audit D2-DESIGN-10 caught the original 15s being
-		// shorter than the 45s orch budget, creating
-		// L2-credit-but-session-failed windows on every restart.
+		// Drain deadline: configurable, must cover the full Drive
+		// budget = CollectTimeout(15s) + SubmitTimeout(30s) +
+		// reconcileL2 worst-case (~180s with default backoffs +
+		// per-poll timeouts). Round-3 audit R3-05/CSM-04/OP-002
+		// raised the default from 60s after the round-2 reconciler
+		// extended the budget without updating the drain default.
 		drainTimeout := time.Duration(args.drainTimeoutSeconds) * time.Second
-		if drainTimeout < 45*time.Second {
-			slog.Warn("drainTimeoutSeconds shorter than orchestrator collect+submit budget; in-flight L2 submits may be cut",
-				"drainTimeoutSeconds", args.drainTimeoutSeconds)
+		const minSafeDrain = 225 * time.Second
+		if drainTimeout < minSafeDrain {
+			slog.Warn("drainTimeoutSeconds shorter than orchestrator full budget (collect+submit+reconcile=~225s); in-flight L2 reconciles may be cut, producing L2-credit-but-FORWARD_FAILED divergence",
+				"drainTimeoutSeconds", args.drainTimeoutSeconds,
+				"recommendedMinSeconds", int(minSafeDrain/time.Second))
 		}
 		srv.Drain(drainTimeout)
 		if p2pCloseFn != nil {

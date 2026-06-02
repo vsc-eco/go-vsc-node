@@ -89,11 +89,11 @@ func parseArgs() (args, error) {
 			"from these is honoured for rate-limiting. Loopback is always trusted. "+
 			"Audit TC2-06.")
 
-	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 60,
+	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 240,
 		"Graceful-shutdown drain timeout in seconds. MUST be >= orchestrator's "+
-			"CollectTimeout + SubmitTimeout (default 15s + 30s = 45s) so in-flight L2 "+
-			"submits complete instead of leaving sessions L2-credited-but-locally-failed. "+
-			"Round-2 audit D2-DESIGN-10.")
+			"CollectTimeout(15s) + SubmitTimeout(30s) + reconcileL2 budget(~180s including " +
+			"sleeps+per-poll timeouts) so in-flight L2 reconciles complete instead of leaving " +
+			"sessions L2-credited-but-locally-failed. Default 240s. Round-3 audit R3-05.")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return a, err
@@ -102,14 +102,23 @@ func parseArgs() (args, error) {
 	if a.primaryPubKey == "" || a.backupPubKey == "" {
 		return a, fmt.Errorf("-primaryPubkey and -backupPubkey are required")
 	}
+	// Round-3 audit OP-010: when both -network and -chainID are
+	// explicit, enforce the pair. A misconfig like -network=mainnet
+	// -chainID=vsc-testnet stamps payloads with the wrong chain_id and
+	// every session times out in ATTESTATION_TIMEOUT while subsystem
+	// logs look green (reads like a network outage).
 	switch a.network {
 	case "mainnet":
 		if a.chainID == "" {
 			a.chainID = "vsc-mainnet"
+		} else if a.chainID != "vsc-mainnet" {
+			return a, fmt.Errorf("-network=mainnet requires -chainID=vsc-mainnet, got %q", a.chainID)
 		}
 	case "testnet":
 		if a.chainID == "" {
 			a.chainID = "vsc-testnet"
+		} else if a.chainID != "vsc-testnet" {
+			return a, fmt.Errorf("-network=testnet requires -chainID=vsc-testnet, got %q", a.chainID)
 		}
 	default:
 		return a, fmt.Errorf("-network must be 'mainnet' or 'testnet', got %q", a.network)
