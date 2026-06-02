@@ -22,3 +22,6 @@ logs/
 *.wasm
 data-rr2-*
 .claude/scheduled_tasks.lock
+
+# Node deps for the optional Ledger signer (cmd/contract-deployer/ledger-signer)
+node_modules/
