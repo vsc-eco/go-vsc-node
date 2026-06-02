@@ -493,6 +493,44 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			return eCtx.ContractCall(contractId, method, payload, options)
 		},
+		// call_as — invokes contractId.method(payload) but tells the callee
+		// "this call is being made on behalf of effective_caller". The
+		// callee reads its effective caller via sdk.EffectiveCaller() (i.e.
+		// system.get_env_key "msg.effective_caller") and uses it for
+		// authorisation checks INSTEAD of the literal caller.
+		//
+		// Permission: caller contract MUST be in system-config.TrustedForwarders.
+		// All other contracts get a permission-denied error. This is the
+		// ERC-2771 trusted-forwarder analog — used by dash-forwarder-contract
+		// for the Dash InstantSend login feature.
+		//
+		// effectiveCaller is NOT propagated to grandchildren: when callee
+		// makes its own contracts.call, the grandchild sees callee as both
+		// caller and effectiveCaller. Per-call-frame scope, never tx-global.
+		"call_as": func(ctx context.Context, arg1 any, arg2 any, arg3 any, arg4 any, arg5 any) SdkResult {
+			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+			contractId, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			method, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			payload, ok := arg3.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			options, ok := arg4.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			effectiveCallerDID, ok := arg5.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			return eCtx.CallAs(contractId, method, payload, options, effectiveCallerDID)
+		},
 	},
 
 	// -------------------------------------------------------------------------

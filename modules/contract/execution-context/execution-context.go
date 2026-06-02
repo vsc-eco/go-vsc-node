@@ -57,6 +57,12 @@ type contractExecutionContext struct {
 	// across binaries. Set once per tx by the state engine and propagated into
 	// nested calls.
 	tryCatchActive bool
+
+	// trustedForwarders is the snapshot of system-config.TrustedForwarders
+	// at the time this execution started. Used by contracts.call_as to gate
+	// the effectiveCaller-override privilege. Empty list => call_as always
+	// errors (the safe default when governance hasn't ratified any forwarder).
+	trustedForwarders []string
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -82,7 +88,17 @@ type Environment struct {
 	RequiredPostingAuths []string
 	Caller               string
 	Sender               string
-	Intents              []contracts.Intent
+	// EffectiveCaller is the identity the callee should treat as the
+	// authorising actor for permission checks. Equal to Caller for normal
+	// contract calls; set to an arbitrary DID only when a trusted forwarder
+	// (in system-config.TrustedForwarders) invokes us via contracts.call_as.
+	// Mirrors ERC-2771 meta-tx semantics.
+	//
+	// Empty means "no override — use Caller". Contracts that want
+	// forwarder-aware identity should read this via sdk.EffectiveCaller()
+	// (which falls back to caller when this is empty).
+	EffectiveCaller string
+	Intents         []contracts.Intent
 	// PendulumOracle is merged into wasm env JSON (system.get_env) and visible via system.get_env_key.
 	PendulumOracle map[string]interface{}
 }
@@ -161,6 +177,30 @@ func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 // coordinated version floor.
 func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
+}
+
+// effectiveCallerOr returns override if non-empty, otherwise fallback.
+// Used to expose msg.effective_caller in env getters with sensible default.
+func effectiveCallerOr(override, fallback string) string {
+	if override != "" {
+		return override
+	}
+	return fallback
+}
+
+// WithTrustedForwarders injects the system-config.TrustedForwarders list
+// into the execution context. Contracts whose IDs appear in this list may
+// invoke contracts.call_as to override the effectiveCaller on outbound
+// calls; all other contracts get a permission-denied error if they try.
+//
+// Pass an empty list (or omit this Option entirely) to disable the
+// feature — call_as will always error. This is the safe default for any
+// network/test that hasn't gone through governance to designate a
+// forwarder.
+func WithTrustedForwarders(list []string) Option {
+	return func(ctx *contractExecutionContext) {
+		ctx.trustedForwarders = append([]string(nil), list...)
+	}
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -267,6 +307,14 @@ func (ctx *contractExecutionContext) EnvVar(key string) result.Result[string] {
 		}
 	case "msg.caller":
 		return result.Ok(ctx.env.Caller)
+	case "msg.effective_caller":
+		// Falls back to Caller when no forwarder override is in effect.
+		// Contracts that want forwarder-aware identity should read this
+		// instead of msg.caller.
+		if ctx.env.EffectiveCaller != "" {
+			return result.Ok(ctx.env.EffectiveCaller)
+		}
+		return result.Ok(ctx.env.Caller)
 	case "intents":
 		return result.Map(
 			resultWrap(json.Marshal(ctx.env.Intents)),
@@ -332,6 +380,7 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 		"msg.required_posting_auths": ctx.env.RequiredPostingAuths,
 		"msg.payer":                  payer,
 		"msg.caller":                 ctx.env.Caller,
+		"msg.effective_caller":       effectiveCallerOr(ctx.env.EffectiveCaller, ctx.env.Caller),
 		"intents":                    ctx.env.Intents,
 	}
 	for k, v := range ctx.env.PendulumOracle {
@@ -699,6 +748,141 @@ func (ctx *contractExecutionContext) ContractCall(
 			}
 			if tryMode {
 				return result.Ok(tryOutcome(true, "", "", res.Result, res.Gas))
+			}
+			return result.Ok(res)
+		},
+	))
+}
+
+// IsTrustedForwarder reports whether THIS executing contract is in the
+// system-config.TrustedForwarders list — i.e. is permitted to invoke
+// contracts.call_as. Defaults to false when the trusted-forwarder list
+// hasn't been wired in (safe default for tests and unconfigured networks).
+func (ctx *contractExecutionContext) IsTrustedForwarder() bool {
+	if len(ctx.trustedForwarders) == 0 {
+		return false
+	}
+	myId := "contract:" + ctx.env.ContractId
+	for _, id := range ctx.trustedForwarders {
+		if id == myId {
+			return true
+		}
+	}
+	return false
+}
+
+// CallAs invokes contractId.method(payload) with the callee's effectiveCaller
+// set to effectiveCallerDID, instead of the literal caller (this contract).
+// Only contracts whose IDs appear in system-config.TrustedForwarders may
+// successfully call this — others get a permission-denied error.
+//
+// Mirrors ContractCall in every other respect: recursion depth, gas
+// propagation, ledger access, intents.
+//
+// effectiveCallerDID can be any DID string the forwarder claims acted via
+// it (e.g. a DashDID corresponding to the user that paid an InstantSend).
+// The forwarder is responsible for verifying that claim — the VM trusts
+// the forwarder unconditionally because it's in the trusted-forwarder
+// list. That's the whole point of the trust boundary.
+//
+// Per-call-frame, NOT tx-global: when the callee (say, a DEX router)
+// makes its own contracts.call to a pool contract, the pool sees the
+// router as both caller and effectiveCaller. User identity propagates
+// downstream only via explicit args. ERC-2771 semantics.
+func (ctx *contractExecutionContext) CallAs(
+	contractId string,
+	method string,
+	payload string,
+	options string,
+	effectiveCallerDID string,
+) wasm_types.WasmResult {
+	if !ctx.IsTrustedForwarder() {
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(
+				fmt.Errorf(contracts.SDK_ERROR),
+				fmt.Errorf("call_as: caller contract:%s is not in system-config.TrustedForwarders", ctx.env.ContractId),
+			),
+		)
+	}
+	if effectiveCallerDID == "" {
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(
+				fmt.Errorf(contracts.SDK_ERROR),
+				fmt.Errorf("call_as: effective caller DID must not be empty"),
+			),
+		)
+	}
+
+	nextRecursion := ctx.recursion + 1
+	if nextRecursion > params.CONTRACT_CALL_MAX_RECURSION_DEPTH {
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_RCSE_LIMIT_HIT), fmt.Errorf("call recursion limit hit")),
+		)
+	}
+	payloadJson := json.RawMessage(payload)
+	if !utf8.Valid(payloadJson) {
+		return result.Err[wasm_types.WasmResultStruct](
+			errors.Join(fmt.Errorf(contracts.IC_INVALD_PAYLD), fmt.Errorf("payload does not parse to a UTF-8 string")),
+		)
+	}
+	opts := contracts.ICCallOptions{
+		Intents: []contracts.Intent{},
+	}
+	json.Unmarshal([]byte(options), &opts)
+
+	return result.Flatten(result.Map(
+		ctx.callSession.GetContractFromDb(contractId, ctx.env.BlockHeight),
+		func(ct contract_session.ContractWithCode) wasm_types.WasmResult {
+			w := wasm_runtime_ipc.New()
+			w.Init()
+			var gasRemaining uint
+			if ctx.gasRemain > ctx.gasUsage {
+				gasRemaining = ctx.gasRemain - ctx.gasUsage
+			}
+
+			ctxValue := New(Environment{
+				ContractId:           contractId,
+				ContractOwner:        ct.Info.Owner,
+				BlockHeight:          ctx.env.BlockHeight,
+				TxId:                 ctx.env.TxId,
+				BlockId:              ctx.env.BlockId,
+				Index:                ctx.env.Index,
+				OpIndex:              ctx.env.OpIndex,
+				Timestamp:            ctx.env.Timestamp,
+				RequiredAuths:        ctx.env.RequiredAuths,
+				RequiredPostingAuths: ctx.env.RequiredPostingAuths,
+				Caller:               "contract:" + ctx.env.ContractId,
+				Sender:               ctx.env.Sender,
+				// ↓ The whole point of call_as: callee sees a different
+				// effective caller than the literal caller.
+				EffectiveCaller: effectiveCallerDID,
+				Intents:         opts.Intents,
+				PendulumOracle:  ctx.env.PendulumOracle,
+			}, ctx.rcLimit, 0, gasRemaining, ctx.ledger, ctx.callSession, nextRecursion,
+				WithPendulumApplier(ctx.pendulumApplier),
+				// Trusted-forwarders does NOT propagate to children — only
+				// the forwarder itself has the privilege. If the callee
+				// makes further calls they're plain ContractCalls, no
+				// override capability.
+			)
+
+			callPayload := payload
+			json.Unmarshal([]byte(payloadJson), &callPayload)
+
+			wasmCtx := context.WithValue(
+				context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+				wasm_context.WasmExecCodeCtxKey,
+				hex.EncodeToString(ct.Code),
+			)
+			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
+			if res.Error != nil {
+				return result.Err[wasm_types.WasmResultStruct](
+					errors.Join(
+						fmt.Errorf("%s", res.ErrorCode),
+						fmt.Errorf("%s", *res.Error),
+						fmt.Errorf("%d", res.Gas),
+					),
+				)
 			}
 			return result.Ok(res)
 		},
