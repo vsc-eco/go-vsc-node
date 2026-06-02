@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 )
@@ -21,7 +24,7 @@ import (
 // The fix moves the GraphQL probe to a background goroutine that
 // refreshes a copy-on-write atomic snapshot on a fixed interval. The
 // /healthz handler reads the snapshot lock-free. Hysteresis kicks in
-// after 3 consecutive failures (mirroring DashdWatcher's threshold).
+// after submitterDegradedFailThreshold consecutive failures.
 type submitterHealthSnapshot struct {
 	DID              string
 	BalanceHbdCents  int64
@@ -30,6 +33,21 @@ type submitterHealthSnapshot struct {
 	ConsecutiveFails int
 	UpdatedAt        time.Time
 }
+
+// submitterDegradedFailThreshold is the consecutive-fail count above
+// which /healthz flips the submitter to degraded. Round-6 audit
+// R6-CORR-02 wired this threshold through the consumer chain; the
+// pre-R6 code dropped ConsecutiveFails at the callback boundary and
+// flipped degraded on the first non-nil err. Chosen to align with
+// the DashdWatcher's >= 5 escalation but stay tighter so RC-exhaustion
+// still surfaces within ~45s (3 fails × 15s refresh).
+const submitterDegradedFailThreshold = 3
+
+// errSubmitterWarmup is the sentinel error the SubmitterHealth callback
+// returns BEFORE the first probe completes (Snapshot() == nil). The
+// /healthz handler distinguishes warmup from a real probe failure and
+// does not flip degraded for warmup. Round-6 audit R6-CORR-03.
+var errSubmitterWarmup = errors.New("submitter health probe warming up")
 
 // submitterHealthMonitor holds the snapshot pointer + the most recent
 // probe state. Snapshot updates publish via atomic.Pointer so readers
@@ -43,9 +61,8 @@ type submitterHealthMonitor struct {
 }
 
 // newSubmitterHealthMonitor builds a monitor that probes via the given
-// closure. The first probe runs synchronously so /healthz returns a
-// populated snapshot immediately after server start; subsequent
-// probes run on the background loop.
+// closure. Run() does an initial probe before entering the ticker
+// loop; until Run is called, Snapshot returns nil.
 func newSubmitterHealthMonitor(refresh time.Duration, probe func(ctx context.Context) (string, int64, int64, error)) *submitterHealthMonitor {
 	if refresh <= 0 {
 		refresh = 15 * time.Second
@@ -77,6 +94,27 @@ func (m *submitterHealthMonitor) Run(ctx context.Context) {
 }
 
 func (m *submitterHealthMonitor) tick(parent context.Context) {
+	// Round-6 audit R6-OP-05: defensive panic-recover. The probe is
+	// supplied by the caller (production wires it to
+	// SubmitterL2.FetchSubmitterHealth) — a future refactor that
+	// introduces panic-prone parsing (map index, interface assertion)
+	// would otherwise crash the IS service process. recover here
+	// keeps the monitor alive, increments the fail counter, and
+	// records the panic in the snapshot for /healthz to surface.
+	defer func() {
+		if r := recover(); r != nil {
+			m.fails++
+			snap := &submitterHealthSnapshot{
+				Err:              fmt.Errorf("submitter health probe panic: %v", r),
+				ConsecutiveFails: m.fails,
+				UpdatedAt:        time.Now(),
+			}
+			m.snap.Store(snap)
+			slog.Error("submitter health probe panicked",
+				"recovered", r, "stack", string(debug.Stack()),
+				"consecutiveFails", m.fails)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	did, bal, rc, err := m.probe(ctx)

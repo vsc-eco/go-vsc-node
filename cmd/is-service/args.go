@@ -138,5 +138,12 @@ func parseArgs() (args, error) {
 	if a.sessionTTLMinutes < 1 {
 		return a, fmt.Errorf("-sessionTTLMinutes must be > 0")
 	}
+	// Round-6 audit R6-OP-04: validate -validatorSetCacheTTLSeconds.
+	// The previous behaviour silently coerced <=0 to 30s, which lets
+	// an operator who passes 0 thinking it disables caching get the
+	// 30s default with no signal.
+	if a.validatorSetCacheTTLSeconds < 1 {
+		return a, fmt.Errorf("-validatorSetCacheTTLSeconds must be > 0")
+	}
 	return a, nil
 }

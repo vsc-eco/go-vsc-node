@@ -278,6 +278,54 @@ func TestSessionStore_CountByState(t *testing.T) {
 	assert.Equal(t, 1, counts[StateOnChain])
 }
 
+// Round-6 audit R6-TEST-02: the R5-CORR-01 terminal-retention window
+// must hold non-Expired terminal sessions past ExpiresAt for
+// max(ttl/2, 1min) so /healthz CountByState surfaces validator-mesh
+// degradation. Pin all four windows.
+func TestSessionStore_PruneRetainsTerminalForWindow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	ttl := 30 * time.Minute
+	store := NewSessionStore(ttl).WithNowFunc(func() time.Time { return now })
+
+	cases := []struct {
+		name     string
+		state    SessionState
+		wantGone bool
+		// advance: how far past CreatedAt to set the clock before Prune
+		advance time.Duration
+	}{
+		// Terminal-but-not-Expired states past ExpiresAt but BEFORE
+		// retention deadline → preserved.
+		{"AttestationTimeout-just-past-TTL", StateAttestationTimeout, false, ttl + time.Minute},
+		{"ForwardFailed-just-past-TTL", StateForwardFailed, false, ttl + time.Minute},
+		{"OnChain-just-past-TTL", StateOnChain, false, ttl + time.Minute},
+		// Same states past TTL + retention → reclaimed.
+		{"AttestationTimeout-past-retention", StateAttestationTimeout, true, ttl + ttl/2 + time.Minute},
+		// StateExpired ignores retention — reclaimed at the boundary.
+		{"Expired-past-TTL", StateExpired, true, ttl + time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			now = time.Unix(1000, 0)
+			sid := c.name
+			require.NoError(t, store.Put(&Session{
+				Sid:       sid,
+				State:     c.state,
+				CreatedAt: now,
+				ExpiresAt: now.Add(ttl),
+			}))
+			now = time.Unix(1000, 0).Add(c.advance)
+			_, _ = store.Prune()
+			_, has := store.sessions[sid]
+			if c.wantGone {
+				assert.False(t, has, "session %s must be reclaimed", sid)
+			} else {
+				assert.True(t, has, "session %s must be retained", sid)
+			}
+		})
+	}
+}
+
 // Round-3 audit R3-005: PutNew is the concurrent-safe alternative to
 // Get-then-Put for /session/start. The serial duplicate-rejection
 // case + a race-coverage variant pin the TOCTOU window closed.

@@ -49,6 +49,12 @@ type Orchestrator struct {
 	// the per-sig verifier falls back to raw signature check only.
 	// Audit R3-07.
 	validatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
+	// validatorSetSource is a human-readable identifier for the
+	// upstream that supplied validatorSetForEpoch (typically the L2
+	// GraphQL endpoint URL). Surfaced on the R5-ADV-01 roster-
+	// divergence slog.Error so operators don't have to ssh+ps to
+	// find the URL. Round-6 audit R6-OP-01.
+	validatorSetSource string
 	// counters is an atomic snapshot of operational events surfaced
 	// via /healthz. Round-4 audit R4-007 — the existing
 	// per-event slog lines are not aggregable.
@@ -117,6 +123,11 @@ type OrchestratorConfig struct {
 	// avoiding wasted RC on contract-side rejections. nil = no
 	// pre-check (fall back to raw-sig verify only).
 	ValidatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
+	// ValidatorSetSource is a human-readable identifier (typically a
+	// URL) for whatever supplied ValidatorSetForEpoch. Emitted in the
+	// roster-divergence slog.Error so operators know which upstream
+	// to investigate. Round-6 audit R6-OP-01.
+	ValidatorSetSource string
 }
 
 func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
@@ -144,6 +155,7 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		reconcileBackoffs:    cfg.ReconcileBackoffs,
 		epochFor:             cfg.EpochFor,
 		validatorSetForEpoch: cfg.ValidatorSetForEpoch,
+		validatorSetSource:   cfg.ValidatorSetSource,
 	}
 }
 
@@ -287,7 +299,8 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		slog.Error("validator-set / libp2p roster divergence: no responder matched expected set",
 			"sid", sid, "epoch", req.Epoch,
 			"responders", len(responses), "expectedSize", len(expected),
-			"hint", "verify the L2 GraphQL endpoint returns the actual on-chain validator set for this epoch")
+			"validatorSetSource", o.validatorSetSource,
+			"hint", "verify the L2 GraphQL endpoint at validatorSetSource returns the actual on-chain validator set for this epoch")
 	}
 
 	if len(verifiedResponses) < o.quorumThreshold {

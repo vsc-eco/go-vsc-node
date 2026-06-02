@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -84,10 +85,14 @@ type Server struct {
 	// Round-3 audit OP-003.
 	dashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
 	// submitterHealth: optional probe surfacing the L2 submitter DID +
-	// HBD balance + RC remaining on /healthz. Round-4 audit R4-007 —
-	// without this an RC-exhaustion outage looks identical to ordinary
-	// quiet traffic on /healthz.
-	submitterHealth func() (did string, balanceHbd int64, rcRemaining int64, err error)
+	// HBD balance + RC remaining + ConsecutiveFails on /healthz.
+	// Round-4 audit R4-007 — without this an RC-exhaustion outage
+	// looks identical to ordinary quiet traffic on /healthz. Round-6
+	// audit R6-CORR-02 extended the signature with consecutiveFails
+	// so the >= submitterDegradedFailThreshold hysteresis from
+	// submitter_health.go is actually applied at the /healthz
+	// degraded-flag gate.
+	submitterHealth func() (did string, balanceHbd int64, rcRemaining int64, consecutiveFails int, err error)
 	// trustedProxies: additional hosts (beyond loopback) that the
 	// clientIP helper trusts for X-Forwarded-For. Empty means
 	// loopback-only (M5 default). Audit TC2-06 plugged the docstring
@@ -135,10 +140,12 @@ type ServerConfig struct {
 	// can be functionally dead while /healthz reports green.
 	DashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
 	// SubmitterHealth surfaces the L2 submitter funding state on
-	// /healthz: derived DID, HBD balance (in cents), and RC remaining.
-	// When err is non-nil the probe is reported as degraded. Round-4
-	// audit R4-007.
-	SubmitterHealth func() (did string, balanceHbd int64, rcRemaining int64, err error)
+	// /healthz: derived DID, HBD balance (in cents), RC remaining,
+	// and the monitor's consecutive-fails counter. Round-4 audit
+	// R4-007 added the original surface; round-6 audit R6-CORR-02
+	// added consecutiveFails so /healthz can apply the
+	// submitterDegradedFailThreshold hysteresis.
+	SubmitterHealth func() (did string, balanceHbd int64, rcRemaining int64, consecutiveFails int, err error)
 	// TrustedProxies: literal host/IP strings (loopback always implied)
 	// from which X-Forwarded-For is honoured. Audit TC2-06: M5 docstring
 	// promised this and the field didn't exist; now it does.
@@ -251,11 +258,18 @@ func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
 // GraphQL roundtrip and so attestation broadcasts don't fail with
 // publish-on-closed-topic. Audit `orchestrator-detached-context-on-shutdown`.
 func (s *Server) Drain(deadline time.Duration) {
-	// Round-5 audit R5-CORRECT-02: the driveCancel func was only
-	// invoked on the hard-cap timeout path; the clean-drain path
-	// left the cancel func leaked (uncalled). defer guarantees it
-	// runs on every Drain return, on both the clean-drain branch
-	// and the deadline-hit branch.
+	// Round-5 audit R5-CORRECT-02: defer ensures driveCancel runs on
+	// every Drain return, including the clean-drain branch (the bug
+	// that round-5 fixed — cancel was leaked on the happy path).
+	//
+	// Round-6 audit R6-CORR-01: the hard-cap branch ADDITIONALLY
+	// needs an explicit driveCancel BEFORE the `<-done` wait. Drive
+	// goroutines block on context-aware GraphQL / reconcileL2 work;
+	// they only return promptly once driveCtx is cancelled. With
+	// only the deferred cancel, `<-done` would wait for the full
+	// natural ~225s budget instead of cutting Drives short at the
+	// deadline. context.CancelFunc is idempotent — calling it twice
+	// is safe and explicit.
 	defer s.driveCancel()
 	done := make(chan struct{})
 	go func() {
@@ -265,7 +279,9 @@ func (s *Server) Drain(deadline time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(deadline):
-		// Hard cap reached — the deferred driveCancel still runs.
+		// Hard cap reached — cancel the shared driveCtx so any
+		// in-flight GraphQL POST / reconcile sleep aborts promptly.
+		s.driveCancel()
 		<-done
 	}
 }
@@ -345,6 +361,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		// at a glance whether the counters they're looking at are
 		// from this process or a previous incarnation.
 		"processStartedAt": s.processStartedAt.UTC().Format(time.RFC3339),
+		// Round-6 audit R6-OP-03: pair the RFC3339 string with a
+		// Unix-seconds integer for Prometheus/Grafana scrapers that
+		// expect process_start_time_seconds-style numeric values.
+		// rate() math over the atomic counters can use either field.
+		"processStartedAtUnix": s.processStartedAt.Unix(),
 	}
 	// Round-3 audit OP-004: expose per-state session counts so operators
 	// can spot pile-ups in L2_SUBMITTED (reconciler stuck), ATTESTING
@@ -383,16 +404,33 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// Round-4 audit R4-007: surface L2 submitter funding state. An
 	// RC-exhausted submitter manifests as silent ATTESTING pile-ups
 	// today; this turns it into an explicit /healthz red.
+	//
+	// Round-6 audit R6-CORR-02: apply the consecutiveFails hysteresis
+	// promised by submitter_health.go before flipping degraded. A
+	// single transient GraphQL flap would previously page on every
+	// probe interval; now we only flip after
+	// submitterDegradedFailThreshold consecutive failures.
+	//
+	// Round-6 audit R6-CORR-03: the errSubmitterWarmup sentinel
+	// distinguishes "monitor goroutine hasn't completed its first
+	// probe yet" from a real failure. Treat warmup as a transient
+	// state — surface it but don't flip degraded.
 	if s.submitterHealth != nil {
-		did, balance, rc, err := s.submitterHealth()
+		did, balance, rc, fails, err := s.submitterHealth()
 		out["submitterDID"] = did
 		out["submitterBalanceHbdCents"] = balance
 		out["submitterRcRemaining"] = rc
-		if err != nil {
+		out["submitterConsecutiveFails"] = fails
+		switch {
+		case errors.Is(err, errSubmitterWarmup):
+			out["submitterWarmup"] = true
+		case err != nil:
 			out["submitterProbeErr"] = err.Error()
-			out["submitterDegraded"] = true
-			out["ok"] = false
-		} else if rc <= 0 && did != "" {
+			if fails >= submitterDegradedFailThreshold {
+				out["submitterDegraded"] = true
+				out["ok"] = false
+			}
+		case rc <= 0 && did != "":
 			out["submitterDegraded"] = true
 			out["ok"] = false
 		}

@@ -241,6 +241,60 @@ func TestOrchestrator_ReconcileTimeoutIncrementsCounter(t *testing.T) {
 	assert.Equal(t, StateForwardFailed, sess.State)
 }
 
+// Round-6 audit R6-TEST-05: pin the R5-ADV-01 roster-divergence
+// signal. When the expected validator set knows none of the
+// libp2p responders, every drop increments AttestationVerifyDrops
+// AND the orchestrator emits a structured slog.Error.
+func TestOrchestrator_RosterDivergence_DropsUnknownResponders(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	broadcaster := &fakeBroadcaster{collector: collector}
+	submitter := &fakeSubmitter{}
+	sk, pkHex := mkValidatorKey(t)
+
+	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			resp, err := islock.BuildResponse(req, "did:key:unknown-responder", sk)
+			if err != nil {
+				return
+			}
+			resp.PubkeyHex = pkHex
+			collector.Deliver(resp)
+		}()
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions:        store,
+		Collector:       collector,
+		Broadcaster:     broadcaster,
+		Submitter:       submitter,
+		ChainID:         "vsc-testnet",
+		QuorumThreshold: 1,
+		CollectTimeout:  200 * time.Millisecond,
+		// Expected set knows ONLY did:key:expected — NOT the
+		// responder DID. Every responder should be dropped, and
+		// the divergence slog.Error should fire.
+		ValidatorSetForEpoch: func(ctx context.Context, _ uint64) map[string]string {
+			return map[string]string{"did:key:expected": pkHex}
+		},
+		ValidatorSetSource: "https://gql.test/graphql",
+		ReconcileBackoffs:  testBackoffs,
+	})
+
+	putObservedSession(t, store, "sid-roster")
+	orch.Drive(context.Background(), "sid-roster", fakeTxid, fakeRawTxHex)
+
+	counters := orch.Counters()
+	assert.Equal(t, int64(1), counters.AttestationVerifyDrops,
+		"unknown responder must increment AttestationVerifyDrops")
+	sess, _ := store.Get("sid-roster")
+	assert.Equal(t, StateAttestationTimeout, sess.State,
+		"all-unknown responders → no quorum → ATTESTATION_TIMEOUT")
+	assert.Empty(t, submitter.Submissions(),
+		"submitter must not be called when no responders pass the DID gate")
+}
+
 func TestOrchestrator_Counters_SnapshotShape(t *testing.T) {
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions:    NewSessionStore(time.Hour),

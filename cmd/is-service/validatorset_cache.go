@@ -7,10 +7,21 @@ import (
 	"time"
 )
 
-// validatorSetCache wraps SubmitterL2.FetchValidatorSet with a
-// per-epoch TTL cache. Round-4 audit R4-001 motivates the wiring;
-// caching avoids hitting GraphQL on every Drive() while still
-// reflecting admin-side updates within ttl.
+// validatorSetFetcher is the small surface validatorSetCache calls
+// through. Production wires it to SubmitterL2.FetchValidatorSet;
+// tests use a fake implementation so the REAL validatorSetCache.Get
+// is exercised end-to-end. Round-6 audit R6-TEST-01 extracted this
+// interface to delete the parallel testCache shadow in
+// validatorset_cache_test.go (which was a copy-paste of Get with
+// drift-hazard implications).
+type validatorSetFetcher interface {
+	FetchValidatorSet(ctx context.Context, contractID string, epoch uint64) (map[string]string, error)
+}
+
+// validatorSetCache wraps validatorSetFetcher with a per-epoch TTL
+// cache. Round-4 audit R4-001 motivates the wiring; caching avoids
+// hitting GraphQL on every Drive() while still reflecting admin-side
+// updates within ttl.
 //
 // Concurrency: many sessions can request the same epoch in parallel;
 // in-flight requests for the same epoch are coalesced via a per-epoch
@@ -25,7 +36,7 @@ import (
 // returns it (with refreshed expiresAt for short-term reuse) so the
 // orchestrator keeps verifying against the last-known good set.
 type validatorSetCache struct {
-	fetcher    *SubmitterL2
+	fetcher    validatorSetFetcher
 	contractID string
 	ttl        time.Duration
 
@@ -39,7 +50,7 @@ type validatorSetEntry struct {
 	loading   chan struct{} // non-nil while a load is in flight
 }
 
-func newValidatorSetCache(fetcher *SubmitterL2, contractID string, ttl time.Duration) *validatorSetCache {
+func newValidatorSetCache(fetcher validatorSetFetcher, contractID string, ttl time.Duration) *validatorSetCache {
 	return &validatorSetCache{
 		fetcher:    fetcher,
 		contractID: contractID,
@@ -103,10 +114,14 @@ func (c *validatorSetCache) Get(ctx context.Context, epoch uint64) map[string]st
 		slog.Warn("validator-set cache: upstream fetch failed",
 			"epoch", epoch, "err", err, "stalePreserved", priorValue != nil)
 		// Don't evict the previous-good entry — round-5 R5-006.
-		// Keep the prior value but mark it expired-soon so the
-		// next caller retries the upstream fetch. A short
-		// retry-delay (1/4 ttl) prevents tight retry loops while
-		// allowing recovery within seconds of a transient flap.
+		// Keep the prior value with a short freshness window
+		// (retryDelay): subsequent callers within the window read
+		// the cached priorValue without retrying upstream
+		// (rate-limits the retry storm); callers after the window
+		// fall through to the singleflight load and try again.
+		// Round-6 audit R6-DOC-01 fixed the original comment which
+		// claimed the entry was 'expired-soon' (the opposite of
+		// what the code does).
 		retryDelay := c.ttl / 4
 		if retryDelay < 5*time.Second {
 			retryDelay = 5 * time.Second

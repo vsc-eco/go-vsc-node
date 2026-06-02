@@ -224,6 +224,7 @@ func main() {
 		ChainID:              args.chainID,
 		ValidatorSetForEpoch: validatorSetForEpoch,
 		EpochFor:             epochFor,
+		ValidatorSetSource:   args.l2GqlURL,
 	})
 
 	// /healthz probe — surfaces LIVE libp2p connected-peer count + mesh
@@ -255,7 +256,7 @@ func main() {
 	// burst of synthetic probes. The probe now runs in a background
 	// goroutine on a fixed interval; /healthz reads an atomic
 	// snapshot. Hysteresis (3 consecutive fails) prevents flapping.
-	var submitterHealthFn func() (string, int64, int64, error)
+	var submitterHealthFn func() (string, int64, int64, int, error)
 	var submitterMonitor *submitterHealthMonitor
 	if l2, ok := submitter.(*SubmitterL2); ok {
 		probe := func(ctx context.Context) (string, int64, int64, error) {
@@ -263,12 +264,20 @@ func main() {
 			return l2.DID(), bal, rc, err
 		}
 		submitterMonitor = newSubmitterHealthMonitor(15*time.Second, probe)
-		submitterHealthFn = func() (string, int64, int64, error) {
+		submitterHealthFn = func() (string, int64, int64, int, error) {
 			snap := submitterMonitor.Snapshot()
 			if snap == nil {
-				return l2.DID(), 0, 0, nil
+				// Round-6 audit R6-CORR-03: surface the warmup
+				// window as a sentinel error so handleHealthz can
+				// distinguish it from a real probe failure and
+				// skip the degraded flip. Without this, a /healthz
+				// hit during the first ~5s window (after process
+				// start, before the goroutine's first probe
+				// completes) was returning rc=0 + did=non-empty
+				// and tripping the rc<=0 degraded branch.
+				return l2.DID(), 0, 0, 0, errSubmitterWarmup
 			}
-			return snap.DID, snap.BalanceHbdCents, snap.RcRemaining, snap.Err
+			return snap.DID, snap.BalanceHbdCents, snap.RcRemaining, snap.ConsecutiveFails, snap.Err
 		}
 	}
 
