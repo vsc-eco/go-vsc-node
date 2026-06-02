@@ -33,6 +33,11 @@ func TestBuildCallInstruction_WithAmount(t *testing.T) {
 }
 
 func TestSessionState_IsTerminal(t *testing.T) {
+	// Round-4 audit R4-SEC-03: AttestationTimeout + SlowPathPending
+	// are terminal from the orchestrator's perspective — Drive
+	// returns after MutateState'ing into them — and must be treated
+	// as such by Get/Prune to preserve operator visibility into
+	// validator-mesh degradation on /healthz CountByState.
 	for _, c := range []struct {
 		state    SessionState
 		terminal bool
@@ -40,14 +45,39 @@ func TestSessionState_IsTerminal(t *testing.T) {
 		{StateWaitingForIS, false},
 		{StateISObserved, false},
 		{StateAttesting, false},
+		{StateL2Submitted, false}, // R4-005: non-terminal, in-flight
 		{StateOnChain, true},
-		{StateAttestationTimeout, false},
-		{StateSlowPathPending, false},
+		{StateAttestationTimeout, true},
+		{StateSlowPathPending, true},
 		{StateForwardFailed, true},
 		{StateExpired, true},
 	} {
 		t.Run(string(c.state), func(t *testing.T) {
 			assert.Equal(t, c.terminal, c.state.IsTerminal())
+		})
+	}
+}
+
+func TestSessionState_IsInFlight(t *testing.T) {
+	// Round-4 audit R4-SEC-01: Get/Prune share the same in-flight
+	// predicate; only ATTESTING and L2_SUBMITTED are protected from
+	// state-clobber past ExpiresAt.
+	for _, c := range []struct {
+		state    SessionState
+		inFlight bool
+	}{
+		{StateWaitingForIS, false},
+		{StateISObserved, false},
+		{StateAttesting, true},
+		{StateL2Submitted, true},
+		{StateOnChain, false},
+		{StateAttestationTimeout, false},
+		{StateSlowPathPending, false},
+		{StateForwardFailed, false},
+		{StateExpired, false},
+	} {
+		t.Run(string(c.state), func(t *testing.T) {
+			assert.Equal(t, c.inFlight, c.state.IsInFlight())
 		})
 	}
 }
@@ -168,6 +198,95 @@ func TestSessionStore_PruneOnlyExpired(t *testing.T) {
 
 	_, ok := store.Get("fresh")
 	assert.True(t, ok)
+}
+
+// Round-3 audit R3-CSM-02 + round-4 R4-SEC-01: Prune AND Get both
+// preserve in-flight sessions past ExpiresAt; the orchestrator owns
+// the terminal transition. Clobbering state from either door breaks
+// the L2 reconcile budget and produces L2-credited-but-session-lost
+// divergences.
+func TestSessionStore_PruneAndGet_KeepInFlight(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(time.Hour).WithNowFunc(func() time.Time { return now })
+
+	for _, s := range []SessionState{StateAttesting, StateL2Submitted} {
+		t.Run(string(s), func(t *testing.T) {
+			sid := "in-flight-" + string(s)
+			_ = store.Put(&Session{
+				Sid:       sid,
+				State:     s,
+				CreatedAt: now,
+				ExpiresAt: now.Add(30 * time.Second),
+			})
+			// Advance past TTL; in-flight session MUST survive both
+			// Prune and Get without state mutation.
+			now = time.Unix(2000, 0)
+			removed, _ := store.Prune()
+			assert.Equal(t, 0, removed, "Prune must not delete in-flight session")
+			got, ok := store.Get(sid)
+			assert.True(t, ok)
+			assert.Equal(t, s, got.State,
+				"Get must not flip in-flight state to Expired past TTL")
+		})
+	}
+}
+
+// Round-4 audit R4-SEC-03: terminal states must not be silently
+// overwritten to StateExpired on /status poll past TTL. Operators
+// rely on /healthz CountByState to surface validator-mesh degradation;
+// reclassifying ATTESTATION_TIMEOUT as ordinary expiry destroys that.
+func TestSessionStore_Get_PreservesTerminalStates(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(time.Hour).WithNowFunc(func() time.Time { return now })
+
+	for _, s := range []SessionState{
+		StateAttestationTimeout, StateSlowPathPending,
+		StateForwardFailed, StateOnChain,
+	} {
+		t.Run(string(s), func(t *testing.T) {
+			sid := "term-" + string(s)
+			_ = store.Put(&Session{
+				Sid:       sid,
+				State:     s,
+				CreatedAt: now,
+				ExpiresAt: now.Add(30 * time.Second),
+			})
+			now = time.Unix(2000, 0)
+			got, ok := store.Get(sid)
+			assert.True(t, ok)
+			assert.Equal(t, s, got.State,
+				"Get must not clobber terminal state to Expired past TTL")
+		})
+	}
+}
+
+// Round-4 audit R4-005: CountByState surfaces operator visibility into
+// where sessions are getting stuck. Pin the basic shape so a future
+// refactor can't silently regress to a zero-count map.
+func TestSessionStore_CountByState(t *testing.T) {
+	now := time.Unix(1000, 0)
+	store := NewSessionStore(time.Hour).WithNowFunc(func() time.Time { return now })
+
+	_ = store.Put(&Session{Sid: "a", State: StateAttesting, ExpiresAt: now.Add(time.Hour)})
+	_ = store.Put(&Session{Sid: "b", State: StateAttesting, ExpiresAt: now.Add(time.Hour)})
+	_ = store.Put(&Session{Sid: "c", State: StateL2Submitted, ExpiresAt: now.Add(time.Hour)})
+	_ = store.Put(&Session{Sid: "d", State: StateOnChain, ExpiresAt: now.Add(time.Hour)})
+
+	counts := store.CountByState()
+	assert.Equal(t, 2, counts[StateAttesting])
+	assert.Equal(t, 1, counts[StateL2Submitted])
+	assert.Equal(t, 1, counts[StateOnChain])
+}
+
+// Round-3 audit R3-005: PutNew is the concurrent-safe alternative to
+// Get-then-Put for /session/start. The serial duplicate-rejection
+// case + a race-coverage variant pin the TOCTOU window closed.
+func TestSessionStore_PutNew_RejectsDuplicateSerial(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	sess := &Session{Sid: "dup", State: StateWaitingForIS, ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, store.PutNew(sess))
+	err := store.PutNew(sess)
+	assert.ErrorIs(t, err, ErrSidAlreadyExists)
 }
 
 func TestFormatInt(t *testing.T) {

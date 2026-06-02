@@ -83,6 +83,11 @@ type Server struct {
 	// dashdHealth: optional DashdWatcher probe surfaced via /healthz.
 	// Round-3 audit OP-003.
 	dashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
+	// submitterHealth: optional probe surfacing the L2 submitter DID +
+	// HBD balance + RC remaining on /healthz. Round-4 audit R4-007 —
+	// without this an RC-exhaustion outage looks identical to ordinary
+	// quiet traffic on /healthz.
+	submitterHealth func() (did string, balanceHbd int64, rcRemaining int64, err error)
 	// trustedProxies: additional hosts (beyond loopback) that the
 	// clientIP helper trusts for X-Forwarded-For. Empty means
 	// loopback-only (M5 default). Audit TC2-06 plugged the docstring
@@ -92,9 +97,9 @@ type Server struct {
 	// shutdown can drain them before tearing down the broadcaster.
 	// Audit `orchestrator-detached-context-on-shutdown`. Default ctx
 	// is context.Background when not wired (test paths).
-	driveCtx       context.Context
-	driveCancel    context.CancelFunc
-	driveWg        sync.WaitGroup
+	driveCtx    context.Context
+	driveCancel context.CancelFunc
+	driveWg     sync.WaitGroup
 }
 
 type ServerConfig struct {
@@ -125,6 +130,11 @@ type ServerConfig struct {
 	// via /healthz. Round-3 audit OP-003 — without this the watcher
 	// can be functionally dead while /healthz reports green.
 	DashdHealth func() (consecutiveFails int, lastErr error, lastErrAt time.Time)
+	// SubmitterHealth surfaces the L2 submitter funding state on
+	// /healthz: derived DID, HBD balance (in cents), and RC remaining.
+	// When err is non-nil the probe is reported as degraded. Round-4
+	// audit R4-007.
+	SubmitterHealth func() (did string, balanceHbd int64, rcRemaining int64, err error)
 	// TrustedProxies: literal host/IP strings (loopback always implied)
 	// from which X-Forwarded-For is honoured. Audit TC2-06: M5 docstring
 	// promised this and the field didn't exist; now it does.
@@ -161,18 +171,19 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	driveCtx, driveCancel := context.WithCancel(context.Background())
 	_ = driveCancel
 	return &Server{
-		primaryPubKey: cfg.PrimaryPubKeyHex,
-		backupPubKey:  cfg.BackupPubKeyHex,
-		chainParams:   params,
-		chainID:       cfg.ChainID,
-		sessions:      sessions,
-		sessionTTL:    cfg.SessionTTL,
-		signer:        cfg.Signer,
-		rateLimitsIP:  newRateLimiter(10, time.Minute),
-		dashd:         cfg.Dashd,
+		primaryPubKey:     cfg.PrimaryPubKeyHex,
+		backupPubKey:      cfg.BackupPubKeyHex,
+		chainParams:       params,
+		chainID:           cfg.ChainID,
+		sessions:          sessions,
+		sessionTTL:        cfg.SessionTTL,
+		signer:            cfg.Signer,
+		rateLimitsIP:      newRateLimiter(10, time.Minute),
+		dashd:             cfg.Dashd,
 		orch:              cfg.Orch,
 		broadcasterHealth: cfg.BroadcasterHealth,
 		dashdHealth:       cfg.DashdHealth,
+		submitterHealth:   cfg.SubmitterHealth,
 		trustedProxies:    append([]string(nil), cfg.TrustedProxies...),
 		driveCtx:          driveCtx,
 		driveCancel:       driveCancel,
@@ -298,8 +309,15 @@ type SessionStatusResponse struct {
 	SenderAddress string `json:"senderAddress,omitempty"`
 	ForwardedAt   string `json:"forwardedAt,omitempty"`
 	SessionToken  string `json:"sessionToken,omitempty"`
-	ForwardError  string `json:"forwardError,omitempty"`
-	ExpiresAt     string `json:"expiresAt"`
+	// L2TxId is the mapInstantSendV2 transaction CID. Populated once
+	// the orchestrator hands the L2 tx to the GraphQL endpoint
+	// (StateL2Submitted) AND preserved on the divergent terminal
+	// states (StateExpired, StateForwardFailed) so operators and
+	// frontends can recover an L2-credited-but-session-lost payment
+	// from /status alone — without log scraping. Round-4 audit R4-006.
+	L2TxId       string `json:"l2TxId,omitempty"`
+	ForwardError string `json:"forwardError,omitempty"`
+	ExpiresAt    string `json:"expiresAt"`
 }
 
 type ErrorResponse struct {
@@ -344,6 +362,37 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			if lastErr != nil {
 				out["dashdWatcherLastErr"] = lastErr.Error()
 			}
+		}
+	}
+
+	// Round-4 audit R4-007: surface L2 submitter funding state. An
+	// RC-exhausted submitter manifests as silent ATTESTING pile-ups
+	// today; this turns it into an explicit /healthz red.
+	if s.submitterHealth != nil {
+		did, balance, rc, err := s.submitterHealth()
+		out["submitterDID"] = did
+		out["submitterBalanceHbdCents"] = balance
+		out["submitterRcRemaining"] = rc
+		if err != nil {
+			out["submitterProbeErr"] = err.Error()
+			out["submitterDegraded"] = true
+			out["ok"] = false
+		} else if rc <= 0 && did != "" {
+			out["submitterDegraded"] = true
+			out["ok"] = false
+		}
+	}
+
+	// Round-4 audit R4-007 / R4-006: aggregate counters for events
+	// that previously only surfaced as individual slog lines.
+	if s.orch != nil {
+		c := s.orch.Counters()
+		out["counters"] = c
+		// L2-credited-but-session-lost is a real-funds divergence —
+		// any non-zero count should attract operator attention even
+		// if the rest of the system is green.
+		if c.UnresolvableOnChainCredits > 0 {
+			out["unresolvableOnChainCreditsDegraded"] = true
 		}
 	}
 
@@ -512,6 +561,7 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		DashTxId:      sess.DashTxId,
 		SenderAddress: sess.SenderAddress,
 		SessionToken:  sess.SessionToken,
+		L2TxId:        sess.L2TxId,
 		ForwardError:  sess.ForwardError,
 		ExpiresAt:     sess.ExpiresAt.Format(time.RFC3339),
 	}
@@ -542,11 +592,24 @@ func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
 	}
 	var depositAddr string
 	var matched bool
+	var conflict bool
 	s.sessions.MutateState(sid, func(sess *Session) {
 		if sess.AddressSignature != provided {
 			return
 		}
 		matched = true
+		// Round-4 audit R4-003: refuse cancel when the orchestrator
+		// has already broadcast attestations or submitted to L2.
+		// Clobbering State to Expired here defeats the Prune
+		// carve-out (state is no longer in-flight, so the next
+		// Prune deletes it) and races reconcileL2 into
+		// L2-credited-but-session-lost divergence. The
+		// orchestrator's own MutateState callback will reach a
+		// terminal state on its own.
+		if sess.State.IsInFlight() {
+			conflict = true
+			return
+		}
 		depositAddr = sess.DepositAddress
 		if !sess.State.IsTerminal() {
 			sess.State = StateExpired
@@ -555,6 +618,12 @@ func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
 	if !matched {
 		// Either no such session OR bad token. 401 for both — no oracle.
 		writeError(w, http.StatusUnauthorized, "session not found or token mismatch")
+		return
+	}
+	if conflict {
+		writeError(w, http.StatusConflict,
+			"session is mid-attestation or mid-L2-submit and cannot be cancelled; "+
+				"poll /session/{sid}/status until terminal")
 		return
 	}
 	if s.dashd != nil && depositAddr != "" {
@@ -608,17 +677,34 @@ func (s *Server) clientIP(r *http.Request) string {
 // operator-supplied list. Loopback is always trusted; additional hosts
 // come from Server.trustedProxies (literal host/IP strings — CIDR
 // support is a future enhancement).
+//
+// Round-4 audit R4-SEC-05: net.SplitHostPort returns IPv6 hosts in
+// canonical lowercase, but the operator-supplied trustedProxies list
+// may carry mixed/upper-case entries. Normalize both sides through
+// net.ParseIP + .String() so an operator typo doesn't silently degrade
+// the per-IP rate limit to a single-bucket-per-proxy fail-secure mode.
 func (s *Server) isTrustedProxy(host string) bool {
-	switch host {
+	hostNorm := canonicalHostMatch(host)
+	switch hostNorm {
 	case "127.0.0.1", "::1", "localhost":
 		return true
 	}
 	for _, p := range s.trustedProxies {
-		if p == host {
+		if canonicalHostMatch(p) == hostNorm {
 			return true
 		}
 	}
 	return false
+}
+
+// canonicalHostMatch lowercases hostnames and runs IP literals through
+// net.ParseIP.String() so "FE80::1" and "fe80::1" match. Non-IP hosts
+// fall through to a plain lowercase comparison.
+func canonicalHostMatch(host string) string {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(host)
 }
 
 // hasReservedRune returns true if s contains any rune reserved by the

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	libpHost "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/multiformats/go-multiaddr"
 
 	islock "vsc-node/modules/islock-attestation"
@@ -27,16 +27,16 @@ import (
 //
 // The IS service uses this to:
 //
-//   * BroadcastRequest — publish an IsLockAttestationRequest message.
-//   * Subscribe — receive IsLockAttestationResponse messages and route
+//   - BroadcastRequest — publish an IsLockAttestationRequest message.
+//   - Subscribe — receive IsLockAttestationResponse messages and route
 //     them to the attestation collector via the onResponse callback.
 //
 // Lifecycle:
 //
-//   bcast, err := newLibp2pBroadcaster(ctx, cfg)   // creates host + connects
-//   bcast.Start(onResponse)                         // begins subscribing
-//   defer bcast.Close()
-//   bcast.BroadcastRequest(ctx, req)                // publishes
+//	bcast, err := newLibp2pBroadcaster(ctx, cfg)   // creates host + connects
+//	bcast.Start(onResponse)                         // begins subscribing
+//	defer bcast.Close()
+//	bcast.BroadcastRequest(ctx, req)                // publishes
 type libp2pBroadcaster struct {
 	host    libpHost.Host
 	ps      *pubsub.PubSub
@@ -355,7 +355,7 @@ func (b *libp2pBroadcaster) Close() error {
 // kept private here so the IS service doesn't depend on the unexported
 // type, but the JSON shape is identical.
 type wireMessage struct {
-	Type     string                             `json:"type"`
-	Request  *islock.IsLockAttestationRequest   `json:"request,omitempty"`
-	Response *islock.IsLockAttestationResponse  `json:"response,omitempty"`
+	Type     string                            `json:"type"`
+	Request  *islock.IsLockAttestationRequest  `json:"request,omitempty"`
+	Response *islock.IsLockAttestationResponse `json:"response,omitempty"`
 }

@@ -91,8 +91,8 @@ func parseArgs() (args, error) {
 
 	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 240,
 		"Graceful-shutdown drain timeout in seconds. MUST be >= orchestrator's "+
-			"CollectTimeout(15s) + SubmitTimeout(30s) + reconcileL2 budget(~180s including " +
-			"sleeps+per-poll timeouts) so in-flight L2 reconciles complete instead of leaving " +
+			"CollectTimeout(15s) + SubmitTimeout(30s) + reconcileL2 budget(~180s including "+
+			"sleeps+per-poll timeouts) so in-flight L2 reconciles complete instead of leaving "+
 			"sessions L2-credited-but-locally-failed. Default 240s. Round-3 audit R3-05.")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {

@@ -302,6 +302,63 @@ func TestSessionCancel_WrongTokenIs401(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
+// Round-4 audit R4-003 regression: cancel during ATTESTING /
+// L2_SUBMITTED returns 409 Conflict instead of clobbering state.
+// Without this guard, Prune's R3-CSM-02 carve-out is bypassed via
+// the cancel handler (state is no longer in-flight → next Prune
+// deletes it → reconcileL2 sees missing entry → L2-credited-but-
+// session-lost divergence).
+func TestSessionCancel_RejectsDuringInFlight(t *testing.T) {
+	for _, s := range []SessionState{StateAttesting, StateL2Submitted} {
+		t.Run(string(s), func(t *testing.T) {
+			srv := newTestServer(t)
+			startW := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth"})
+			require.Equal(t, http.StatusCreated, startW.Code)
+			var start SessionStartResponse
+			require.NoError(t, json.Unmarshal(startW.Body.Bytes(), &start))
+
+			// Manually nudge the session into the in-flight state.
+			srv.sessions.MutateState(start.Sid, func(sess *Session) {
+				sess.State = s
+			})
+
+			cancelW := doRequestWithHeader(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil,
+				"X-Cancel-Token", start.AddressSignature)
+			assert.Equal(t, http.StatusConflict, cancelW.Code,
+				"cancel must refuse during %s", s)
+
+			// And state stays in-flight.
+			statusW := doRequest(t, srv, "GET", "/session/"+start.Sid+"/status", nil)
+			require.Equal(t, http.StatusOK, statusW.Code)
+			var status SessionStatusResponse
+			require.NoError(t, json.Unmarshal(statusW.Body.Bytes(), &status))
+			assert.Equal(t, string(s), status.State)
+		})
+	}
+}
+
+// Round-4 audit R4-006: /session/{sid}/status must surface L2TxId so
+// operators and frontends can recover an L2-credited-but-session-lost
+// payment from the status endpoint alone (no log scraping).
+func TestSessionStatus_SurfacesL2TxId(t *testing.T) {
+	srv := newTestServer(t)
+	startW := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth"})
+	require.Equal(t, http.StatusCreated, startW.Code)
+	var start SessionStartResponse
+	require.NoError(t, json.Unmarshal(startW.Body.Bytes(), &start))
+
+	srv.sessions.MutateState(start.Sid, func(sess *Session) {
+		sess.State = StateL2Submitted
+		sess.L2TxId = "bafy-l2-test-cid"
+	})
+
+	w := doRequest(t, srv, "GET", "/session/"+start.Sid+"/status", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp SessionStatusResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "bafy-l2-test-cid", resp.L2TxId)
+}
+
 // ===== /healthz =====
 
 func TestHealthz(t *testing.T) {

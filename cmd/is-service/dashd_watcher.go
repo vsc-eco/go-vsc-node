@@ -193,8 +193,8 @@ func (c *DashdRPCClient) GetRawMempool(ctx context.Context) ([]string, error) {
 // Watcher is concurrent-safe. Start runs the poll loop in a goroutine
 // until Stop is called or the context is cancelled.
 type DashdWatcher struct {
-	client  *DashdRPCClient
-	mu      sync.RWMutex
+	client *DashdRPCClient
+	mu     sync.RWMutex
 	// addr → session info (sid + onObserved cb)
 	watched map[string]watchedAddress
 	// pollInterval controls the dashd polling cadence. Default 2s.
@@ -208,7 +208,7 @@ type DashdWatcher struct {
 }
 
 type watchedAddress struct {
-	sid       string
+	sid        string
 	onObserved func(sid, txid, rawTxHex string)
 }
 

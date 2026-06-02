@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	islock "vsc-node/modules/islock-attestation"
@@ -48,6 +49,39 @@ type Orchestrator struct {
 	// the per-sig verifier falls back to raw signature check only.
 	// Audit R3-07.
 	validatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
+	// counters is an atomic snapshot of operational events surfaced
+	// via /healthz. Round-4 audit R4-007 — the existing
+	// per-event slog lines are not aggregable.
+	counters orchestratorCounters
+}
+
+// orchestratorCounters aggregates per-event tallies for /healthz.
+// All fields are accessed via atomic.Int64 ops; reads via Counters()
+// snapshot the values without locking.
+type orchestratorCounters struct {
+	UnresolvableOnChainCredits atomic.Int64 // R3-CSM-01/02 guard-skipped post-submit
+	AttestationVerifyDrops     atomic.Int64 // R3-07 per-sig verify failures
+	ReconcileTimeouts          atomic.Int64 // R3-04 reconcileL2 budget exhausted
+	PreSubmitRefusals          atomic.Int64 // R4-CSM-07 pre-submit state check
+}
+
+// CountersSnapshot is the read-only view of orchestrator counters
+// exposed to /healthz.
+type CountersSnapshot struct {
+	UnresolvableOnChainCredits int64 `json:"unresolvableOnChainCredits"`
+	AttestationVerifyDrops     int64 `json:"attestationVerifyDrops"`
+	ReconcileTimeouts          int64 `json:"reconcileTimeouts"`
+	PreSubmitRefusals          int64 `json:"preSubmitRefusals"`
+}
+
+// Counters returns an atomic snapshot of the orchestrator's counters.
+func (o *Orchestrator) Counters() CountersSnapshot {
+	return CountersSnapshot{
+		UnresolvableOnChainCredits: o.counters.UnresolvableOnChainCredits.Load(),
+		AttestationVerifyDrops:     o.counters.AttestationVerifyDrops.Load(),
+		ReconcileTimeouts:          o.counters.ReconcileTimeouts.Load(),
+		PreSubmitRefusals:          o.counters.PreSubmitRefusals.Load(),
+	}
 }
 
 // Broadcaster is the p2p publish primitive. Implemented by
@@ -99,12 +133,12 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		cfg.EpochFor = func(context.Context) uint64 { return 0 }
 	}
 	return &Orchestrator{
-		collector:         cfg.Collector,
-		broadcaster:       cfg.Broadcaster,
-		submitter:         cfg.Submitter,
-		sessions:          cfg.Sessions,
-		chainID:           cfg.ChainID,
-		quorumThreshold:   cfg.QuorumThreshold,
+		collector:            cfg.Collector,
+		broadcaster:          cfg.Broadcaster,
+		submitter:            cfg.Submitter,
+		sessions:             cfg.Sessions,
+		chainID:              cfg.ChainID,
+		quorumThreshold:      cfg.QuorumThreshold,
 		collectTimeout:       cfg.CollectTimeout,
 		submitTimeout:        cfg.SubmitTimeout,
 		reconcileBackoffs:    cfg.ReconcileBackoffs,
@@ -212,11 +246,13 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		if expected != nil {
 			expectedPk, known := expected[r.ValidatorDID]
 			if !known {
+				o.counters.AttestationVerifyDrops.Add(1)
 				slog.Warn("attestation from unknown validator DID; dropping",
 					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
 				continue
 			}
 			if expectedPk != r.PubkeyHex {
+				o.counters.AttestationVerifyDrops.Add(1)
 				slog.Warn("attestation PubkeyHex doesn't match registered set; dropping",
 					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
 				continue
@@ -224,6 +260,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		}
 		ok, err := islock.VerifyAttestation(req, r)
 		if err != nil || !ok {
+			o.counters.AttestationVerifyDrops.Add(1)
 			slog.Warn("attestation per-sig verify failed; dropping",
 				"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID,
 				"err", err)
@@ -282,6 +319,29 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		},
 	}
 
+	// Round-4 audit R4-CSM-07: pre-Submit state re-check. The cancel
+	// handler can't clobber state once we're StateAttesting (R4-003
+	// guards that), but we may have transitioned into other terminal
+	// states (e.g. Drive ran on a session whose IS observation
+	// raced a manual /cancel before Collect started). Bail rather
+	// than burn submitter RC on a known-dead session.
+	if pre, ok := o.sessions.Get(sid); !ok || pre.State != StateAttesting {
+		state := SessionState("missing")
+		if ok {
+			state = pre.State
+		}
+		o.counters.PreSubmitRefusals.Add(1)
+		slog.Warn("pre-submit state check refused L2 submission",
+			"sid", sid, "state", state, "dashTxid", txid)
+		o.sessions.MutateState(sid, func(s *Session) {
+			if !s.State.IsTerminal() {
+				s.State = StateForwardFailed
+				s.ForwardError = "session not in ATTESTING state at submit boundary"
+			}
+		})
+		return
+	}
+
 	submitCtx, submitCancel := context.WithTimeout(ctx, o.submitTimeout)
 	defer submitCancel()
 	l2TxID, err := o.submitter.SubmitMapInstantSend(submitCtx, payload)
@@ -310,6 +370,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		advanced = true
 	})
 	if !advanced {
+		o.counters.UnresolvableOnChainCredits.Add(1)
 		slog.Warn("session was cancelled or pruned during submit; not advancing to L2_SUBMITTED",
 			"sid", sid, "l2TxId", l2TxID, "dashTxid", txid,
 			"note", "L2 tx may still confirm — inspect chain state to recover")
@@ -339,6 +400,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		advanced = true
 	})
 	if !advanced {
+		o.counters.UnresolvableOnChainCredits.Add(1)
 		slog.Warn("session was cancelled or pruned during reconcile; not minting SessionToken",
 			"sid", sid, "l2TxId", l2TxID, "dashTxid", txid,
 			"note", "L2 tx confirmed but session is no longer eligible — inspect chain state to recover")
@@ -398,7 +460,8 @@ func (o *Orchestrator) reconcileL2(ctx context.Context, sid, dashTxID, chainID, 
 	// Deadline elapsed without terminal status. Don't mint the token.
 	// Mark as forward-failed so frontend doesn't see a stuck session.
 	// The L2 tx may still land eventually — an operator can recover
-	// manually by inspecting Session.L2TxId in logs.
+	// manually by inspecting Session.L2TxId in /healthz / /status.
+	o.counters.ReconcileTimeouts.Add(1)
 	o.fail(sid, fmt.Sprintf("L2 reconcile timed out (l2TxId=%s); inspect chain state to recover", l2TxID))
 	return false
 }

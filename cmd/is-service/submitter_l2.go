@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
@@ -197,7 +199,7 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 // actual on-chain confirmation rather than mempool-accept.
 func (s *SubmitterL2) FetchTransactionStatus(ctx context.Context, l2TxID string) (string, error) {
 	body, _ := json.Marshal(map[string]any{
-		"query": `query($id: String!){ findTransaction(filterOptions: {byTxId: $id}){ txs { status } } }`,
+		"query":     `query($id: String!){ findTransaction(filterOptions: {byTxId: $id}){ txs { status } } }`,
 		"variables": map[string]any{"id": l2TxID},
 	})
 	var result struct {
@@ -222,6 +224,102 @@ func (s *SubmitterL2) FetchTransactionStatus(ctx context.Context, l2TxID string)
 		return L2StatusUnknown, nil
 	}
 	return result.Data.FindTransaction.Txs[0].Status, nil
+}
+
+// FetchValidatorSet reads the dash-mapping-contract's per-epoch
+// validator set via the L2 GraphQL getStateByKeys query and returns
+// the {ValidatorDID → PubkeyHex} map.
+//
+// State key layout (matches contract/mapping/forwarder_integration.go):
+//
+//	key:   "vs-<epoch>"
+//	value: "<registeredAtBlock>#<did1>=<pk1>|<did2>=<pk2>|..."
+//
+// The trailing 'account' / PoP fields used at registration are NOT
+// persisted; they exist only on the inbound admin payload (see
+// ParseValidatorSetPayload). Round-4 audit R4-001.
+//
+// Returns nil (no error) when the key is unset — the orchestrator
+// treats nil as "no expected set known; fall back to raw-sig verify".
+func (s *SubmitterL2) FetchValidatorSet(ctx context.Context, contractID string, epoch uint64) (map[string]string, error) {
+	stateKey := "vs-" + strconv.FormatUint(epoch, 10)
+	body, _ := json.Marshal(map[string]any{
+		"query":     `query($c: String!, $k: [String!]!){ getStateByKeys(contractId: $c, keys: $k) }`,
+		"variables": map[string]any{"c": contractID, "k": []string{stateKey}},
+	})
+	var result struct {
+		Data struct {
+			GetStateByKeys map[string]any `json:"getStateByKeys"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := s.gqlPost(ctx, body, &result); err != nil {
+		return nil, err
+	}
+	if len(result.Errors) > 0 {
+		return nil, fmt.Errorf("graphql: %s", result.Errors[0].Message)
+	}
+	rawV, ok := result.Data.GetStateByKeys[stateKey]
+	if !ok || rawV == nil {
+		return nil, nil
+	}
+	raw, ok := rawV.(string)
+	if !ok {
+		return nil, fmt.Errorf("validator-set state value not a string: %T", rawV)
+	}
+	// Strip registeredAt prefix.
+	hash := strings.IndexByte(raw, '#')
+	if hash < 0 {
+		return nil, fmt.Errorf("malformed validator-set state value: missing '#' prefix")
+	}
+	entries := strings.Split(raw[hash+1:], "|")
+	out := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if e == "" {
+			continue
+		}
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			continue
+		}
+		out[parts[0]] = parts[1]
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// FetchSubmitterHealth reports the submitter's HBD balance (in cents)
+// and remaining RC. Used by /healthz to flag RC-exhaustion that would
+// otherwise present as silent ATTESTING pile-ups. Round-4 audit R4-007.
+func (s *SubmitterL2) FetchSubmitterHealth(ctx context.Context) (balanceHbdCents int64, rcRemaining int64, err error) {
+	body, _ := json.Marshal(map[string]any{
+		"query":     `query($a: String!){ getAccountBalance(account: $a){ hbd } getAccountRC(account: $a){ amount } }`,
+		"variables": map[string]any{"a": s.did.String()},
+	})
+	var result struct {
+		Data struct {
+			GetAccountBalance struct {
+				Hbd int64 `json:"hbd"`
+			} `json:"getAccountBalance"`
+			GetAccountRC struct {
+				Amount int64 `json:"amount"`
+			} `json:"getAccountRC"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if e := s.gqlPost(ctx, body, &result); e != nil {
+		return 0, 0, e
+	}
+	if len(result.Errors) > 0 {
+		return 0, 0, fmt.Errorf("graphql: %s", result.Errors[0].Message)
+	}
+	return result.Data.GetAccountBalance.Hbd, result.Data.GetAccountRC.Amount, nil
 }
 
 // fetchAccountNonce mirrors mapper/graphql_client.go's FetchAccountNonce.

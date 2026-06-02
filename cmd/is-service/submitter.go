@@ -55,11 +55,11 @@ func IsL2TerminalSuccess(status string) bool {
 // Field names + JSON tags MUST stay byte-for-byte aligned. Drift here is
 // the audit's `payload-schema-mismatch-is-vs-contract` finding.
 type MapInstantSendBody struct {
-	RawTxHex     string                       `json:"raw_tx_hex"`
-	Instruction  string                       `json:"instruction"`
-	Epoch        uint64                       `json:"epoch"`
-	Attestations []MapInstantSendAttestation  `json:"attestations"`
-	ChainId      string                       `json:"chain_id"`
+	RawTxHex     string                      `json:"raw_tx_hex"`
+	Instruction  string                      `json:"instruction"`
+	Epoch        uint64                      `json:"epoch"`
+	Attestations []MapInstantSendAttestation `json:"attestations"`
+	ChainId      string                      `json:"chain_id"`
 }
 
 // MapInstantSendAttestation mirrors the contract's ValidatorAttestation.

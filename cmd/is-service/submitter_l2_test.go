@@ -29,8 +29,8 @@ func TestSubmitterL2_RejectsBadPrivKey(t *testing.T) {
 
 func TestSubmitterL2_RejectsMissingFields(t *testing.T) {
 	cases := []SubmitterL2Config{
-		{ContractId: "vsc1foo", NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey}, // no endpoint
-		{GraphQLEndpoint: "http://x", NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey}, // no contract
+		{ContractId: "vsc1foo", NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey},        // no endpoint
+		{GraphQLEndpoint: "http://x", NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey},  // no contract
 		{GraphQLEndpoint: "http://x", ContractId: "vsc1foo", PrivateKeyHex: testL2PrivKey}, // no netId
 		{GraphQLEndpoint: "http://x", ContractId: "vsc1foo", NetId: "vsc-testnet"},         // no key
 	}
@@ -44,13 +44,13 @@ func TestSubmitterL2_RejectsMissingFields(t *testing.T) {
 // getAccountNonce + submitTransactionV1. Records call counts so tests
 // can assert ordering / serialization.
 func mockGqlServer(t *testing.T) (*httptest.Server, *struct {
-	mu          sync.Mutex
+	mu           sync.Mutex
 	nonceQueries int
 	submits      int
 }) {
 	t.Helper()
 	stats := &struct {
-		mu          sync.Mutex
+		mu           sync.Mutex
 		nonceQueries int
 		submits      int
 	}{}

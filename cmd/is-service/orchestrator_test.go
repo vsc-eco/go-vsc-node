@@ -161,7 +161,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 		Submitter:       submitter,
 		ChainID:         "vsc-testnet",
 		QuorumThreshold: 1,
-		CollectTimeout: 500 * time.Millisecond, ReconcileBackoffs: testBackoffs,
+		CollectTimeout:  500 * time.Millisecond, ReconcileBackoffs: testBackoffs,
 	})
 
 	putObservedSession(t, store, "sid-x")
@@ -246,8 +246,8 @@ func TestOrchestrator_SubmitFailMarksForwardFailed(t *testing.T) {
 		Submitter:       submitter,
 		ChainID:         "vsc-testnet",
 		QuorumThreshold: 1,
-		CollectTimeout: 200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
-		SubmitTimeout:   100 * time.Millisecond,
+		CollectTimeout:  200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
+		SubmitTimeout: 100 * time.Millisecond,
 	})
 
 	putObservedSession(t, store, "sid-fail")
@@ -374,7 +374,7 @@ func TestOrchestrator_NoAwaiterLeakOnHappyPath(t *testing.T) {
 // non-happy-path return.
 func TestOrchestrator_NoAwaiterLeakOnFailurePaths(t *testing.T) {
 	cases := []struct {
-		name string
+		name  string
 		setup func(*fakeBroadcaster, *fakeSubmitter, *bls.SecretKey, string)
 	}{
 		{"broadcast-fail", func(b *fakeBroadcaster, s *fakeSubmitter, _ *bls.SecretKey, _ string) {

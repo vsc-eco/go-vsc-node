@@ -183,12 +183,41 @@ func main() {
 	}
 
 	sessions := NewSessionStore(time.Duration(args.sessionTTLMinutes) * time.Minute)
+
+	// Round-4 audit R4-001: wire ValidatorSetForEpoch + EpochFor for
+	// the orchestrator's DID↔pubkey cross-check (R3-07). The hook
+	// reads the contract's per-epoch validator set via the L2 GraphQL
+	// getStateByKeys query; without it, a rogue libp2p peer can sign
+	// with its own BLS key while claiming another validator's DID
+	// and force the contract to burn submitter RC on rejection.
+	//
+	// Fail-loud at startup if the hook is nil while the L2 submitter
+	// is configured (the wiring is meaningless in log-only mode but
+	// silent absence is the bug R4-001 caught in round-3).
+	var validatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
+	var epochFor func(ctx context.Context) uint64
+	if l2, ok := submitter.(*SubmitterL2); ok {
+		cache := newValidatorSetCache(l2, args.l2DashMappingContract, 30*time.Second)
+		validatorSetForEpoch = cache.Get
+		// v1 stub: a constant 0 epoch. Replacing this with the active
+		// epoch from the witness module is workstream-5b follow-up;
+		// in v1 deployments the contract grace-window fallback picks
+		// up the most-recently-registered set regardless.
+		epochFor = func(context.Context) uint64 { return 0 }
+		slog.Info("R3-07 ValidatorSetForEpoch hook wired",
+			"contract", args.l2DashMappingContract)
+	} else {
+		slog.Info("ValidatorSetForEpoch hook NOT wired — log-only submitter (no L2 RC at risk)")
+	}
+
 	orch := NewOrchestrator(OrchestratorConfig{
-		Sessions:    sessions,
-		Collector:   collector,
-		Broadcaster: broadcaster,
-		Submitter:   submitter,
-		ChainID:     args.chainID,
+		Sessions:             sessions,
+		Collector:            collector,
+		Broadcaster:          broadcaster,
+		Submitter:            submitter,
+		ChainID:              args.chainID,
+		ValidatorSetForEpoch: validatorSetForEpoch,
+		EpochFor:             epochFor,
 	})
 
 	// /healthz probe — surfaces LIVE libp2p connected-peer count + mesh
@@ -211,6 +240,19 @@ func main() {
 		dashdHealthFn = dashd.Health
 	}
 
+	// Round-4 audit R4-007: /healthz consults the L2 submitter's
+	// balance + RC via GraphQL so RC-exhaustion outages no longer
+	// present as silent ATTESTING pile-ups.
+	var submitterHealthFn func() (string, int64, int64, error)
+	if l2, ok := submitter.(*SubmitterL2); ok {
+		submitterHealthFn = func() (string, int64, int64, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			bal, rc, err := l2.FetchSubmitterHealth(ctx)
+			return l2.DID(), bal, rc, err
+		}
+	}
+
 	trustedProxies := splitCSV(args.trustedProxies)
 	if len(trustedProxies) > 0 {
 		slog.Info("trusted reverse proxies configured", "hosts", trustedProxies)
@@ -227,6 +269,7 @@ func main() {
 		Sessions:          sessions,
 		BroadcasterHealth: broadcasterHealth,
 		DashdHealth:       dashdHealthFn,
+		SubmitterHealth:   submitterHealthFn,
 		TrustedProxies:    trustedProxies,
 	})
 	if err != nil {

@@ -15,9 +15,9 @@ import (
 type SessionState string
 
 const (
-	StateWaitingForIS       SessionState = "WAITING_FOR_IS"
-	StateISObserved         SessionState = "IS_OBSERVED"
-	StateAttesting          SessionState = "ATTESTING"
+	StateWaitingForIS SessionState = "WAITING_FOR_IS"
+	StateISObserved   SessionState = "IS_OBSERVED"
+	StateAttesting    SessionState = "ATTESTING"
 	// StateL2Submitted: orchestrator has handed the mapInstantSendV2
 	// tx to the L2 GraphQL endpoint (mempool-accepted) but has not yet
 	// confirmed execution. The reconciler polls FetchTransactionStatus
@@ -33,9 +33,34 @@ const (
 
 // IsTerminal reports whether the state will not advance on its own —
 // the session is done from the IS service's perspective.
+//
+// Round-4 audit R4-SEC-03: StateAttestationTimeout and
+// StateSlowPathPending are terminal from the orchestrator's perspective
+// (Drive returns after MutateState'ing into them); including them here
+// prevents Get() / Prune() from silently overwriting them to
+// StateExpired past ExpiresAt and destroying operator visibility into
+// validator-mesh degradation.
 func (s SessionState) IsTerminal() bool {
 	switch s {
-	case StateOnChain, StateForwardFailed, StateExpired:
+	case StateOnChain, StateForwardFailed, StateExpired,
+		StateAttestationTimeout, StateSlowPathPending:
+		return true
+	}
+	return false
+}
+
+// IsInFlight reports whether the orchestrator still holds the session
+// in active processing — between IS-lock observation and a terminal
+// state. Get() and Prune() use this to avoid clobbering in-flight
+// state past ExpiresAt; the orchestrator is allowed to outrun the
+// session TTL on a slow L2 reconcile.
+//
+// Round-3 audit R3-CSM-02 motivated this carve-out for Prune;
+// round-4 audit R4-SEC-01 extended it to Get (which was the other
+// half of the same divergence).
+func (s SessionState) IsInFlight() bool {
+	switch s {
+	case StateAttesting, StateL2Submitted:
 		return true
 	}
 	return false
@@ -100,8 +125,20 @@ func (s *SessionStore) WithNowFunc(now func() time.Time) *SessionStore {
 	return s
 }
 
-// Get fetches a session by sid. Returns (nil, false) on miss or expiry.
-// Side effect: expired sessions are removed.
+// Get fetches a session by sid. Returns (nil, false) on miss.
+// Side effect: non-terminal, non-in-flight sessions past ExpiresAt
+// are marked StateExpired so a polling client can observe the
+// transition; the entry is reclaimed on the next Prune cycle.
+//
+// Round-4 audit R4-SEC-01: in-flight sessions (Attesting / L2Submitted)
+// are NEVER mutated to Expired here — reconcileL2 may outrun the TTL
+// on a slow L2, and clobbering state on read would defeat the Prune
+// carve-out from the other side.
+//
+// Round-4 audit R4-SEC-03: terminal states (including
+// AttestationTimeout / SlowPathPending) are similarly preserved so
+// /healthz CountByState can surface mesh-degradation signal rather
+// than seeing every late-poll session reclassified as Expired.
 func (s *SessionStore) Get(sid string) (*Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,11 +146,8 @@ func (s *SessionStore) Get(sid string) (*Session, bool) {
 	if !ok {
 		return nil, false
 	}
-	if s.now().After(sess.ExpiresAt) {
+	if s.now().After(sess.ExpiresAt) && !sess.State.IsTerminal() && !sess.State.IsInFlight() {
 		sess.State = StateExpired
-		// Keep it briefly so a polling client can see the EXPIRED state, but
-		// flag it. A full deletion happens during Prune.
-		return sess, true
 	}
 	return sess, true
 }
@@ -216,8 +250,10 @@ func (s *SessionStore) Prune() (removed int, prunedDepositAddrs []string) {
 		// Carve-out: never prune an in-flight session even if TTL
 		// elapsed. The orchestrator will transition it to a terminal
 		// state itself (ON_CHAIN / FORWARD_FAILED / ATTESTATION_TIMEOUT)
-		// and the NEXT prune cycle will reclaim it.
-		if sess.State == StateAttesting || sess.State == StateL2Submitted {
+		// and the NEXT prune cycle will reclaim it. R3-CSM-02 +
+		// R4-SEC-01 use SessionState.IsInFlight to share the predicate
+		// with SessionStore.Get's overwrite-guard.
+		if sess.State.IsInFlight() {
 			continue
 		}
 		delete(s.sessions, sid)
