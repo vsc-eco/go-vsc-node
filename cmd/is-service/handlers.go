@@ -180,7 +180,6 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		sessions = NewSessionStore(cfg.SessionTTL)
 	}
 	driveCtx, driveCancel := context.WithCancel(context.Background())
-	_ = driveCancel
 	return &Server{
 		primaryPubKey:     cfg.PrimaryPubKeyHex,
 		backupPubKey:      cfg.BackupPubKeyHex,
@@ -417,22 +416,40 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// state — surface it but don't flip degraded.
 	if s.submitterHealth != nil {
 		did, balance, rc, fails, err := s.submitterHealth()
-		out["submitterDID"] = did
-		out["submitterBalanceHbdCents"] = balance
-		out["submitterRcRemaining"] = rc
-		out["submitterConsecutiveFails"] = fails
 		switch {
 		case errors.Is(err, errSubmitterWarmup):
+			// Round-7 audit R7-OP-01-readiness + R7-CORR-01-gvn:
+			// during the monitor's first-probe warmup window
+			// (typically <5s after process start) we flip ok=false
+			// so /healthz returns 503 and synthetic readiness
+			// probes don't mark the pod live before the submitter
+			// probe proves L2 reachability. We also OMIT
+			// submitterBalanceHbdCents / submitterRcRemaining so
+			// metric scrapers without a warmup-gate don't fire
+			// rc<=0 alerts on the zero-init values.
+			out["submitterDID"] = did
 			out["submitterWarmup"] = true
+			out["submitterConsecutiveFails"] = fails
+			out["ok"] = false
 		case err != nil:
+			out["submitterDID"] = did
+			out["submitterBalanceHbdCents"] = balance
+			out["submitterRcRemaining"] = rc
+			out["submitterConsecutiveFails"] = fails
 			out["submitterProbeErr"] = err.Error()
 			if fails >= submitterDegradedFailThreshold {
 				out["submitterDegraded"] = true
 				out["ok"] = false
 			}
-		case rc <= 0 && did != "":
-			out["submitterDegraded"] = true
-			out["ok"] = false
+		default:
+			out["submitterDID"] = did
+			out["submitterBalanceHbdCents"] = balance
+			out["submitterRcRemaining"] = rc
+			out["submitterConsecutiveFails"] = fails
+			if rc <= 0 && did != "" {
+				out["submitterDegraded"] = true
+				out["ok"] = false
+			}
 		}
 	}
 

@@ -6,11 +6,32 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"sync/atomic"
 	"time"
 
 	islock "vsc-node/modules/islock-attestation"
 )
+
+// sanitizeURLForLog strips userinfo + query string from a URL so an
+// operator who accidentally configured -l2GqlURL with embedded
+// credentials (e.g. https://user:pass@host/...) doesn't leak them
+// through structured logs to a log-shipping pipeline. Round-7 audit
+// R7-OP-01-logleak. Falls back to scheme://host when parsing
+// succeeds; falls back to "" when the input doesn't parse.
+func sanitizeURLForLog(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		// Not a URL — likely a host:port literal; emit as-is so the
+		// operator can still find the upstream. We've already
+		// stripped any '@' bearing prefix at the parse step.
+		return raw
+	}
+	return u.Scheme + "://" + u.Host
+}
 
 // Orchestrator drives a session through the IS_OBSERVED → ATTESTING →
 // ON_CHAIN sequence. One Orchestrator runs in the process; per-session
@@ -299,7 +320,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		slog.Error("validator-set / libp2p roster divergence: no responder matched expected set",
 			"sid", sid, "epoch", req.Epoch,
 			"responders", len(responses), "expectedSize", len(expected),
-			"validatorSetSource", o.validatorSetSource,
+			"validatorSetSource", sanitizeURLForLog(o.validatorSetSource),
 			"hint", "verify the L2 GraphQL endpoint at validatorSetSource returns the actual on-chain validator set for this epoch")
 	}
 
