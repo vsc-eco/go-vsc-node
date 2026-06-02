@@ -1,0 +1,35 @@
+{
+  "name": "vsc-ledger-signer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-contained Ledger signer for the VSC contract-deployer's -ledger-sign-cmd hook. Not part of the Go build; only needed by operators deploying with a hardware wallet.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "vsc-ledger-sign": "./dist/sign.js"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@11.5.1",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "sign": "node ./dist/sign.js"
+  },
+  "dependencies": {
+    "@aioha/ledger-app-hive": "0.0.3",
+    "@ledgerhq/hw-transport-node-hid": "^6.29.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-hid",
+      "usb"
+    ]
+  }
+}

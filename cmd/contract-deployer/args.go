@@ -19,6 +19,17 @@ type args struct {
 
 	// update contract args
 	contractId string
+
+	// offline-signing args (Ledger / hardware-wallet flow)
+	noBroadcast     bool
+	out             string
+	expiration      int
+	broadcastSigned string
+	signature       string
+
+	// one-shot Ledger signing: prepare -> sign via external command -> broadcast
+	ledgerSignCmd string
+	ledgerPath    string
 }
 
 func ParseArgs() (args, error) {
@@ -37,18 +48,52 @@ func ParseArgs() (args, error) {
 	dataDir := flag.String("data-dir", "data", "Data directory for config")
 	contractId := flag.String("contractId", "", "Existing contract ID to update contract. Omit to deploy a new contract.")
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
+	noBroadcast := flag.Bool("no-broadcast", false, "Build and print the unsigned transaction + signing digest instead of broadcasting. Use to sign externally (e.g. a Ledger), then submit with -broadcast-signed.")
+	out := flag.String("out", "", "When used with -no-broadcast, also write the signing bundle JSON to this file path.")
+	expiration := flag.Int("expiration", 1800, "Seconds until the prepared transaction expires (max 3600). Larger values give more time to confirm on a hardware wallet. Only used with -no-broadcast.")
+	broadcastSigned := flag.String("broadcast-signed", "", "Path to a signing bundle previously produced by -no-broadcast. Broadcasts it using the signature from -signature. Requires no private key and no WASM proof.")
+	signature := flag.String("signature", "", "Hex-encoded signature (from the external signer) to attach when broadcasting with -broadcast-signed.")
+	ledgerSignCmd := flag.String("ledger-sign-cmd", "", "External command that signs the active authority (e.g. the bundled ledger-signer after 'pnpm install': \"node cmd/contract-deployer/ledger-signer/dist/sign.js\"). Run via 'sh -c'; receives the signing request JSON on stdin and must print the signature hex on stdout. When set, the tool prepares, signs, and broadcasts in one run.")
+	ledgerPath := flag.String("ledger-path", "m/48'/13'/0'/0'/0'", "BIP32 (SLIP-0048) derivation path passed to the external signer. Only used with -ledger-sign-cmd.")
 	flag.Parse()
 
-	return args{
-		*network,
-		*wasmPath,
-		*name,
-		*desc,
-		*owner,
-		*isInit,
-		*gqlUrl,
-		*dataDir,
-		*sysconfigPath,
-		*contractId,
-	}, nil
+	parsed := args{
+		network:         *network,
+		wasmPath:        *wasmPath,
+		name:            *name,
+		description:     *desc,
+		owner:           *owner,
+		isInit:          *isInit,
+		gqlUrl:          *gqlUrl,
+		dataDir:         *dataDir,
+		sysconfigPath:   *sysconfigPath,
+		contractId:      *contractId,
+		noBroadcast:     *noBroadcast,
+		out:             *out,
+		expiration:      *expiration,
+		broadcastSigned: *broadcastSigned,
+		signature:       *signature,
+		ledgerSignCmd:   *ledgerSignCmd,
+		ledgerPath:      *ledgerPath,
+	}
+
+	if parsed.expiration <= 0 || parsed.expiration > 3600 {
+		return parsed, fmt.Errorf("-expiration must be between 1 and 3600 seconds (Hive's maximum), got %d", parsed.expiration)
+	}
+	if parsed.broadcastSigned != "" {
+		if parsed.noBroadcast {
+			return parsed, fmt.Errorf("-broadcast-signed cannot be combined with -no-broadcast")
+		}
+		if parsed.signature == "" {
+			return parsed, fmt.Errorf("-broadcast-signed requires -signature")
+		}
+		if parsed.ledgerSignCmd != "" {
+			return parsed, fmt.Errorf("-broadcast-signed cannot be combined with -ledger-sign-cmd")
+		}
+	}
+	if parsed.ledgerSignCmd != "" && parsed.noBroadcast {
+		return parsed, fmt.Errorf("-ledger-sign-cmd cannot be combined with -no-broadcast")
+	}
+
+	return parsed, nil
 }
