@@ -350,6 +350,22 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 // (500 blocks) is fixed on testnet and mainnet; only devnet honours the
 // VSC_ELECTION_SCOREMAP_MIN_SAMPLES override.
 
+// banSystemEnabled gates the per-witness participation ban filter applied in
+// GenerateFullElection (see computeBanScores). It is currently DISABLED: even
+// with the per-witness denominator fix, the filter was observed to gradually
+// over-prune the committee — a witness that drops below the
+// threshold is removed, then can no longer sign blocks to rebuild its score, so
+// the network ratchets down to fewer and fewer nodes. Left off until a
+// recovery-aware replacement lands; scoreMap/computeBanScores are kept intact
+// so re-enabling is a one-line flip.
+//
+// MUST stay a compile-time constant. Disabling the ban changes which witnesses
+// make the committee — and therefore the election CID — so every node has to
+// make the identical decision. A per-node env/config toggle could diverge the
+// committee across honest nodes and break the BLS aggregate; flip this (and
+// rebuild the whole network) only in lockstep.
+const banSystemEnabled = false
+
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
@@ -383,8 +399,9 @@ func (e *electionProposer) GenerateFullElection(
 		firstElection = true
 	}
 
-	// #24 + dilution fix: apply the BannedNodes filter from scoreMap. Without
-	// this the per-witness score is computed but never read, so persistent
+	// #24 + dilution fix: when banSystemEnabled, apply the BannedNodes filter
+	// from scoreMap (currently OFF — see banSystemEnabled). Without this the
+	// per-witness score is computed but never read, so persistent
 	// under-participators stay eligible for the next committee. scoreMap scores
 	// each witness against only the blocks of the epochs it was actually
 	// elected to (see computeBanScores) and applies the scoreMapMinSamples floor
@@ -405,7 +422,7 @@ func (e *electionProposer) GenerateFullElection(
 	// window. A cleaner long-term fix would have the proposer publish its
 	// BannedNodes set alongside the election so verifiers re-derive against the
 	// proposed input. Tracked as a follow-up.
-	if !firstElection && e.vscBlocks != nil {
+	if banSystemEnabled && !firstElection && e.vscBlocks != nil {
 		sm, smErr := e.scoreMap()
 		if smErr != nil {
 			log.Warn("scoreMap failed; skipping ban filter", "err", smErr)
