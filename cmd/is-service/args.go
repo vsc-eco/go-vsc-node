@@ -37,18 +37,19 @@ func validateOperatorURL(flag, raw string) error {
 		return fmt.Errorf("%s must NOT include a query string or fragment; secrets carried that way still reach upstream callers", flag)
 	}
 	// Round-10 audit R10-SEC-PATH-SMUGGLE-01 + round-11 audit
-	// R11-INFO-PATH-SMUGGLE-DEFENSE-NARROW: defense in depth.
-	// An operator who percent-encodes any control byte, '?' / '#',
+	// R11-INFO-PATH-SMUGGLE-DEFENSE-NARROW + round-12 audit
+	// R12-DRIFT-ARGS-COMMENT-SEMICOLON: defense in depth. An
+	// operator who percent-encodes any control byte, '?' / '#',
 	// or matrix-style ';' into the path slips past the RawQuery /
 	// Fragment gate above. The current logging path drops Path
 	// anyway (sanitizeURLForLog), but reject at parse time so a
-	// future sanitiser regression can't surface them. R11 widened
-	// the reject set from {?, #, NUL} to all C0 control bytes plus
-	// DEL plus the path-grammar delimiters.
+	// future sanitiser regression can't surface them. R12 closed
+	// the code-vs-comment drift by adding the ';' check the
+	// docstring promised but R11 had skipped.
 	for i := 0; i < len(u.Path); i++ {
 		c := u.Path[i]
-		if c < 0x20 || c == 0x7f || c == '?' || c == '#' {
-			return fmt.Errorf("%s path must not contain encoded delimiters (?, #) or control bytes", flag)
+		if c < 0x20 || c == 0x7f || c == '?' || c == '#' || c == ';' {
+			return fmt.Errorf("%s path must not contain encoded delimiters (?, #, ;) or control bytes", flag)
 		}
 	}
 	return nil

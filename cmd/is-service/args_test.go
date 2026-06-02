@@ -57,6 +57,10 @@ func TestValidateOperatorURL(t *testing.T) {
 		{"encoded-tab", "https://gql.example.org/p%09ath", true, "path"},
 		{"encoded-cr", "https://gql.example.org/p%0Dath", true, "path"},
 		{"encoded-del", "https://gql.example.org/p%7Fath", true, "path"},
+		// Round-12 audit R12-DRIFT-ARGS-COMMENT-SEMICOLON: matrix-
+		// style ';' in path was the one delimiter the R11 comment
+		// promised but the code skipped. Closed in R12.
+		{"encoded-semicolon", "https://gql.example.org/path%3Btoken=secret", true, "path"},
 		// Round-11 audit R11-INFO-PATH-SMUGGLE-TEST-COVERAGE-DOUBLE-ENCODED:
 		// pin the Go-url-decodes-once contract — a double-encoded
 		// '?' (%253F) decodes to literal '%3F' in u.Path, which is
