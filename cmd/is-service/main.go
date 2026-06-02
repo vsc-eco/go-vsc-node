@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -91,8 +92,65 @@ func main() {
 	// production main wiring once the libp2p host is exposed in this
 	// command's main).
 	collector := newAttestationCollector()
-	broadcaster := noopBroadcaster{}
-	submitter := SubmitterLogOnly{}
+
+	// libp2p broadcaster — when -p2pBootstrapPeers is set, the IS
+	// service joins the islock-attestation gossip topic and uses real
+	// broadcast + response collection. Without it, the noop
+	// broadcaster is used (sessions stall at ATTESTING_TIMEOUT).
+	var broadcaster Broadcaster = noopBroadcaster{}
+	var p2pCloseFn func() error
+	if args.p2pBootstrapPeers != "" {
+		boot := splitCSV(args.p2pBootstrapPeers)
+		listen := splitCSV(args.p2pListenAddrs)
+		topicPrefix := "/vsc/" + args.network // matches PubSubTopicPrefix
+		p2pBcast, err := newLibp2pBroadcaster(context.Background(), libp2pBroadcasterConfig{
+			ChainID:        args.chainID,
+			TopicPrefix:    topicPrefix,
+			BootstrapPeers: boot,
+			ListenAddrs:    listen,
+		})
+		if err != nil {
+			slog.Error("libp2p broadcaster failed to start", "err", err)
+			os.Exit(1)
+		}
+		// Subscriber goroutine routes responses straight into the
+		// collector — bootstrap before the orchestrator so responses
+		// arriving immediately after broadcast aren't dropped.
+		p2pBcast.Start(context.Background(), collector.Deliver)
+		broadcaster = p2pBcast
+		p2pCloseFn = p2pBcast.Close
+		slog.Info("libp2p broadcaster started",
+			"topic", topicPrefix+"/islock-attestation/v1",
+			"peers", len(boot))
+	} else {
+		slog.Info("libp2p broadcaster NOT configured — using noop (no attestations gathered)")
+	}
+
+	var submitter Submitter = SubmitterLogOnly{}
+	if args.l2GqlURL != "" && args.l2PrivKeyHex != "" {
+		if args.l2DashMappingContract == "" {
+			slog.Error("l2GqlURL + l2PrivKey set but l2DashMappingContract missing — refusing to start")
+			os.Exit(1)
+		}
+		l2, err := NewSubmitterL2(SubmitterL2Config{
+			GraphQLEndpoint: args.l2GqlURL,
+			ContractId:      args.l2DashMappingContract,
+			NetId:           args.chainID,
+			RcLimit:         args.l2RcLimit,
+			PrivateKeyHex:   args.l2PrivKeyHex,
+		})
+		if err != nil {
+			slog.Error("L2 submitter config invalid", "err", err)
+			os.Exit(1)
+		}
+		submitter = l2
+		slog.Info("L2 submitter configured",
+			"endpoint", args.l2GqlURL,
+			"contract", args.l2DashMappingContract,
+			"did", l2.DID())
+	} else {
+		slog.Info("L2 submitter NOT configured — using log-only stub (no on-chain effect)")
+	}
 
 	sessions := NewSessionStore(time.Duration(args.sessionTTLMinutes) * time.Minute)
 	orch := NewOrchestrator(OrchestratorConfig{
@@ -182,6 +240,25 @@ func main() {
 			slog.Error("graceful shutdown failed", "err", err)
 			os.Exit(1)
 		}
+		if p2pCloseFn != nil {
+			_ = p2pCloseFn()
+		}
 		slog.Info("shutdown complete")
 	}
+}
+
+// splitCSV breaks a comma-separated config value, trimming spaces and
+// discarding empties. Returns nil for "" input.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := []string{}
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

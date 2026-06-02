@@ -59,6 +59,7 @@ type Session struct {
 	ExpiresAt        time.Time
 	State            SessionState
 	DashTxId         string // populated on IS_OBSERVED
+	SenderAddress    string // populated on IS_OBSERVED — DashL1 address that paid
 	OnChainAt        *time.Time
 	SessionToken     string // populated on ON_CHAIN + FORWARD_OK
 	ForwardError     string // populated on FORWARD_FAILED

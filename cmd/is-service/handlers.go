@@ -149,6 +149,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 // already in ATTESTING or ON_CHAIN), the callback no-ops. This handles
 // the watcher's "may fire multiple times" semantic safely.
 func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
+	// Best-effort sender resolution. Failure isn't fatal — the contract
+	// re-derives this from rawTxHex on its own. We only surface the
+	// address through /status as a UX convenience.
+	sender, senderErr := resolveSenderAddress(rawTxHex, s.chainParams)
 	advanced := false
 	s.sessions.MutateState(sid, func(sess *Session) {
 		if sess.State != StateWaitingForIS {
@@ -156,6 +160,9 @@ func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
 		}
 		sess.State = StateISObserved
 		sess.DashTxId = txid
+		if senderErr == nil {
+			sess.SenderAddress = sender
+		}
 		advanced = true
 	})
 	if !advanced || s.orch == nil {
@@ -210,13 +217,14 @@ type SessionStartResponse struct {
 }
 
 type SessionStatusResponse struct {
-	Sid          string  `json:"sid"`
-	State        string  `json:"state"`
-	DashTxId     string  `json:"dashTxId,omitempty"`
-	ForwardedAt  string  `json:"forwardedAt,omitempty"`
-	SessionToken string  `json:"sessionToken,omitempty"`
-	ForwardError string  `json:"forwardError,omitempty"`
-	ExpiresAt    string  `json:"expiresAt"`
+	Sid           string `json:"sid"`
+	State         string `json:"state"`
+	DashTxId      string `json:"dashTxId,omitempty"`
+	SenderAddress string `json:"senderAddress,omitempty"`
+	ForwardedAt   string `json:"forwardedAt,omitempty"`
+	SessionToken  string `json:"sessionToken,omitempty"`
+	ForwardError  string `json:"forwardError,omitempty"`
+	ExpiresAt     string `json:"expiresAt"`
 }
 
 type ErrorResponse struct {
@@ -347,12 +355,13 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := SessionStatusResponse{
-		Sid:          sess.Sid,
-		State:        string(sess.State),
-		DashTxId:     sess.DashTxId,
-		SessionToken: sess.SessionToken,
-		ForwardError: sess.ForwardError,
-		ExpiresAt:    sess.ExpiresAt.Format(time.RFC3339),
+		Sid:           sess.Sid,
+		State:         string(sess.State),
+		DashTxId:      sess.DashTxId,
+		SenderAddress: sess.SenderAddress,
+		SessionToken:  sess.SessionToken,
+		ForwardError:  sess.ForwardError,
+		ExpiresAt:     sess.ExpiresAt.Format(time.RFC3339),
 	}
 	if sess.OnChainAt != nil {
 		resp.ForwardedAt = sess.OnChainAt.Format(time.RFC3339)
