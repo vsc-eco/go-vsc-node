@@ -693,7 +693,11 @@ func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	if !matched {
-		// Either no such session OR bad token. 401 for both — no oracle.
+		// Either no such session OR bad token. 401 for both —
+		// matches /status which returns 404 vs 200 anyway, so any
+		// existence oracle is already publicly observable on the
+		// status endpoint. Round-10 audit R10-INFO-EXISTENCE-ORACLE-01
+		// adjusted the claim to be honest about the model.
 		writeError(w, http.StatusUnauthorized, "session not found or token mismatch")
 		return
 	}

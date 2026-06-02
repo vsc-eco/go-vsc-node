@@ -24,9 +24,18 @@ func TestValidateOperatorURL(t *testing.T) {
 		{"clean-https", "https://gql.example.org/graphql", false, ""},
 		{"clean-https-port", "https://gql.example.org:8443/graphql", false, ""},
 		{"clean-http", "http://gql.example.org/graphql", false, ""},
+		// Round-10 audit R10-TEST-COV-BOUNDARY-01: production-realistic
+		// operator inputs that the validator must accept.
+		{"localhost-port", "https://localhost:3030", false, ""},
+		{"ipv4", "https://192.0.2.1:8443/graphql", false, ""},
+		{"ipv6-bracketed", "https://[::1]:8443", false, ""},
 		// Scheme rejections.
 		{"missing-scheme", "gql.example.org/graphql", true, "scheme"},
-		{"opaque-userinfo", "user:pass@host:8080/api", true, "scheme"},
+		// Round-10 audit R10-DRIFT-ARGSTEST-OPAQUE-USERINFO-WRONG-GATE:
+		// renamed from "opaque-userinfo" — this triggers the missing-
+		// scheme gate (the dedicated userinfo case below covers the
+		// credentials gate).
+		{"opaque-form-missing-scheme", "user:pass@host:8080/api", true, "scheme"},
 		{"ftp-scheme", "ftp://gql.example.org", true, "scheme"},
 		{"javascript-scheme", "javascript://attacker", true, "scheme"},
 		// Host rejection.
@@ -36,6 +45,12 @@ func TestValidateOperatorURL(t *testing.T) {
 		// Query / fragment rejection.
 		{"with-query", "https://gql.example.org/?token=secret", true, "query"},
 		{"with-fragment", "https://gql.example.org/#frag", true, "fragment"},
+		// Round-10 audit R10-SEC-PATH-SMUGGLE-01: percent-encoded
+		// '?' / '#' / NUL in the path must be rejected too so a
+		// future sanitiser regression that emits Path can't leak
+		// smuggled secrets.
+		{"encoded-question", "https://gql.example.org/path%3Ftoken=secret", true, "path"},
+		{"encoded-hash", "https://gql.example.org/path%23frag", true, "path"},
 		// Unparseable.
 		{"control-byte", "https://gql.example.org/\x00leak", true, "parseable"},
 	}

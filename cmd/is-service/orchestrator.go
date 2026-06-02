@@ -31,6 +31,12 @@ import (
 //
 // Returns a string suitable for slog attrs and operator logs. NEVER
 // returns userinfo, query, or path components.
+//
+// Deprecated: prefer sanitizeURLForLogWithFlag so the redaction
+// marker (if any) names the offending flag. Round-10 audit
+// R10-OPS-MARKER-DRIFT-01 / R10-DRIFT-SANITIZE-BARE-NO-PROD-CALLER:
+// only kept as a test convenience pinning the empty-flag default;
+// no production caller. Delete once the test is rewritten.
 func sanitizeURLForLog(raw string) string {
 	return sanitizeURLForLogWithFlag("", raw)
 }

@@ -67,5 +67,8 @@ When porting `client.js` into the Altera `LoginModal`:
 - [ ] Pipe the deep-link `dash:` URI to the relevant DashPay deep-link
       handler on iOS/Android, with desktop fallback to the QR
 - [ ] Move `baseUrl` out of an input box and into Altera's env config
-- [ ] Add error states for `FAILED` and `EXPIRED` that explain what to
-      do next
+- [ ] Add error states for `FORWARD_FAILED` / `ATTESTATION_TIMEOUT` /
+      `SLOW_PATH_PENDING` / `EXPIRED` that explain what to do next
+      (matches the Go `IsTerminal()` set in `cmd/is-service/session.go`;
+      round-10 audit R10-DRIFT-REF-CLIENT-README-FAILED fixed the
+      stale `FAILED` reference here)

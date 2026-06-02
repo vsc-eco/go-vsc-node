@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 )
 
 // validateOperatorURL enforces that operator-supplied URL flags
@@ -35,6 +36,15 @@ func validateOperatorURL(flag, raw string) error {
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("%s must NOT include a query string or fragment; secrets carried that way still reach upstream callers", flag)
+	}
+	// Round-10 audit R10-SEC-PATH-SMUGGLE-01: defense in depth.
+	// An operator who percent-encodes '?' / '#' / NUL into the
+	// path slips past the RawQuery / Fragment gate above. The
+	// current logging path drops Path anyway (sanitizeURLForLog),
+	// but reject at parse time so a future sanitiser regression
+	// can't surface them.
+	if strings.ContainsAny(u.Path, "?#\x00") {
+		return fmt.Errorf("%s path must not contain encoded delimiters (?, #, NUL)", flag)
 	}
 	return nil
 }
