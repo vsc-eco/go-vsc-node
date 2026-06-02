@@ -83,6 +83,26 @@ func main() {
 		slog.Info("dashd watcher NOT configured — IS_OBSERVED transitions must be driven externally")
 	}
 
+	// Orchestrator drives the IS_OBSERVED → ATTESTING → ON_CHAIN
+	// progression. v1 wiring uses a no-op broadcaster (logs only) and
+	// the log-only submitter — both are placeholders for the real p2p
+	// libp2p host and L2 client that production deployments configure
+	// via the server-with-p2p variant of NewServer (TODO: add a
+	// production main wiring once the libp2p host is exposed in this
+	// command's main).
+	collector := newAttestationCollector()
+	broadcaster := noopBroadcaster{}
+	submitter := SubmitterLogOnly{}
+
+	sessions := NewSessionStore(time.Duration(args.sessionTTLMinutes) * time.Minute)
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions:    sessions,
+		Collector:   collector,
+		Broadcaster: broadcaster,
+		Submitter:   submitter,
+		ChainID:     args.chainID,
+	})
+
 	srv, err := NewServer(ServerConfig{
 		PrimaryPubKeyHex: args.primaryPubKey,
 		BackupPubKeyHex:  args.backupPubKey,
@@ -91,6 +111,8 @@ func main() {
 		SessionTTL:       time.Duration(args.sessionTTLMinutes) * time.Minute,
 		Signer:           signer,
 		Dashd:            dashd,
+		Orch:             orch,
+		Sessions:         sessions,
 	})
 	if err != nil {
 		slog.Error("server config invalid", "err", err)

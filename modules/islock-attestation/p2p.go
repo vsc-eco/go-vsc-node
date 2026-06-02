@@ -106,6 +106,21 @@ func NewService(
 	}
 }
 
+// Start binds a constructed libp2p.PubSubService[p2pMessage] to this
+// service. After Start, BroadcastRequest can publish, and HandleMessage
+// callbacks delivered by the underlying pubsub run with svc available
+// for replies via the SendFunc passed to HandleMessage.
+//
+// Construction site (validator or IS Service):
+//
+//	svcParams := islock_attestation.NewService(chainID, signer, memory, onResp)
+//	pubsubSvc, err := libp2p.NewPubSubService(p2pServer, svcParams)
+//	if err != nil { return err }
+//	svcParams.Start(pubsubSvc)
+func (s *Service) Start(svc libp2p.PubSubService[p2pMessage]) {
+	s.svc = svc
+}
+
 // BroadcastRequest is the IS-Service-side primitive: publish a request
 // for attestation on a specific (txid, rawTxHash, instruction-hash, epoch).
 // Validators that have it in their memory respond; others silently ignore.
@@ -113,16 +128,16 @@ func NewService(
 // Callers collect responses via the onResponse callback registered at
 // NewService time. Use a per-txid waitgroup or channel to know when
 // quorum is reached.
+//
+// ctx is currently unused — libp2p.PubSubService.Send takes the service's
+// own context. Kept on the signature so callers can wire cancellation
+// once Send-with-ctx lands in the underlying pubsub.
 func (s *Service) BroadcastRequest(ctx context.Context, req IsLockAttestationRequest) error {
+	_ = ctx
 	if s.svc == nil {
 		return fmt.Errorf("p2p service not yet wired; call Start() first")
 	}
-	msg := p2pMessage{Type: "request", Request: &req}
-	// WIRING NEEDED: replace with the actual PubSubService.Publish call.
-	// libp2p.PubSubService doesn't expose Publish in the interface I see
-	// at the time of writing — needs investigation against modules/p2p.
-	_ = msg
-	return fmt.Errorf("BroadcastRequest: live wiring TODO (workstream 4 follow-up)")
+	return s.svc.Send(p2pMessage{Type: "request", Request: &req})
 }
 
 // ===== libp2p.PubSubServiceParams[p2pMessage] interface =====

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -69,6 +70,12 @@ type Server struct {
 	// driven externally (e.g. for tests). When non-nil, Server.Run
 	// starts the watcher goroutine.
 	dashd *DashdWatcher
+	// orch is optional — when nil, the IS_OBSERVED → ATTESTING → ON_CHAIN
+	// progression is left for an external driver (tests, or a separate
+	// process during devnet bring-up). When non-nil, onISLockObserved
+	// spawns a goroutine that runs the full p2p attestation + L2 submit
+	// flow.
+	orch *Orchestrator
 }
 
 type ServerConfig struct {
@@ -83,6 +90,14 @@ type ServerConfig struct {
 	// session to IS_OBSERVED when the watcher detects an IS-locked tx
 	// paying that address.
 	Dashd *DashdWatcher
+	// Orch is optional. If non-nil, onISLockObserved kicks off the
+	// p2p-attestation + L2-submit flow in a goroutine after marking
+	// the session IS_OBSERVED.
+	Orch *Orchestrator
+	// Sessions optionally injects a pre-built SessionStore so external
+	// constructions (e.g. an orchestrator built before the server) can
+	// share state. If nil, NewServer creates a fresh one.
+	Sessions *SessionStore
 }
 
 // NewServer constructs a Server. Returns an error if config is invalid.
@@ -108,16 +123,21 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	default:
 		return nil, fmt.Errorf("network must be 'mainnet' or 'testnet', got %q", cfg.Network)
 	}
+	sessions := cfg.Sessions
+	if sessions == nil {
+		sessions = NewSessionStore(cfg.SessionTTL)
+	}
 	return &Server{
 		primaryPubKey: cfg.PrimaryPubKeyHex,
 		backupPubKey:  cfg.BackupPubKeyHex,
 		chainParams:   params,
 		chainID:       cfg.ChainID,
-		sessions:      NewSessionStore(cfg.SessionTTL),
+		sessions:      sessions,
 		sessionTTL:    cfg.SessionTTL,
 		signer:        cfg.Signer,
 		rateLimitsIP:  newRateLimiter(10, time.Minute),
 		dashd:         cfg.Dashd,
+		orch:          cfg.Orch,
 	}, nil
 }
 
@@ -129,17 +149,24 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 // already in ATTESTING or ON_CHAIN), the callback no-ops. This handles
 // the watcher's "may fire multiple times" semantic safely.
 func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
+	advanced := false
 	s.sessions.MutateState(sid, func(sess *Session) {
 		if sess.State != StateWaitingForIS {
 			return
 		}
 		sess.State = StateISObserved
 		sess.DashTxId = txid
-		// rawTxHex isn't currently in the Session struct — TODO: add it
-		// alongside the attestation request flow when wiring up the
-		// next state transition (IS_OBSERVED → ATTESTING → ON_CHAIN).
-		_ = rawTxHex
+		advanced = true
 	})
+	if !advanced || s.orch == nil {
+		return
+	}
+	// Orchestrator drives the rest of the state machine in its own
+	// goroutine — broadcasting attestation requests, collecting
+	// quorum, submitting the L2 tx. Context is detached from the
+	// watcher's so a slow attestation doesn't block IS-observation
+	// of other sessions; orchestrator has its own per-phase timeouts.
+	go s.orch.Drive(context.Background(), sid, txid, rawTxHex)
 }
 
 // Routes returns an http.ServeMux with the IS service's HTTP endpoints

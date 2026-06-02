@@ -16,6 +16,7 @@ modules/gql/gqlgen/models.go
 /vsc-node
 /contract-deployer
 /feed-publisher
+/is-service
 *.tar
 logs/
 *attack-vectors.md
