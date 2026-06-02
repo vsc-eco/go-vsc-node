@@ -79,6 +79,11 @@ type Server struct {
 	orch *Orchestrator
 	// broadcasterHealth: optional probe surfaced via /healthz.
 	broadcasterHealth func() (int, bool)
+	// trustedProxies: additional hosts (beyond loopback) that the
+	// clientIP helper trusts for X-Forwarded-For. Empty means
+	// loopback-only (M5 default). Audit TC2-06 plugged the docstring
+	// gap where the config field was promised but missing.
+	trustedProxies []string
 	// driveCtx + driveWg track spawned Drive goroutines so graceful
 	// shutdown can drain them before tearing down the broadcaster.
 	// Audit `orchestrator-detached-context-on-shutdown`. Default ctx
@@ -112,6 +117,10 @@ type ServerConfig struct {
 	// to surface the libp2p connect-count + degraded flag. Wired by
 	// main when a real broadcaster is configured. Returns (connectedPeers, degraded).
 	BroadcasterHealth func() (int, bool)
+	// TrustedProxies: literal host/IP strings (loopback always implied)
+	// from which X-Forwarded-For is honoured. Audit TC2-06: M5 docstring
+	// promised this and the field didn't exist; now it does.
+	TrustedProxies []string
 }
 
 // NewServer constructs a Server. Returns an error if config is invalid.
@@ -155,6 +164,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		dashd:         cfg.Dashd,
 		orch:              cfg.Orch,
 		broadcasterHealth: cfg.BroadcasterHealth,
+		trustedProxies:    append([]string(nil), cfg.TrustedProxies...),
 		driveCtx:          driveCtx,
 		driveCancel:       driveCancel,
 	}, nil
@@ -314,7 +324,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	if !s.rateLimitsIP.allow(ip) {
 		// Audit `rate-limit-and-libp2p-drops-silent`: log so operators
 		// can spot rate-limit hits without restart-with-debug.
@@ -361,6 +371,27 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	case OpCall:
 		if req.Args == nil || req.Args.Contract == "" || req.Args.Method == "" {
 			writeError(w, http.StatusBadRequest, "op=call requires args.contract and args.method")
+			return
+		}
+		// Audit D2-DESIGN-08: reject reserved delimiters in user-
+		// supplied instruction fields. Without this an attacker can
+		// inject duplicate `contract=` / `method=` keys via ArgsB64;
+		// the last-write-wins parser on the contract side then
+		// dispatches to an attacker-chosen target while the IS-service
+		// session log records the original values — audit-trail
+		// divergence.
+		//
+		// We reject ';' (the FIELD delimiter) in all four fields, and
+		// reject '=' (the KV delimiter) in Contract/Method/Sid only —
+		// ArgsB64 legitimately uses '=' as base64 padding, and
+		// ParseInstructionV2 splits on the FIRST '=' per field so
+		// trailing '=' in val is safe.
+		if strings.ContainsRune(req.Args.Contract, ';') || strings.ContainsRune(req.Args.Contract, '=') ||
+			strings.ContainsRune(req.Args.Method, ';') || strings.ContainsRune(req.Args.Method, '=') ||
+			strings.ContainsRune(sid, ';') || strings.ContainsRune(sid, '=') ||
+			strings.ContainsRune(req.Args.ArgsB64, ';') {
+			writeError(w, http.StatusBadRequest,
+				"args fields contain reserved instruction delimiters (';' in any; '=' in contract/method/sid)")
 			return
 		}
 		if req.Args.AmountDuffs > 0 && req.Args.AmountDuffs < MinCallFundingDuffs {
@@ -506,13 +537,15 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // clientIP returns the effective source IP for rate-limiting. ONLY
-// honours X-Forwarded-For when r.RemoteAddr is in the configured
-// trusted-proxies set (loopback by default); otherwise uses r.RemoteAddr
-// directly. Without this gate any attacker can rotate X-Forwarded-For
-// headers to bypass the per-IP cap (audit `xff-rate-limit-bypass`).
-func clientIP(r *http.Request) string {
+// honours X-Forwarded-For when r.RemoteAddr is in the server's
+// configured trusted-proxies set (loopback by default; extensible via
+// ServerConfig.TrustedProxies — audit TC2-06 plugged the
+// missing-field gap). Without this gate any attacker can rotate
+// X-Forwarded-For headers to bypass the per-IP cap (audit
+// `xff-rate-limit-bypass`).
+func (s *Server) clientIP(r *http.Request) string {
 	hostPart, _, _ := splitHostPort(r.RemoteAddr)
-	if isTrustedProxy(hostPart) {
+	if s.isTrustedProxy(hostPart) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			if i := strings.Index(fwd, ","); i >= 0 {
 				return strings.TrimSpace(fwd[:i])
@@ -523,14 +556,19 @@ func clientIP(r *http.Request) string {
 	return hostPart
 }
 
-// isTrustedProxy is a v1 conservative default — accept loopback + IPv6
-// loopback only. Operators behind a real reverse proxy should set
-// TrustedProxies via the Server config so XFF is honoured for those
-// hops; everything else fails closed to direct RemoteAddr.
-func isTrustedProxy(host string) bool {
+// isTrustedProxy consults both the hardcoded loopback default and the
+// operator-supplied list. Loopback is always trusted; additional hosts
+// come from Server.trustedProxies (literal host/IP strings — CIDR
+// support is a future enhancement).
+func (s *Server) isTrustedProxy(host string) bool {
 	switch host {
 	case "127.0.0.1", "::1", "localhost":
 		return true
+	}
+	for _, p := range s.trustedProxies {
+		if p == host {
+			return true
+		}
 	}
 	return false
 }

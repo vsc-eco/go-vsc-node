@@ -121,7 +121,7 @@ func main() {
 		p2pCloseFn = p2pBcast.Close
 		slog.Info("libp2p broadcaster started",
 			"topic", topicPrefix+"/islock-attestation/v1",
-			"connectedPeers", p2pBcast.ConnectedPeerCount(),
+			"bootstrapConnectedPeers", p2pBcast.BootstrapConnectedCount(),
 			"configuredPeers", len(boot))
 	} else {
 		slog.Info("libp2p broadcaster NOT configured — using noop (no attestations gathered)")
@@ -179,15 +179,23 @@ func main() {
 		ChainID:     args.chainID,
 	})
 
-	// /healthz probe — surfaces libp2p connected-peer count + degraded flag.
+	// /healthz probe — surfaces LIVE libp2p connected-peer count + mesh
+	// membership + degraded flag. Audit R2-N6 caught the original
+	// cached-boot-time count.
 	var broadcasterHealth func() (int, bool)
 	if bcaster, ok := broadcaster.(*libp2pBroadcaster); ok {
 		broadcasterHealth = func() (int, bool) {
-			n := bcaster.ConnectedPeerCount()
-			return n, n == 0
+			// Mesh membership is what actually matters for attestation
+			// delivery — degraded = zero peers on our topic.
+			mesh := bcaster.MeshPeerCount()
+			return mesh, mesh == 0
 		}
 	}
 
+	trustedProxies := splitCSV(args.trustedProxies)
+	if len(trustedProxies) > 0 {
+		slog.Info("trusted reverse proxies configured", "hosts", trustedProxies)
+	}
 	srv, err := NewServer(ServerConfig{
 		PrimaryPubKeyHex:  args.primaryPubKey,
 		BackupPubKeyHex:   args.backupPubKey,
@@ -199,6 +207,7 @@ func main() {
 		Orch:              orch,
 		Sessions:          sessions,
 		BroadcasterHealth: broadcasterHealth,
+		TrustedProxies:    trustedProxies,
 	})
 	if err != nil {
 		slog.Error("server config invalid", "err", err)
@@ -236,8 +245,17 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if removed := srv.sessions.Prune(); removed > 0 {
+				removed, prunedAddrs := srv.sessions.Prune()
+				if removed > 0 {
 					slog.Debug("pruned expired sessions", "count", removed)
+				}
+				// Audit R2-N3: also Unwatch the dashd entries for
+				// pruned sessions. Without this, every TTL-expired
+				// session permanently leaks a watcher map entry.
+				if dashd != nil {
+					for _, addr := range prunedAddrs {
+						dashd.Unwatch(addr)
+					}
 				}
 			}
 		}
@@ -275,7 +293,16 @@ func main() {
 			slog.Error("graceful shutdown failed", "err", err)
 			os.Exit(1)
 		}
-		srv.Drain(15 * time.Second)
+		// Drain deadline: configurable, >= orchestrator collect+submit
+		// budget. Audit D2-DESIGN-10 caught the original 15s being
+		// shorter than the 45s orch budget, creating
+		// L2-credit-but-session-failed windows on every restart.
+		drainTimeout := time.Duration(args.drainTimeoutSeconds) * time.Second
+		if drainTimeout < 45*time.Second {
+			slog.Warn("drainTimeoutSeconds shorter than orchestrator collect+submit budget; in-flight L2 submits may be cut",
+				"drainTimeoutSeconds", args.drainTimeoutSeconds)
+		}
+		srv.Drain(drainTimeout)
 		if p2pCloseFn != nil {
 			_ = p2pCloseFn()
 		}

@@ -32,6 +32,11 @@ type args struct {
 	// broadcaster is used and no attestations are gathered.
 	p2pBootstrapPeers string
 	p2pListenAddrs    string
+	// drainTimeoutSeconds: graceful-shutdown soft deadline. Must be >=
+	// orchestrator.collectTimeout + submitTimeout.
+	drainTimeoutSeconds int
+	// trustedProxies: comma-separated proxy hosts. Audit TC2-06.
+	trustedProxies string
 }
 
 func parseArgs() (args, error) {
@@ -78,6 +83,17 @@ func parseArgs() (args, error) {
 			"collector. When unset, falls back to the no-op broadcaster (no on-network effect).")
 	fs.StringVar(&a.p2pListenAddrs, "p2pListenAddrs", "",
 		"Comma-separated libp2p listen multiaddrs. Defaults to /ip4/0.0.0.0/tcp/0 + /ip6/::/tcp/0.")
+
+	fs.StringVar(&a.trustedProxies, "trustedProxies", "",
+		"Comma-separated host/IP strings of trusted reverse proxies; X-Forwarded-For "+
+			"from these is honoured for rate-limiting. Loopback is always trusted. "+
+			"Audit TC2-06.")
+
+	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 60,
+		"Graceful-shutdown drain timeout in seconds. MUST be >= orchestrator's "+
+			"CollectTimeout + SubmitTimeout (default 15s + 30s = 45s) so in-flight L2 "+
+			"submits complete instead of leaving sessions L2-credited-but-locally-failed. "+
+			"Round-2 audit D2-DESIGN-10.")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return a, err

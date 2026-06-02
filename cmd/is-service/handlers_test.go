@@ -152,6 +152,58 @@ func TestSessionStart_Call_BelowFloorRejected(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "0.01 DASH")
 }
 
+// TestSessionStart_Call_RejectsReservedDelims — audit D2-DESIGN-08.
+// User-supplied contract/method/sid must not contain ';' or '='; args
+// must not contain ';' (base64 padding '=' is allowed there).
+func TestSessionStart_Call_RejectsReservedDelims(t *testing.T) {
+	srv := newTestServer(t)
+	cases := []struct {
+		name string
+		args CallArgs
+		sid  string
+	}{
+		{"contract has ;", CallArgs{Contract: "vsc1foo;contract=evil", Method: "m", ArgsB64: ""}, ""},
+		{"contract has =", CallArgs{Contract: "vsc1=foo", Method: "m", ArgsB64: ""}, ""},
+		{"method has ;", CallArgs{Contract: "vsc1foo", Method: "swap;contract=evil", ArgsB64: ""}, ""},
+		{"method has =", CallArgs{Contract: "vsc1foo", Method: "sw=ap", ArgsB64: ""}, ""},
+		{"args has ;", CallArgs{Contract: "vsc1foo", Method: "swap", ArgsB64: "abc;contract=evil"}, ""},
+		{"sid has ;", CallArgs{Contract: "vsc1foo", Method: "swap", ArgsB64: ""}, "sid;contract=evil"},
+		{"sid has =", CallArgs{Contract: "vsc1foo", Method: "swap", ArgsB64: ""}, "sid=evil"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{
+				Op:   "call",
+				Sid:  tc.sid,
+				Args: &tc.args,
+			})
+			assert.Equal(t, http.StatusBadRequest, w.Code,
+				"reserved delimiter must be rejected; body=%s", w.Body.String())
+		})
+	}
+}
+
+// TestSessionStart_Call_AllowsBase64PaddingInArgs — '=' is the kv
+// delimiter BUT base64 uses it for padding. The contract's
+// ParseInstructionV2 splits on the FIRST '=' per field so trailing
+// '=' in the args value is parsed correctly. Verify the IS service
+// doesn't gratuitously reject base64-padded args.
+func TestSessionStart_Call_AllowsBase64PaddingInArgs(t *testing.T) {
+	srv := newTestServer(t)
+	w := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{
+		Op: "call",
+		Args: &CallArgs{
+			Contract: "vsc1foo",
+			Method:   "swap",
+			// Real base64 with '==' padding.
+			ArgsB64: base64.StdEncoding.EncodeToString([]byte("hello")),
+		},
+	})
+	assert.Equal(t, http.StatusCreated, w.Code,
+		"base64-padded args must NOT be rejected (only ';' is reserved in args); body=%s",
+		w.Body.String())
+}
+
 func TestSessionStart_Call_MissingArgsRejected(t *testing.T) {
 	srv := newTestServer(t)
 	w := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "call"})

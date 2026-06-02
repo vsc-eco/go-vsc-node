@@ -65,9 +65,11 @@ func (f *fakeBroadcaster) Requests() []islock.IsLockAttestationRequest {
 
 // fakeSubmitter captures submissions.
 type fakeSubmitter struct {
-	mu       sync.Mutex
-	payloads []MapInstantSendPayload
-	err      error
+	mu            sync.Mutex
+	payloads      []MapInstantSendPayload
+	err           error
+	fakeStatus    string // empty → defaults to L2StatusConfirmed
+	fakeStatusErr error
 }
 
 func (f *fakeSubmitter) SubmitMapInstantSend(ctx context.Context, p MapInstantSendPayload) (string, error) {
@@ -79,6 +81,21 @@ func (f *fakeSubmitter) SubmitMapInstantSend(ctx context.Context, p MapInstantSe
 		return "", err
 	}
 	return "fake-l2-tx-" + p.Body.ChainId, nil
+}
+
+// FetchTransactionStatus returns a configurable status for tests. Default
+// is "CONFIRMED" — happy path. Tests that want to exercise the
+// reconciler failure path override fakeStatus.
+func (f *fakeSubmitter) FetchTransactionStatus(ctx context.Context, l2TxID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fakeStatusErr != nil {
+		return "", f.fakeStatusErr
+	}
+	if f.fakeStatus != "" {
+		return f.fakeStatus, nil
+	}
+	return L2StatusConfirmed, nil
 }
 
 func (f *fakeSubmitter) Submissions() []MapInstantSendPayload {
@@ -95,6 +112,10 @@ const fakeRawTxHex = "deadbeef00112233"
 // fakeTxid is a stable 32-byte hex txid (64 hex chars) for tests that
 // need to satisfy CanonicalSigningMessage's hex-len check.
 const fakeTxid = "deadbeefcafef00d00112233445566778899aabbccddeeff00112233445566cc"
+
+// testBackoffs is a fast L2-status-poll schedule for tests. The
+// production default is 4-60s; tests use sub-millisecond steps.
+var testBackoffs = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond}
 
 func putObservedSession(t *testing.T, store *SessionStore, sid string) *Session {
 	t.Helper()
@@ -140,7 +161,7 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 		Submitter:       submitter,
 		ChainID:         "vsc-testnet",
 		QuorumThreshold: 1,
-		CollectTimeout:  500 * time.Millisecond,
+		CollectTimeout: 500 * time.Millisecond, ReconcileBackoffs: testBackoffs,
 	})
 
 	putObservedSession(t, store, "sid-x")
@@ -225,7 +246,7 @@ func TestOrchestrator_SubmitFailMarksForwardFailed(t *testing.T) {
 		Submitter:       submitter,
 		ChainID:         "vsc-testnet",
 		QuorumThreshold: 1,
-		CollectTimeout:  200 * time.Millisecond,
+		CollectTimeout: 200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
 		SubmitTimeout:   100 * time.Millisecond,
 	})
 
@@ -310,6 +331,181 @@ func TestOrchestrator_UnknownSessionIsNoOp(t *testing.T) {
 	assert.Empty(t, broadcaster.Requests())
 }
 
+// TestOrchestrator_NoAwaiterLeakOnHappyPath — round-2 audit R2-002.
+// After Drive returns successfully, no awaiter entries should remain
+// in the collector map. Without the symmetric defer Cancel, every
+// session leaks one awaiter + buffered channel monotonically.
+func TestOrchestrator_NoAwaiterLeakOnHappyPath(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	broadcaster := &fakeBroadcaster{collector: collector}
+	submitter := &fakeSubmitter{}
+	sk, pkHex := mkValidatorKey(t)
+
+	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			resp, err := islock.BuildResponse(req, "did:key:v1", sk)
+			if err != nil {
+				return
+			}
+			resp.PubkeyHex = pkHex
+			collector.Deliver(resp)
+		}()
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions: store, Collector: collector, Broadcaster: broadcaster,
+		Submitter: submitter, ChainID: "vsc-testnet",
+		QuorumThreshold: 1, CollectTimeout: 500 * time.Millisecond, ReconcileBackoffs: testBackoffs,
+	})
+
+	putObservedSession(t, store, "sid-no-leak")
+	orch.Drive(context.Background(), "sid-no-leak", fakeTxid, fakeRawTxHex)
+
+	collector.mu.Lock()
+	defer collector.mu.Unlock()
+	assert.Empty(t, collector.awaiters,
+		"awaiter map must be empty after Drive returns; got %d leaked entries",
+		len(collector.awaiters))
+}
+
+// TestOrchestrator_NoAwaiterLeakOnFailurePaths — same guard for each
+// non-happy-path return.
+func TestOrchestrator_NoAwaiterLeakOnFailurePaths(t *testing.T) {
+	cases := []struct {
+		name string
+		setup func(*fakeBroadcaster, *fakeSubmitter, *bls.SecretKey, string)
+	}{
+		{"broadcast-fail", func(b *fakeBroadcaster, s *fakeSubmitter, _ *bls.SecretKey, _ string) {
+			b.err = errors.New("p2p down")
+		}},
+		{"submit-fail", func(b *fakeBroadcaster, s *fakeSubmitter, sk *bls.SecretKey, pkHex string) {
+			s.err = errors.New("L2 down")
+			b.onBroadcast = func(req islock.IsLockAttestationRequest) {
+				go func() {
+					time.Sleep(10 * time.Millisecond)
+					r, _ := islock.BuildResponse(req, "v1", sk)
+					r.PubkeyHex = pkHex
+					b.collector.Deliver(r)
+				}()
+			}
+		}},
+		{"quorum-timeout", func(b *fakeBroadcaster, s *fakeSubmitter, _ *bls.SecretKey, _ string) {
+			// no onBroadcast → no responses ever → timeout
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewSessionStore(time.Hour)
+			collector := newAttestationCollector()
+			broadcaster := &fakeBroadcaster{collector: collector}
+			submitter := &fakeSubmitter{}
+			sk, pkHex := mkValidatorKey(t)
+			tc.setup(broadcaster, submitter, sk, pkHex)
+
+			orch := NewOrchestrator(OrchestratorConfig{
+				Sessions: store, Collector: collector, Broadcaster: broadcaster,
+				Submitter: submitter, ChainID: "vsc-testnet",
+				QuorumThreshold: 1,
+				CollectTimeout:  100 * time.Millisecond,
+				SubmitTimeout:   100 * time.Millisecond,
+			})
+
+			putObservedSession(t, store, "sid-fail-"+tc.name)
+			orch.Drive(context.Background(), "sid-fail-"+tc.name, fakeTxid, fakeRawTxHex)
+
+			collector.mu.Lock()
+			leaked := len(collector.awaiters)
+			collector.mu.Unlock()
+			assert.Equal(t, 0, leaked,
+				"awaiter map must be empty after Drive failure (%s); got %d leaked entries",
+				tc.name, leaked)
+		})
+	}
+}
+
+// TestOrchestrator_ReconcileL2_Failed — audit D2-DESIGN-06. When the
+// L2 status comes back FAILED, the session MUST end in FORWARD_FAILED
+// and NO sessionToken must be minted.
+func TestOrchestrator_ReconcileL2_Failed(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	broadcaster := &fakeBroadcaster{collector: collector}
+	submitter := &fakeSubmitter{fakeStatus: L2StatusFailed}
+	sk, pkHex := mkValidatorKey(t)
+
+	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+		go func() {
+			resp, _ := islock.BuildResponse(req, "v1", sk)
+			resp.PubkeyHex = pkHex
+			collector.Deliver(resp)
+		}()
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions: store, Collector: collector, Broadcaster: broadcaster,
+		Submitter: submitter, ChainID: "vsc-testnet",
+		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond,
+		ReconcileBackoffs: testBackoffs,
+	})
+
+	putObservedSession(t, store, "sid-l2-fail")
+	orch.Drive(context.Background(), "sid-l2-fail", fakeTxid, fakeRawTxHex)
+
+	sess, _ := store.Get("sid-l2-fail")
+	assert.Equal(t, StateForwardFailed, sess.State,
+		"FAILED L2 status MUST mark FORWARD_FAILED, not ON_CHAIN")
+	assert.Empty(t, sess.SessionToken,
+		"FAILED L2 status MUST NOT mint sessionToken (audit D2-DESIGN-06)")
+	assert.NotEmpty(t, sess.L2TxId,
+		"L2TxId must be persisted even on failure for operator triage")
+}
+
+// TestOrchestrator_PerSigVerifyDropsJunk — audit R2-N5. A response
+// with a syntactically-valid sig over the WRONG message must be
+// dropped by the per-sig verify gate, never reach AggregateSignatures.
+func TestOrchestrator_PerSigVerifyDropsJunk(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	broadcaster := &fakeBroadcaster{collector: collector}
+	submitter := &fakeSubmitter{}
+	sk, pkHex := mkValidatorKey(t)
+
+	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+		go func() {
+			// Sign a DIFFERENT request so the sig is valid by itself
+			// but doesn't verify against THIS request.
+			fakeReq := req
+			fakeReq.Epoch = 99999
+			junkSig, _ := islock.Sign(fakeReq, sk)
+			collector.Deliver(islock.IsLockAttestationResponse{
+				TxId:         req.TxId,
+				ValidatorDID: "did:key:junk",
+				PubkeyHex:    pkHex,
+				Epoch:        req.Epoch,
+				BlsSigHex:    junkSig,
+			})
+		}()
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions: store, Collector: collector, Broadcaster: broadcaster,
+		Submitter: submitter, ChainID: "vsc-testnet",
+		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond,
+		ReconcileBackoffs: testBackoffs,
+	})
+
+	putObservedSession(t, store, "sid-junk")
+	orch.Drive(context.Background(), "sid-junk", fakeTxid, fakeRawTxHex)
+
+	sess, _ := store.Get("sid-junk")
+	assert.Equal(t, StateAttestationTimeout, sess.State,
+		"junk sig MUST be dropped by per-sig verify and session timeout — never aggregated and submitted")
+	assert.Empty(t, submitter.Submissions(),
+		"junk responses MUST NOT reach the submitter (audit R2-N5)")
+}
+
 // regression: verifies the session token is deterministic for the same
 // (sid, txid, chainID) — Altera frontend needs idempotent lookup.
 func TestOrchestrator_SessionTokenIsDeterministic(t *testing.T) {
@@ -330,7 +526,7 @@ func TestOrchestrator_SessionTokenIsDeterministic(t *testing.T) {
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions: store, Collector: collector, Broadcaster: broadcaster,
 		Submitter: submitter, ChainID: "vsc-testnet",
-		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond,
+		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
 	})
 	putObservedSession(t, store, "sid-tok")
 	orch.Drive(context.Background(), "sid-tok", fakeTxid, fakeRawTxHex)

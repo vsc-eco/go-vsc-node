@@ -139,7 +139,7 @@ func TestSessionStore_Prune(t *testing.T) {
 
 	// Advance past all expiries.
 	now = time.Unix(2000, 0)
-	removed := store.Prune()
+	removed, _ := store.Prune()
 	assert.Equal(t, 3, removed)
 	assert.Equal(t, 0, store.Len())
 }
@@ -162,7 +162,7 @@ func TestSessionStore_PruneOnlyExpired(t *testing.T) {
 	})
 
 	now = time.Unix(1060, 0) // "expired" is past, "fresh" still in window
-	removed := store.Prune()
+	removed, _ := store.Prune()
 	assert.Equal(t, 1, removed)
 	assert.Equal(t, 1, store.Len())
 

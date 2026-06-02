@@ -34,6 +34,11 @@ type Orchestrator struct {
 	quorumThreshold int
 	collectTimeout  time.Duration
 	submitTimeout   time.Duration
+	// reconcileBackoffs is the sleep schedule between L2 status polls
+	// AFTER the first immediate poll. Empty → production default
+	// (4s/8s/16s/32s/60s, ~2 min total). Tests supply short values.
+	// Audit D2-DESIGN-06.
+	reconcileBackoffs []time.Duration
 	// epochFor returns the validator-set epoch to ask attesters to sign
 	// against. v1 stub returns 0; production wires in the active epoch
 	// from the witness module.
@@ -61,6 +66,9 @@ type OrchestratorConfig struct {
 	CollectTimeout time.Duration
 	// SubmitTimeout bounds the L2 tx submission.
 	SubmitTimeout time.Duration
+	// ReconcileBackoffs is the L2-status-poll backoff schedule. Empty
+	// → production default. Audit D2-DESIGN-06.
+	ReconcileBackoffs []time.Duration
 	// EpochFor is the epoch source. nil falls back to a constant 0
 	// (v1 stub — see workstream 5b).
 	EpochFor func(ctx context.Context) uint64
@@ -80,15 +88,16 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		cfg.EpochFor = func(context.Context) uint64 { return 0 }
 	}
 	return &Orchestrator{
-		collector:       cfg.Collector,
-		broadcaster:     cfg.Broadcaster,
-		submitter:       cfg.Submitter,
-		sessions:        cfg.Sessions,
-		chainID:         cfg.ChainID,
-		quorumThreshold: cfg.QuorumThreshold,
-		collectTimeout:  cfg.CollectTimeout,
-		submitTimeout:   cfg.SubmitTimeout,
-		epochFor:        cfg.EpochFor,
+		collector:         cfg.Collector,
+		broadcaster:       cfg.Broadcaster,
+		submitter:         cfg.Submitter,
+		sessions:          cfg.Sessions,
+		chainID:           cfg.ChainID,
+		quorumThreshold:   cfg.QuorumThreshold,
+		collectTimeout:    cfg.CollectTimeout,
+		submitTimeout:     cfg.SubmitTimeout,
+		reconcileBackoffs: cfg.ReconcileBackoffs,
+		epochFor:          cfg.EpochFor,
 	}
 }
 
@@ -152,26 +161,53 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 	// this, a fast validator (or test goroutine) racing the orchestrator
 	// can land its Deliver before Collect runs Await, and the response
 	// hits the no-awaiter early-return.
+	//
+	// Round-2 audit R2-002: pair the pre-Await with a defer Cancel.
+	// Without it, the awaiter+channel leaks on every successful session
+	// because Collect's internal Await+defer-Cancel pair only drops the
+	// refcount back to 1 (the pre-Await's count). No janitor sweeps.
 	collectCtx, cancel := context.WithTimeout(ctx, o.collectTimeout)
 	defer cancel()
 	_ = o.collector.Await(txid, o.quorumThreshold*2)
+	defer o.collector.Cancel(txid)
 
 	if err := o.broadcaster.BroadcastRequest(ctx, req); err != nil {
-		o.collector.Cancel(txid)
 		o.fail(sid, fmt.Sprintf("broadcast failed: %v", err))
 		return
 	}
 
 	responses := o.collector.Collect(collectCtx, txid, o.quorumThreshold, o.collectTimeout)
 
-	if len(responses) < o.quorumThreshold {
-		slog.Warn("attestation quorum not reached",
-			"sid", sid, "txid", txid, "got", len(responses), "need", o.quorumThreshold)
+	// Per-sig BLS verify BEFORE aggregation (round-2 audit R2-N5).
+	// Without this gate, one junk-sig response from a misbehaving peer
+	// is enough to satisfy QuorumThreshold=1, the orchestrator aggregates
+	// junk, submits the L2 tx, and the contract rejects after RC is
+	// already spent. Verifying each sig against its claimed PubkeyHex
+	// is one pairing per response; cheap compared to the L2 round-trip.
+	verifiedResponses := make([]islock.IsLockAttestationResponse, 0, len(responses))
+	for _, r := range responses {
+		ok, err := islock.VerifyAttestation(req, r)
+		if err != nil || !ok {
+			slog.Warn("attestation per-sig verify failed; dropping",
+				"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID,
+				"err", err)
+			continue
+		}
+		verifiedResponses = append(verifiedResponses, r)
+	}
+
+	if len(verifiedResponses) < o.quorumThreshold {
+		slog.Warn("attestation quorum not reached after per-sig verify",
+			"sid", sid, "txid", txid,
+			"verified", len(verifiedResponses),
+			"collected", len(responses),
+			"need", o.quorumThreshold)
 		o.sessions.MutateState(sid, func(s *Session) {
 			if s.State == StateAttesting {
 				s.State = StateAttestationTimeout
-				s.ForwardError = fmt.Sprintf("only %d/%d attestations collected within %s",
-					len(responses), o.quorumThreshold, o.collectTimeout)
+				s.ForwardError = fmt.Sprintf("only %d/%d verified attestations within %s (collected %d, %d failed per-sig verify)",
+					len(verifiedResponses), o.quorumThreshold, o.collectTimeout,
+					len(responses), len(responses)-len(verifiedResponses))
 			}
 		})
 		return
@@ -180,8 +216,8 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 	// Build per-attestation entries for the contract envelope. Each
 	// validator's PubkeyHex came down on the wire — the contract
 	// verifies it against the registered set at the request's epoch.
-	atts := make([]MapInstantSendAttestation, 0, len(responses))
-	for _, r := range responses {
+	atts := make([]MapInstantSendAttestation, 0, len(verifiedResponses))
+	for _, r := range verifiedResponses {
 		atts = append(atts, MapInstantSendAttestation{
 			ValidatorDID: r.ValidatorDID,
 			PubkeyHex:    r.PubkeyHex,
@@ -191,7 +227,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 
 	// Aggregate the per-validator signatures into one BLS signature
 	// the contract verifies via crypto.bls_verify_aggregate.
-	aggSigHex, err := islock.AggregateSignatures(responses)
+	aggSigHex, err := islock.AggregateSignatures(verifiedResponses)
 	if err != nil {
 		o.fail(sid, fmt.Sprintf("BLS aggregate failed: %v", err))
 		return
@@ -218,11 +254,25 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
+	// L2 mempool-accepted. Persist the L2 txID and transition to
+	// L2_SUBMITTED — but do NOT mint the session token yet.
+	// Round-2 audit D2-DESIGN-06: the spec requires waiting for
+	// block-inclusion before issuing the token. Reconciler polls the
+	// L2 status until terminal.
+	o.sessions.MutateState(sid, func(s *Session) {
+		s.State = StateL2Submitted
+		s.L2TxId = l2TxID
+	})
+
+	if !o.reconcileL2(ctx, sid, txid, req.ChainId, l2TxID) {
+		// reconcileL2 already set the failed state.
+		return
+	}
+
 	now := time.Now()
 	o.sessions.MutateState(sid, func(s *Session) {
 		s.State = StateOnChain
 		s.OnChainAt = &now
-		s.L2TxId = l2TxID
 		// v1 session token: hex of (sid || dashTxId || chainID). This is a
 		// stable opaque handle the frontend can present to Altera; Altera
 		// validates it by checking the dash-mapping-contract state for
@@ -234,7 +284,60 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 
 	slog.Info("session reached ON_CHAIN",
 		"sid", sid, "dashTxid", txid, "l2TxId", l2TxID,
-		"attestations", len(responses))
+		"attestations", len(verifiedResponses))
+}
+
+// reconcileL2 polls the submitter for the L2 tx's terminal status.
+// Returns true on success (CONFIRMED / PROCESSED), false on terminal
+// failure or timeout. On false the session is already marked
+// FORWARD_FAILED via o.fail. Audit D2-DESIGN-06.
+func (o *Orchestrator) reconcileL2(ctx context.Context, sid, dashTxID, chainID, l2TxID string) bool {
+	// Backoffs control the wait BEFORE each poll attempt (after the
+	// first). The first poll runs immediately so devnet stubs that
+	// instantly return CONFIRMED don't block the test for several
+	// seconds. Total budget ~2 min for the default schedule.
+	backoffs := o.reconcileBackoffs
+	if len(backoffs) == 0 {
+		backoffs = []time.Duration{
+			4 * time.Second, 8 * time.Second,
+			16 * time.Second, 32 * time.Second,
+			60 * time.Second,
+		}
+	}
+	for attempt := 0; attempt <= len(backoffs); attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				o.fail(sid, fmt.Sprintf("L2 reconcile aborted: %v (l2TxId=%s)", ctx.Err(), l2TxID))
+				return false
+			case <-time.After(backoffs[attempt-1]):
+			}
+		}
+		statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		status, err := o.submitter.FetchTransactionStatus(statusCtx, l2TxID)
+		cancel()
+		if err != nil {
+			slog.Warn("L2 status poll error", "sid", sid, "l2TxId", l2TxID,
+				"attempt", attempt+1, "err", err)
+			continue
+		}
+		switch status {
+		case L2StatusFailed:
+			o.fail(sid, fmt.Sprintf("L2 tx FAILED on-chain (l2TxId=%s)", l2TxID))
+			return false
+		case L2StatusConfirmed, L2StatusProcessed:
+			return true
+		}
+		// INCLUDED / UNKNOWN — keep polling.
+		slog.Debug("L2 status not yet terminal",
+			"sid", sid, "l2TxId", l2TxID, "status", status, "attempt", attempt+1)
+	}
+	// Deadline elapsed without terminal status. Don't mint the token.
+	// Mark as forward-failed so frontend doesn't see a stuck session.
+	// The L2 tx may still land eventually — an operator can recover
+	// manually by inspecting Session.L2TxId in logs.
+	o.fail(sid, fmt.Sprintf("L2 reconcile timed out (l2TxId=%s); inspect chain state to recover", l2TxID))
+	return false
 }
 
 func (o *Orchestrator) fail(sid, reason string) {

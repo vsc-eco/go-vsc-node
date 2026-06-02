@@ -81,6 +81,16 @@ func mockGqlServer(t *testing.T) (*httptest.Server, *struct {
 					"submitTransactionV1": map[string]any{"id": id},
 				},
 			})
+		case contains(req.Query, "findTransaction"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"findTransaction": map[string]any{
+						"txs": []map[string]any{
+							{"status": "CONFIRMED"},
+						},
+					},
+				},
+			})
 		default:
 			http.Error(w, "unknown query", http.StatusBadRequest)
 		}
@@ -149,6 +159,52 @@ func TestSubmitterL2_GraphqlErrorSurfaces(t *testing.T) {
 	_, err = sub.SubmitMapInstantSend(context.Background(), MapInstantSendPayload{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonce service down")
+}
+
+// TestSubmitterL2_FetchTransactionStatus — audit D2-DESIGN-06.
+// The reconciler-gating poll must reach the L2 GraphQL findTransaction.
+func TestSubmitterL2_FetchTransactionStatus(t *testing.T) {
+	srv, _ := mockGqlServer(t)
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL,
+		ContractId:      "vsc1foo",
+		NetId:           "vsc-testnet",
+		PrivateKeyHex:   testL2PrivKey,
+	})
+	require.NoError(t, err)
+
+	status, err := sub.FetchTransactionStatus(context.Background(), "bafyfake")
+	require.NoError(t, err)
+	assert.Equal(t, L2StatusConfirmed, status)
+}
+
+// TestSubmitterL2_FetchTransactionStatus_NotFound — when the L2 has no
+// record of the txID, FetchTransactionStatus returns UNKNOWN (not
+// error). The orchestrator's reconciler treats UNKNOWN as "keep
+// polling" — which is correct for an in-flight tx that hasn't yet
+// propagated.
+func TestSubmitterL2_FetchTransactionStatus_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"findTransaction": map[string]any{
+					"txs": []map[string]any{},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL,
+		ContractId:      "vsc1foo",
+		NetId:           "vsc-testnet",
+		PrivateKeyHex:   testL2PrivKey,
+	})
+	require.NoError(t, err)
+	status, err := sub.FetchTransactionStatus(context.Background(), "bafymissing")
+	require.NoError(t, err)
+	assert.Equal(t, L2StatusUnknown, status)
 }
 
 func TestSubmitterL2_ContextCancelDuringLock(t *testing.T) {

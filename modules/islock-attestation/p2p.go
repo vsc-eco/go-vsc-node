@@ -51,6 +51,11 @@ type AttestationSigner interface {
 	// ValidatorDID returns the signer's did:key:... reference, used in
 	// the response's ValidatorDID field.
 	ValidatorDID() string
+	// PubkeyHex returns the validator's 48-byte BLS pubkey, hex-encoded
+	// (96 chars). Round-2 audit `R2-001` — the broadcaster + contract
+	// both require this field; without it every legitimate validator
+	// response is silently dropped on the IS-service ingress.
+	PubkeyHex() string
 	// Sign produces a BLS signature over CanonicalSigningMessage(req).
 	// Implementations typically wrap a *bls.SecretKey held in the
 	// validator's identity config.
@@ -251,8 +256,13 @@ func (s *Service) handleRequest(
 	resp := IsLockAttestationResponse{
 		TxId:         req.TxId,
 		ValidatorDID: s.signer.ValidatorDID(),
-		Epoch:        req.Epoch,
-		BlsSigHex:    sigHex,
+		// Round-2 audit R2-001: PubkeyHex MUST be populated. The
+		// IS-service-side broadcaster + the contract both reject
+		// responses with empty/wrong-length PubkeyHex; without this
+		// the entire fast-path is silently dead.
+		PubkeyHex: s.signer.PubkeyHex(),
+		Epoch:     req.Epoch,
+		BlsSigHex: sigHex,
 	}
 	if send != nil {
 		send(p2pMessage{Type: "response", Response: &resp})

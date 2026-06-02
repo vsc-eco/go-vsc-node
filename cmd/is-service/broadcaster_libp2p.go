@@ -51,10 +51,11 @@ type libp2pBroadcaster struct {
 	// (audit `libp2p-broadcaster-no-response-validation`).
 	peerLimiter *broadcasterRateLimiter
 
-	// connectedCount: how many bootstrap peers handshook at startup.
-	// Exposed via ConnectedPeerCount() so /healthz can reflect degraded
-	// state when zero (audit `libp2p-zero-peers-silent-degraded-start`).
-	connectedCount int
+	// bootstrapConnectedCount: how many bootstrap peers handshook at
+	// startup. Exposed via BootstrapConnectedCount() — used only for
+	// the startup degraded-mode check. Runtime peer health uses the
+	// live ConnectedPeerCount() / MeshPeerCount() (audit R2-N6).
+	bootstrapConnectedCount int
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -212,21 +213,44 @@ func newLibp2pBroadcaster(ctx context.Context, cfg libp2pBroadcasterConfig) (*li
 	}
 
 	return &libp2pBroadcaster{
-		host:           h,
-		ps:             ps,
-		topic:          topic,
-		sub:            sub,
-		topicID:        topicID,
-		chainID:        cfg.ChainID,
-		peerLimiter:    newBroadcasterRateLimiter(),
-		connectedCount: connectedCount,
-		stopCh:         make(chan struct{}),
+		host:                    h,
+		ps:                      ps,
+		topic:                   topic,
+		sub:                     sub,
+		topicID:                 topicID,
+		chainID:                 cfg.ChainID,
+		peerLimiter:             newBroadcasterRateLimiter(),
+		bootstrapConnectedCount: connectedCount,
+		stopCh:                  make(chan struct{}),
 	}, nil
 }
 
-// ConnectedPeerCount returns the number of bootstrap peers connected at
-// startup. Used by /healthz to surface a degraded state when zero.
-func (b *libp2pBroadcaster) ConnectedPeerCount() int { return b.connectedCount }
+// BootstrapConnectedCount returns the count of peers connected during
+// startup. Stable; meant for startup logging only. For runtime health,
+// use ConnectedPeerCount() / MeshPeerCount().
+func (b *libp2pBroadcaster) BootstrapConnectedCount() int { return b.bootstrapConnectedCount }
+
+// ConnectedPeerCount returns the LIVE number of connected libp2p
+// peers. Round-2 audit R2-N6: the original implementation returned a
+// cached boot-time count, so /healthz reported "ok" even after rolling
+// witness restarts dropped every peer.
+func (b *libp2pBroadcaster) ConnectedPeerCount() int {
+	if b.host == nil {
+		return 0
+	}
+	return len(b.host.Network().Peers())
+}
+
+// MeshPeerCount returns the live count of peers in the
+// islock-attestation gossipsub mesh. Mesh membership is what actually
+// matters for attestation delivery — a peer connected via libp2p but
+// not subscribed to our topic is effectively absent.
+func (b *libp2pBroadcaster) MeshPeerCount() int {
+	if b.ps == nil {
+		return 0
+	}
+	return len(b.ps.ListPeers(b.topicID))
+}
 
 // Start begins the subscriber goroutine. Inbound responses route into
 // onResponse — but only after the broadcaster validates them:

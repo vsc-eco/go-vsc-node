@@ -155,6 +155,32 @@ func BuildResponse(
 	}, nil
 }
 
+// VerifyAttestation checks a single response's BlsSigHex against its
+// PubkeyHex over the canonical message for req. Returns (true, nil)
+// only when the BLS pairing verifies. Round-2 audit R2-N5: gating
+// aggregation behind this check prevents a single malicious peer with
+// QuorumThreshold=1 from forcing the operator to broadcast junk to L2
+// and burn RC.
+//
+// The contract still re-checks aggregate verification + per-DID pubkey
+// matching against the registered validator set; this is a cheap
+// off-chain pre-filter so the operator only pays RC for plausible
+// aggregates.
+func VerifyAttestation(req IsLockAttestationRequest, resp IsLockAttestationResponse) (bool, error) {
+	if len(resp.PubkeyHex) != 96 {
+		return false, fmt.Errorf("PubkeyHex must be 48 bytes (96 hex chars)")
+	}
+	pkBytes, err := hex.DecodeString(resp.PubkeyHex)
+	if err != nil {
+		return false, fmt.Errorf("PubkeyHex decode: %w", err)
+	}
+	var pk bls.Pubkey
+	if err := pk.Deserialize((*[48]byte)(pkBytes)); err != nil {
+		return false, fmt.Errorf("pubkey deserialize: %w", err)
+	}
+	return Verify(req, resp.BlsSigHex, &pk)
+}
+
 // AggregateSignatures takes the BlsSigHex of each response and returns
 // hex(aggregated 96-byte BLS signature). Empty input → error. Used by
 // the IS-service-side orchestrator to build the aggregate sig the

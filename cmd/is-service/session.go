@@ -16,6 +16,12 @@ const (
 	StateWaitingForIS       SessionState = "WAITING_FOR_IS"
 	StateISObserved         SessionState = "IS_OBSERVED"
 	StateAttesting          SessionState = "ATTESTING"
+	// StateL2Submitted: orchestrator has handed the mapInstantSendV2
+	// tx to the L2 GraphQL endpoint (mempool-accepted) but has not yet
+	// confirmed execution. The reconciler polls FetchTransactionStatus
+	// until terminal — audit D2-DESIGN-06. SessionToken is NOT minted
+	// at this state.
+	StateL2Submitted        SessionState = "L2_SUBMITTED"
 	StateOnChain            SessionState = "ON_CHAIN"
 	StateAttestationTimeout SessionState = "ATTESTATION_TIMEOUT"
 	StateSlowPathPending    SessionState = "SLOW_PATH_PENDING"
@@ -145,20 +151,24 @@ func (s *SessionStore) MutateState(sid string, fn func(*Session)) bool {
 	return true
 }
 
-// Prune removes terminal-state and expired sessions. Returns the number
-// removed. Safe to call periodically.
-func (s *SessionStore) Prune() int {
+// Prune removes terminal-state and expired sessions. Returns the
+// deposit addresses of pruned sessions so the caller can Unwatch
+// them. Audit R2-N3: TTL-expired sessions were leaking watcher map
+// entries because the prune janitor only touched SessionStore.
+func (s *SessionStore) Prune() (removed int, prunedDepositAddrs []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
-	removed := 0
 	for sid, sess := range s.sessions {
 		if now.After(sess.ExpiresAt) || sess.State == StateExpired {
 			delete(s.sessions, sid)
 			removed++
+			if sess.DepositAddress != "" {
+				prunedDepositAddrs = append(prunedDepositAddrs, sess.DepositAddress)
+			}
 		}
 	}
-	return removed
+	return removed, prunedDepositAddrs
 }
 
 // Len returns the current session count.

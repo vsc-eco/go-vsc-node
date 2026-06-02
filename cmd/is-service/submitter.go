@@ -24,6 +24,30 @@ import (
 // nested keys snake_case).
 type Submitter interface {
 	SubmitMapInstantSend(ctx context.Context, payload MapInstantSendPayload) (l2TxID string, err error)
+	// FetchTransactionStatus polls the L2's view of an L2 tx CID.
+	// Returns the upstream's status string ("INCLUDED", "CONFIRMED",
+	// "PROCESSED", "FAILED", etc.) or an error. Round-2 audit
+	// D2-DESIGN-06 — without this the IS service mints SessionToken
+	// on mempool-accept and lies to the frontend if the L2 then rejects.
+	FetchTransactionStatus(ctx context.Context, l2TxID string) (string, error)
+}
+
+// L2 status string constants. Values match modules/gql/gqlgen output
+// (which is itself the on-chain enum stringified). PROCESSED ==
+// terminal-success; CONFIRMED == included in a block but not yet
+// finality-passed; FAILED == terminal-fail.
+const (
+	L2StatusUnknown   = "UNKNOWN"
+	L2StatusIncluded  = "INCLUDED"
+	L2StatusConfirmed = "CONFIRMED"
+	L2StatusProcessed = "PROCESSED"
+	L2StatusFailed    = "FAILED"
+)
+
+// IsL2TerminalSuccess returns true when status indicates the tx
+// executed successfully on-chain.
+func IsL2TerminalSuccess(status string) bool {
+	return status == L2StatusConfirmed || status == L2StatusProcessed
 }
 
 // MapInstantSendBody mirrors the contract's MapInstantSendV2Params (tinyjson
@@ -103,4 +127,11 @@ func (SubmitterLogOnly) SubmitMapInstantSend(ctx context.Context, p MapInstantSe
 		"payloadHex", hex.EncodeToString(raw),
 	)
 	return "log-only:no-l2-tx", nil
+}
+
+// FetchTransactionStatus stubs out the L2 polling in log-only mode.
+// Returns CONFIRMED so the orchestrator's reconciler doesn't stall
+// devnet tests that don't have a real L2.
+func (SubmitterLogOnly) FetchTransactionStatus(ctx context.Context, l2TxID string) (string, error) {
+	return L2StatusConfirmed, nil
 }

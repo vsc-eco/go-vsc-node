@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	islock "vsc-node/modules/islock-attestation"
 )
@@ -79,6 +80,46 @@ func TestCollector_CtxCancelReturnsEarly(t *testing.T) {
 	dur := time.Since(start)
 	assert.Less(t, dur, 200*time.Millisecond, "Collect must honour ctx cancel")
 	assert.Empty(t, got)
+}
+
+// TestCollector_RefcountTracksAwaitersCorrectly — regression for
+// audit R2-002 + M4. Two Awaits + two Cancels (matching pairs) must
+// fully release the entry; one Await + one Cancel must also release.
+func TestCollector_RefcountTracksAwaitersCorrectly(t *testing.T) {
+	c := newAttestationCollector()
+	const txid = "tx-refcount"
+
+	// Pre-Await (caller A): refcount=1.
+	chA := c.Await(txid, 4)
+	// Collect-style Await (caller B): refcount=2, same channel.
+	chB := c.Await(txid, 4)
+	assert.Equal(t, chA, chB, "duplicate Await for same txid returns same channel")
+
+	c.mu.Lock()
+	require.Equal(t, 2, c.awaiters[txid].refcount,
+		"two Awaits should yield refcount=2")
+	c.mu.Unlock()
+
+	// First Cancel (caller B): refcount=1, channel NOT closed.
+	c.Cancel(txid)
+	c.mu.Lock()
+	require.NotNil(t, c.awaiters[txid], "entry must persist after first Cancel")
+	require.Equal(t, 1, c.awaiters[txid].refcount)
+	c.mu.Unlock()
+
+	// Second Cancel (caller A): refcount=0, channel closed, entry removed.
+	c.Cancel(txid)
+	c.mu.Lock()
+	_, exists := c.awaiters[txid]
+	c.mu.Unlock()
+	assert.False(t, exists, "entry must be removed after final Cancel")
+}
+
+// TestCollector_ExtraCancelIsNoOp — pure mismatch guard: a Cancel
+// without a prior Await must not panic.
+func TestCollector_ExtraCancelIsNoOp(t *testing.T) {
+	c := newAttestationCollector()
+	c.Cancel("never-awaited") // must not panic
 }
 
 func TestCollector_ConcurrentDeliveriesSafe(t *testing.T) {

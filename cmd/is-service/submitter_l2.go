@@ -191,6 +191,39 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 	return txID, nil
 }
 
+// FetchTransactionStatus polls the L2 GraphQL findTransaction(id) for
+// the given L2 tx CID. Returns the upstream status string or an error.
+// Round-2 audit D2-DESIGN-06 — gates SessionToken issuance behind
+// actual on-chain confirmation rather than mempool-accept.
+func (s *SubmitterL2) FetchTransactionStatus(ctx context.Context, l2TxID string) (string, error) {
+	body, _ := json.Marshal(map[string]any{
+		"query": `query($id: String!){ findTransaction(filterOptions: {byTxId: $id}){ txs { status } } }`,
+		"variables": map[string]any{"id": l2TxID},
+	})
+	var result struct {
+		Data struct {
+			FindTransaction struct {
+				Txs []struct {
+					Status string `json:"status"`
+				} `json:"txs"`
+			} `json:"findTransaction"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := s.gqlPost(ctx, body, &result); err != nil {
+		return "", err
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql: %s", result.Errors[0].Message)
+	}
+	if len(result.Data.FindTransaction.Txs) == 0 {
+		return L2StatusUnknown, nil
+	}
+	return result.Data.FindTransaction.Txs[0].Status, nil
+}
+
 // fetchAccountNonce mirrors mapper/graphql_client.go's FetchAccountNonce.
 func (s *SubmitterL2) fetchAccountNonce(ctx context.Context, account string) (uint64, error) {
 	body, _ := json.Marshal(map[string]any{
