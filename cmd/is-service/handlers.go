@@ -100,6 +100,10 @@ type Server struct {
 	driveCtx    context.Context
 	driveCancel context.CancelFunc
 	driveWg     sync.WaitGroup
+	// processStartedAt is stamped in NewServer for /healthz; lets
+	// dashboards compute rate() over orchestrator counters
+	// (R5-OP-03 — counters are atomic.Int64 and reset on restart).
+	processStartedAt time.Time
 }
 
 type ServerConfig struct {
@@ -187,6 +191,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		trustedProxies:    append([]string(nil), cfg.TrustedProxies...),
 		driveCtx:          driveCtx,
 		driveCancel:       driveCancel,
+		processStartedAt:  time.Now(),
 	}, nil
 }
 
@@ -246,6 +251,12 @@ func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
 // GraphQL roundtrip and so attestation broadcasts don't fail with
 // publish-on-closed-topic. Audit `orchestrator-detached-context-on-shutdown`.
 func (s *Server) Drain(deadline time.Duration) {
+	// Round-5 audit R5-CORRECT-02: the driveCancel func was only
+	// invoked on the hard-cap timeout path; the clean-drain path
+	// left the cancel func leaked (uncalled). defer guarantees it
+	// runs on every Drain return, on both the clean-drain branch
+	// and the deadline-hit branch.
+	defer s.driveCancel()
 	done := make(chan struct{})
 	go func() {
 		s.driveWg.Wait()
@@ -254,10 +265,7 @@ func (s *Server) Drain(deadline time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(deadline):
-		// Hard cap reached — cancel the shared driveCtx so subsequent
-		// network calls error out promptly rather than holding the
-		// process open.
-		s.driveCancel()
+		// Hard cap reached — the deferred driveCancel still runs.
 		<-done
 	}
 }
@@ -330,6 +338,13 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"ok":       true,
 		"sessions": s.sessions.Len(),
+		// Round-5 audit R5-OP-03: orchestrator counters reset on every
+		// restart, so absolute-value alert thresholds would page
+		// spuriously on rolling deploys. processStartedAt lets
+		// dashboards compute rate() correctly and lets operators see
+		// at a glance whether the counters they're looking at are
+		// from this process or a previous incarnation.
+		"processStartedAt": s.processStartedAt.UTC().Format(time.RFC3339),
 	}
 	// Round-3 audit OP-004: expose per-state session counts so operators
 	// can spot pile-ups in L2_SUBMITTED (reconciler stuck), ATTESTING
@@ -727,14 +742,6 @@ func hasReservedRune(s string, kvReserved bool) bool {
 		}
 	}
 	return false
-}
-
-func splitHostPort(addr string) (string, string, error) {
-	i := strings.LastIndex(addr, ":")
-	if i < 0 {
-		return addr, "", nil
-	}
-	return addr[:i], addr[i+1:], nil
 }
 
 // hexBytes returns hex(s). Used to encode the instruction string for the

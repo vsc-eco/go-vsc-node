@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -189,7 +188,6 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 	slog.Info("mapInstantSendV2 broadcast accepted",
 		"l2TxId", txID, "signer", s.did.String(), "nonce", nonce,
 		"cborSize", len(sTx.Tx))
-	_ = hex.EncodeToString // kept for diagnostics during incident response
 	return txID, nil
 }
 

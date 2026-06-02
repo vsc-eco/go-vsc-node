@@ -196,8 +196,14 @@ func main() {
 	// silent absence is the bug R4-001 caught in round-3).
 	var validatorSetForEpoch func(ctx context.Context, epoch uint64) map[string]string
 	var epochFor func(ctx context.Context) uint64
+	var validatorSetCacheRef *validatorSetCache
 	if l2, ok := submitter.(*SubmitterL2); ok {
-		cache := newValidatorSetCache(l2, args.l2DashMappingContract, 30*time.Second)
+		cacheTTL := time.Duration(args.validatorSetCacheTTLSeconds) * time.Second
+		if cacheTTL <= 0 {
+			cacheTTL = 30 * time.Second
+		}
+		cache := newValidatorSetCache(l2, args.l2DashMappingContract, cacheTTL)
+		validatorSetCacheRef = cache
 		validatorSetForEpoch = cache.Get
 		// v1 stub: a constant 0 epoch. Replacing this with the active
 		// epoch from the witness module is workstream-5b follow-up;
@@ -243,13 +249,26 @@ func main() {
 	// Round-4 audit R4-007: /healthz consults the L2 submitter's
 	// balance + RC via GraphQL so RC-exhaustion outages no longer
 	// present as silent ATTESTING pile-ups.
+	//
+	// Round-5 audit R5-OP-02/R5-OP-06: a synchronous 5s GraphQL probe
+	// per /healthz request becomes a self-DoS amplifier under any
+	// burst of synthetic probes. The probe now runs in a background
+	// goroutine on a fixed interval; /healthz reads an atomic
+	// snapshot. Hysteresis (3 consecutive fails) prevents flapping.
 	var submitterHealthFn func() (string, int64, int64, error)
+	var submitterMonitor *submitterHealthMonitor
 	if l2, ok := submitter.(*SubmitterL2); ok {
-		submitterHealthFn = func() (string, int64, int64, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+		probe := func(ctx context.Context) (string, int64, int64, error) {
 			bal, rc, err := l2.FetchSubmitterHealth(ctx)
 			return l2.DID(), bal, rc, err
+		}
+		submitterMonitor = newSubmitterHealthMonitor(15*time.Second, probe)
+		submitterHealthFn = func() (string, int64, int64, error) {
+			snap := submitterMonitor.Snapshot()
+			if snap == nil {
+				return l2.DID(), 0, 0, nil
+			}
+			return snap.DID, snap.BalanceHbdCents, snap.RcRemaining, snap.Err
 		}
 	}
 
@@ -325,6 +344,35 @@ func main() {
 			}
 		}
 	}()
+
+	// Round-5 audit R5-OP-02/R5-OP-06: background submitter-health
+	// refresher. The /healthz hook reads the atomic snapshot this
+	// publishes — no synchronous GraphQL on the probe path.
+	if submitterMonitor != nil {
+		go submitterMonitor.Run(ctx)
+	}
+
+	// Round-5 audit R5-OP-05: cache janitor. The validator-set cache
+	// can accumulate entries when epochFor() varies; drop entries
+	// whose expiresAt is more than 10 minutes in the past.
+	if validatorSetCacheRef != nil {
+		go func() {
+			t := time.NewTicker(5 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					removed := validatorSetCacheRef.GC(10 * time.Minute)
+					if removed > 0 {
+						slog.Debug("validator-set cache GC removed entries",
+							"count", removed)
+					}
+				}
+			}
+		}()
+	}
 
 	slog.Info("is-service listening",
 		"port", args.port,

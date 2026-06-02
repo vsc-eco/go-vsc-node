@@ -226,3 +226,89 @@ func TestSubmitterL2_ContextCancelDuringLock(t *testing.T) {
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+// Round-5 audit R5-COV-02: pin the FetchValidatorSet GraphQL parser.
+// Must round-trip the contract's serializeValidatorSet wire-form
+// "<registeredAt>#<did>=<pk>|..." into the expected map.
+func TestSubmitterL2_FetchValidatorSet_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"getStateByKeys": map[string]any{
+					"vs-7": "4888500#did:key:a=pk-a|did:key:b=pk-b",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL, ContractId: "vsc1mapping",
+		NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey,
+	})
+	require.NoError(t, err)
+	set, err := sub.FetchValidatorSet(context.Background(), "vsc1mapping", 7)
+	require.NoError(t, err)
+	assert.Equal(t, "pk-a", set["did:key:a"])
+	assert.Equal(t, "pk-b", set["did:key:b"])
+}
+
+func TestSubmitterL2_FetchValidatorSet_MissingKeyReturnsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"getStateByKeys": map[string]any{},
+			},
+		})
+	}))
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL, ContractId: "vsc1mapping",
+		NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey,
+	})
+	require.NoError(t, err)
+	set, err := sub.FetchValidatorSet(context.Background(), "vsc1mapping", 999)
+	require.NoError(t, err)
+	assert.Nil(t, set)
+}
+
+func TestSubmitterL2_FetchValidatorSet_RejectsMissingPrefix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"getStateByKeys": map[string]any{
+					"vs-7": "did:key:a=pk-a", // no '#' prefix
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL, ContractId: "vsc1mapping",
+		NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey,
+	})
+	require.NoError(t, err)
+	_, err = sub.FetchValidatorSet(context.Background(), "vsc1mapping", 7)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "'#'")
+}
+
+func TestSubmitterL2_FetchSubmitterHealth_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"getAccountBalance": map[string]any{"hbd": 12345},
+				"getAccountRC":      map[string]any{"amount": 8000},
+			},
+		})
+	}))
+	defer srv.Close()
+	sub, err := NewSubmitterL2(SubmitterL2Config{
+		GraphQLEndpoint: srv.URL, ContractId: "vsc1mapping",
+		NetId: "vsc-testnet", PrivateKeyHex: testL2PrivKey,
+	})
+	require.NoError(t, err)
+	bal, rc, err := sub.FetchSubmitterHealth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(12345), bal)
+	assert.Equal(t, int64(8000), rc)
+}

@@ -26,9 +26,18 @@ const (
 	StateL2Submitted        SessionState = "L2_SUBMITTED"
 	StateOnChain            SessionState = "ON_CHAIN"
 	StateAttestationTimeout SessionState = "ATTESTATION_TIMEOUT"
-	StateSlowPathPending    SessionState = "SLOW_PATH_PENDING"
-	StateForwardFailed      SessionState = "FORWARD_FAILED"
-	StateExpired            SessionState = "EXPIRED"
+	// StateSlowPathPending is reserved for the spec's mined-block-
+	// proof fallback (§5.2). The slow-path flow is NOT wired into the
+	// orchestrator yet — Drive never transitions into this state.
+	// TODO(slow-path-workstream): implement the fallback that walks a
+	// session from AttestationTimeout into SlowPathPending and then to
+	// OnChain or ForwardFailed via the slow-path mined-block proof.
+	// Round-5 audit R5-TEST-01 noted the dead branch; left in place
+	// because it's a stable wire-protocol value the contract already
+	// accepts.
+	StateSlowPathPending SessionState = "SLOW_PATH_PENDING"
+	StateForwardFailed   SessionState = "FORWARD_FAILED"
+	StateExpired         SessionState = "EXPIRED"
 )
 
 // IsTerminal reports whether the state will not advance on its own —
@@ -242,6 +251,17 @@ func (s *SessionStore) Prune() (removed int, prunedDepositAddrs []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
+	// Round-5 audit R5-CORR-01: terminal-but-not-Expired sessions
+	// stay around long enough that /healthz CountByState surfaces
+	// validator-mesh degradation (R4-SEC-03 promise). We need a
+	// terminal-retention window distinct from the WaitingForIS TTL
+	// so explicit attestation timeouts/forward-failures don't
+	// silently roll into the generic Expired bucket on the next
+	// prune tick after ExpiresAt.
+	terminalRetention := s.maxAge / 2
+	if terminalRetention < time.Minute {
+		terminalRetention = time.Minute
+	}
 	for sid, sess := range s.sessions {
 		expired := now.After(sess.ExpiresAt) || sess.State == StateExpired
 		if !expired {
@@ -255,6 +275,17 @@ func (s *SessionStore) Prune() (removed int, prunedDepositAddrs []string) {
 		// with SessionStore.Get's overwrite-guard.
 		if sess.State.IsInFlight() {
 			continue
+		}
+		// Round-5 R5-CORR-01: hold non-Expired terminal states
+		// (AttestationTimeout, SlowPathPending, ForwardFailed,
+		// OnChain) past ExpiresAt for an additional retention
+		// window so CountByState can surface the distinction. Only
+		// reclaim once both ExpiresAt + terminalRetention have
+		// elapsed (or the state explicitly transitioned to Expired).
+		if sess.State != StateExpired && sess.State.IsTerminal() {
+			if !now.After(sess.ExpiresAt.Add(terminalRetention)) {
+				continue
+			}
 		}
 		delete(s.sessions, sid)
 		removed++

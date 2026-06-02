@@ -37,6 +37,10 @@ type args struct {
 	drainTimeoutSeconds int
 	// trustedProxies: comma-separated proxy hosts. Audit TC2-06.
 	trustedProxies string
+	// validatorSetCacheTTLSeconds: TTL for the per-epoch validator-set
+	// cache. Round-5 audit R5-DRIFT-06 — made operator-configurable so
+	// admin rotation latency is tunable in production. Default 30s.
+	validatorSetCacheTTLSeconds int
 }
 
 func parseArgs() (args, error) {
@@ -88,6 +92,11 @@ func parseArgs() (args, error) {
 		"Comma-separated host/IP strings of trusted reverse proxies; X-Forwarded-For "+
 			"from these is honoured for rate-limiting. Loopback is always trusted. "+
 			"Audit TC2-06.")
+
+	fs.IntVar(&a.validatorSetCacheTTLSeconds, "validatorSetCacheTTLSeconds", 30,
+		"TTL in seconds for the per-epoch validator-set cache (R4-001 + "+
+			"R5-DRIFT-06). Lower = faster reflection of admin-side rotations; "+
+			"higher = fewer L2 GraphQL probes per Drive(). Default 30s.")
 
 	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 240,
 		"Graceful-shutdown drain timeout in seconds. MUST be >= orchestrator's "+

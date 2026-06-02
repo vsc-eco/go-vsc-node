@@ -132,6 +132,132 @@ func putObservedSession(t *testing.T, store *SessionStore, sid string) *Session 
 	return sess
 }
 
+// Round-5 audit R5-COV-04 + R5-005: pin the new orchestrator
+// counters so a future refactor can't silently regress the R4-007
+// observability surface. Each test exercises one counter through a
+// distinct path.
+//
+// preSubmitFlippingSubmitter never reaches SubmitMapInstantSend — it
+// is wrapped by a flip-then-submit broadcaster that mutates state to
+// StateExpired between Collect and Drive's pre-Submit Get(). Used to
+// pin the R4-CSM-07 refusal counter deterministically (no race).
+type preSubmitFlippingBroadcaster struct {
+	collector *attestationCollector
+	store     *SessionStore
+	sid       string
+	sk        *bls.SecretKey
+	pkHex     string
+}
+
+func (b *preSubmitFlippingBroadcaster) BroadcastRequest(ctx context.Context, req islock.IsLockAttestationRequest) error {
+	resp, err := islock.BuildResponse(req, "did:key:validator-1", b.sk)
+	if err != nil {
+		return err
+	}
+	resp.PubkeyHex = b.pkHex
+	b.collector.Deliver(resp)
+	// Flip state synchronously while we still hold control —
+	// before Drive's Collect returns. By the time the orchestrator
+	// reaches the pre-Submit Get(), state is Expired.
+	b.store.MutateState(b.sid, func(s *Session) {
+		s.State = StateExpired
+	})
+	return nil
+}
+
+func TestOrchestrator_PreSubmitRefusalIncrementsCounter(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	submitter := &fakeSubmitter{}
+	sk, pkHex := mkValidatorKey(t)
+	broadcaster := &preSubmitFlippingBroadcaster{
+		collector: collector,
+		store:     store,
+		sid:       "sid-presubmit",
+		sk:        sk,
+		pkHex:     pkHex,
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions:          store,
+		Collector:         collector,
+		Broadcaster:       broadcaster,
+		Submitter:         submitter,
+		ChainID:           "vsc-testnet",
+		QuorumThreshold:   1,
+		CollectTimeout:    200 * time.Millisecond,
+		ReconcileBackoffs: testBackoffs,
+	})
+
+	putObservedSession(t, store, "sid-presubmit")
+	orch.Drive(context.Background(), "sid-presubmit", fakeTxid, fakeRawTxHex)
+
+	counters := orch.Counters()
+	assert.Equal(t, int64(1), counters.PreSubmitRefusals,
+		"PreSubmitRefusals must increment when state flips to non-Attesting before submit")
+	// SubmitMapInstantSend must NOT have been called.
+	assert.Empty(t, submitter.Submissions(),
+		"submitter must not be called after pre-Submit guard refuses")
+}
+
+func TestOrchestrator_ReconcileTimeoutIncrementsCounter(t *testing.T) {
+	store := NewSessionStore(time.Hour)
+	collector := newAttestationCollector()
+	broadcaster := &fakeBroadcaster{collector: collector}
+	// fakeSubmitter returns "UNKNOWN" status forever; reconcile will time out.
+	submitter := &fakeSubmitter{fakeStatus: L2StatusUnknown}
+	sk, pkHex := mkValidatorKey(t)
+
+	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			resp, _ := islock.BuildResponse(req, "did:key:validator-1", sk)
+			resp.PubkeyHex = pkHex
+			collector.Deliver(resp)
+		}()
+	}
+
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions:        store,
+		Collector:       collector,
+		Broadcaster:     broadcaster,
+		Submitter:       submitter,
+		ChainID:         "vsc-testnet",
+		QuorumThreshold: 1,
+		CollectTimeout:  200 * time.Millisecond,
+		// Tight backoffs — reconcile budget exhausts quickly.
+		ReconcileBackoffs: []time.Duration{
+			1 * time.Millisecond, 1 * time.Millisecond, 1 * time.Millisecond,
+		},
+	})
+
+	putObservedSession(t, store, "sid-reconcile-timeout")
+	orch.Drive(context.Background(), "sid-reconcile-timeout", fakeTxid, fakeRawTxHex)
+
+	counters := orch.Counters()
+	assert.Equal(t, int64(1), counters.ReconcileTimeouts,
+		"ReconcileTimeouts must increment when status stays UNKNOWN")
+	sess, _ := store.Get("sid-reconcile-timeout")
+	assert.Equal(t, StateForwardFailed, sess.State)
+}
+
+func TestOrchestrator_Counters_SnapshotShape(t *testing.T) {
+	orch := NewOrchestrator(OrchestratorConfig{
+		Sessions:    NewSessionStore(time.Hour),
+		Collector:   newAttestationCollector(),
+		Broadcaster: &fakeBroadcaster{},
+		Submitter:   &fakeSubmitter{},
+		ChainID:     "vsc-testnet",
+	})
+	snap := orch.Counters()
+	// Zero baseline — proves all four fields surface through the
+	// snapshot path without panics.
+	assert.Equal(t, int64(0), snap.UnresolvableOnChainCredits)
+	assert.Equal(t, int64(0), snap.AttestationVerifyDrops)
+	assert.Equal(t, int64(0), snap.ReconcileTimeouts)
+	assert.Equal(t, int64(0), snap.PreSubmitRefusals)
+}
+
 func TestOrchestrator_HappyPath(t *testing.T) {
 	store := NewSessionStore(time.Hour)
 	collector := newAttestationCollector()

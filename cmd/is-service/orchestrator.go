@@ -242,6 +242,14 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		expected = o.validatorSetForEpoch(ctx, req.Epoch)
 	}
 	verifiedResponses := make([]islock.IsLockAttestationResponse, 0, len(responses))
+	// Round-5 audit R5-ADV-01: track whether the expected set knew
+	// ANY of the responders. If we have an expected set + got
+	// responses but every single one was dropped as unknown, the
+	// likely cause is a malicious/wrong GraphQL endpoint returning a
+	// fabricated validator set. Surface that case structurally rather
+	// than letting it look like a normal quorum miss.
+	hadExpected := expected != nil && len(responses) > 0
+	matchedAny := false
 	for _, r := range responses {
 		if expected != nil {
 			expectedPk, known := expected[r.ValidatorDID]
@@ -257,6 +265,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
 				continue
 			}
+			matchedAny = true
 		}
 		ok, err := islock.VerifyAttestation(req, r)
 		if err != nil || !ok {
@@ -267,6 +276,18 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 			continue
 		}
 		verifiedResponses = append(verifiedResponses, r)
+	}
+
+	if hadExpected && !matchedAny {
+		// All responders are unknown to the expected set. The L2
+		// GraphQL endpoint is either out of date or actively
+		// misbehaving; either way the orchestrator is signing into
+		// a void. Surface this loudly so operators can compare
+		// libp2p mesh roster vs the GraphQL set.
+		slog.Error("validator-set / libp2p roster divergence: no responder matched expected set",
+			"sid", sid, "epoch", req.Epoch,
+			"responders", len(responses), "expectedSize", len(expected),
+			"hint", "verify the L2 GraphQL endpoint returns the actual on-chain validator set for this epoch")
 	}
 
 	if len(verifiedResponses) < o.quorumThreshold {

@@ -368,6 +368,48 @@ func TestHealthz(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"ok":true`)
 }
 
+// Round-5 audit R5-COV-05: assert /healthz JSON includes the round-3
+// + round-4 + round-5 fields. Locks down the shape so frontend
+// dashboards have a stable contract.
+func TestHealthz_EmitsExpectedKeys(t *testing.T) {
+	srv := newTestServer(t)
+	w := doRequest(t, srv, "GET", "/healthz", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	// Round-3 + R4 + R5-OP-03 keys.
+	for _, key := range []string{"ok", "sessions", "sessionsByState", "processStartedAt"} {
+		_, present := body[key]
+		assert.True(t, present, "/healthz missing key %q", key)
+	}
+}
+
+// Round-5 audit R5-COV-03: isTrustedProxy must normalize IPv6 host
+// casing through canonicalHostMatch so an operator typo (FE80::1) is
+// treated equivalent to its lowercase canonical form.
+func TestIsTrustedProxy_IPv6Canonical(t *testing.T) {
+	srv := newTestServer(t)
+	srv.trustedProxies = []string{"FE80::1", "2001:DB8::ABCD"}
+	cases := []struct {
+		host    string
+		trusted bool
+	}{
+		{"127.0.0.1", true},      // loopback default
+		{"::1", true},            // loopback default
+		{"LocalHost", true},      // case-insensitive name
+		{"fe80::1", true},        // lowercase IPv6 matches uppercase operator config
+		{"FE80::1", true},        // same value
+		{"2001:db8::abcd", true}, // mixed-case operator config matches canonical
+		{"::2", false},           // unrelated IPv6
+		{"10.0.0.1", false},      // unrelated IPv4
+	}
+	for _, c := range cases {
+		t.Run(c.host, func(t *testing.T) {
+			assert.Equal(t, c.trusted, srv.isTrustedProxy(c.host))
+		})
+	}
+}
+
 // ===== NewServer config validation =====
 
 func TestNewServer_RejectsEmptyPubkeys(t *testing.T) {
