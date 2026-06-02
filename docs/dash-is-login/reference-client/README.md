@@ -68,7 +68,10 @@ When porting `client.js` into the Altera `LoginModal`:
       handler on iOS/Android, with desktop fallback to the QR
 - [ ] Move `baseUrl` out of an input box and into Altera's env config
 - [ ] Add error states for `FORWARD_FAILED` / `ATTESTATION_TIMEOUT` /
-      `SLOW_PATH_PENDING` / `EXPIRED` that explain what to do next
-      (matches the Go `IsTerminal()` set in `cmd/is-service/session.go`;
-      round-10 audit R10-DRIFT-REF-CLIENT-README-FAILED fixed the
-      stale `FAILED` reference here)
+      `EXPIRED` that explain what to do next (matches the Go
+      `IsTerminal()` set in `cmd/is-service/session.go`; round-10
+      audit R10-DRIFT-REF-CLIENT-README-FAILED fixed the stale
+      `FAILED` reference here). `SLOW_PATH_PENDING` is also in the
+      terminal set but is reserved for a future slow-path fallback
+      workstream — the IS service does NOT emit it today
+      (round-11 audit R11-INFO-README-CHECKLIST-SLOW-PATH-01)

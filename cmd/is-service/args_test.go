@@ -51,6 +51,19 @@ func TestValidateOperatorURL(t *testing.T) {
 		// smuggled secrets.
 		{"encoded-question", "https://gql.example.org/path%3Ftoken=secret", true, "path"},
 		{"encoded-hash", "https://gql.example.org/path%23frag", true, "path"},
+		// Round-11 audit R11-INFO-PATH-SMUGGLE-DEFENSE-NARROW: the
+		// reject set is C0 control bytes + DEL + ?/# so any
+		// percent-encoded escape decoded by url.Parse fails too.
+		{"encoded-tab", "https://gql.example.org/p%09ath", true, "path"},
+		{"encoded-cr", "https://gql.example.org/p%0Dath", true, "path"},
+		{"encoded-del", "https://gql.example.org/p%7Fath", true, "path"},
+		// Round-11 audit R11-INFO-PATH-SMUGGLE-TEST-COVERAGE-DOUBLE-ENCODED:
+		// pin the Go-url-decodes-once contract — a double-encoded
+		// '?' (%253F) decodes to literal '%3F' in u.Path, which is
+		// not in the reject set and not interpreted as a delimiter
+		// by net/http on the way out. Acceptable: the smuggled byte
+		// never reaches the network as a real '?'.
+		{"double-encoded-question-ok", "https://gql.example.org/path%253Ftoken", false, ""},
 		// Unparseable.
 		{"control-byte", "https://gql.example.org/\x00leak", true, "parseable"},
 	}
