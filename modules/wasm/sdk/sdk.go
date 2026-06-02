@@ -21,6 +21,7 @@ import (
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	bls "github.com/protolambda/bls12-381-util"
 
 	"github.com/JustinKnueppel/go-result"
 )
@@ -738,7 +739,205 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			return result.Ok(SdkResultStruct{Result: "true", Gas: params.CYCLE_GAS_PER_RC * 10})
 		},
+		// bls_verify performs single-pubkey BLS12-381 signature verification
+		// over the message digest. All inputs are hex-encoded:
+		//   pubkey: 48-byte compressed G1 point (96 hex chars)
+		//   msg:    arbitrary length message (varies)
+		//   sig:    96-byte compressed G2 point (192 hex chars)
+		// Returns "true" or "false". Deterministic — same inputs always
+		// produce the same output, safe for consensus use.
+		//
+		// Backed by the existing protolambda/bls12-381-util library used by
+		// Magi consensus, so the verification path matches what block voting
+		// and BlsCircuit.Verify already rely on.
+		//
+		// Gas: ~5x keccak256, reflecting the ~1-2ms verify cost for a
+		// single point pair. Use bls_verify_aggregate when you need to
+		// verify a quorum-aggregated signature over the same message.
+		"bls_verify": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
+			pubkeyHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			msgHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sigHex, ok := arg3.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			pubkey, err := blsParsePubkey(pubkeyHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), err),
+				)
+			}
+			msg, err := hexDecode(msgHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid msg hex")),
+				)
+			}
+			sig, err := blsParseSignature(sigHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), err),
+				)
+			}
+			ok = bls.Verify(pubkey, msg, sig)
+			outResult := "false"
+			if ok {
+				outResult = "true"
+			}
+			return result.Ok(SdkResultStruct{
+				Result: outResult,
+				Gas:    params.CYCLE_GAS_PER_RC * 5,
+			})
+		},
+		// bls_verify_aggregate verifies an aggregated BLS signature against
+		// a list of pubkeys all having signed the SAME message. This is the
+		// standard "quorum signed a notarization" pattern: each validator
+		// signs the canonical message with its own key, then the submitter
+		// aggregates the signatures (via bls.Aggregate off-chain) and the
+		// contract aggregates the pubkeys here for a single pairing check.
+		//
+		// pubkeys_concat: concatenated hex of 48-byte compressed pubkeys
+		//                 (length must be a multiple of 96 hex chars, at
+		//                 least 1 pubkey, max 256 to bound CPU cost)
+		// msg:            arbitrary length message (hex)
+		// agg_sig:        96-byte compressed aggregate signature (hex)
+		//
+		// Returns "true" or "false". Deterministic.
+		//
+		// Gas: base 10x keccak + 0.5x keccak per pubkey aggregated, reflecting
+		// per-pubkey hash + EC add cost on top of the verify pairing.
+		//
+		// Designed for the Dash InstantSend login attestation flow where N
+		// Magi validators each sign the same canonical IS-lock message with
+		// their consensus BLS key. The dash-mapping-contract reads the
+		// validator set from elections state, supplies their pubkeys here,
+		// and verifies the bundle.
+		"bls_verify_aggregate": func(ctx context.Context, arg1 any, arg2 any, arg3 any) SdkResult {
+			pubkeysHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			msgHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			aggSigHex, ok := arg3.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			pubkeys, err := blsParsePubkeysConcat(pubkeysHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), err),
+				)
+			}
+			msg, err := hexDecode(msgHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid msg hex")),
+				)
+			}
+			aggSig, err := blsParseSignature(aggSigHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), err),
+				)
+			}
+			aggPubkey, err := bls.AggregatePubkeys(pubkeys)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("aggregate pubkeys: %w", err)),
+				)
+			}
+			verified := bls.Verify(aggPubkey, msg, aggSig)
+			outResult := "false"
+			if verified {
+				outResult = "true"
+			}
+			// Per-pubkey hash + curve add cost is roughly half a keccak each;
+			// the pairing dominates total cost regardless of N up to small
+			// quorum sizes (~17 for testnet, similar for mainnet).
+			perPubkeyGas := uint(params.CYCLE_GAS_PER_RC / 2)
+			return result.Ok(SdkResultStruct{
+				Result: outResult,
+				Gas:    params.CYCLE_GAS_PER_RC*10 + perPubkeyGas*uint(len(pubkeys)),
+			})
+		},
 	},
+}
+
+// blsMaxPubkeysPerVerify caps the aggregate-verify size to bound CPU cost.
+// Sized comfortably above current Magi validator set (17 on testnet); raise
+// if validator counts grow.
+const blsMaxPubkeysPerVerify = 256
+
+// blsParsePubkey decodes a single 48-byte compressed G1 pubkey from hex.
+func blsParsePubkey(hexStr string) (*bls.Pubkey, error) {
+	raw, err := hexDecode(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pubkey hex")
+	}
+	if len(raw) != 48 {
+		return nil, fmt.Errorf("pubkey must be 48 bytes hex, got %d", len(raw))
+	}
+	var pk bls.Pubkey
+	if err := pk.Deserialize((*[48]byte)(raw)); err != nil {
+		return nil, fmt.Errorf("pubkey deserialize: %w", err)
+	}
+	return &pk, nil
+}
+
+// blsParsePubkeysConcat decodes N concatenated 48-byte compressed G1
+// pubkeys from a single hex string. Length must be a multiple of 96 hex
+// chars, at least 1 pubkey, at most blsMaxPubkeysPerVerify.
+func blsParsePubkeysConcat(hexStr string) ([]*bls.Pubkey, error) {
+	raw, err := hexDecode(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pubkeys hex")
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("pubkeys empty: need at least 1")
+	}
+	if len(raw)%48 != 0 {
+		return nil, fmt.Errorf("pubkeys length must be multiple of 48 bytes, got %d", len(raw))
+	}
+	n := len(raw) / 48
+	if n > blsMaxPubkeysPerVerify {
+		return nil, fmt.Errorf("pubkeys count %d exceeds max %d", n, blsMaxPubkeysPerVerify)
+	}
+	out := make([]*bls.Pubkey, n)
+	for i := 0; i < n; i++ {
+		var pk bls.Pubkey
+		start := i * 48
+		chunk := raw[start : start+48]
+		if err := pk.Deserialize((*[48]byte)(chunk)); err != nil {
+			return nil, fmt.Errorf("pubkey %d deserialize: %w", i, err)
+		}
+		out[i] = &pk
+	}
+	return out, nil
+}
+
+// blsParseSignature decodes a single 96-byte compressed G2 signature from hex.
+func blsParseSignature(hexStr string) (*bls.Signature, error) {
+	raw, err := hexDecode(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid sig hex")
+	}
+	if len(raw) != 96 {
+		return nil, fmt.Errorf("sig must be 96 bytes hex, got %d", len(raw))
+	}
+	var sig bls.Signature
+	if err := sig.Deserialize((*[96]byte)(raw)); err != nil {
+		return nil, fmt.Errorf("sig deserialize: %w", err)
+	}
+	return &sig, nil
 }
 
 func hexDecode(s string) ([]byte, error) {
