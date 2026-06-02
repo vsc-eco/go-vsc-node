@@ -8,11 +8,14 @@ import (
 )
 
 // validateOperatorURL enforces that operator-supplied URL flags
-// carry an explicit scheme + host AND do not embed userinfo. The
-// IS service prefers network-trust boundaries over bearer-in-URL;
-// credentials there would also leak through structured logs even
-// with sanitizeURLForLog active (R7-OP-01-logleak / R8-SEC-01).
-// Returns a fatal startup error rather than silently sanitising.
+// carry an explicit http/https scheme + host, do not embed userinfo,
+// and do not carry a query string or fragment. The IS service prefers
+// network-trust boundaries over bearer-in-URL; credentials anywhere
+// in the URL would also leak through structured logs even with
+// sanitizeURLForLog active (R7-OP-01-logleak / R8-SEC-01).
+// Round-9 audit R9-INFO-SCHEME-01 + R9-SEC-QUERY-01 tightened the
+// scheme allow-list and added query/fragment rejection. Returns a
+// fatal startup error rather than silently sanitising.
 func validateOperatorURL(flag, raw string) error {
 	if raw == "" {
 		return nil
@@ -24,8 +27,14 @@ func validateOperatorURL(flag, raw string) error {
 	if u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("%s must include an explicit scheme and host (got %q)", flag, raw)
 	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s scheme must be http or https (got %q)", flag, u.Scheme)
+	}
 	if u.User != nil {
 		return fmt.Errorf("%s must NOT embed credentials in the URL (user:pass@); use a network-trust boundary instead", flag)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s must NOT include a query string or fragment; secrets carried that way still reach upstream callers", flag)
 	}
 	return nil
 }

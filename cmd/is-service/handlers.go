@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -664,7 +665,13 @@ func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
 	var matched bool
 	var conflict bool
 	s.sessions.MutateState(sid, func(sess *Session) {
-		if sess.AddressSignature != provided {
+		// Round-9 audit R9-INFO-TIMING-01: use crypto/subtle for the
+		// AddressSignature comparison so the loop doesn't short-circuit
+		// on the first mismatched byte. The signature is HMAC-SHA256
+		// base64 (~256 bits) so any actual timing oracle is far below
+		// network-measurement resolution, but constant-time is the
+		// hygienic default for any secret-equality check.
+		if subtle.ConstantTimeCompare([]byte(sess.AddressSignature), []byte(provided)) != 1 {
 			return
 		}
 		matched = true

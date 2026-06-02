@@ -32,19 +32,29 @@ import (
 // Returns a string suitable for slog attrs and operator logs. NEVER
 // returns userinfo, query, or path components.
 func sanitizeURLForLog(raw string) string {
+	return sanitizeURLForLogWithFlag("", raw)
+}
+
+// sanitizeURLForLogWithFlag is the flag-aware sanitiser variant.
+// Round-9 audit R9-INFO-MARKER-HINT-01 — when a redaction marker
+// fires, including the flag name in the marker saves operators a
+// triage step (no need to map slog key → flag manually).
+func sanitizeURLForLogWithFlag(flag, raw string) string {
+	mark := func(reason string) string {
+		if flag == "" {
+			return "<redacted: " + reason + ">"
+		}
+		return "<redacted: " + flag + " " + reason + ">"
+	}
 	if raw == "" {
 		return ""
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "<redacted: unparseable URL>"
+		return mark("unparseable URL")
 	}
 	if u.Scheme == "" || u.Host == "" {
-		// Schemeless input like "user:pass@host:8080/api" parses
-		// successfully with Scheme="user" and empty Host — we must
-		// redact rather than emit the raw string (which still
-		// carries userinfo). Round-8 audit R8-SEC-01.
-		return "<redacted: missing scheme>"
+		return mark("missing scheme")
 	}
 	return u.Scheme + "://" + u.Host
 }
@@ -336,7 +346,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		slog.Error("validator-set / libp2p roster divergence: no responder matched expected set",
 			"sid", sid, "epoch", req.Epoch,
 			"responders", len(responses), "expectedSize", len(expected),
-			"validatorSetSource", sanitizeURLForLog(o.validatorSetSource),
+			"validatorSetSource", sanitizeURLForLogWithFlag("-l2GqlURL", o.validatorSetSource),
 			"hint", "verify the L2 GraphQL endpoint at validatorSetSource returns the actual on-chain validator set for this epoch")
 	}
 

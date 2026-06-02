@@ -95,12 +95,20 @@ els.startBtn.addEventListener("click", async () => {
 //   - distinguish 409 (in-flight refusal — keep polling, do NOT tear
 //     down local UI) from 204 (cancelled) and 404/401 (already gone)
 //   - bound the post-409 polling window with a client-side deadline
+//   - hold the cancel token in JS memory (closure / module state),
+//     NOT in the DOM (textContent) — DOM-stored secrets are
+//     readable by any same-origin script. Round-9 audit
+//     R9-INFO-REFCLIENT-DOM-01: this reference reads the token
+//     from els.addressSignature.textContent on purpose so the
+//     foot-gun is visible, but production callers MUST keep it
+//     out of the DOM.
 //
 // See altera-app/src/lib/auth/dash/{isClient.ts,session.svelte.ts}
 // for a production implementation that handles all three outcomes
-// + the R6-SEC-01 trap-deadline. Round-8 audit R8-DRIFT-REF-CLIENT
-// caught the gap below; the minimal version stays minimal but is
-// labelled so integrators don't ship this verbatim.
+// + the R6-SEC-01 trap-deadline + the R9-SEC-01 AbortController
+// timeouts. Round-8 audit R8-DRIFT-REF-CLIENT caught the gap below;
+// the minimal version stays minimal but is labelled so integrators
+// don't ship this verbatim.
 els.cancelBtn.addEventListener("click", async () => {
   if (!activeSid) return;
   // Capture the addressSignature returned by /session/start when
@@ -178,7 +186,17 @@ async function pollStatus(sid) {
       stopPolling();
       els.result.hidden = false;
       els.sessionToken.textContent = s.sessionToken;
-    } else if (s.state === "EXPIRED" || s.state === "FAILED") {
+    } else if (
+      // Round-9 audit R9-OP-01: real terminal states match
+      // cmd/is-service/session.go IsTerminal() — the pre-R9
+      // reference checked a non-existent "FAILED" state and
+      // polled forever on FORWARD_FAILED / ATTESTATION_TIMEOUT /
+      // SLOW_PATH_PENDING.
+      s.state === "EXPIRED" ||
+      s.state === "FORWARD_FAILED" ||
+      s.state === "ATTESTATION_TIMEOUT" ||
+      s.state === "SLOW_PATH_PENDING"
+    ) {
       stopPolling();
     }
   } catch (err) {

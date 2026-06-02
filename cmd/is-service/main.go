@@ -87,11 +87,12 @@ func main() {
 		probeCancel()
 		if probeErr != nil {
 			slog.Error("dashd RPC startup probe failed — refusing to start with degraded backend",
-				"rpc", sanitizeURLForLog(args.dashdRPCURL), "err", probeErr)
+				"rpc", sanitizeURLForLogWithFlag("-dashdRPC", args.dashdRPCURL), "err", probeErr)
 			os.Exit(1)
 		}
 		dashd = NewDashdWatcher(client)
-		slog.Info("dashd watcher configured + probed", "rpc", sanitizeURLForLog(args.dashdRPCURL))
+		slog.Info("dashd watcher configured + probed",
+			"rpc", sanitizeURLForLogWithFlag("-dashdRPC", args.dashdRPCURL))
 	} else {
 		slog.Info("dashd watcher NOT configured — IS_OBSERVED transitions must be driven externally")
 	}
@@ -177,9 +178,11 @@ func main() {
 		// Round-8 audit R8-SEC-01: emit through sanitizeURLForLog so
 		// embedded credentials in -l2GqlURL never reach log shippers.
 		// This was the dominant startup-time leak surface (the R7
-		// fix only covered the roster-divergence path).
+		// fix only covered the roster-divergence path). Round-9
+		// R9-INFO-MARKER-HINT-01: use the flag-aware variant so the
+		// redaction marker (if any) names the offending flag.
 		slog.Info("L2 submitter configured",
-			"endpoint", sanitizeURLForLog(args.l2GqlURL),
+			"endpoint", sanitizeURLForLogWithFlag("-l2GqlURL", args.l2GqlURL),
 			"contract", args.l2DashMappingContract,
 			"did", l2.DID())
 	} else {

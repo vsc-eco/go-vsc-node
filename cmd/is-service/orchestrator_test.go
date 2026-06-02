@@ -318,6 +318,10 @@ func TestSanitizeURLForLog(t *testing.T) {
 		// url.Parse accepts most strings; control-byte cases that
 		// would otherwise emit raw must still redact.
 		{"control-bytes", "https://gql.example.org/\x00leak", "<redacted: unparseable URL>"},
+		// Round-9 audit R9-TEST-01: backslash-host doesn't parse
+		// as a URL; verify it lands in the explicit-redacted branch
+		// (and never raw, which would leak the path component).
+		{"backslash-host", "http://host\\path", "<redacted: unparseable URL>"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
