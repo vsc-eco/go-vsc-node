@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sign in with DashPay — reference client</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- qrcode-svg, single file, MIT — kept local rather than hot-linking
+       a CDN so this reference works offline. The team should replace
+       this with whatever QR lib their frontend already uses. -->
+  <script src="./vendor/qrcode.min.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Sign in with DashPay</h1>
+    <p class="hint">
+      Reference integration for the Dash InstantSend login flow.
+      See <code>../README.md</code> for protocol details.
+    </p>
+
+    <section id="config">
+      <label>
+        IS service base URL
+        <input id="baseUrl" type="text" value="http://localhost:3030" />
+      </label>
+      <label>
+        Operation
+        <select id="op">
+          <option value="auth">auth (free, login only)</option>
+          <option value="call">call (invoke a contract)</option>
+        </select>
+      </label>
+      <fieldset id="callArgs" hidden>
+        <legend>Call args</legend>
+        <label>contract id <input id="contract" type="text" placeholder="vsc1..." /></label>
+        <label>method <input id="method" type="text" placeholder="transfer" /></label>
+        <label>args (base64) <input id="argsB64" type="text" placeholder="<tinyjson base64>" /></label>
+        <label>amount duffs <input id="amount" type="number" min="0" placeholder="0 = free login-style call" /></label>
+      </fieldset>
+      <button id="start">Start session</button>
+    </section>
+
+    <section id="session" hidden>
+      <h2>Pay this address via DashPay</h2>
+      <div id="qr"></div>
+      <p>
+        Address <code id="depositAddr"></code><br />
+        Fingerprint <code id="fingerprint"></code><br />
+        Amount <code id="amount-out"></code> duffs<br />
+        Expires <code id="expiresAt"></code>
+      </p>
+      <p>
+        State <code id="state"></code><br />
+        Dash tx <code id="dashTxId">—</code><br />
+        On-chain at <code id="onChainAt">—</code>
+      </p>
+      <details>
+        <summary>Address signature (verify against pinned key)</summary>
+        <pre id="addressSignature"></pre>
+      </details>
+      <button id="cancel">Cancel session</button>
+    </section>
+
+    <section id="result" hidden>
+      <h2>Session token</h2>
+      <pre id="sessionToken"></pre>
+      <p class="hint">Use this token to authenticate subsequent requests to Altera.</p>
+    </section>
+  </main>
+
+  <script src="./client.js"></script>
+</body>
+</html>
