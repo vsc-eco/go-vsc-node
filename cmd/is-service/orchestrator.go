@@ -13,22 +13,38 @@ import (
 	islock "vsc-node/modules/islock-attestation"
 )
 
-// sanitizeURLForLog strips userinfo + query string from a URL so an
-// operator who accidentally configured -l2GqlURL with embedded
+// sanitizeURLForLog strips userinfo + query string + path from a URL
+// so an operator who accidentally configured -l2GqlURL with embedded
 // credentials (e.g. https://user:pass@host/...) doesn't leak them
 // through structured logs to a log-shipping pipeline. Round-7 audit
-// R7-OP-01-logleak. Falls back to scheme://host when parsing
-// succeeds; falls back to "" when the input doesn't parse.
+// R7-OP-01-logleak; round-8 audit R8-SEC-01 + R8-DESIGN-DOC-01
+// closed the schemeless-input bypass and aligned the function with
+// its docstring.
+//
+// Behavior:
+//   - empty input → empty output
+//   - url.Parse failure → "<redacted: unparseable URL>" (never raw)
+//   - missing scheme OR host (e.g. host:port literal,
+//     `user:pass@host` opaque form) → "<redacted: missing scheme>"
+//   - well-formed URL → "<scheme>://<host>" (host may include port,
+//     IPv6 brackets are preserved; userinfo + query + path dropped)
+//
+// Returns a string suitable for slog attrs and operator logs. NEVER
+// returns userinfo, query, or path components.
 func sanitizeURLForLog(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		// Not a URL — likely a host:port literal; emit as-is so the
-		// operator can still find the upstream. We've already
-		// stripped any '@' bearing prefix at the parse step.
-		return raw
+	if err != nil {
+		return "<redacted: unparseable URL>"
+	}
+	if u.Scheme == "" || u.Host == "" {
+		// Schemeless input like "user:pass@host:8080/api" parses
+		// successfully with Scheme="user" and empty Host — we must
+		// redact rather than emit the raw string (which still
+		// carries userinfo). Round-8 audit R8-SEC-01.
+		return "<redacted: missing scheme>"
 	}
 	return u.Scheme + "://" + u.Host
 }

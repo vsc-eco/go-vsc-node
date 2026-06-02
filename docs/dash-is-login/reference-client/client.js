@@ -87,11 +87,38 @@ els.startBtn.addEventListener("click", async () => {
   }
 });
 
+// NOTE: this reference client is a minimal showcase. Production
+// clients MUST:
+//
+//   - send X-Cancel-Token (the addressSignature from /session/start)
+//     so the server can authenticate the cancel
+//   - distinguish 409 (in-flight refusal — keep polling, do NOT tear
+//     down local UI) from 204 (cancelled) and 404/401 (already gone)
+//   - bound the post-409 polling window with a client-side deadline
+//
+// See altera-app/src/lib/auth/dash/{isClient.ts,session.svelte.ts}
+// for a production implementation that handles all three outcomes
+// + the R6-SEC-01 trap-deadline. Round-8 audit R8-DRIFT-REF-CLIENT
+// caught the gap below; the minimal version stays minimal but is
+// labelled so integrators don't ship this verbatim.
 els.cancelBtn.addEventListener("click", async () => {
   if (!activeSid) return;
-  await fetch(els.baseUrl.value + "/session/" + activeSid + "/cancel", {
+  // Capture the addressSignature returned by /session/start when
+  // showing the session and pass it back here — required by the
+  // server's R4-003 / TC2-01 auth gate.
+  const cancelToken = els.addressSignature.textContent;
+  const resp = await fetch(els.baseUrl.value + "/session/" + activeSid + "/cancel", {
     method: "POST",
+    headers: cancelToken ? { "X-Cancel-Token": cancelToken } : {},
   });
+  if (resp.status === 409) {
+    // Server is mid-attestation. A production client would keep
+    // polling /status until terminal (bounded by a client deadline).
+    // This minimal reference simply surfaces the conflict so the
+    // integrator sees it.
+    console.warn("cancel refused (409 in-flight) — production clients should keep polling /status");
+    return;
+  }
   stopPolling();
   els.session.hidden = true;
   els.config.hidden = false;

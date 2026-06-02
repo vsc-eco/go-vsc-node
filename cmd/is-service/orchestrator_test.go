@@ -295,6 +295,42 @@ func TestOrchestrator_RosterDivergence_DropsUnknownResponders(t *testing.T) {
 		"submitter must not be called when no responders pass the DID gate")
 }
 
+// Round-8 audit R8-TEST-01: pin sanitizeURLForLog against every
+// pathological input class the R8-SEC-01 fix targeted. Without this
+// the next refactor (e.g. accepting opaque "host:port" emit-as-is)
+// silently re-opens the credential-leak hole the round-7 fix was
+// supposed to close.
+func TestSanitizeURLForLog(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"clean-https", "https://gql.example.org/graphql", "https://gql.example.org"},
+		{"clean-http-port", "http://gql.example.org:8080/graphql", "http://gql.example.org:8080"},
+		{"strip-userinfo", "https://user:pass@gql.example.org/graphql", "https://gql.example.org"},
+		{"strip-query", "https://gql.example.org/graphql?token=secret", "https://gql.example.org"},
+		{"strip-fragment", "https://gql.example.org/graphql#sensitive", "https://gql.example.org"},
+		{"ipv6-host", "https://[fe80::1]:8080/path", "https://[fe80::1]:8080"},
+		{"schemeless-with-creds", "user:pass@host:8080/api", "<redacted: missing scheme>"},
+		{"host-port-only", "host:8080", "<redacted: missing scheme>"},
+		// url.Parse accepts most strings; control-byte cases that
+		// would otherwise emit raw must still redact.
+		{"control-bytes", "https://gql.example.org/\x00leak", "<redacted: unparseable URL>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := sanitizeURLForLog(c.in)
+			assert.Equal(t, c.want, got, "sanitizeURLForLog(%q)", c.in)
+			// Never leak userinfo (the '@' marker) regardless of
+			// case classification.
+			assert.NotContains(t, got, "user:pass",
+				"sanitizer must never emit userinfo for input %q", c.in)
+		})
+	}
+}
+
 func TestOrchestrator_Counters_SnapshotShape(t *testing.T) {
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions:    NewSessionStore(time.Hour),

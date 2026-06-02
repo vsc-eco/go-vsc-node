@@ -3,8 +3,32 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 )
+
+// validateOperatorURL enforces that operator-supplied URL flags
+// carry an explicit scheme + host AND do not embed userinfo. The
+// IS service prefers network-trust boundaries over bearer-in-URL;
+// credentials there would also leak through structured logs even
+// with sanitizeURLForLog active (R7-OP-01-logleak / R8-SEC-01).
+// Returns a fatal startup error rather than silently sanitising.
+func validateOperatorURL(flag, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s is not a parseable URL: %w", flag, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%s must include an explicit scheme and host (got %q)", flag, raw)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s must NOT embed credentials in the URL (user:pass@); use a network-trust boundary instead", flag)
+	}
+	return nil
+}
 
 type args struct {
 	debug               bool
@@ -144,6 +168,16 @@ func parseArgs() (args, error) {
 	// 30s default with no signal.
 	if a.validatorSetCacheTTLSeconds < 1 {
 		return a, fmt.Errorf("-validatorSetCacheTTLSeconds must be > 0")
+	}
+	// Round-8 audit R8-SEC-01: reject URL flags that embed
+	// credentials or lack an explicit scheme. Pre-R8 a misconfigured
+	// -l2GqlURL=user:pass@host bypassed sanitizeURLForLog and
+	// leaked through startup logs.
+	if err := validateOperatorURL("-dashdRPC", a.dashdRPCURL); err != nil {
+		return a, err
+	}
+	if err := validateOperatorURL("-l2GqlURL", a.l2GqlURL); err != nil {
+		return a, err
 	}
 	return a, nil
 }

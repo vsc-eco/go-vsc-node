@@ -369,12 +369,15 @@ func TestHealthz(t *testing.T) {
 	assert.Contains(t, w.Body.String(), `"ok":true`)
 }
 
-// Round-5 audit R5-COV-05 / round-7 R7-DRIFT-01: assert /healthz JSON
-// includes the round-3 + round-4 + round-5 + round-6 fields. Locks
-// down the shape so frontend dashboards have a stable contract.
+// Round-5 audit R5-COV-05 / round-7 R7-DRIFT-01 / round-8 R8-OP-01:
+// assert /healthz JSON includes the round-3 + round-4 + round-5 +
+// round-6 fields. Locks down the shape so frontend dashboards have
+// a stable contract.
 func TestHealthz_EmitsExpectedKeys(t *testing.T) {
+	before := time.Now().Unix()
 	srv := newTestServer(t)
 	w := doRequest(t, srv, "GET", "/healthz", nil)
+	after := time.Now().Unix()
 	require.Equal(t, http.StatusOK, w.Code)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
@@ -383,20 +386,25 @@ func TestHealthz_EmitsExpectedKeys(t *testing.T) {
 		_, present := body[key]
 		assert.True(t, present, "/healthz missing key %q", key)
 	}
-	// processStartedAtUnix must be a number near current Unix time.
+	// Round-8 audit R8-OP-01: assert by bracket [before, after]
+	// rather than InDelta(5s) — gives zero false-positives on slow
+	// CI without bloating the tolerance window.
 	if v, ok := body["processStartedAtUnix"].(float64); ok {
-		now := float64(time.Now().Unix())
-		assert.InDelta(t, now, v, 5,
-			"processStartedAtUnix must be within 5s of now")
+		assert.GreaterOrEqual(t, int64(v), before,
+			"processStartedAtUnix must be >= before-snapshot")
+		assert.LessOrEqual(t, int64(v), after,
+			"processStartedAtUnix must be <= after-snapshot")
 	} else {
 		t.Errorf("processStartedAtUnix must be numeric, got %T", body["processStartedAtUnix"])
 	}
 }
 
-// Round-7 audit R7-TEST-01: the SubmitterHealth warmup sentinel and
-// the wrapped-error case must produce different /healthz behaviour.
-// Warmup → ok=false (503), submitterWarmup=true, balance/RC omitted.
-// Real probe failure → degraded only after >= 3 consecutive fails.
+// Round-7 audit R7-TEST-01 / round-8 R8-DRIFT-WARMUP-FIELDS: the
+// SubmitterHealth warmup sentinel and the wrapped-error case must
+// produce different /healthz behaviour. Warmup → ok=false (503),
+// submitterWarmup=true, balance/RC/probeErr omitted. Real probe
+// failure → degraded only after >= submitterDegradedFailThreshold
+// consecutive fails.
 func TestHealthz_WarmupSentinelNotProbeFailure(t *testing.T) {
 	srv := newTestServer(t)
 	srv.submitterHealth = func() (string, int64, int64, int, error) {
@@ -409,35 +417,43 @@ func TestHealthz_WarmupSentinelNotProbeFailure(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Equal(t, true, body["submitterWarmup"])
 	assert.Equal(t, false, body["ok"])
-	// Round-7 R7-CORR-01-gvn: balance/RC keys are omitted during
-	// warmup so scrapers don't trip rc<=0 alerts on zero-init values.
-	_, hasBalance := body["submitterBalanceHbdCents"]
-	_, hasRc := body["submitterRcRemaining"]
-	assert.False(t, hasBalance, "submitterBalanceHbdCents must be omitted during warmup")
-	assert.False(t, hasRc, "submitterRcRemaining must be omitted during warmup")
+	// Round-7 R7-CORR-01-gvn + round-8 R8-DRIFT-WARMUP-FIELDS: balance/RC/probeErr
+	// keys are omitted during warmup. The warmup sentinel is NOT a
+	// probe failure so submitterProbeErr must not appear either.
+	for _, omitKey := range []string{
+		"submitterBalanceHbdCents", "submitterRcRemaining", "submitterProbeErr",
+	} {
+		_, has := body[omitKey]
+		assert.False(t, has, "%q must be omitted during warmup", omitKey)
+	}
 }
 
 func TestHealthz_SubmitterHysteresisGate(t *testing.T) {
 	srv := newTestServer(t)
-	// First two failures must NOT flip degraded (threshold = 3).
+	// Round-8 audit R8-TEST-01: use the package-local threshold
+	// constant rather than literal 2/3 so a future bump to the
+	// hysteresis threshold automatically updates this test.
+	belowThreshold := submitterDegradedFailThreshold - 1
+	atThreshold := submitterDegradedFailThreshold
+
 	srv.submitterHealth = func() (string, int64, int64, int, error) {
-		return "did:test", 100, 200, 2, errors.New("transient flap")
+		return "did:test", 100, 200, belowThreshold, errors.New("transient flap")
 	}
 	w := doRequest(t, srv, "GET", "/healthz", nil)
 	assert.Equal(t, http.StatusOK, w.Code,
-		"two consecutive fails must NOT trip degraded")
+		"%d consecutive fails must NOT trip degraded", belowThreshold)
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	_, degraded := body["submitterDegraded"]
 	assert.False(t, degraded, "submitterDegraded must stay off below threshold")
-	assert.Equal(t, float64(2), body["submitterConsecutiveFails"])
-	// Reach threshold: third fail flips degraded.
+	assert.Equal(t, float64(belowThreshold), body["submitterConsecutiveFails"])
+
 	srv.submitterHealth = func() (string, int64, int64, int, error) {
-		return "did:test", 100, 200, 3, errors.New("transient flap")
+		return "did:test", 100, 200, atThreshold, errors.New("transient flap")
 	}
 	w = doRequest(t, srv, "GET", "/healthz", nil)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
-		"third fail must flip /healthz to 503")
+		"%d consecutive fails must flip /healthz to 503", atThreshold)
 }
 
 // Round-5 audit R5-COV-03: isTrustedProxy must normalize IPv6 host
