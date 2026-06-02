@@ -870,6 +870,13 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
 			}
+			// Mirror the production wiring (transactions.go) so the
+			// simulate path matches real-execution semantics for
+			// contracts.call_as — audit
+			// `trusted-forwarders-not-wired-in-state-processing`.
+			if sc := r.StateEngine.SystemConfig(); sc != nil {
+				ctxOpts = append(ctxOpts, contract_execution_context.WithTrustedForwarders(sc.TrustedForwarders()))
+			}
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{

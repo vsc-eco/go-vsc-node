@@ -119,18 +119,21 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		o.fail(sid, fmt.Sprintf("invalid rawTxHex: %v", err))
 		return
 	}
-	rawTxHash := sha256.Sum256(rawTxBytes)
-	// Dash actually uses sha256d for tx hashing; v1 uses sha256 for
-	// canonical-message construction (validators do the same). Aligning
-	// with sha256d is a workstream-5b follow-up — needs coordinated
-	// change in modules/islock-attestation/attestation.go and the
-	// contract's CanonicalAttestationMessage.
+	// sha256d (double SHA-256) is Bitcoin's tx-hashing convention; the
+	// dash-mapping-contract's CanonicalAttestationMessage uses sha256d
+	// on the same rawTxBytes. The signing-message builder
+	// (CanonicalSigningMessage) reverses display-hex → internal-bytes,
+	// so we put the DISPLAY-form hex on the wire here. See audit
+	// `canonical-message-txid-byte-order-drift`.
+	first := sha256.Sum256(rawTxBytes)
+	internal := sha256.Sum256(first[:])
+	displayHash := islock.ReverseBytesCopy(internal[:])
 
 	instrHash := sha256.Sum256([]byte(sess.Instruction))
 
 	req := islock.IsLockAttestationRequest{
 		TxId:               txid,
-		RawTxHashHex:       hex.EncodeToString(rawTxHash[:]),
+		RawTxHashHex:       hex.EncodeToString(displayHash),
 		InstructionHashHex: hex.EncodeToString(instrHash[:]),
 		Epoch:              o.epochFor(ctx),
 		ChainId:            o.chainID,
@@ -144,13 +147,21 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		}
 	})
 
+	// Pre-register the awaiter BEFORE broadcast so responses arriving
+	// in the broadcast→collect gap aren't silently dropped. Without
+	// this, a fast validator (or test goroutine) racing the orchestrator
+	// can land its Deliver before Collect runs Await, and the response
+	// hits the no-awaiter early-return.
+	collectCtx, cancel := context.WithTimeout(ctx, o.collectTimeout)
+	defer cancel()
+	_ = o.collector.Await(txid, o.quorumThreshold*2)
+
 	if err := o.broadcaster.BroadcastRequest(ctx, req); err != nil {
+		o.collector.Cancel(txid)
 		o.fail(sid, fmt.Sprintf("broadcast failed: %v", err))
 		return
 	}
 
-	collectCtx, cancel := context.WithTimeout(ctx, o.collectTimeout)
-	defer cancel()
 	responses := o.collector.Collect(collectCtx, txid, o.quorumThreshold, o.collectTimeout)
 
 	if len(responses) < o.quorumThreshold {
@@ -166,19 +177,43 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
+	// Build per-attestation entries for the contract envelope. Each
+	// validator's PubkeyHex came down on the wire — the contract
+	// verifies it against the registered set at the request's epoch.
+	atts := make([]MapInstantSendAttestation, 0, len(responses))
+	for _, r := range responses {
+		atts = append(atts, MapInstantSendAttestation{
+			ValidatorDID: r.ValidatorDID,
+			PubkeyHex:    r.PubkeyHex,
+			BlsSigHex:    r.BlsSigHex,
+		})
+	}
+
+	// Aggregate the per-validator signatures into one BLS signature
+	// the contract verifies via crypto.bls_verify_aggregate.
+	aggSigHex, err := islock.AggregateSignatures(responses)
+	if err != nil {
+		o.fail(sid, fmt.Sprintf("BLS aggregate failed: %v", err))
+		return
+	}
+
 	payload := MapInstantSendPayload{
-		TxId:               txid,
-		RawTxHex:           rawTxHex,
-		InstructionRaw:     sess.Instruction,
-		InstructionHashHex: req.InstructionHashHex,
-		Epoch:              req.Epoch,
-		ChainId:            req.ChainId,
-		Attestations:       responses,
+		Body: MapInstantSendBody{
+			RawTxHex:     rawTxHex,
+			Instruction:  sess.Instruction,
+			Epoch:        req.Epoch,
+			Attestations: atts,
+			ChainId:      req.ChainId,
+		},
+		Agg: MapInstantSendAgg{
+			AggSigHex: aggSigHex,
+		},
 	}
 
 	submitCtx, submitCancel := context.WithTimeout(ctx, o.submitTimeout)
 	defer submitCancel()
-	if err := o.submitter.SubmitMapInstantSend(submitCtx, payload); err != nil {
+	l2TxID, err := o.submitter.SubmitMapInstantSend(submitCtx, payload)
+	if err != nil {
 		o.fail(sid, fmt.Sprintf("L2 submission failed: %v", err))
 		return
 	}
@@ -187,7 +222,8 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 	o.sessions.MutateState(sid, func(s *Session) {
 		s.State = StateOnChain
 		s.OnChainAt = &now
-		// v1 session token: hex of (sid || dashTxId || epoch). This is a
+		s.L2TxId = l2TxID
+		// v1 session token: hex of (sid || dashTxId || chainID). This is a
 		// stable opaque handle the frontend can present to Altera; Altera
 		// validates it by checking the dash-mapping-contract state for
 		// the bound DashDID. Production may swap this for a JWT signed by
@@ -196,7 +232,9 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		s.SessionToken = hex.EncodeToString(h[:])
 	})
 
-	slog.Info("session reached ON_CHAIN", "sid", sid, "txid", txid)
+	slog.Info("session reached ON_CHAIN",
+		"sid", sid, "dashTxid", txid, "l2TxId", l2TxID,
+		"attestations", len(responses))
 }
 
 func (o *Orchestrator) fail(sid, reason string) {

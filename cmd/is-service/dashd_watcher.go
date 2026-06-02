@@ -110,7 +110,52 @@ type RawTransactionResult struct {
 	TxID        string `json:"txid"`
 	Hex         string `json:"hex"`
 	InstantLock bool   `json:"instantlock"`
-	// Truncated — many other fields exist but we don't need them.
+	// Vout carries the output set so the watcher can pre-match watched
+	// addresses BEFORE firing onObserved. Without this filter every
+	// session-watching the watcher would mass-transition on every
+	// IS-locked tx in the mempool.
+	Vout []RawTxOutput `json:"vout"`
+}
+
+// RawTxOutput is the minimal projection of dashd's verbose vout entry
+// we need: the addresses script pays to. Other fields (value, n, type)
+// exist on the wire but we don't consume them — Vout is purely for the
+// per-tx watcher fan-out filter.
+type RawTxOutput struct {
+	ScriptPubKey RawTxScriptPubKey `json:"scriptPubKey"`
+}
+
+type RawTxScriptPubKey struct {
+	Addresses []string `json:"addresses"`
+	// Some Dash forks ALSO surface an `address` (singular) field for
+	// single-address scripts. Accept both for robustness.
+	Address string `json:"address"`
+}
+
+// payeeAddresses returns the union of address-strings across all vout
+// entries (de-duped, order preserved by first sighting). Used by the
+// poll loop to filter the watched-address fan-out.
+func (r *RawTransactionResult) payeeAddresses() []string {
+	if r == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(r.Vout))
+	out := make([]string, 0, len(r.Vout))
+	for _, vo := range r.Vout {
+		if vo.ScriptPubKey.Address != "" {
+			if _, dup := seen[vo.ScriptPubKey.Address]; !dup {
+				seen[vo.ScriptPubKey.Address] = struct{}{}
+				out = append(out, vo.ScriptPubKey.Address)
+			}
+		}
+		for _, a := range vo.ScriptPubKey.Addresses {
+			if _, dup := seen[a]; !dup {
+				seen[a] = struct{}{}
+				out = append(out, a)
+			}
+		}
+	}
+	return out
 }
 
 // GetRawTransaction fetches a tx's verbose details. Returns nil + a
@@ -154,6 +199,12 @@ type DashdWatcher struct {
 	watched map[string]watchedAddress
 	// pollInterval controls the dashd polling cadence. Default 2s.
 	pollInterval time.Duration
+	// healthMu protects the consecutiveFails / lastErr / lastErrAt
+	// fields exposed via Health() for /healthz.
+	healthMu         sync.Mutex
+	consecutiveFails int
+	lastErr          error
+	lastErrAt        time.Time
 }
 
 type watchedAddress struct {
@@ -200,18 +251,58 @@ func (w *DashdWatcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.pollInterval)
 	defer ticker.Stop()
 
+	// consecutiveFailures: escalate poll-error logging once we've
+	// missed enough cycles that the watcher is effectively offline
+	// (audit `dashd-rpc-errors-only-at-debug-level`).
+	consecutiveFailures := 0
+	const escalateAfter = 5
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			if err := w.poll(ctx, seen); err != nil {
-				slog.Debug("dashd watcher poll error", "err", err)
+				consecutiveFailures++
+				if consecutiveFailures == escalateAfter {
+					slog.Error("dashd watcher: poll has failed repeatedly — sessions will stall in WAITING_FOR_IS",
+						"consecutiveFailures", consecutiveFailures, "err", err)
+				} else if consecutiveFailures > escalateAfter && consecutiveFailures%30 == 0 {
+					// Once we've escalated, sample every ~30 polls
+					// (~1 min at default cadence) so the log isn't flooded.
+					slog.Error("dashd watcher still failing",
+						"consecutiveFailures", consecutiveFailures, "err", err)
+				} else {
+					slog.Debug("dashd watcher poll error",
+						"consecutiveFailures", consecutiveFailures, "err", err)
+				}
+				w.healthMu.Lock()
+				w.lastErr = err
+				w.lastErrAt = time.Now()
+				w.consecutiveFails = consecutiveFailures
+				w.healthMu.Unlock()
 				// Don't return — transient errors are normal during
-				// dashd restarts/network blips.
+				// dashd restarts/network blips. The /healthz handler
+				// surfaces the degraded state.
+			} else if consecutiveFailures > 0 {
+				slog.Info("dashd watcher recovered",
+					"previousConsecutiveFailures", consecutiveFailures)
+				consecutiveFailures = 0
+				w.healthMu.Lock()
+				w.lastErr = nil
+				w.consecutiveFails = 0
+				w.healthMu.Unlock()
 			}
 		}
 	}
+}
+
+// Health returns the watcher's last-error + consecutive-failure count
+// for /healthz probes.
+func (w *DashdWatcher) Health() (consecutiveFails int, lastErr error, lastErrAt time.Time) {
+	w.healthMu.Lock()
+	defer w.healthMu.Unlock()
+	return w.consecutiveFails, w.lastErr, w.lastErrAt
 }
 
 func (w *DashdWatcher) poll(ctx context.Context, seen map[string]bool) error {
@@ -249,16 +340,26 @@ func (w *DashdWatcher) poll(ctx context.Context, seen map[string]bool) error {
 			continue
 		}
 		seen[txid] = true
-		// Look up which (if any) of our watched addresses received this tx.
-		// We don't have a parsed list of outputs here without re-decoding;
-		// dashd's verbose JSON has vout but we kept the struct minimal.
-		// For v1: fire onObserved with empty addr-match info and let the
-		// callback resolve the session via the txid → instruction lookup
-		// in the IS service's session store.
-		//
-		// TODO: parse tx.Vout[i].ScriptPubKey.Addresses and pre-match
-		// against watched addresses here for tighter routing.
-		for _, wa := range addrs {
+		// Per-output address match: only fire onObserved for sessions
+		// whose deposit address actually appears in tx.vout. Without
+		// this filter every IS-locked tx fans out to every watched
+		// session, mass-transitioning unrelated sessions to IS_OBSERVED
+		// with the wrong txid — see audit finding
+		// `watcher-fires-onobserved-cross-product`.
+		payees := tx.payeeAddresses()
+		if len(payees) == 0 {
+			// dashd's vout didn't decode (legacy multisig, op_return,
+			// older dashd lacking scriptPubKey.addresses). Skip — we
+			// can't safely fan-out without knowing who got paid.
+			slog.Debug("dashd tx has no decodable output addresses; skipping fan-out",
+				"txid", txid)
+			continue
+		}
+		for _, payee := range payees {
+			wa, ok := addrs[payee]
+			if !ok {
+				continue
+			}
 			wa.onObserved(wa.sid, txid, tx.Hex)
 		}
 	}

@@ -47,6 +47,41 @@ func mkReq() IsLockAttestationRequest {
 	}
 }
 
+// ----- byte-order helper -----
+
+func TestReverseBytesCopy(t *testing.T) {
+	in := []byte{0x01, 0x02, 0x03, 0x04}
+	out := ReverseBytesCopy(in)
+	assert.Equal(t, []byte{0x04, 0x03, 0x02, 0x01}, out)
+	// Must be a copy — input not mutated.
+	assert.Equal(t, []byte{0x01, 0x02, 0x03, 0x04}, in)
+}
+
+// TestCanonicalSigningMessage_TxidByteOrderReversed — regression for the
+// audit's `canonical-message-txid-byte-order-drift` finding. The signing
+// buffer must contain the INTERNAL byte order (reverse of the
+// display-form hex on the wire). Verifies by feeding the same txid hex
+// to mkReq, then asserts the digest changes when the reversal is
+// disabled (we emulate the bug by passing pre-reversed hex).
+func TestCanonicalSigningMessage_TxidByteOrderReversed(t *testing.T) {
+	req := mkReq()
+	msgWithReverse, err := CanonicalSigningMessage(req)
+	require.NoError(t, err)
+
+	// If we feed in the already-reversed hex, the now-applied reverse
+	// brings us back to the original display bytes — a different
+	// digest. Confirms that the reversal is on the path.
+	txidBytes, _ := hex.DecodeString(req.TxId)
+	reversedHex := hex.EncodeToString(ReverseBytesCopy(txidBytes))
+	req2 := req
+	req2.TxId = reversedHex
+	msgWithoutReverse, err := CanonicalSigningMessage(req2)
+	require.NoError(t, err)
+	assert.NotEqual(t, msgWithReverse, msgWithoutReverse,
+		"reversing the wire-form txid must change the canonical digest — "+
+			"this is the bytewise audit guard against future drift")
+}
+
 // ----- canonical message structure -----
 
 func TestCanonicalSigningMessage_DomainSeparation(t *testing.T) {

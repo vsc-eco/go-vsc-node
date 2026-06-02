@@ -2,17 +2,35 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	bls "github.com/protolambda/bls12-381-util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	islock "vsc-node/modules/islock-attestation"
 )
+
+// mkValidatorKey returns a fresh BLS secret + its pubkey hex. Used by
+// orchestrator tests that need real signatures so the aggregator can
+// run end-to-end.
+func mkValidatorKey(t *testing.T) (*bls.SecretKey, string) {
+	t.Helper()
+	var skBytes [32]byte
+	_, err := rand.Read(skBytes[:])
+	require.NoError(t, err)
+	var sk bls.SecretKey
+	require.NoError(t, sk.Deserialize(&skBytes))
+	pk, err := bls.SkToPk(&sk)
+	require.NoError(t, err)
+	pkBytes := pk.Serialize()
+	return &sk, hex.EncodeToString(pkBytes[:])
+}
 
 // fakeBroadcaster captures requests + can synthesize attestations
 // straight into a collector to drive end-to-end tests.
@@ -52,12 +70,15 @@ type fakeSubmitter struct {
 	err      error
 }
 
-func (f *fakeSubmitter) SubmitMapInstantSend(ctx context.Context, p MapInstantSendPayload) error {
+func (f *fakeSubmitter) SubmitMapInstantSend(ctx context.Context, p MapInstantSendPayload) (string, error) {
 	f.mu.Lock()
 	f.payloads = append(f.payloads, p)
 	err := f.err
 	f.mu.Unlock()
-	return err
+	if err != nil {
+		return "", err
+	}
+	return "fake-l2-tx-" + p.Body.ChainId, nil
 }
 
 func (f *fakeSubmitter) Submissions() []MapInstantSendPayload {
@@ -71,6 +92,10 @@ func (f *fakeSubmitter) Submissions() []MapInstantSendPayload {
 // rawTxFor returns a minimal hex-encoded raw tx body for tests.
 const fakeRawTxHex = "deadbeef00112233"
 
+// fakeTxid is a stable 32-byte hex txid (64 hex chars) for tests that
+// need to satisfy CanonicalSigningMessage's hex-len check.
+const fakeTxid = "deadbeefcafef00d00112233445566778899aabbccddeeff00112233445566cc"
+
 func putObservedSession(t *testing.T, store *SessionStore, sid string) *Session {
 	t.Helper()
 	now := time.Now()
@@ -82,7 +107,7 @@ func putObservedSession(t *testing.T, store *SessionStore, sid string) *Session 
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(30 * time.Minute),
 	}
-	store.Put(sess)
+	_ = store.Put(sess)
 	return sess
 }
 
@@ -91,17 +116,20 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 	collector := newAttestationCollector()
 	broadcaster := &fakeBroadcaster{collector: collector}
 	submitter := &fakeSubmitter{}
+	sk, pkHex := mkValidatorKey(t)
 
 	// Synthesize one attestation in response to each broadcast.
 	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			collector.Deliver(islock.IsLockAttestationResponse{
-				TxId:         req.TxId,
-				ValidatorDID: "did:key:validator-1",
-				Epoch:        req.Epoch,
-				BlsSigHex:    "00",
-			})
+			resp, err := islock.BuildResponse(req, "did:key:validator-1", sk)
+			if err != nil {
+				return
+			}
+			// Override the PubkeyHex with the test-known hex so the
+			// assertion can validate it surfaces through the envelope.
+			resp.PubkeyHex = pkHex
+			collector.Deliver(resp)
 		}()
 	}
 
@@ -117,27 +145,34 @@ func TestOrchestrator_HappyPath(t *testing.T) {
 
 	putObservedSession(t, store, "sid-x")
 
-	orch.Drive(context.Background(), "sid-x", "abc123", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-x", fakeTxid, fakeRawTxHex)
 
 	sess, ok := store.Get("sid-x")
 	require.True(t, ok)
 	assert.Equal(t, StateOnChain, sess.State)
-	assert.Equal(t, "abc123", sess.DashTxId)
+	assert.Equal(t, fakeTxid, sess.DashTxId)
 	assert.NotEmpty(t, sess.SessionToken)
 	assert.NotNil(t, sess.OnChainAt)
 
 	require.Len(t, broadcaster.Requests(), 1)
 	req := broadcaster.Requests()[0]
-	assert.Equal(t, "abc123", req.TxId)
+	assert.Equal(t, fakeTxid, req.TxId)
 	assert.Equal(t, "vsc-testnet", req.ChainId)
 	// Instruction hash must be deterministic over the instruction string.
 	assert.Equal(t, 64, len(req.InstructionHashHex))
 
 	require.Len(t, submitter.Submissions(), 1)
 	sub := submitter.Submissions()[0]
-	assert.Equal(t, "abc123", sub.TxId)
-	assert.Equal(t, fakeRawTxHex, sub.RawTxHex)
-	assert.Len(t, sub.Attestations, 1)
+	assert.Equal(t, fakeRawTxHex, sub.Body.RawTxHex)
+	assert.Equal(t, "vsc-testnet", sub.Body.ChainId)
+	require.Len(t, sub.Body.Attestations, 1)
+	att := sub.Body.Attestations[0]
+	assert.Equal(t, "did:key:validator-1", att.ValidatorDID)
+	assert.Equal(t, pkHex, att.PubkeyHex, "PubkeyHex MUST flow through to the envelope")
+	assert.Len(t, att.BlsSigHex, 192, "per-attestation sig is 96-byte hex")
+	assert.Len(t, sub.Agg.AggSigHex, 192, "aggregate sig is also 96-byte hex")
+	// Session must persist the L2 txID for /status observability.
+	assert.Equal(t, "fake-l2-tx-vsc-testnet", sess.L2TxId)
 }
 
 func TestOrchestrator_TimeoutOnNoAttestations(t *testing.T) {
@@ -157,7 +192,7 @@ func TestOrchestrator_TimeoutOnNoAttestations(t *testing.T) {
 	})
 
 	putObservedSession(t, store, "sid-tmo")
-	orch.Drive(context.Background(), "sid-tmo", "txid-tmo", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-tmo", fakeTxid, fakeRawTxHex)
 
 	sess, _ := store.Get("sid-tmo")
 	assert.Equal(t, StateAttestationTimeout, sess.State)
@@ -171,12 +206,15 @@ func TestOrchestrator_SubmitFailMarksForwardFailed(t *testing.T) {
 	collector := newAttestationCollector()
 	broadcaster := &fakeBroadcaster{collector: collector}
 	submitter := &fakeSubmitter{err: errors.New("L2 rejected")}
+	sk, _ := mkValidatorKey(t)
 
 	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
 		go func() {
-			collector.Deliver(islock.IsLockAttestationResponse{
-				TxId: req.TxId, ValidatorDID: "v1",
-			})
+			resp, err := islock.BuildResponse(req, "v1", sk)
+			if err != nil {
+				return
+			}
+			collector.Deliver(resp)
 		}()
 	}
 
@@ -192,7 +230,7 @@ func TestOrchestrator_SubmitFailMarksForwardFailed(t *testing.T) {
 	})
 
 	putObservedSession(t, store, "sid-fail")
-	orch.Drive(context.Background(), "sid-fail", "txfail", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-fail", fakeTxid, fakeRawTxHex)
 
 	sess, _ := store.Get("sid-fail")
 	assert.Equal(t, StateForwardFailed, sess.State)
@@ -211,7 +249,7 @@ func TestOrchestrator_BroadcastFailMarksForwardFailed(t *testing.T) {
 	})
 
 	putObservedSession(t, store, "sid-bcast")
-	orch.Drive(context.Background(), "sid-bcast", "tx-bcast", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-bcast", fakeTxid, fakeRawTxHex)
 
 	sess, _ := store.Get("sid-bcast")
 	assert.Equal(t, StateForwardFailed, sess.State)
@@ -249,12 +287,12 @@ func TestOrchestrator_SessionNotObservedIsNoOp(t *testing.T) {
 	})
 
 	now := time.Now()
-	store.Put(&Session{
+	_ = store.Put(&Session{
 		Sid: "sid-stuck", Op: OpAuth, State: StateWaitingForIS,
 		CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	})
 
-	orch.Drive(context.Background(), "sid-stuck", "txid", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-stuck", fakeTxid, fakeRawTxHex)
 	assert.Empty(t, broadcaster.Requests(),
 		"Drive must not broadcast for sessions not in IS_OBSERVED")
 	assert.Empty(t, submitter.Submissions())
@@ -268,7 +306,7 @@ func TestOrchestrator_UnknownSessionIsNoOp(t *testing.T) {
 		Broadcaster: broadcaster, Submitter: &fakeSubmitter{}, ChainID: "vsc-testnet",
 	})
 
-	orch.Drive(context.Background(), "nonexistent", "txid", fakeRawTxHex)
+	orch.Drive(context.Background(), "nonexistent", fakeTxid, fakeRawTxHex)
 	assert.Empty(t, broadcaster.Requests())
 }
 
@@ -279,8 +317,15 @@ func TestOrchestrator_SessionTokenIsDeterministic(t *testing.T) {
 	collector := newAttestationCollector()
 	broadcaster := &fakeBroadcaster{collector: collector}
 	submitter := &fakeSubmitter{}
+	sk, _ := mkValidatorKey(t)
 	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
-		go collector.Deliver(islock.IsLockAttestationResponse{TxId: req.TxId, ValidatorDID: "v1"})
+		go func() {
+			resp, err := islock.BuildResponse(req, "v1", sk)
+			if err != nil {
+				return
+			}
+			collector.Deliver(resp)
+		}()
 	}
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions: store, Collector: collector, Broadcaster: broadcaster,
@@ -288,7 +333,7 @@ func TestOrchestrator_SessionTokenIsDeterministic(t *testing.T) {
 		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond,
 	})
 	putObservedSession(t, store, "sid-tok")
-	orch.Drive(context.Background(), "sid-tok", "txid-tok", fakeRawTxHex)
+	orch.Drive(context.Background(), "sid-tok", fakeTxid, fakeRawTxHex)
 
 	sess, _ := store.Get("sid-tok")
 	assert.Len(t, sess.SessionToken, 64, "token is 32-byte sha256 hex")

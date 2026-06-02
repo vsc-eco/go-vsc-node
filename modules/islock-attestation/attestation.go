@@ -27,13 +27,28 @@ import (
 // The result is a 32-byte SHA-256 digest, suitable input to bls.Sign /
 // bls.Verify. Domain-separation reasoning: see lib/dids/dash.go's
 // DashISLockDomainPrefix and the workstream-0 scoping memo (Q3).
+//
+// CRITICAL BYTE-ORDER NOTE — fixes audit finding
+// `canonical-message-txid-byte-order-drift`:
+//
+//   The canonical message embeds txid and rawTxHash in INTERNAL byte order
+//   (the raw output of sha256d(rawTxBytes)), NOT Bitcoin's display order.
+//   Display order is internal-reversed; dashd's getrawtransaction returns
+//   txids in display form.
+//
+//   Wire format (req.TxId, req.RawTxHashHex) carries DISPLAY-ORDER hex so
+//   operators / logs can copy-paste txids straight from explorers. The
+//   reversal happens here, inside the signing-message builder, on BOTH
+//   the sign and verify paths so the BLS aggregate computed by validators
+//   matches what the dash-mapping-contract recomputes via
+//   sha256.Sum256(sha256.Sum256(rawTxBytes)).
 func CanonicalSigningMessage(req IsLockAttestationRequest) ([]byte, error) {
-	txid, err := hex.DecodeString(req.TxId)
-	if err != nil || len(txid) != 32 {
-		return nil, fmt.Errorf("txid must be 32-byte hex, got %q (decoded %d bytes)", req.TxId, len(txid))
+	txidDisplay, err := hex.DecodeString(req.TxId)
+	if err != nil || len(txidDisplay) != 32 {
+		return nil, fmt.Errorf("txid must be 32-byte hex, got %q (decoded %d bytes)", req.TxId, len(txidDisplay))
 	}
-	rawTxHash, err := hex.DecodeString(req.RawTxHashHex)
-	if err != nil || len(rawTxHash) != 32 {
+	rawTxHashDisplay, err := hex.DecodeString(req.RawTxHashHex)
+	if err != nil || len(rawTxHashDisplay) != 32 {
 		return nil, fmt.Errorf("rawTxHash must be 32-byte hex")
 	}
 	instrHash, err := hex.DecodeString(req.InstructionHashHex)
@@ -44,18 +59,35 @@ func CanonicalSigningMessage(req IsLockAttestationRequest) ([]byte, error) {
 		return nil, errors.New("chainId must not be empty")
 	}
 
+	// Reverse to internal sha256d byte order — matches the contract's
+	// CanonicalAttestationMessage recomputation.
+	txidInternal := ReverseBytesCopy(txidDisplay)
+	rawTxHashInternal := ReverseBytesCopy(rawTxHashDisplay)
+
 	var buf bytes.Buffer
 	buf.WriteString(dids.DashISLockDomainPrefix)
 	buf.WriteString(req.ChainId)
 	var epochBuf [8]byte
 	binary.BigEndian.PutUint64(epochBuf[:], req.Epoch)
 	buf.Write(epochBuf[:])
-	buf.Write(txid)
-	buf.Write(rawTxHash)
+	buf.Write(txidInternal)
+	buf.Write(rawTxHashInternal)
 	buf.Write(instrHash)
 
 	digest := sha256.Sum256(buf.Bytes())
 	return digest[:], nil
+}
+
+// ReverseBytesCopy returns a NEW slice with bytes in reverse order.
+// Public helper because the IS service's orchestrator + the contract
+// integration tests both need the same primitive when constructing /
+// asserting canonical messages.
+func ReverseBytesCopy(in []byte) []byte {
+	out := make([]byte, len(in))
+	for i, b := range in {
+		out[len(in)-1-i] = b
+	}
+	return out
 }
 
 // Sign produces a BLS signature over the canonical message using the
@@ -94,7 +126,12 @@ func Verify(req IsLockAttestationRequest, sigHex string, validatorPubkey *bls.Pu
 }
 
 // BuildResponse is a convenience: validates the request, signs it,
-// returns a populated response with the validator's DID and sig.
+// returns a populated response with the validator's DID, pubkey, and sig.
+//
+// PubkeyHex is included in the response so the IS-service-side
+// aggregator can hand it to the contract without a separate validator-set
+// query. The contract is the authority on whether the pubkey actually
+// matches the registered one for ValidatorDID at the claimed epoch.
 func BuildResponse(
 	req IsLockAttestationRequest,
 	validatorDID string,
@@ -104,10 +141,44 @@ func BuildResponse(
 	if err != nil {
 		return IsLockAttestationResponse{}, err
 	}
+	pk, err := bls.SkToPk(sk)
+	if err != nil {
+		return IsLockAttestationResponse{}, fmt.Errorf("derive pubkey: %w", err)
+	}
+	pkBytes := pk.Serialize()
 	return IsLockAttestationResponse{
 		TxId:         req.TxId,
 		ValidatorDID: validatorDID,
+		PubkeyHex:    hex.EncodeToString(pkBytes[:]),
 		Epoch:        req.Epoch,
 		BlsSigHex:    sigHex,
 	}, nil
+}
+
+// AggregateSignatures takes the BlsSigHex of each response and returns
+// hex(aggregated 96-byte BLS signature). Empty input → error. Used by
+// the IS-service-side orchestrator to build the aggregate sig the
+// contract verifies via crypto.bls_verify_aggregate.
+func AggregateSignatures(responses []IsLockAttestationResponse) (string, error) {
+	if len(responses) == 0 {
+		return "", errors.New("cannot aggregate zero signatures")
+	}
+	sigs := make([]*bls.Signature, 0, len(responses))
+	for i, r := range responses {
+		raw, err := hex.DecodeString(r.BlsSigHex)
+		if err != nil || len(raw) != 96 {
+			return "", fmt.Errorf("response %d: BlsSigHex must be 96-byte hex", i)
+		}
+		var s bls.Signature
+		if err := s.Deserialize((*[96]byte)(raw)); err != nil {
+			return "", fmt.Errorf("response %d: sig deserialize: %w", i, err)
+		}
+		sigs = append(sigs, &s)
+	}
+	agg, err := bls.Aggregate(sigs)
+	if err != nil {
+		return "", fmt.Errorf("bls.Aggregate: %w", err)
+	}
+	raw := agg.Serialize()
+	return hex.EncodeToString(raw[:]), nil
 }

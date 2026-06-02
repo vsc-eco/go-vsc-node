@@ -111,16 +111,18 @@ func TestSubmitterL2_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	payload := MapInstantSendPayload{
-		TxId:               "abc",
-		RawTxHex:           "deadbeef",
-		InstructionRaw:     "op=auth;sid=test",
-		InstructionHashHex: "00",
-		Epoch:              1,
-		ChainId:            "vsc-testnet",
+		Body: MapInstantSendBody{
+			RawTxHex:    "deadbeef",
+			Instruction: "op=auth;sid=test",
+			Epoch:       1,
+			ChainId:     "vsc-testnet",
+		},
+		Agg: MapInstantSendAgg{AggSigHex: "aa"},
 	}
 
-	err = sub.SubmitMapInstantSend(context.Background(), payload)
+	l2TxID, err := sub.SubmitMapInstantSend(context.Background(), payload)
 	require.NoError(t, err)
+	assert.Equal(t, "bafyfake", l2TxID, "L2 txID must be returned, not discarded")
 
 	stats.mu.Lock()
 	defer stats.mu.Unlock()
@@ -144,7 +146,7 @@ func TestSubmitterL2_GraphqlErrorSurfaces(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = sub.SubmitMapInstantSend(context.Background(), MapInstantSendPayload{})
+	_, err = sub.SubmitMapInstantSend(context.Background(), MapInstantSendPayload{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nonce service down")
 }
@@ -164,7 +166,7 @@ func TestSubmitterL2_ContextCancelDuringLock(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err = sub.SubmitMapInstantSend(ctx, MapInstantSendPayload{})
+	_, err = sub.SubmitMapInstantSend(ctx, MapInstantSendPayload{})
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }

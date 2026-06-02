@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -76,6 +77,15 @@ type Server struct {
 	// spawns a goroutine that runs the full p2p attestation + L2 submit
 	// flow.
 	orch *Orchestrator
+	// broadcasterHealth: optional probe surfaced via /healthz.
+	broadcasterHealth func() (int, bool)
+	// driveCtx + driveWg track spawned Drive goroutines so graceful
+	// shutdown can drain them before tearing down the broadcaster.
+	// Audit `orchestrator-detached-context-on-shutdown`. Default ctx
+	// is context.Background when not wired (test paths).
+	driveCtx       context.Context
+	driveCancel    context.CancelFunc
+	driveWg        sync.WaitGroup
 }
 
 type ServerConfig struct {
@@ -98,6 +108,10 @@ type ServerConfig struct {
 	// constructions (e.g. an orchestrator built before the server) can
 	// share state. If nil, NewServer creates a fresh one.
 	Sessions *SessionStore
+	// BroadcasterHealth is an optional probe the /healthz handler calls
+	// to surface the libp2p connect-count + degraded flag. Wired by
+	// main when a real broadcaster is configured. Returns (connectedPeers, degraded).
+	BroadcasterHealth func() (int, bool)
 }
 
 // NewServer constructs a Server. Returns an error if config is invalid.
@@ -127,6 +141,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if sessions == nil {
 		sessions = NewSessionStore(cfg.SessionTTL)
 	}
+	driveCtx, driveCancel := context.WithCancel(context.Background())
+	_ = driveCancel
 	return &Server{
 		primaryPubKey: cfg.PrimaryPubKeyHex,
 		backupPubKey:  cfg.BackupPubKeyHex,
@@ -137,7 +153,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		signer:        cfg.Signer,
 		rateLimitsIP:  newRateLimiter(10, time.Minute),
 		dashd:         cfg.Dashd,
-		orch:          cfg.Orch,
+		orch:              cfg.Orch,
+		broadcasterHealth: cfg.BroadcasterHealth,
+		driveCtx:          driveCtx,
+		driveCancel:       driveCancel,
 	}, nil
 }
 
@@ -154,26 +173,63 @@ func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
 	// address through /status as a UX convenience.
 	sender, senderErr := resolveSenderAddress(rawTxHex, s.chainParams)
 	advanced := false
+	var depositAddr string
 	s.sessions.MutateState(sid, func(sess *Session) {
 		if sess.State != StateWaitingForIS {
 			return
 		}
 		sess.State = StateISObserved
 		sess.DashTxId = txid
+		depositAddr = sess.DepositAddress
 		if senderErr == nil {
 			sess.SenderAddress = sender
 		}
 		advanced = true
 	})
-	if !advanced || s.orch == nil {
+	if !advanced {
+		return
+	}
+	// IS-lock observed — we no longer need to watch this address.
+	// Unwatch before kicking off orch.Drive so the watcher map shrinks
+	// promptly under load (audit `dashd-watcher-leaks-after-session-terminal`).
+	if s.dashd != nil && depositAddr != "" {
+		s.dashd.Unwatch(depositAddr)
+	}
+	if s.orch == nil {
 		return
 	}
 	// Orchestrator drives the rest of the state machine in its own
 	// goroutine — broadcasting attestation requests, collecting
-	// quorum, submitting the L2 tx. Context is detached from the
-	// watcher's so a slow attestation doesn't block IS-observation
-	// of other sessions; orchestrator has its own per-phase timeouts.
-	go s.orch.Drive(context.Background(), sid, txid, rawTxHex)
+	// quorum, submitting the L2 tx. Tracked via WaitGroup so graceful
+	// shutdown can drain in-flight work before closing the broadcaster
+	// (audit `orchestrator-detached-context-on-shutdown`).
+	s.driveWg.Add(1)
+	go func() {
+		defer s.driveWg.Done()
+		s.orch.Drive(s.driveCtx, sid, txid, rawTxHex)
+	}()
+}
+
+// Drain blocks until all in-flight Drive goroutines finish, or until
+// the deadline elapses. Call AFTER httpSrv.Shutdown and BEFORE
+// p2pBroadcaster.Close so in-flight L2 submissions can finish their
+// GraphQL roundtrip and so attestation broadcasts don't fail with
+// publish-on-closed-topic. Audit `orchestrator-detached-context-on-shutdown`.
+func (s *Server) Drain(deadline time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		s.driveWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(deadline):
+		// Hard cap reached — cancel the shared driveCtx so subsequent
+		// network calls error out promptly rather than holding the
+		// process open.
+		s.driveCancel()
+		<-done
+	}
 }
 
 // Routes returns an http.ServeMux with the IS service's HTTP endpoints
@@ -234,12 +290,35 @@ type ErrorResponse struct {
 // ===== handlers =====
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	out := map[string]any{
+		"ok":       true,
+		"sessions": s.sessions.Len(),
+	}
+	// Broadcaster degraded flag — set by main wiring when libp2p is
+	// configured. Lets ops dashboards surface a zero-peers degraded
+	// state without restart-with-debug (audit
+	// `libp2p-zero-peers-silent-degraded-start`).
+	if s.broadcasterHealth != nil {
+		conn, degraded := s.broadcasterHealth()
+		out["connectedPeers"] = conn
+		out["broadcasterDegraded"] = degraded
+		if degraded {
+			out["ok"] = false
+		}
+	}
+	if out["ok"].(bool) {
+		writeJSON(w, http.StatusOK, out)
+	} else {
+		writeJSON(w, http.StatusServiceUnavailable, out)
+	}
 }
 
 func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !s.rateLimitsIP.allow(ip) {
+		// Audit `rate-limit-and-libp2p-drops-silent`: log so operators
+		// can spot rate-limit hits without restart-with-debug.
+		slog.Debug("HTTP rate-limit exceeded", "ip", ip, "path", r.URL.Path)
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded for source IP")
 		return
 	}
@@ -322,7 +401,10 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        now.Add(s.sessionTTL),
 		State:            StateWaitingForIS,
 	}
-	s.sessions.Put(sess)
+	if err := s.sessions.Put(sess); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "session capacity reached, try again later")
+		return
+	}
 
 	// Register the deposit address with the dashd watcher so we get
 	// notified when an IS-lock fires. Watcher is optional — if not
@@ -375,14 +457,38 @@ func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing sid in path")
 		return
 	}
-	ok := s.sessions.MutateState(sid, func(sess *Session) {
+	// L1 — session-cancel auth: bind the cancel to a sessionToken-style
+	// secret returned at session-start. Without this any sid-knower
+	// could EXPIRE another user's in-flight session (audit
+	// `session-cancel-no-auth`). The cancel-token is the
+	// addressSignature returned in the StartResponse, since it's a
+	// secret only the session owner has at this point. Header name:
+	// X-Cancel-Token.
+	provided := r.Header.Get("X-Cancel-Token")
+	if provided == "" {
+		writeError(w, http.StatusUnauthorized,
+			"X-Cancel-Token header required (use addressSignature from /session/start)")
+		return
+	}
+	var depositAddr string
+	var matched bool
+	s.sessions.MutateState(sid, func(sess *Session) {
+		if sess.AddressSignature != provided {
+			return
+		}
+		matched = true
+		depositAddr = sess.DepositAddress
 		if !sess.State.IsTerminal() {
 			sess.State = StateExpired
 		}
 	})
-	if !ok {
-		writeError(w, http.StatusNotFound, "session not found")
+	if !matched {
+		// Either no such session OR bad token. 401 for both — no oracle.
+		writeError(w, http.StatusUnauthorized, "session not found or token mismatch")
 		return
+	}
+	if s.dashd != nil && depositAddr != "" {
+		s.dashd.Unwatch(depositAddr)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -399,16 +505,34 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
 }
 
+// clientIP returns the effective source IP for rate-limiting. ONLY
+// honours X-Forwarded-For when r.RemoteAddr is in the configured
+// trusted-proxies set (loopback by default); otherwise uses r.RemoteAddr
+// directly. Without this gate any attacker can rotate X-Forwarded-For
+// headers to bypass the per-IP cap (audit `xff-rate-limit-bypass`).
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		// First entry is the original client per common convention.
-		if i := strings.Index(fwd, ","); i >= 0 {
-			return strings.TrimSpace(fwd[:i])
+	hostPart, _, _ := splitHostPort(r.RemoteAddr)
+	if isTrustedProxy(hostPart) {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			if i := strings.Index(fwd, ","); i >= 0 {
+				return strings.TrimSpace(fwd[:i])
+			}
+			return strings.TrimSpace(fwd)
 		}
-		return strings.TrimSpace(fwd)
 	}
-	host, _, _ := splitHostPort(r.RemoteAddr)
-	return host
+	return hostPart
+}
+
+// isTrustedProxy is a v1 conservative default — accept loopback + IPv6
+// loopback only. Operators behind a real reverse proxy should set
+// TrustedProxies via the Server config so XFF is honoured for those
+// hops; everything else fails closed to direct RemoteAddr.
+func isTrustedProxy(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 func splitHostPort(addr string) (string, string, error) {
@@ -462,14 +586,21 @@ func newRateLimiter(maxPerWindow int, window time.Duration) *rateLimiter {
 
 func (r *rateLimiter) allow(key string) bool {
 	if key == "" {
-		return true // never block missing-IP requests
+		// Missing-IP requests — refuse rather than fail open. A real
+		// client with a parseable RemoteAddr never hits this path; the
+		// branch only fires for malformed proxies / tests, both of
+		// which should be slow-pathed.
+		return false
 	}
 	if r.keyCount.Load() >= rateLimiterMaxKeys {
-		// Memory cap reached — fail open for new keys. Existing keys
-		// continue to track normally.
+		// Memory cap reached — fail CLOSED for new keys (audit
+		// `dashd-watcher-leaks-after-session-terminal` flagged the
+		// previous fail-open as a memory-exhaustion vector when
+		// combined with the watcher leak). Existing keys continue to
+		// track normally so legitimate traffic isn't lost.
 		v, ok := r.state.Load(key)
 		if !ok {
-			return true
+			return false
 		}
 		b := v.(*bucketState)
 		return r.checkBucket(b)

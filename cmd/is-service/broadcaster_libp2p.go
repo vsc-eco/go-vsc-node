@@ -45,8 +45,67 @@ type libp2pBroadcaster struct {
 	topicID string
 	chainID string
 
+	// peerLimiter throttles inbound responses per peer. Mirrors
+	// modules/islock-attestation's validator-side limiter — same shape,
+	// IS-service side. Without it any peer can flood our collector
+	// (audit `libp2p-broadcaster-no-response-validation`).
+	peerLimiter *broadcasterRateLimiter
+
+	// connectedCount: how many bootstrap peers handshook at startup.
+	// Exposed via ConnectedPeerCount() so /healthz can reflect degraded
+	// state when zero (audit `libp2p-zero-peers-silent-degraded-start`).
+	connectedCount int
+
 	stopOnce sync.Once
 	stopCh   chan struct{}
+}
+
+// broadcasterRateLimiter caps responses per (gossipsub) peer per
+// minute. Concurrency: sub.Next runs single-threaded so technically
+// the mutex is unneeded today, but the validate-then-deliver split
+// makes it cheap insurance against future refactors.
+type broadcasterRateLimiter struct {
+	mu       sync.Mutex
+	state    map[string]*broadcasterBucket
+	maxPer   int
+	window   time.Duration
+	maxPeers int
+}
+
+type broadcasterBucket struct {
+	count    int
+	windowAt time.Time
+}
+
+func newBroadcasterRateLimiter() *broadcasterRateLimiter {
+	return &broadcasterRateLimiter{
+		state:    make(map[string]*broadcasterBucket),
+		maxPer:   60, // 60 responses / minute per peer — generous: typical session generates 1 response per validator
+		window:   time.Minute,
+		maxPeers: 10_000,
+	}
+}
+
+func (r *broadcasterRateLimiter) allow(peerID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	if b, ok := r.state[peerID]; ok {
+		if now.Sub(b.windowAt) > r.window {
+			b.count = 0
+			b.windowAt = now
+		}
+		if b.count >= r.maxPer {
+			return false
+		}
+		b.count++
+		return true
+	}
+	if len(r.state) >= r.maxPeers {
+		return false
+	}
+	r.state[peerID] = &broadcasterBucket{count: 1, windowAt: now}
+	return true
 }
 
 // libp2pBroadcasterConfig configures the broadcaster.
@@ -98,8 +157,10 @@ func newLibp2pBroadcaster(ctx context.Context, cfg libp2pBroadcasterConfig) (*li
 		return nil, fmt.Errorf("create libp2p host: %w", err)
 	}
 
-	// Connect to bootstrap peers. Failures here are non-fatal — gossipsub
-	// will still publish to any peer that eventually connects.
+	// Connect to bootstrap peers. Count successes so the caller can
+	// fail-fast on zero (audit `libp2p-zero-peers-silent-degraded-start`
+	// — startup must not silently succeed with no mesh members).
+	connectedCount := 0
 	for _, addr := range cfg.BootstrapPeers {
 		ma, err := multiaddr.NewMultiaddr(addr)
 		if err != nil {
@@ -116,8 +177,18 @@ func newLibp2pBroadcaster(ctx context.Context, cfg libp2pBroadcasterConfig) (*li
 			slog.Warn("failed to connect to bootstrap peer", "addr", addr, "err", err)
 		} else {
 			slog.Info("connected to bootstrap peer", "peer", ai.ID.String())
+			connectedCount++
 		}
 		cancel()
+	}
+	if connectedCount == 0 && len(cfg.BootstrapPeers) > 0 {
+		// Caller asked for bootstrap peers but none connected. Refuse to
+		// start the IS service in this state — every session would time
+		// out in ATTESTATION_TIMEOUT and operators would only learn from
+		// user complaints.
+		_ = h.Close()
+		return nil, fmt.Errorf("libp2p broadcaster: none of %d configured bootstrap peers connected — refusing to start in degraded mode",
+			len(cfg.BootstrapPeers))
 	}
 
 	ps, err := pubsub.NewGossipSub(ctx, h)
@@ -141,18 +212,37 @@ func newLibp2pBroadcaster(ctx context.Context, cfg libp2pBroadcasterConfig) (*li
 	}
 
 	return &libp2pBroadcaster{
-		host:    h,
-		ps:      ps,
-		topic:   topic,
-		sub:     sub,
-		topicID: topicID,
-		chainID: cfg.ChainID,
-		stopCh:  make(chan struct{}),
+		host:           h,
+		ps:             ps,
+		topic:          topic,
+		sub:            sub,
+		topicID:        topicID,
+		chainID:        cfg.ChainID,
+		peerLimiter:    newBroadcasterRateLimiter(),
+		connectedCount: connectedCount,
+		stopCh:         make(chan struct{}),
 	}, nil
 }
 
+// ConnectedPeerCount returns the number of bootstrap peers connected at
+// startup. Used by /healthz to surface a degraded state when zero.
+func (b *libp2pBroadcaster) ConnectedPeerCount() int { return b.connectedCount }
+
 // Start begins the subscriber goroutine. Inbound responses route into
-// onResponse. The goroutine stops when Close is called or ctx is done.
+// onResponse — but only after the broadcaster validates them:
+//
+//   - drop our own echoed messages
+//   - drop non-response types
+//   - drop responses with malformed PubkeyHex / BlsSigHex (length-only;
+//     full BLS verify is the contract's authority)
+//   - apply a per-peer rate-limit on response volume so a single
+//     misbehaving validator can't flood our collector
+//
+// Audit `libp2p-broadcaster-no-response-validation`. Without these
+// gates, any libp2p peer could publish forged response messages with
+// matching TxId + unique fake ValidatorDIDs to fill the collector's
+// buffer, causing the orchestrator to submit junk that the contract
+// rejects only after the operator pays RC.
 func (b *libp2pBroadcaster) Start(ctx context.Context, onResponse func(islock.IsLockAttestationResponse)) {
 	go func() {
 		for {
@@ -169,24 +259,38 @@ func (b *libp2pBroadcaster) Start(ctx context.Context, onResponse func(islock.Is
 					return
 				}
 			}
-			// Drop our own messages — gossipsub echoes them locally
-			// and we shouldn't deliver them as if they were peer
-			// responses.
+			// Drop our own echoed messages.
 			if msg.ReceivedFrom == b.host.ID() {
 				continue
 			}
 			var parsed wireMessage
 			if err := json.Unmarshal(msg.GetData(), &parsed); err != nil {
+				slog.Debug("dropped malformed gossipsub message",
+					"peer", msg.ReceivedFrom.String(), "err", err)
 				continue
 			}
-			if parsed.Type == "response" && parsed.Response != nil {
-				if onResponse != nil {
-					onResponse(*parsed.Response)
-				}
+			if parsed.Type != "response" || parsed.Response == nil {
+				// Requests are forwarded by the gossipsub mesh; we ignore
+				// them on the IS-service side (we're a requester, not an
+				// attester).
+				continue
 			}
-			// Requests are forwarded by the gossipsub mesh; we ignore
-			// them on the IS-service side (we're a requester, not an
-			// attester).
+			r := parsed.Response
+			if len(r.PubkeyHex) != 96 || len(r.BlsSigHex) != 192 ||
+				r.TxId == "" || r.ValidatorDID == "" {
+				slog.Debug("dropped malformed attestation response",
+					"peer", msg.ReceivedFrom.String(), "txid", r.TxId,
+					"pubkeyLen", len(r.PubkeyHex), "sigLen", len(r.BlsSigHex))
+				continue
+			}
+			if !b.peerLimiter.allow(msg.ReceivedFrom.String()) {
+				slog.Debug("dropped response: per-peer rate limit",
+					"peer", msg.ReceivedFrom.String(), "txid", r.TxId)
+				continue
+			}
+			if onResponse != nil {
+				onResponse(*r)
+			}
 		}
 	}()
 }

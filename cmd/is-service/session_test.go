@@ -63,7 +63,7 @@ func TestSessionStore_PutGet(t *testing.T) {
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(30 * time.Minute),
 	}
-	store.Put(sess)
+	_ = store.Put(sess)
 	got, ok := store.Get("sid1")
 	require.True(t, ok)
 	assert.Equal(t, sess, got)
@@ -85,7 +85,7 @@ func TestSessionStore_MutateState(t *testing.T) {
 		CreatedAt: now,
 		ExpiresAt: now.Add(30 * time.Minute),
 	}
-	store.Put(sess)
+	_ = store.Put(sess)
 
 	ok := store.MutateState("sid1", func(s *Session) {
 		s.State = StateISObserved
@@ -114,7 +114,7 @@ func TestSessionStore_ExpiryOnGet(t *testing.T) {
 		CreatedAt: now,
 		ExpiresAt: now.Add(60 * time.Second),
 	}
-	store.Put(sess)
+	_ = store.Put(sess)
 
 	// Advance past expiry.
 	now = time.Unix(2000, 0)
@@ -128,7 +128,7 @@ func TestSessionStore_Prune(t *testing.T) {
 	store := NewSessionStore(time.Hour).WithNowFunc(func() time.Time { return now })
 
 	for _, sid := range []string{"a", "b", "c"} {
-		store.Put(&Session{
+		_ = store.Put(&Session{
 			Sid:       sid,
 			State:     StateWaitingForIS,
 			CreatedAt: now,
@@ -148,13 +148,13 @@ func TestSessionStore_PruneOnlyExpired(t *testing.T) {
 	now := time.Unix(1000, 0)
 	store := NewSessionStore(time.Hour).WithNowFunc(func() time.Time { return now })
 
-	store.Put(&Session{
+	_ = store.Put(&Session{
 		Sid:       "expired",
 		State:     StateWaitingForIS,
 		CreatedAt: now,
 		ExpiresAt: now.Add(30 * time.Second),
 	})
-	store.Put(&Session{
+	_ = store.Put(&Session{
 		Sid:       "fresh",
 		State:     StateWaitingForIS,
 		CreatedAt: now,

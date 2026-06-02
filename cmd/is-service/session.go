@@ -61,6 +61,7 @@ type Session struct {
 	DashTxId         string // populated on IS_OBSERVED
 	SenderAddress    string // populated on IS_OBSERVED — DashL1 address that paid
 	OnChainAt        *time.Time
+	L2TxId           string // populated on ON_CHAIN — the mapInstantSendV2 L2 tx CID
 	SessionToken     string // populated on ON_CHAIN + FORWARD_OK
 	ForwardError     string // populated on FORWARD_FAILED
 }
@@ -109,12 +110,25 @@ func (s *SessionStore) Get(sid string) (*Session, bool) {
 	return sess, true
 }
 
-// Put stores or overwrites a session. Callers typically call this once
-// at session start; subsequent state changes go through MutateState.
-func (s *SessionStore) Put(sess *Session) {
+// MaxSessions is the global cap on concurrent sessions. Beyond this,
+// new sessions are rejected to bound memory + watcher entries — audit
+// `dashd-watcher-leaks-after-session-terminal`.
+const MaxSessions = 50_000
+
+// ErrSessionStoreFull is returned by Put when the store is at MaxSessions.
+var ErrSessionStoreFull = errors.New("session store full — global cap reached")
+
+// Put stores or overwrites a session. Returns ErrSessionStoreFull when
+// the global cap is reached for a NEW session id (overwriting an
+// existing sid always succeeds).
+func (s *SessionStore) Put(sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.sessions[sess.Sid]; !exists && len(s.sessions) >= MaxSessions {
+		return ErrSessionStoreFull
+	}
 	s.sessions[sess.Sid] = sess
+	return nil
 }
 
 // MutateState atomically applies a state transition. The fn receives a

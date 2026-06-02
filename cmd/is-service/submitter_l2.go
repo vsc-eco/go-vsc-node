@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -115,20 +116,29 @@ func (s *SubmitterL2) DID() string { return s.did.String() }
 
 // SubmitMapInstantSend implements Submitter. Encodes the payload as
 // CBOR via TransactionCrafter and posts to submitTransactionV1.
-func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInstantSendPayload) error {
+// Returns the L2 tx CID so the orchestrator can persist it on the
+// Session (audit `submitter-l2-txid-discarded-no-observability`).
+//
+// Lock scope minimised (audit `submitter-mu-blocks-with-http-nonce-fetch`):
+// only the nonce-fetch + broadcast pair runs under the mutex. Payload
+// marshal + crafter.SignFinal run outside.
+func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInstantSendPayload) (string, error) {
+	payloadJSON, err := payload.Marshal()
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
+
+	// nonce-fetch + broadcast are the only steps that must serialize.
+	// Hold the mu only across them; signing the (still un-nonced) op
+	// happens AFTER we've reserved the nonce.
 	if err := s.submitMu.lock(ctx); err != nil {
-		return err
+		return "", err
 	}
 	defer s.submitMu.unlock()
 
-	payloadJSON, err := payload.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-
 	nonce, err := s.fetchAccountNonce(ctx, s.did.String())
 	if err != nil {
-		return fmt.Errorf("fetch L2 nonce: %w", err)
+		return "", fmt.Errorf("fetch L2 nonce: %w", err)
 	}
 
 	call := &transactionpool.VscContractCall{
@@ -142,7 +152,7 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 	}
 	op, err := call.SerializeVSC()
 	if err != nil {
-		return fmt.Errorf("serialize L2 op: %w", err)
+		return "", fmt.Errorf("serialize L2 op: %w", err)
 	}
 
 	vscTx := transactionpool.VSCTransaction{
@@ -158,10 +168,10 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 	}
 	sTx, err := crafter.SignFinal(vscTx)
 	if err != nil {
-		return fmt.Errorf("sign L2 tx: %w", err)
+		return "", fmt.Errorf("sign L2 tx: %w", err)
 	}
 	if len(sTx.Tx) > transactionpool.MAX_TX_SIZE {
-		return fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), transactionpool.MAX_TX_SIZE)
+		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), transactionpool.MAX_TX_SIZE)
 	}
 
 	txID, err := s.submitTransactionV1(
@@ -170,14 +180,15 @@ func (s *SubmitterL2) SubmitMapInstantSend(ctx context.Context, payload MapInsta
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
 	if err != nil {
-		return fmt.Errorf("broadcast L2 tx: %w", err)
+		slog.Error("mapInstantSendV2 broadcast failed",
+			"signer", s.did.String(), "nonce", nonce, "err", err)
+		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
-	// Submitter contract is "best-effort post" — the orchestrator
-	// transitions to ON_CHAIN once this returns nil. Confirmation
-	// status is observable separately via the explorer / GQL.
-	_ = txID
-	_ = hex.EncodeToString // referenced for fmt import resolution in some build modes
-	return nil
+	slog.Info("mapInstantSendV2 broadcast accepted",
+		"l2TxId", txID, "signer", s.did.String(), "nonce", nonce,
+		"cborSize", len(sTx.Tx))
+	_ = hex.EncodeToString // kept for diagnostics during incident response
+	return txID, nil
 }
 
 // fetchAccountNonce mirrors mapper/graphql_client.go's FetchAccountNonce.

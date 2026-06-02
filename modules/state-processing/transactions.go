@@ -157,6 +157,15 @@ func (t TxVscCallContract) ExecuteTx(
 		contract_execution_context.WithTryCatch(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
+		// Audit `trusted-forwarders-not-wired-in-state-processing`: pass
+		// the active system-config's TrustedForwarders list so contracts
+		// can invoke contracts.call_as when called by one of these
+		// trusted-forwarder contract IDs (ERC-2771-style metadata).
+		// Without this, IsTrustedForwarder() returns false unconditionally
+		// and every call_as aborts. Propagation into nested calls is
+		// handled by ContractCall (NOT by CallAs, which preserves the
+		// per-frame privilege boundary).
+		contract_execution_context.WithTrustedForwarders(se.SystemConfig().TrustedForwarders()),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)

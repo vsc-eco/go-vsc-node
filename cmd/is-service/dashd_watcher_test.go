@@ -125,6 +125,11 @@ func TestWatcher_FiresOnInstantLock(t *testing.T) {
 				"txid":        "abc123",
 				"hex":         "deadbeef",
 				"instantlock": true,
+				"vout": []map[string]any{
+					{"scriptPubKey": map[string]any{
+						"addresses": []string{"tdash1qWatchedAddress"},
+					}},
+				},
 			}, nil
 		},
 	})
@@ -213,6 +218,95 @@ func mapLen(w *DashdWatcher) int {
 	return len(w.watched)
 }
 
+// TestWatcher_OnlyFiresForMatchingPayee — regression for the audit's
+// `watcher-fires-onobserved-cross-product` finding. Without the per-output
+// address match, an IS-locked tx paying address X would fan out to every
+// watched session, not just the session expecting X.
+func TestWatcher_OnlyFiresForMatchingPayee(t *testing.T) {
+	srv := mockDashdServer(t, map[string]func([]any) (any, error){
+		"getrawmempool": func([]any) (any, error) {
+			return []string{"locked-tx"}, nil
+		},
+		"getrawtransaction": func(params []any) (any, error) {
+			return map[string]any{
+				"txid":        "locked-tx",
+				"hex":         "deadbeef",
+				"instantlock": true,
+				"vout": []map[string]any{
+					// tx pays addressA only — addressB watcher must NOT fire.
+					{"scriptPubKey": map[string]any{
+						"addresses": []string{"addressA"},
+					}},
+				},
+			}, nil
+		},
+	})
+	defer srv.Close()
+
+	w := NewDashdWatcher(NewDashdRPCClient(srv.URL, "u", "p"))
+	w.pollInterval = 50 * time.Millisecond
+
+	firedA := atomic.Int32{}
+	firedB := atomic.Int32{}
+	w.Watch("addressA", "sid-a", func(string, string, string) { firedA.Add(1) })
+	w.Watch("addressB", "sid-b", func(string, string, string) { firedB.Add(1) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	assert.Equal(t, int32(1), firedA.Load(), "addressA watcher must fire exactly once")
+	assert.Equal(t, int32(0), firedB.Load(),
+		"addressB watcher must NOT fire (tx didn't pay addressB) — see audit cross-product fan-out")
+}
+
+// TestWatcher_SkipsTxWithNoDecodableVout — defensive behavior: if dashd
+// returns a tx whose outputs we can't decode (no scriptPubKey.addresses),
+// the watcher must NOT fan-out blindly; it should skip.
+func TestWatcher_SkipsTxWithNoDecodableVout(t *testing.T) {
+	srv := mockDashdServer(t, map[string]func([]any) (any, error){
+		"getrawmempool": func([]any) (any, error) {
+			return []string{"opaque-tx"}, nil
+		},
+		"getrawtransaction": func(params []any) (any, error) {
+			return map[string]any{
+				"txid":        "opaque-tx",
+				"hex":         "deadbeef",
+				"instantlock": true,
+				"vout":        []map[string]any{},
+			}, nil
+		},
+	})
+	defer srv.Close()
+
+	w := NewDashdWatcher(NewDashdRPCClient(srv.URL, "u", "p"))
+	w.pollInterval = 50 * time.Millisecond
+
+	fired := atomic.Int32{}
+	w.Watch("any-address", "sid", func(string, string, string) { fired.Add(1) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	assert.Equal(t, int32(0), fired.Load(),
+		"undecodable vout must not trigger fan-out")
+}
+
+func TestPayeeAddresses_DedupesAndAcceptsBothFields(t *testing.T) {
+	r := &RawTransactionResult{
+		Vout: []RawTxOutput{
+			{ScriptPubKey: RawTxScriptPubKey{Addresses: []string{"x", "y"}}},
+			// Legacy `address` singular field — should be merged.
+			{ScriptPubKey: RawTxScriptPubKey{Address: "z"}},
+			// Duplicate "x" must dedupe.
+			{ScriptPubKey: RawTxScriptPubKey{Addresses: []string{"x"}}},
+		},
+	}
+	got := r.payeeAddresses()
+	assert.ElementsMatch(t, []string{"x", "y", "z"}, got)
+}
+
 func TestWatcher_NoWatchedAddressesIsNoOp(t *testing.T) {
 	srv := mockDashdServer(t, map[string]func([]any) (any, error){
 		// Should never be called.
@@ -246,7 +340,7 @@ func TestServer_OnISLockObserved_TransitionsState(t *testing.T) {
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(30 * time.Minute),
 	}
-	srv.sessions.Put(sess)
+	_ = srv.sessions.Put(sess)
 
 	srv.onISLockObserved("sid-x", "txidABC", "deadbeef")
 
@@ -267,7 +361,7 @@ func TestServer_OnISLockObserved_IdempotentIfPastWaiting(t *testing.T) {
 		CreatedAt: now,
 		ExpiresAt: now.Add(30 * time.Minute),
 	}
-	srv.sessions.Put(sess)
+	_ = srv.sessions.Put(sess)
 
 	// Second observation shouldn't overwrite anything.
 	srv.onISLockObserved("sid-y", "wrongTxid", "wronghex")

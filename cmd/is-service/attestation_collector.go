@@ -21,38 +21,59 @@ import (
 // responses — quorum's already over-met.
 type attestationCollector struct {
 	mu       sync.Mutex
-	awaiters map[string]chan islock.IsLockAttestationResponse
+	awaiters map[string]*awaiter
+}
+
+// awaiter is the refcounted bag around a per-txid response channel.
+// Multiple Drive goroutines awaiting the same txid (which happens when
+// the watcher cross-product fan-out fires) all share the channel; only
+// the LAST Cancel actually closes it. Audit
+// `attestation-collector-await-shares-channel`.
+type awaiter struct {
+	ch       chan islock.IsLockAttestationResponse
+	refcount int
 }
 
 func newAttestationCollector() *attestationCollector {
 	return &attestationCollector{
-		awaiters: make(map[string]chan islock.IsLockAttestationResponse),
+		awaiters: make(map[string]*awaiter),
 	}
 }
 
-// Await registers a per-txid channel and returns it. Caller is responsible
-// for calling Cancel(txid) when done. Buffer sizes the channel to avoid
-// blocking Deliver under load.
+// Await registers a per-txid channel and returns it. Caller is
+// responsible for calling Cancel(txid) when done. Buffer sizes the
+// channel to avoid blocking Deliver under load. Multiple Awaits for
+// the same txid share the same channel; refcounted so Cancel only
+// closes when the last awaiter releases.
 func (c *attestationCollector) Await(txid string, buffer int) <-chan islock.IsLockAttestationResponse {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if existing, ok := c.awaiters[txid]; ok {
-		return existing
+		existing.refcount++
+		return existing.ch
 	}
-	ch := make(chan islock.IsLockAttestationResponse, buffer)
-	c.awaiters[txid] = ch
-	return ch
+	a := &awaiter{
+		ch:       make(chan islock.IsLockAttestationResponse, buffer),
+		refcount: 1,
+	}
+	c.awaiters[txid] = a
+	return a.ch
 }
 
-// Cancel removes the awaiter for txid. Idempotent — safe to call from a
-// goroutine that doesn't know whether quorum was reached or the deadline
-// fired.
+// Cancel decrements the refcount; closes the channel + removes the
+// entry only when the refcount drops to zero. Idempotent on
+// nonexistent txid.
 func (c *attestationCollector) Cancel(txid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if ch, ok := c.awaiters[txid]; ok {
+	a, ok := c.awaiters[txid]
+	if !ok {
+		return
+	}
+	a.refcount--
+	if a.refcount <= 0 {
 		delete(c.awaiters, txid)
-		close(ch)
+		close(a.ch)
 	}
 }
 
@@ -67,12 +88,12 @@ func (c *attestationCollector) Cancel(txid string) {
 func (c *attestationCollector) Deliver(resp islock.IsLockAttestationResponse) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	ch, ok := c.awaiters[resp.TxId]
+	a, ok := c.awaiters[resp.TxId]
 	if !ok {
 		return
 	}
 	select {
-	case ch <- resp:
+	case a.ch <- resp:
 	default:
 		// Buffer full — quorum has clearly been over-met; drop silently.
 	}

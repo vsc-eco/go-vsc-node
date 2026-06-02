@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p-pubsub"
@@ -167,6 +168,13 @@ func (s *Service) ValidateMessage(ctx context.Context, from peer.ID, raw *pubsub
 		if msg.Response == nil || msg.Response.TxId == "" || msg.Response.BlsSigHex == "" {
 			return false
 		}
+		// Apply the same per-peer rate limit to RESPONSE messages.
+		// Without this, a misbehaving validator could flood the topic
+		// with type=response messages with no per-peer cap — audit
+		// `gossipsub-response-broadcast-flood`.
+		if !s.rateLimits.allow(from.String()) {
+			return false
+		}
 		return true
 	}
 	return false
@@ -253,12 +261,20 @@ func (s *Service) handleRequest(
 
 // ===== rate limiter (validator-side) =====
 
-// requestRateLimiter caps how many requests a single peer can post on
+// requestRateLimiter caps how many messages a single peer can post on
 // the topic per window. Prevents a single (compromised or buggy) peer
-// from spamming attestation requests at the validator set.
+// from spamming attestation requests OR responses at the validator set
+// — audit `gossipsub-response-broadcast-flood` was about asymmetric
+// limiting, so we now apply allow() to BOTH branches in
+// ValidateMessage.
+//
+// Concurrency: go-libp2p-pubsub dispatches non-inline topic validators
+// in fresh goroutines per message, so requestRateLimiter.state is
+// accessed concurrently and MUST be guarded by a mutex. Unsynchronized
+// map writes trigger Go's runtime throw which bypasses defer/recover —
+// audit `rate-limiter-no-mutex-concurrent-map-panic`.
 type requestRateLimiter struct {
-	// Simple sliding-window per peer. Bounded to maxPeers to avoid
-	// memory growth from spoofed peer IDs.
+	mu            sync.Mutex
 	state         map[string]*requestBucket
 	maxPerWindow  int
 	window        time.Duration
@@ -273,13 +289,15 @@ type requestBucket struct {
 func newRequestRateLimiter() *requestRateLimiter {
 	return &requestRateLimiter{
 		state:        make(map[string]*requestBucket),
-		maxPerWindow: 100, // 100 requests / minute per peer is generous
+		maxPerWindow: 100, // 100 messages / minute per peer is generous
 		window:       time.Minute,
 		maxPeers:     10_000,
 	}
 }
 
 func (r *requestRateLimiter) allow(peerID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	now := time.Now()
 	if b, ok := r.state[peerID]; ok {
 		if now.Sub(b.windowAt) > r.window {

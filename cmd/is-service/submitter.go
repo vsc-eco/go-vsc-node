@@ -11,36 +11,58 @@ import (
 
 // Submitter sends the assembled mapInstantSendV2 L2 transaction to the
 // Magi network. Abstracted so the IS service can be tested without a
-// running L2 — production wires this to a hive_io client posting to the
+// running L2 — production wires this to a vsc client posting to the
 // dash-mapping-contract.
 //
-// SubmitMapInstantSend executes the L2 contract call and blocks until
-// the result is observable (transaction landed in a block). For v1 the
-// spec doesn't require landing-block confirmation; the caller still
-// transitions to ON_CHAIN once submission returns nil error.
+// SubmitMapInstantSend executes the L2 contract call. Returns the L2
+// txID so the orchestrator can persist it on the Session and surface
+// it via /status (audit finding `submitter-l2-txid-discarded-no-observability`).
 //
 // payload is the wire format the dash-mapping-contract's mapInstantSendV2
-// entrypoint expects (see modules/islock-attestation + dash-mapping-contract
-// MapInstantSendV2Params).
+// entrypoint expects — MUST match the contract's
+// MapInstantSendV2ParamsFull tinyjson schema (envelope: {body, agg}; all
+// nested keys snake_case).
 type Submitter interface {
-	SubmitMapInstantSend(ctx context.Context, payload MapInstantSendPayload) error
+	SubmitMapInstantSend(ctx context.Context, payload MapInstantSendPayload) (l2TxID string, err error)
 }
 
-// MapInstantSendPayload is the IS-service-side view of the contract call.
-// The contract decodes this from JSON into MapInstantSendV2ParamsFull.
+// MapInstantSendBody mirrors the contract's MapInstantSendV2Params (tinyjson
+// type in dash-mapping-contract/contract/mapping/forwarder_integration.go).
+// Field names + JSON tags MUST stay byte-for-byte aligned. Drift here is
+// the audit's `payload-schema-mismatch-is-vs-contract` finding.
+type MapInstantSendBody struct {
+	RawTxHex     string                       `json:"raw_tx_hex"`
+	Instruction  string                       `json:"instruction"`
+	Epoch        uint64                       `json:"epoch"`
+	Attestations []MapInstantSendAttestation  `json:"attestations"`
+	ChainId      string                       `json:"chain_id"`
+}
+
+// MapInstantSendAttestation mirrors the contract's ValidatorAttestation.
+// PubkeyHex is the 48-byte BLS pubkey hex; the contract aggregates these
+// via crypto.bls_verify_aggregate's host fn and also confirms each DID is
+// in the registered validator set at the request's epoch.
+type MapInstantSendAttestation struct {
+	ValidatorDID string `json:"validator_did"`
+	PubkeyHex    string `json:"pubkey_hex"`
+	BlsSigHex    string `json:"sig_hex"`
+}
+
+// MapInstantSendAgg mirrors the contract's AggregatedSig — the OFF-CHAIN
+// aggregate of every attestation's BlsSigHex via bls.Aggregate.
+type MapInstantSendAgg struct {
+	AggSigHex string `json:"agg_sig_hex"`
+}
+
+// MapInstantSendPayload mirrors the contract's MapInstantSendV2ParamsFull
+// — the {body, agg} envelope.
 type MapInstantSendPayload struct {
-	TxId               string                              `json:"txid"`
-	RawTxHex           string                              `json:"rawTxHex"`
-	InstructionRaw     string                              `json:"instruction"`
-	InstructionHashHex string                              `json:"instructionHash"`
-	Epoch              uint64                              `json:"epoch"`
-	ChainId            string                              `json:"chainId"`
-	Attestations       []islock.IsLockAttestationResponse  `json:"attestations"`
+	Body MapInstantSendBody `json:"body"`
+	Agg  MapInstantSendAgg  `json:"agg"`
 }
 
-// Marshal returns the JSON wire bytes the contract will receive as
-// `args` (base64-encoded by the L2 client). Convenience for tests +
-// production submitters.
+// Marshal returns the JSON wire bytes the contract will receive as the
+// L2 action payload. Used by L2 submitters + test fixtures.
 func (p MapInstantSendPayload) Marshal() ([]byte, error) {
 	return json.Marshal(p)
 }
@@ -69,16 +91,16 @@ func (noopBroadcaster) BroadcastRequest(ctx context.Context, req islock.IsLockAt
 // what would have been submitted.
 type SubmitterLogOnly struct{}
 
-func (SubmitterLogOnly) SubmitMapInstantSend(ctx context.Context, p MapInstantSendPayload) error {
+func (SubmitterLogOnly) SubmitMapInstantSend(ctx context.Context, p MapInstantSendPayload) (string, error) {
 	raw, err := p.Marshal()
 	if err != nil {
-		return err
+		return "", err
 	}
 	slog.Info("mapInstantSendV2 submission (log-only mode)",
-		"txid", p.TxId,
-		"epoch", p.Epoch,
-		"attestations", len(p.Attestations),
+		"epoch", p.Body.Epoch,
+		"attestations", len(p.Body.Attestations),
+		"chainId", p.Body.ChainId,
 		"payloadHex", hex.EncodeToString(raw),
 	)
-	return nil
+	return "log-only:no-l2-tx", nil
 }

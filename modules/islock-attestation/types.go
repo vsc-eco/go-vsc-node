@@ -65,9 +65,16 @@ type IsLockAttestationResponse struct {
 	// TxId echoed back so the requester can correlate response → request.
 	TxId string `json:"txid"`
 	// ValidatorDID identifies the signing validator. For Magi this is
-	// "did:key:..." (BlsDID). Requester looks up the corresponding
-	// pubkey from the active validator set at the request's epoch.
+	// "did:key:..." (BlsDID). The contract looks up the corresponding
+	// pubkey from the active validator set at the request's epoch and
+	// confirms it matches PubkeyHex.
 	ValidatorDID string `json:"validatorDid"`
+	// PubkeyHex is the validator's 48-byte BLS pubkey (96 hex chars).
+	// Included in the response so the IS-service-side aggregator
+	// doesn't need a separate validator-set query — the contract is the
+	// authority and rejects responses whose PubkeyHex doesn't match the
+	// registered pubkey for the claimed ValidatorDID.
+	PubkeyHex string `json:"pubkey"`
 	// Epoch the validator signed at. MUST equal the request's Epoch
 	// (validators reject requests for epochs they're not active in).
 	Epoch uint64 `json:"epoch"`

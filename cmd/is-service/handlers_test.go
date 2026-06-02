@@ -32,6 +32,17 @@ func newTestServer(t *testing.T) *Server {
 
 func doRequest(t *testing.T, srv *Server, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
+	return doRequestWithHeader(t, srv, method, path, body)
+}
+
+// doRequestWithHeader builds a request like doRequest but sets pairs of
+// header/value extras (variadic; expects even count). Used by tests that
+// need to provide the X-Cancel-Token header.
+func doRequestWithHeader(t *testing.T, srv *Server, method, path string, body any, headers ...string) *httptest.ResponseRecorder {
+	t.Helper()
+	if len(headers)%2 != 0 {
+		t.Fatalf("doRequestWithHeader: headers must come in name+value pairs (got %d)", len(headers))
+	}
 	var reqBody io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -39,6 +50,9 @@ func doRequest(t *testing.T, srv *Server, method, path string, body any) *httpte
 		reqBody = bytes.NewReader(buf)
 	}
 	r := httptest.NewRequest(method, path, reqBody)
+	for i := 0; i < len(headers); i += 2 {
+		r.Header.Set(headers[i], headers[i+1])
+	}
 	w := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(w, r)
 	return w
@@ -192,7 +206,8 @@ func TestSessionCancel_HappyPath(t *testing.T) {
 	var start SessionStartResponse
 	require.NoError(t, json.Unmarshal(startW.Body.Bytes(), &start))
 
-	cancelW := doRequest(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil)
+	cancelW := doRequestWithHeader(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil,
+		"X-Cancel-Token", start.AddressSignature)
 	assert.Equal(t, http.StatusNoContent, cancelW.Code)
 
 	// After cancel, status reports EXPIRED.
@@ -205,8 +220,34 @@ func TestSessionCancel_HappyPath(t *testing.T) {
 
 func TestSessionCancel_NotFound(t *testing.T) {
 	srv := newTestServer(t)
-	w := doRequest(t, srv, "POST", "/session/nonexistent/cancel", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	// Audit L1 fixes the cancel endpoint to require the token; nonexistent
+	// session + any token returns 401 (not 404 — avoid the
+	// session-existence oracle).
+	w := doRequestWithHeader(t, srv, "POST", "/session/nonexistent/cancel", nil,
+		"X-Cancel-Token", "any-fake-token")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestSessionCancel_WithoutTokenIs401(t *testing.T) {
+	srv := newTestServer(t)
+	startW := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth"})
+	require.Equal(t, http.StatusCreated, startW.Code)
+	var start SessionStartResponse
+	require.NoError(t, json.Unmarshal(startW.Body.Bytes(), &start))
+	// No X-Cancel-Token header.
+	w := doRequest(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestSessionCancel_WrongTokenIs401(t *testing.T) {
+	srv := newTestServer(t)
+	startW := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth"})
+	require.Equal(t, http.StatusCreated, startW.Code)
+	var start SessionStartResponse
+	require.NoError(t, json.Unmarshal(startW.Body.Bytes(), &start))
+	w := doRequestWithHeader(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil,
+		"X-Cancel-Token", "wrong-token")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 // ===== /healthz =====

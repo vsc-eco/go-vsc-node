@@ -121,15 +121,33 @@ func main() {
 		p2pCloseFn = p2pBcast.Close
 		slog.Info("libp2p broadcaster started",
 			"topic", topicPrefix+"/islock-attestation/v1",
-			"peers", len(boot))
+			"connectedPeers", p2pBcast.ConnectedPeerCount(),
+			"configuredPeers", len(boot))
 	} else {
 		slog.Info("libp2p broadcaster NOT configured — using noop (no attestations gathered)")
 	}
 
+	// L2 submitter — all-or-nothing on the trio. Partial configs are a
+	// silent footgun (audit `no-l2-config-trio-validation`): if any of
+	// {l2GqlURL, l2PrivKey, l2DashMappingContract} is set, ALL three
+	// must be set or we refuse to start. The previous gate only checked
+	// two and silently fell back to log-only when a third was missing.
 	var submitter Submitter = SubmitterLogOnly{}
-	if args.l2GqlURL != "" && args.l2PrivKeyHex != "" {
+	anyL2 := args.l2GqlURL != "" || args.l2PrivKeyHex != "" || args.l2DashMappingContract != ""
+	if anyL2 {
+		missing := []string{}
+		if args.l2GqlURL == "" {
+			missing = append(missing, "-l2GqlURL")
+		}
+		if args.l2PrivKeyHex == "" {
+			missing = append(missing, "-l2PrivKey")
+		}
 		if args.l2DashMappingContract == "" {
-			slog.Error("l2GqlURL + l2PrivKey set but l2DashMappingContract missing — refusing to start")
+			missing = append(missing, "-l2DashMappingContract")
+		}
+		if len(missing) > 0 {
+			slog.Error("L2 config incomplete — refusing to start with partial L2 setup",
+				"missing", missing)
 			os.Exit(1)
 		}
 		l2, err := NewSubmitterL2(SubmitterL2Config{
@@ -161,16 +179,26 @@ func main() {
 		ChainID:     args.chainID,
 	})
 
+	// /healthz probe — surfaces libp2p connected-peer count + degraded flag.
+	var broadcasterHealth func() (int, bool)
+	if bcaster, ok := broadcaster.(*libp2pBroadcaster); ok {
+		broadcasterHealth = func() (int, bool) {
+			n := bcaster.ConnectedPeerCount()
+			return n, n == 0
+		}
+	}
+
 	srv, err := NewServer(ServerConfig{
-		PrimaryPubKeyHex: args.primaryPubKey,
-		BackupPubKeyHex:  args.backupPubKey,
-		Network:          args.network,
-		ChainID:          args.chainID,
-		SessionTTL:       time.Duration(args.sessionTTLMinutes) * time.Minute,
-		Signer:           signer,
-		Dashd:            dashd,
-		Orch:             orch,
-		Sessions:         sessions,
+		PrimaryPubKeyHex:  args.primaryPubKey,
+		BackupPubKeyHex:   args.backupPubKey,
+		Network:           args.network,
+		ChainID:           args.chainID,
+		SessionTTL:        time.Duration(args.sessionTTLMinutes) * time.Minute,
+		Signer:            signer,
+		Dashd:             dashd,
+		Orch:              orch,
+		Sessions:          sessions,
+		BroadcasterHealth: broadcasterHealth,
 	})
 	if err != nil {
 		slog.Error("server config invalid", "err", err)
@@ -236,10 +264,18 @@ func main() {
 		slog.Info("shutdown signal received, draining...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		// Order matters (audit `orchestrator-detached-context-on-shutdown`):
+		//   1. HTTP server: stop accepting new requests.
+		//   2. Drain spawned Drive goroutines so any in-flight
+		//      mapInstantSendV2 submissions complete OR honour the
+		//      drain deadline.
+		//   3. ONLY THEN close the p2p broadcaster — otherwise an
+		//      in-flight BroadcastRequest fails publish-on-closed-topic.
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 			slog.Error("graceful shutdown failed", "err", err)
 			os.Exit(1)
 		}
+		srv.Drain(15 * time.Second)
 		if p2pCloseFn != nil {
 			_ = p2pCloseFn()
 		}
