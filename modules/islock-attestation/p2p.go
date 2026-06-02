@@ -1,0 +1,289 @@
+package islock_attestation
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/peer"
+
+	libp2p "vsc-node/modules/p2p"
+)
+
+// Workstream 4 follow-up: p2p service skeleton.
+//
+// This file pins the gossipsub topic + message-routing pattern that the
+// validator-side subscriber and the IS-Service-side requester will share.
+// Implements the PubSubServiceParams[p2pMessage] interface used by the
+// existing TSS/oracle/block-producer modules (see modules/tss/p2p.go for
+// the reference pattern and the workstream-0 scoping spike for the
+// design rationale).
+//
+// Live wiring is TODO — the parts marked "WIRING NEEDED" require:
+//   - A validator-side construction site (e.g. inside the main validator
+//     boot path) that calls NewService with a populated AttestationSigner
+//     and a MemoryReader backed by the dashd ZMQ subscriber.
+//   - An IS-Service-side construction site (cmd/is-service) that calls
+//     NewService with an empty AttestationSigner (it doesn't sign) and
+//     uses its own request-broadcast helper instead of HandleMessage.
+
+// p2pTopic is the gossipsub topic for the lazy-attestation protocol.
+// Versioned so future schema changes can roll out via /v2 without
+// breaking older peers.
+const p2pTopic = "/islock-attestation/v1"
+
+// p2pMessage is the union of request + response on the same topic.
+// Mirrors the modules/tss/p2p.go pattern.
+type p2pMessage struct {
+	Type     string                     `json:"type"` // "request" or "response"
+	Request  *IsLockAttestationRequest  `json:"request,omitempty"`
+	Response *IsLockAttestationResponse `json:"response,omitempty"`
+}
+
+// AttestationSigner is the validator-side dependency: when an attestation
+// request arrives, the service checks memory and if found, builds a
+// signed response using this signer's BLS consensus key. The IS Service
+// side passes a no-op signer (requests only; never signs).
+type AttestationSigner interface {
+	// ValidatorDID returns the signer's did:key:... reference, used in
+	// the response's ValidatorDID field.
+	ValidatorDID() string
+	// Sign produces a BLS signature over CanonicalSigningMessage(req).
+	// Implementations typically wrap a *bls.SecretKey held in the
+	// validator's identity config.
+	Sign(req IsLockAttestationRequest) (string, error)
+}
+
+// MemoryReader exposes the read side of an IsLockMemory. Validators back
+// this with their dashd ZMQ subscriber's rolling buffer; the IS Service
+// passes nil and doesn't sign attestation requests it receives (it's a
+// consumer, not an attester).
+type MemoryReader interface {
+	Lookup(txid string) (rawTxHex string, rawTxHash []byte, ok bool)
+}
+
+// ResponseCallback fires when a IsLockAttestationResponse arrives for a
+// txid we (the IS Service) previously requested. Implementations
+// typically deliver into a per-txid buffered channel so the request
+// flow can collect N-of-M responses.
+type ResponseCallback func(resp IsLockAttestationResponse)
+
+// Service is the gossipsub-backed islock-attestation node-side handler.
+// Construct one per validator (and one per IS Service, but with signer=nil).
+type Service struct {
+	signer       AttestationSigner   // nil on IS-Service side
+	memory       MemoryReader        // nil on IS-Service side
+	chainID      string              // included in every signed message
+	onResponse   ResponseCallback    // nil on validator side
+	rateLimits   *requestRateLimiter // bounds per-peer attestation cost
+
+	// WIRING NEEDED: assigned in NewService once the libp2p.PubSubService is built.
+	svc libp2p.PubSubService[p2pMessage]
+}
+
+// NewService constructs a fresh attestation service. Pass signer + memory
+// (validator side) or signer=nil/memory=nil + onResponse (IS Service side).
+//
+// chainID disambiguates mainnet/testnet in signed messages.
+//
+// WIRING NEEDED: this is the call site each consumer needs to make. The
+// underlying libp2p.NewPubSubService(host, params, topic) wiring is
+// straightforward once the consumer has its libp2p host available.
+func NewService(
+	chainID string,
+	signer AttestationSigner,
+	memory MemoryReader,
+	onResponse ResponseCallback,
+) *Service {
+	return &Service{
+		signer:     signer,
+		memory:     memory,
+		chainID:    chainID,
+		onResponse: onResponse,
+		rateLimits: newRequestRateLimiter(),
+	}
+}
+
+// BroadcastRequest is the IS-Service-side primitive: publish a request
+// for attestation on a specific (txid, rawTxHash, instruction-hash, epoch).
+// Validators that have it in their memory respond; others silently ignore.
+//
+// Callers collect responses via the onResponse callback registered at
+// NewService time. Use a per-txid waitgroup or channel to know when
+// quorum is reached.
+func (s *Service) BroadcastRequest(ctx context.Context, req IsLockAttestationRequest) error {
+	if s.svc == nil {
+		return fmt.Errorf("p2p service not yet wired; call Start() first")
+	}
+	msg := p2pMessage{Type: "request", Request: &req}
+	// WIRING NEEDED: replace with the actual PubSubService.Publish call.
+	// libp2p.PubSubService doesn't expose Publish in the interface I see
+	// at the time of writing — needs investigation against modules/p2p.
+	_ = msg
+	return fmt.Errorf("BroadcastRequest: live wiring TODO (workstream 4 follow-up)")
+}
+
+// ===== libp2p.PubSubServiceParams[p2pMessage] interface =====
+
+// Topic returns the gossipsub topic name.
+func (s *Service) Topic() string { return p2pTopic }
+
+// ValidateMessage rejects messages that don't make sense before the
+// expensive HandleMessage path runs. Following the TSS pattern, we
+// filter for malformed structure here and let HandleMessage do
+// content-specific work.
+func (s *Service) ValidateMessage(ctx context.Context, from peer.ID, raw *pubsub.Message, msg p2pMessage) bool {
+	switch msg.Type {
+	case "request":
+		if msg.Request == nil || msg.Request.TxId == "" || msg.Request.ChainId == "" {
+			return false
+		}
+		if msg.Request.ChainId != s.chainID {
+			return false
+		}
+		// Per-peer rate limit so a noisy validator can't flood the topic.
+		if !s.rateLimits.allow(from.String()) {
+			return false
+		}
+		return true
+	case "response":
+		if msg.Response == nil || msg.Response.TxId == "" || msg.Response.BlsSigHex == "" {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// ParseMessage decodes the wire format. JSON for now to match TSS pattern.
+func (Service) ParseMessage(data []byte) (p2pMessage, error) {
+	var m p2pMessage
+	err := json.Unmarshal(data, &m)
+	return m, err
+}
+
+// SerializeMessage is the inverse of ParseMessage.
+func (Service) SerializeMessage(msg p2pMessage) []byte {
+	out, _ := json.Marshal(msg)
+	return out
+}
+
+// HandleRawMessage is called for raw inbound pubsub messages. Most
+// modules just leave this as a no-op and let HandleMessage do the work
+// via the framework's parse path. We follow that convention.
+func (Service) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, send libp2p.SendFunc[p2pMessage]) error {
+	return nil
+}
+
+// HandleMessage dispatches to per-side handlers based on message type.
+// Validators care about requests (sign + respond); IS Service cares
+// about responses (deliver to the awaiting requester).
+func (s *Service) HandleMessage(
+	ctx context.Context,
+	from peer.ID,
+	msg p2pMessage,
+	send libp2p.SendFunc[p2pMessage],
+) error {
+	switch msg.Type {
+	case "request":
+		s.handleRequest(ctx, *msg.Request, send)
+	case "response":
+		if s.onResponse != nil {
+			s.onResponse(*msg.Response)
+		}
+	}
+	return nil
+}
+
+// handleRequest is the validator-side path: look up in memory, sign if
+// found, send response. Silent on miss — no negative response (avoid
+// side channel that leaks "I never saw this lock" timing info).
+func (s *Service) handleRequest(
+	ctx context.Context,
+	req IsLockAttestationRequest,
+	send libp2p.SendFunc[p2pMessage],
+) {
+	if s.memory == nil || s.signer == nil {
+		// Not a validator — silently ignore the request.
+		return
+	}
+	rawTxHex, _, ok := s.memory.Lookup(req.TxId)
+	if !ok {
+		return
+	}
+	_ = rawTxHex
+	// TODO: defense-in-depth — call dashd RPC `getrawtransaction txid verbose`
+	// and confirm `instantlock == true` before signing. Closes the ZMQ-bug
+	// attack surface where a buggy dashd might emit rawtxlock for a
+	// non-IS-locked tx.
+
+	sigHex, err := s.signer.Sign(req)
+	if err != nil {
+		// Signing failed — silently drop. The requester will time out
+		// or collect quorum from other validators.
+		return
+	}
+	resp := IsLockAttestationResponse{
+		TxId:         req.TxId,
+		ValidatorDID: s.signer.ValidatorDID(),
+		Epoch:        req.Epoch,
+		BlsSigHex:    sigHex,
+	}
+	if send != nil {
+		send(p2pMessage{Type: "response", Response: &resp})
+	}
+}
+
+// ===== rate limiter (validator-side) =====
+
+// requestRateLimiter caps how many requests a single peer can post on
+// the topic per window. Prevents a single (compromised or buggy) peer
+// from spamming attestation requests at the validator set.
+type requestRateLimiter struct {
+	// Simple sliding-window per peer. Bounded to maxPeers to avoid
+	// memory growth from spoofed peer IDs.
+	state         map[string]*requestBucket
+	maxPerWindow  int
+	window        time.Duration
+	maxPeers      int
+}
+
+type requestBucket struct {
+	count    int
+	windowAt time.Time
+}
+
+func newRequestRateLimiter() *requestRateLimiter {
+	return &requestRateLimiter{
+		state:        make(map[string]*requestBucket),
+		maxPerWindow: 100, // 100 requests / minute per peer is generous
+		window:       time.Minute,
+		maxPeers:     10_000,
+	}
+}
+
+func (r *requestRateLimiter) allow(peerID string) bool {
+	now := time.Now()
+	if b, ok := r.state[peerID]; ok {
+		if now.Sub(b.windowAt) > r.window {
+			b.count = 0
+			b.windowAt = now
+		}
+		if b.count >= r.maxPerWindow {
+			return false
+		}
+		b.count++
+		return true
+	}
+	if len(r.state) >= r.maxPeers {
+		// Memory cap — refuse to track new peer, fail-closed for them.
+		return false
+	}
+	r.state[peerID] = &requestBucket{count: 1, windowAt: now}
+	return true
+}
+
+// Compile-time check that Service implements the params interface.
+var _ libp2p.PubSubServiceParams[p2pMessage] = &Service{}
