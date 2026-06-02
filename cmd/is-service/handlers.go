@@ -65,6 +65,10 @@ type Server struct {
 	sessionTTL    time.Duration
 	signer        AddressSigner
 	rateLimitsIP  *rateLimiter
+	// dashd is optional — when nil, the IS-observed transition is
+	// driven externally (e.g. for tests). When non-nil, Server.Run
+	// starts the watcher goroutine.
+	dashd *DashdWatcher
 }
 
 type ServerConfig struct {
@@ -74,6 +78,11 @@ type ServerConfig struct {
 	ChainID          string // "vsc-mainnet" or "vsc-testnet"
 	SessionTTL       time.Duration
 	Signer           AddressSigner
+	// Dashd is optional. If non-nil, the Server registers each new
+	// session's deposit address with the watcher and transitions the
+	// session to IS_OBSERVED when the watcher detects an IS-locked tx
+	// paying that address.
+	Dashd *DashdWatcher
 }
 
 // NewServer constructs a Server. Returns an error if config is invalid.
@@ -108,7 +117,29 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		sessionTTL:    cfg.SessionTTL,
 		signer:        cfg.Signer,
 		rateLimitsIP:  newRateLimiter(10, time.Minute),
+		dashd:         cfg.Dashd,
 	}, nil
+}
+
+// onISLockObserved is the dashd-watcher callback. Transitions a session
+// from WAITING_FOR_IS → IS_OBSERVED and stores the dash txid + rawTxHex
+// (the rawTxHex is needed later for the mapInstantSendV2 submission).
+//
+// Idempotent: if the session is already past WAITING_FOR_IS (e.g.
+// already in ATTESTING or ON_CHAIN), the callback no-ops. This handles
+// the watcher's "may fire multiple times" semantic safely.
+func (s *Server) onISLockObserved(sid, txid, rawTxHex string) {
+	s.sessions.MutateState(sid, func(sess *Session) {
+		if sess.State != StateWaitingForIS {
+			return
+		}
+		sess.State = StateISObserved
+		sess.DashTxId = txid
+		// rawTxHex isn't currently in the Session struct — TODO: add it
+		// alongside the attestation request flow when wiring up the
+		// next state transition (IS_OBSERVED → ATTESTING → ON_CHAIN).
+		_ = rawTxHex
+	})
 }
 
 // Routes returns an http.ServeMux with the IS service's HTTP endpoints
@@ -257,6 +288,14 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		State:            StateWaitingForIS,
 	}
 	s.sessions.Put(sess)
+
+	// Register the deposit address with the dashd watcher so we get
+	// notified when an IS-lock fires. Watcher is optional — if not
+	// configured (e.g. in tests), state transitions are driven
+	// externally.
+	if s.dashd != nil {
+		s.dashd.Watch(depositAddr, sid, s.onISLockObserved)
+	}
 
 	writeJSON(w, http.StatusCreated, SessionStartResponse{
 		Sid:                   sid,

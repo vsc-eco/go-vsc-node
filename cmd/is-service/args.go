@@ -15,6 +15,9 @@ type args struct {
 	backupPubKey        string
 	addressSignerSecret string
 	sessionTTLMinutes   int
+	dashdRPCURL         string
+	dashdRPCUser        string
+	dashdRPCPassword    string
 }
 
 func parseArgs() (args, error) {
@@ -33,6 +36,12 @@ func parseArgs() (args, error) {
 		"HMAC secret for signing (deposit_address, instruction) tuples in API responses. "+
 			"DEV/TEST ONLY — production must replace with HSM/KMS asymmetric signer (see §5.7).")
 	fs.IntVar(&a.sessionTTLMinutes, "sessionTTLMinutes", 30, "how long sessions stay active before expiry")
+
+	fs.StringVar(&a.dashdRPCURL, "dashdRPC", "",
+		"dashd JSON-RPC URL for IS-lock observation (optional; e.g. http://vsc-dashd-testnet:9998). "+
+			"When unset, IS_OBSERVED transitions must be driven externally.")
+	fs.StringVar(&a.dashdRPCUser, "dashdRPCUser", "vsc-node-user", "dashd RPC username")
+	fs.StringVar(&a.dashdRPCPassword, "dashdRPCPassword", "vsc-node-pass", "dashd RPC password")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return a, err

@@ -70,6 +70,19 @@ func main() {
 	}
 	signer := NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 
+	// Optional dashd watcher — when -dashdRPC is set, the IS service
+	// auto-transitions sessions to IS_OBSERVED as their deposit address
+	// receives IS-locked txs. Without it, the IS-observed transition
+	// must be driven externally (e.g. for offline/devnet runs).
+	var dashd *DashdWatcher
+	if args.dashdRPCURL != "" {
+		client := NewDashdRPCClient(args.dashdRPCURL, args.dashdRPCUser, args.dashdRPCPassword)
+		dashd = NewDashdWatcher(client)
+		slog.Info("dashd watcher configured", "rpc", args.dashdRPCURL)
+	} else {
+		slog.Info("dashd watcher NOT configured — IS_OBSERVED transitions must be driven externally")
+	}
+
 	srv, err := NewServer(ServerConfig{
 		PrimaryPubKeyHex: args.primaryPubKey,
 		BackupPubKeyHex:  args.backupPubKey,
@@ -77,6 +90,7 @@ func main() {
 		ChainID:          args.chainID,
 		SessionTTL:       time.Duration(args.sessionTTLMinutes) * time.Minute,
 		Signer:           signer,
+		Dashd:            dashd,
 	})
 	if err != nil {
 		slog.Error("server config invalid", "err", err)
@@ -93,6 +107,16 @@ func main() {
 	// Graceful shutdown on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// dashd watcher goroutine — polls dashd RPC + fires IS-observed
+	// transitions. Stops when ctx is cancelled.
+	if dashd != nil {
+		go func() {
+			if err := dashd.Run(ctx); err != nil && err != context.Canceled {
+				slog.Error("dashd watcher failed", "err", err)
+			}
+		}()
+	}
 
 	// Session-prune janitor — minimal overhead, keeps memory bounded
 	// against any forgotten-to-cancel sessions.
