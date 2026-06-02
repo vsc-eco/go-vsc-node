@@ -27,6 +27,7 @@ type SystemConfig interface {
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
+	TrustedForwarders() []string
 	LoadOverrides(path string) error
 }
 
@@ -44,6 +45,7 @@ type config struct {
 	oracleParams                 params.OracleParams
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
+	trustedForwarders            []string
 }
 
 func (c *config) OnMainnet() bool {
@@ -109,6 +111,24 @@ func (c *config) PendulumPoolWhitelist() []string {
 	return out
 }
 
+// TrustedForwarders returns the per-network list of contract IDs that are
+// allowed to invoke the WASM `call_as` host function — i.e. set the
+// effectiveCaller of an outbound contract call to an arbitrary DID. This is
+// a protocol-level privilege gate analogous to ERC-2771's trusted-forwarder
+// list. Currently used by dash-forwarder-contract for the Dash InstantSend
+// login feature; can be extended to ltc/bch/doge forwarders later.
+//
+// Empty list (the default on networks that don't deploy the feature) means
+// `call_as` is unreachable — no contract can spoof effectiveCaller.
+func (c *config) TrustedForwarders() []string {
+	if len(c.trustedForwarders) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.trustedForwarders))
+	copy(out, c.trustedForwarders)
+	return out
+}
+
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
@@ -122,6 +142,7 @@ type SysConfigOverrides struct {
 	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
 	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
 	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
+	TrustedForwarders     *[]string               `json:"trustedForwarders,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -142,6 +163,7 @@ func (c *config) LoadOverrides(path string) error {
 		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
 		TssParams             json.RawMessage `json:"tssParams,omitempty"`
 		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
+		TrustedForwarders     *[]string       `json:"trustedForwarders,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -178,6 +200,9 @@ func (c *config) LoadOverrides(path string) error {
 	}
 	if raw.PendulumPoolWhitelist != nil {
 		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
+	}
+	if raw.TrustedForwarders != nil {
+		c.trustedForwarders = append([]string(nil), (*raw.TrustedForwarders)...)
 	}
 	return nil
 }
