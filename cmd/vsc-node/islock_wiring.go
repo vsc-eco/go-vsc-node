@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
@@ -33,11 +34,36 @@ import (
 // signature shape checks) bound the surface. See
 // `MAGI_ISLOCK_TRUST_ALL` for the explicit ack.
 type IslockAttestationPlugin struct {
-	chainID    string
-	identity   common.IdentityConfig
-	p2pServer  *libp2p.P2PServer
-	enabled    bool
-	trustAll   bool
+	chainID   string
+	network   string
+	identity  common.IdentityConfig
+	p2pServer *libp2p.P2PServer
+	enabled   bool
+
+	// trustAll: deprecated devnet-only fallback. When set without a
+	// real dashd RPC URL, the MemoryReader returns ok=true for
+	// every txid. Kept for backwards compatibility with the early
+	// devnet wiring; new code paths should configure
+	// MAGI_ISLOCK_DASHD_RPC instead.
+	trustAll bool
+
+	// dashdRPC: full URL of the validator's dashd JSON-RPC
+	// endpoint. When set, the plugin starts a DashdPoller that
+	// populates a real IsLockMemory cache from observed mempool
+	// txs (filtering on `instantlock=true` unless
+	// acceptUnlocked is also set).
+	dashdRPC     string
+	dashdRPCUser string
+	dashdRPCPass string
+
+	// acceptUnlocked: devnet-only bypass that downgrades the
+	// instantlock=true check to "tx observed in mempool". Mirrors
+	// cmd/is-service's -testBypassDashdISLock for the regtest case.
+	acceptUnlocked bool
+
+	// pollerCancel cancels the DashdPoller goroutine on Stop().
+	pollerCancel context.CancelFunc
+
 	service     *islock.Service
 	startErr    error
 	startedOnce sync.Once
@@ -46,37 +72,78 @@ type IslockAttestationPlugin struct {
 // NewIslockAttestationPlugin constructs the plugin. Returns an
 // enabled instance only when MAGI_ISLOCK_ENABLE=true; otherwise
 // it's a no-op (Init/Start/Stop succeed without side effects).
+//
+// Operator env vars:
+//   - MAGI_ISLOCK_ENABLE          (required) — turn the plugin on
+//   - MAGI_ISLOCK_DASHD_RPC       — http URL of validator's dashd
+//     (preferred — uses real IsLockMemory backed by observed mempool)
+//   - MAGI_ISLOCK_DASHD_USER      — basic-auth user
+//   - MAGI_ISLOCK_DASHD_PASS      — basic-auth password
+//   - MAGI_ISLOCK_ACCEPT_UNLOCKED — devnet-only; records txs even
+//     when dashd reports instantlock=false. Required for regtest
+//     dashd (no LLMQ).
+//   - MAGI_ISLOCK_TRUST_ALL       — DEPRECATED devnet-only; when
+//     set WITHOUT a DASHD_RPC URL, MemoryReader returns ok=true
+//     for every txid. Use the DASHD_RPC + ACCEPT_UNLOCKED pair
+//     instead — closer to the production code path.
 func NewIslockAttestationPlugin(
 	chainID string,
+	network string,
 	identity common.IdentityConfig,
 	p2pServer *libp2p.P2PServer,
 ) *IslockAttestationPlugin {
 	enabled := os.Getenv("MAGI_ISLOCK_ENABLE") == "true"
 	trustAll := os.Getenv("MAGI_ISLOCK_TRUST_ALL") == "true"
+	dashdRPC := os.Getenv("MAGI_ISLOCK_DASHD_RPC")
+	dashdUser := os.Getenv("MAGI_ISLOCK_DASHD_USER")
+	dashdPass := os.Getenv("MAGI_ISLOCK_DASHD_PASS")
+	acceptUnlocked := os.Getenv("MAGI_ISLOCK_ACCEPT_UNLOCKED") == "true"
 	return &IslockAttestationPlugin{
-		chainID:   chainID,
-		identity:  identity,
-		p2pServer: p2pServer,
-		enabled:   enabled,
-		trustAll:  trustAll,
+		chainID:        chainID,
+		network:        network,
+		identity:       identity,
+		p2pServer:      p2pServer,
+		enabled:        enabled,
+		trustAll:       trustAll,
+		dashdRPC:       dashdRPC,
+		dashdRPCUser:   dashdUser,
+		dashdRPCPass:   dashdPass,
+		acceptUnlocked: acceptUnlocked,
 	}
 }
 
 // Init is the aggregate.Plugin lifecycle hook called before Start.
 // We defer the actual libp2p PubSubService construction to Start
 // because the underlying p2pServer needs to be up first.
+//
+// Backing-mode validation:
+//   - DASHD_RPC set: production-shape, requires either
+//     instantlock=true upstream OR ACCEPT_UNLOCKED+network=devnet.
+//   - TRUST_ALL set with no DASHD_RPC: deprecated devnet-only
+//     fallback. Refuses non-devnet networks.
+//   - Neither: reject — refuse to start without ANY memory
+//     backing, since the validator would sign garbage requests.
 func (p *IslockAttestationPlugin) Init() error {
 	if !p.enabled {
 		return nil
 	}
-	if !p.trustAll {
-		// Refuse to start an attestation service that would sign
-		// everything without a real memory backing. The trustAll
-		// flag is an explicit ack required to use the stub.
+	hasRPC := p.dashdRPC != ""
+	if !hasRPC && !p.trustAll {
 		return fmt.Errorf(
-			"MAGI_ISLOCK_ENABLE=true requires MAGI_ISLOCK_TRUST_ALL=true " +
-				"until real dashd-ZMQ memory backing is wired " +
-				"(devnet-only safeguard)")
+			"MAGI_ISLOCK_ENABLE=true requires either MAGI_ISLOCK_DASHD_RPC " +
+				"(production-shape memory backing) or MAGI_ISLOCK_TRUST_ALL " +
+				"(deprecated devnet-only fallback)")
+	}
+	if p.acceptUnlocked && p.network != "devnet" {
+		return fmt.Errorf(
+			"MAGI_ISLOCK_ACCEPT_UNLOCKED=true requires -network=devnet (got %q); "+
+				"this flag downgrades the IS-lock check and is gated to "+
+				"the devnet-only test surface", p.network)
+	}
+	if p.trustAll && p.network != "devnet" {
+		return fmt.Errorf(
+			"MAGI_ISLOCK_TRUST_ALL=true requires -network=devnet (got %q); "+
+				"trust-all is the deprecated devnet-only fallback", p.network)
 	}
 	return nil
 }
@@ -97,7 +164,32 @@ func (p *IslockAttestationPlugin) Start() *promise.Promise[any] {
 				p.startErr = fmt.Errorf("build attestation signer: %w", err)
 				return
 			}
-			memory := newTrustAllMemoryReader(p.trustAll)
+			// Memory backing: prefer real dashd-RPC poller. Falls
+			// back to trust-all stub only when no RPC URL is set
+			// (deprecated devnet path).
+			var memory islock.MemoryReader
+			if p.dashdRPC != "" {
+				realMem := islock.NewIsLockMemory()
+				poller := islock.NewDashdPoller(
+					p.dashdRPC, p.dashdRPCUser, p.dashdRPCPass,
+					realMem, 2*time.Second, p.acceptUnlocked)
+				pctx, cancel := context.WithCancel(context.Background())
+				p.pollerCancel = cancel
+				go func() {
+					if err := poller.Run(pctx); err != nil && pctx.Err() == nil {
+						slog.Error("islock-attestation dashd poller exited",
+							"err", err)
+					}
+				}()
+				slog.Info("islock-attestation: dashd-RPC MemoryReader configured",
+					"acceptUnlocked", p.acceptUnlocked,
+					"network", p.network)
+				memory = realMem
+			} else {
+				slog.Warn("islock-attestation: trust-all MemoryReader (deprecated; configure MAGI_ISLOCK_DASHD_RPC for production-shape backing)",
+					"network", p.network)
+				memory = newTrustAllMemoryReader(p.trustAll)
+			}
 			p.service = islock.NewService(p.chainID, signer, memory, nil)
 
 			// Construct the pubsub service binding. Pubsub topic +
@@ -123,9 +215,15 @@ func (p *IslockAttestationPlugin) Start() *promise.Promise[any] {
 	})
 }
 
-// Stop is a no-op — the libp2p shutdown path tears down the
-// pubsub service alongside its parent host.
-func (p *IslockAttestationPlugin) Stop() error { return nil }
+// Stop cancels the dashd poller (if active) and lets the libp2p
+// shutdown path tear down the pubsub service alongside its parent
+// host.
+func (p *IslockAttestationPlugin) Stop() error {
+	if p.pollerCancel != nil {
+		p.pollerCancel()
+	}
+	return nil
+}
 
 // ===== AttestationSigner adapter =====
 
@@ -197,6 +295,3 @@ func (r *trustAllMemoryReader) Lookup(txid string) (rawTxHex string, rawTxHash [
 	return "", nil, true
 }
 
-// ===== unused but documented for the linter =====
-
-var _ context.Context // future hook for ctx-aware lookup

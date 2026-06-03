@@ -86,16 +86,24 @@ func TestIsLoginSmoke(t *testing.T) {
 	cfg.GenesisNode = 5
 	cfg.LogLevel = "info,is-service=debug"
 	cfg.EnableDashd = true
-	// Activate the magi-side islock-attestation plugin. With
-	// MAGI_ISLOCK_TRUST_ALL=true the per-validator MemoryReader
-	// returns ok=true for every txid, so the witness signs any
-	// well-formed attestation request from the IS service via the
-	// libp2p gossip topic. cmd/vsc-node/islock_wiring.go gates
-	// this combo at startup so production deploys cannot enable
-	// it by accident.
+	// Activate the magi-side islock-attestation plugin with the
+	// production-shape dashd-RPC MemoryReader backing. Each magi
+	// witness polls the shared regtest dashd, observes mempool
+	// txs, populates an in-memory cache that islock-attestation's
+	// HandleMessage consults before signing. The ACCEPT_UNLOCKED
+	// flag is the regtest-only bypass for the instantlock check
+	// (regtest dashd has no LLMQ quorum so it never sets
+	// instantlock=true); production deploys leave it off so the
+	// validator only signs for txids it independently observed
+	// as IS-locked. cmd/vsc-node/islock_wiring.go gates this combo
+	// at startup so production deploys cannot enable it by
+	// accident (Init() refuses ACCEPT_UNLOCKED outside devnet).
 	cfg.MagiEnv = map[string]string{
-		"MAGI_ISLOCK_ENABLE":     "true",
-		"MAGI_ISLOCK_TRUST_ALL":  "true",
+		"MAGI_ISLOCK_ENABLE":          "true",
+		"MAGI_ISLOCK_DASHD_RPC":       "http://dashd:19898",
+		"MAGI_ISLOCK_DASHD_USER":      "vsc-node-user",
+		"MAGI_ISLOCK_DASHD_PASS":      "vsc-node-pass",
+		"MAGI_ISLOCK_ACCEPT_UNLOCKED": "true",
 	}
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
