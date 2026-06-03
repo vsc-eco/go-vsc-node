@@ -29,17 +29,11 @@ import (
 //   - well-formed URL → "<scheme>://<host>" (host may include port,
 //     IPv6 brackets are preserved; userinfo + query + path dropped)
 //
-// Returns a string suitable for slog attrs and operator logs. NEVER
-// returns userinfo, query, or path components.
-//
-// Deprecated: prefer sanitizeURLForLogWithFlag so the redaction
-// marker (if any) names the offending flag. Round-10 audit
-// R10-OPS-MARKER-DRIFT-01 / R10-DRIFT-SANITIZE-BARE-NO-PROD-CALLER:
-// only kept as a test convenience pinning the empty-flag default;
-// no production caller. Delete once the test is rewritten.
-func sanitizeURLForLog(raw string) string {
-	return sanitizeURLForLogWithFlag("", raw)
-}
+// (round-14 cleanup) sanitizeURLForLog bare variant deleted —
+// R11-INFO-DEPRECATED-SANITIZER-STILL-EXPORTED. All production
+// callers use sanitizeURLForLogWithFlag; tests now also call that
+// directly with an empty flag string so the empty-flag default
+// behaviour stays pinned without an exported alias.
 
 // sanitizeURLForLogWithFlag is the flag-aware sanitiser variant.
 // Round-9 audit R9-INFO-MARKER-HINT-01 — when a redaction marker

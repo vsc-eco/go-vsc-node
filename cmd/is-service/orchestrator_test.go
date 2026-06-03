@@ -325,8 +325,11 @@ func TestSanitizeURLForLog(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := sanitizeURLForLog(c.in)
-			assert.Equal(t, c.want, got, "sanitizeURLForLog(%q)", c.in)
+			// Round-14 follow-up: bare sanitizeURLForLog wrapper was
+			// deleted; call WithFlag with an empty flag to pin the
+			// no-flag default-marker shape.
+			got := sanitizeURLForLogWithFlag("", c.in)
+			assert.Equal(t, c.want, got, "sanitizeURLForLogWithFlag(%q)", c.in)
 			// Never leak userinfo (the '@' marker) regardless of
 			// case classification.
 			assert.NotContains(t, got, "user:pass",

@@ -98,8 +98,37 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	}
 	args = append(args, deployCmd...)
 
-	out, err := d.composeOutput(ctx, args...)
-
+	// Round-14 follow-up: the deployer container's libp2p DHT
+	// bootstrap is flaky if the remaining magi nodes haven't fully
+	// formed their mesh by the time we stop the deployer node.
+	// Concrete symptom: subprocess stdout = "DHT Bootstrap error:
+	// <nil>\nError in subscription: subscription cancelled" with no
+	// "contract id:" line. Mitigation: retry the docker-compose run
+	// up to 3 times with a 10s mesh-settle wait between attempts.
+	// Persistent failures past retry-3 still surface the full
+	// output for diagnosis. Tracked under
+	// "TestOracleDashChainRelay devnet flake investigation" in the
+	// dash_is_login_audit_loop memory note.
+	var out string
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		out, err = d.composeOutput(ctx, args...)
+		if err == nil && parseContractId(out) != "" {
+			break
+		}
+		if attempt < maxAttempts {
+			log.Printf("[devnet] deploy attempt %d/%d returned no contract id; "+
+				"sleeping 10s for libp2p mesh to settle before retry. output:\n%s",
+				attempt, maxAttempts, out)
+			select {
+			case <-time.After(10 * time.Second):
+			case <-ctx.Done():
+				err = ctx.Err()
+				goto restart
+			}
+		}
+	}
+restart:
 	// Always restart the node, even if deploy failed.
 	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
 		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
@@ -108,14 +137,14 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	time.Sleep(5 * time.Second)
 
 	if err != nil {
-		return "", fmt.Errorf("contract deployment failed: %w\noutput: %s", err, out)
+		return "", fmt.Errorf("contract deployment failed after %d attempts: %w\noutput: %s", maxAttempts, err, out)
 	}
 
 	log.Printf("[devnet] contract-deployer output:\n%s", out)
 
 	contractId := parseContractId(out)
 	if contractId == "" {
-		return "", fmt.Errorf("could not parse contract ID from output:\n%s", out)
+		return "", fmt.Errorf("could not parse contract ID from output after %d attempts:\n%s", maxAttempts, out)
 	}
 
 	log.Printf("[devnet] contract deployed: %s", contractId)
