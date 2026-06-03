@@ -65,11 +65,29 @@ func main() {
 	// file. NOT FOR PRODUCTION — production needs an HSM/KMS asymmetric
 	// signer per spec §5.7. Refusing to start with an empty secret prevents
 	// accidental no-signature deployment.
-	if args.addressSignerSecret == "" {
-		slog.Error("addressSignerSecret must be set (development HMAC stub; replace with HSM/KMS for prod)")
+	// Signer selection — production-shape Ed25519 file-based path
+	// takes precedence over the dev HMAC stub. Either path is
+	// required (both blank = fail-fast). HSM/KMS implementation is
+	// the next workstream and will plug into the same AddressSigner
+	// interface.
+	var signer AddressSigner
+	switch {
+	case args.addressSignerEd25519KeyFile != "":
+		s, pubHex, err := NewAddressSignerEd25519FromFile(args.addressSignerEd25519KeyFile)
+		if err != nil {
+			slog.Error("loading Ed25519 signer key file", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("address signer: ed25519 file-backed (production-shape; pin pubkey in PUBLIC_IS_SERVICE_SIGNER_PUBKEY)",
+			"pubkey", pubHex)
+		signer = s
+	case args.addressSignerSecret != "":
+		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -addressSignerEd25519KeyFile or HSM/KMS per §5.7)")
+		signer = NewAddressSignerHMAC([]byte(args.addressSignerSecret))
+	default:
+		slog.Error("address signer required: set -addressSignerEd25519KeyFile (production) or -addressSignerSecret (dev HMAC stub)")
 		os.Exit(1)
 	}
-	signer := NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 
 	// Optional dashd watcher — when -dashdRPC is set, the IS service
 	// auto-transitions sessions to IS_OBSERVED as their deposit address

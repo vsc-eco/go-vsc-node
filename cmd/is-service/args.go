@@ -62,7 +62,8 @@ type args struct {
 	chainID             string // "vsc-mainnet" or "vsc-testnet"
 	primaryPubKey       string
 	backupPubKey        string
-	addressSignerSecret string
+	addressSignerSecret         string
+	addressSignerEd25519KeyFile string
 	sessionTTLMinutes   int
 	dashdRPCURL         string
 	dashdRPCUser        string
@@ -113,7 +114,15 @@ func parseArgs() (args, error) {
 		"hex-encoded 33-byte compressed pubkey for the bridge TSS backup key")
 	fs.StringVar(&a.addressSignerSecret, "addressSignerSecret", "",
 		"HMAC secret for signing (deposit_address, instruction) tuples in API responses. "+
-			"DEV/TEST ONLY — production must replace with HSM/KMS asymmetric signer (see §5.7).")
+			"DEV/TEST ONLY — production must replace with -addressSignerEd25519KeyFile "+
+			"or an HSM/KMS-backed signer per spec §5.7.")
+	fs.StringVar(&a.addressSignerEd25519KeyFile, "addressSignerEd25519KeyFile", "",
+		"Path to a 32-byte Ed25519 seed (hex-encoded, 0o600). Production-shape "+
+			"asymmetric address signer — Altera pins the derived public key in "+
+			"PUBLIC_IS_SERVICE_SIGNER_PUBKEY and verifies each /session/start's "+
+			"addressSignature. Takes precedence over -addressSignerSecret. "+
+			"HSM/KMS-backed implementation is the next workstream and will share "+
+			"the AddressSigner interface.")
 	fs.IntVar(&a.sessionTTLMinutes, "sessionTTLMinutes", 30, "how long sessions stay active before expiry")
 
 	fs.StringVar(&a.dashdRPCURL, "dashdRPC", "",
