@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -243,6 +244,90 @@ type IsSessionStartResp struct {
 	RequiredAmountDuffs   int64  `json:"requiredAmountDuffs"`
 	ExpiresAt             string `json:"expiresAt"`
 	StatusURL             string `json:"statusUrl"`
+}
+
+// readMagiBlsKey reads magi-N's BlsPrivKeySeed from its identityConfig.json,
+// deserialises the BLS private key, and derives the matching pubkey + DID.
+// Used by attestation-injection + validator-set-payload helpers below.
+func (d *Devnet) readMagiBlsKey(node int) (
+	priv *dids.BlsPrivKey,
+	pub *blsAPI.Pubkey,
+	did dids.BlsDID,
+	err error,
+) {
+	donorPath := filepath.Join(d.devnetDir,
+		fmt.Sprintf("data-%d", node), "config", "identityConfig.json")
+	donorBytes, err := os.ReadFile(donorPath)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("reading magi-%d identityConfig at %s: %w", node, donorPath, err)
+	}
+	var donor struct {
+		BlsPrivKeySeed string `json:"BlsPrivKeySeed"`
+	}
+	if err := json.Unmarshal(donorBytes, &donor); err != nil {
+		return nil, nil, "", fmt.Errorf("parsing magi-%d identityConfig: %w", node, err)
+	}
+	if len(donor.BlsPrivKeySeed) != 64 {
+		return nil, nil, "", fmt.Errorf("magi-%d BlsPrivKeySeed must be 32 hex bytes, got len=%d",
+			node, len(donor.BlsPrivKeySeed))
+	}
+	seedBytes, err := hex.DecodeString(donor.BlsPrivKeySeed)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("decoding magi-%d BlsPrivKeySeed: %w", node, err)
+	}
+	var seed [32]byte
+	copy(seed[:], seedBytes)
+	priv = &dids.BlsPrivKey{}
+	if err := priv.Deserialize(&seed); err != nil {
+		return nil, nil, "", fmt.Errorf("deserializing magi-%d BLS priv: %w", node, err)
+	}
+	pub, err = blsAPI.SkToPk(priv)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("deriving magi-%d BLS pubkey: %w", node, err)
+	}
+	did, err = dids.NewBlsDID(pub)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("deriving magi-%d BLS DID: %w", node, err)
+	}
+	return priv, pub, did, nil
+}
+
+// BuildValidatorSetPayload constructs the 4-field per-entry payload
+// the dash-mapping-contract's setValidatorSet expects:
+//
+//	<epoch>;<did>=<pk_hex>=<pop_hex>=<account>|...
+//
+// Mirrors the format produced by dash-mapping-contract/cmd/
+// gen-validator-set-payload — generates an account-bound PoP via
+// dids.GenerateBlsPoP, decodes the base64-rawurl PoP and hex-
+// encodes it (the contract's verifier accepts hex). The `nodes`
+// list selects which magi witnesses to include; the account name
+// for each is `<witnessPrefix><N>` (e.g. "magi.test1").
+func (d *Devnet) BuildValidatorSetPayload(epoch uint64, nodes []int) (string, error) {
+	parts := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		priv, pub, did, err := d.readMagiBlsKey(n)
+		if err != nil {
+			return "", err
+		}
+		account := fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, n)
+		popB64, err := dids.GenerateBlsPoP(priv, account)
+		if err != nil {
+			return "", fmt.Errorf("magi-%d PoP: %w", n, err)
+		}
+		popRaw, err := base64.RawURLEncoding.DecodeString(popB64)
+		if err != nil {
+			return "", fmt.Errorf("magi-%d PoP decode: %w", n, err)
+		}
+		pkBytes := pub.Serialize()
+		entry := fmt.Sprintf("%s=%s=%s=%s",
+			did.String(),
+			hex.EncodeToString(pkBytes[:]),
+			hex.EncodeToString(popRaw),
+			account)
+		parts = append(parts, entry)
+	}
+	return fmt.Sprintf("%d;%s", epoch, strings.Join(parts, "|")), nil
 }
 
 // IsForceAttestation reads magi-N's BLS private-key seed from its

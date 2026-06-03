@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,10 +142,49 @@ func TestIsLoginSmoke(t *testing.T) {
 	//    keys don't need to own anything — the deposit address they
 	//    derive is never paid against, and we drive the
 	//    WAITING_FOR_IS / ATTESTING transitions via test-only HTTP
-	//    endpoints.
+	//    endpoints. But the SAME pubkeys must be registered on the
+	//    contract via registerPublicKey so the contract-side deposit-
+	//    address re-derivation matches what the IS service hands the
+	//    user — otherwise any real mapInstantSendV2 submission would
+	//    abort with "derived deposit address ... not found in tx
+	//    outputs".
 	primaryPub, backupPub, _, err := GenerateIsTestKeys()
 	if err != nil {
 		t.Fatalf("generating IS test keys: %v", err)
+	}
+
+	// 3a. Register the bridge pubkeys on the contract. Owner-gated;
+	//     the deployer (magi.test1) is contract.owner.
+	registerKeysPayload := fmt.Sprintf(
+		`{"primary_public_key":%q,"backup_public_key":%q}`,
+		primaryPub, backupPub)
+	if _, err := d.CallContract(ctx, 1, mappingId, "registerPublicKey", registerKeysPayload); err != nil {
+		t.Fatalf("registerPublicKey: %v", err)
+	}
+	t.Logf("registered bridge pubkeys on contract (primary=%s… backup=%s…)",
+		primaryPub[:16], backupPub[:16])
+
+	// 3b. Register magi-1 as the active validator set for epoch 0
+	//     (the IS service's log-only mode stamps epoch=0 into every
+	//     attestation request). Builds a 4-field PoP-bound payload
+	//     using magi-1's real BLS key from data-1/config/
+	//     identityConfig.json — the contract's setValidatorSet does
+	//     full BLS PoP verification before accepting the entry.
+	validatorPayload, err := d.BuildValidatorSetPayload(0, []int{1})
+	if err != nil {
+		t.Fatalf("BuildValidatorSetPayload: %v", err)
+	}
+	if _, err := d.CallContract(ctx, 1, mappingId, "setValidatorSet", validatorPayload); err != nil {
+		t.Fatalf("setValidatorSet: %v", err)
+	}
+	t.Logf("registered validator set for epoch 0 (magi-1 → %s)",
+		strings.SplitN(strings.SplitN(validatorPayload, ";", 2)[1], "=", 2)[0])
+
+	// 3c. setMinAttestations(1) — single-attester quorum. Default
+	//     fallback is also 1, but explicit so a future contract bump
+	//     doesn't silently raise it.
+	if _, err := d.CallContract(ctx, 1, mappingId, "setMinAttestations", "1"); err != nil {
+		t.Fatalf("setMinAttestations: %v", err)
 	}
 
 	// 4. Start the IS service in log-only L2 mode. The L2 GraphQL
