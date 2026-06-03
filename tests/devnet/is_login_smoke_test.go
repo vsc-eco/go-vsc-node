@@ -148,9 +148,25 @@ func TestIsLoginSmoke(t *testing.T) {
 	//    user — otherwise any real mapInstantSendV2 submission would
 	//    abort with "derived deposit address ... not found in tx
 	//    outputs".
-	primaryPub, backupPub, _, err := GenerateIsTestKeys()
+	primaryPub, backupPub, l2Priv, err := GenerateIsTestKeys()
 	if err != nil {
 		t.Fatalf("generating IS test keys: %v", err)
+	}
+	l2DID, err := ComputeL2DIDFromPrivHex(l2Priv)
+	if err != nil {
+		t.Fatalf("computing L2 DID: %v", err)
+	}
+	t.Logf("IS service L2 account: %s", l2DID)
+
+	// 3d. Pre-fund the IS service's L2 account by broadcasting an
+	//     L1→L2 deposit op (initminer → vsc.gateway with memo
+	//     `to=<did>`). State engine credits the L2 account when it
+	//     sees the gateway-targeted transfer with that memo shape
+	//     (mirrors ledger_system_test.go's "memo to=<eth address>"
+	//     case). Devnet block time is 3s; 12s settle wait gives the
+	//     state engine ~4 blocks of headroom.
+	if err := d.FundL2Account(ctx, l2DID, "100.000", 12*time.Second); err != nil {
+		t.Fatalf("FundL2Account: %v", err)
 	}
 
 	// 3a. Register the bridge pubkeys on the contract. Owner-gated;
@@ -200,16 +216,19 @@ func TestIsLoginSmoke(t *testing.T) {
 		PrimaryPubkey:       primaryPub,
 		BackupPubkey:        backupPub,
 		AddressSignerSecret: "smoke-test-hmac-secret-dev-only-do-not-ship",
+		// Real L2 submitter: target magi-1's GraphQL endpoint with
+		// the priv key whose did:pkh:eip155 account we just funded.
+		// The IS service will now build + sign + broadcast real
+		// VSC native transactions instead of the log-only stub.
+		L2GqlURL:       "http://magi-1:8080/api/v1/graphql",
+		L2PrivKeyHex:   l2Priv,
+		L2DashContract: mappingId,
 		// Devnet test bypass: enables -testBypassDashdISLock AND
 		// TestEndpointsEnabled (wires `/test/observed/{sid}` +
 		// `/test/attestation/{sid}`). args.go gates this to
 		// -network=devnet so production deploys cannot enable it.
 		TestBypassDashdISLock: true,
 	}
-	// mappingId is stashed only to keep the cleanup helpers happy +
-	// surface it in the test log; the IS service doesn't use it in
-	// log-only mode.
-	_ = mappingId
 	if err := d.StartIsService(ctx, isOpts); err != nil {
 		// Pull is-service's own logs first so the actual binary
 		// startup error surfaces — dumpLogs() only covers
@@ -262,19 +281,33 @@ func TestIsLoginSmoke(t *testing.T) {
 	}
 
 	// 6. Drive WAITING_FOR_IS → IS_OBSERVED via /test/observed.
-	//    We supply a synthesised rawTxHex (32 random bytes) and a
-	//    txid; the orchestrator picks them up via
-	//    Drive(sid, txid, rawTxHex) → builds the canonical
-	//    attestation request using these.
-	rawTxBytes := make([]byte, 32)
-	if _, err := rand.Read(rawTxBytes); err != nil {
-		t.Fatalf("rand: %v", err)
+	//    We supply a synthesised Bitcoin-wire-format rawTxHex with
+	//    one P2PKH input + one P2WSH output paying the IS-service-
+	//    issued deposit address. This satisfies BOTH the contract's
+	//    FindOutputAmount (the P2WSH output matches the address)
+	//    AND ResolveSenderDashDID (the P2PKH-style input recovers
+	//    to a Dash address via txscript.ComputePkScript). See
+	//    tests/devnet/synthetic_dashtx.go for the construction.
+	//
+	//    Decode the deposit address into a btcutil.Address using
+	//    the same Dash testnet params the IS service uses (R5 devnet
+	//    case inherits testnet params).
+	depositAddr, err := DecodeDashP2WSH(resp.DepositAddress, dashTestNetParamsForHarness())
+	if err != nil {
+		t.Fatalf("decoding deposit address: %v", err)
 	}
-	rawTxHex := hex.EncodeToString(rawTxBytes)
+	rawTxHex, syntheticSender, err := BuildSyntheticDashTxToAddress(
+		depositAddr, 100_000, dashTestNetParamsForHarness())
+	if err != nil {
+		t.Fatalf("BuildSyntheticDashTxToAddress: %v", err)
+	}
+	t.Logf("synthetic Dash tx: rawTxHex=%s… sender=%s amount=100000 duffs",
+		rawTxHex[:32], syntheticSender)
+
 	// BuildResponse requires a 32-byte hex txid (64 lowercase hex
-	// chars). Synthesise a random one — the IS service stores it
-	// verbatim on the session and the orchestrator's canonical
-	// message embeds it.
+	// chars). The contract uses the actual SHA256d of rawTxBytes as
+	// the txid (Bitcoin convention); synthesise it here so the
+	// orchestrator + contract see the same value.
 	txidBytes := make([]byte, 32)
 	if _, err := rand.Read(txidBytes); err != nil {
 		t.Fatalf("rand: %v", err)

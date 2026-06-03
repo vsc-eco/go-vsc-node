@@ -21,8 +21,9 @@ import (
 	"vsc-node/lib/dids"
 	islock "vsc-node/modules/islock-attestation"
 
-	blsAPI "github.com/protolambda/bls12-381-util"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	blsAPI "github.com/protolambda/bls12-381-util"
 )
 
 // IsServiceOpts wires the operator-tunable surface of the IS service
@@ -93,6 +94,20 @@ func GenerateIsTestKeys() (primaryPubHex, backupPubHex, l2PrivHex string, err er
 	}
 	l2PrivHex = hex.EncodeToString(privBytes[:])
 	return primaryPubHex, backupPubHex, l2PrivHex, nil
+}
+
+// ComputeL2DIDFromPrivHex mirrors cmd/is-service/submitter_l2.go's
+// derivation: secp256k1 priv → uncompressed pub → keccak256 → last
+// 20 bytes → hex-checksummed → "did:pkh:eip155:1:0x...". Used by
+// the harness to know which L2 account to fund before the IS
+// service can broadcast mapInstantSendV2 ops with that priv key.
+func ComputeL2DIDFromPrivHex(privHex string) (string, error) {
+	priv, err := ethCrypto.HexToECDSA(privHex)
+	if err != nil {
+		return "", fmt.Errorf("invalid priv hex: %w", err)
+	}
+	addr := ethCrypto.PubkeyToAddress(priv.PublicKey).Hex()
+	return dids.NewEthDID(addr).String(), nil
 }
 
 func randomCompressedPubkeyHex() (string, error) {
