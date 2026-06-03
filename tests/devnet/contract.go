@@ -2,13 +2,14 @@ package devnet
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
+	"sync"
 )
 
 // ContractDeployOpts holds options for deploying a WASM contract.
@@ -19,19 +20,46 @@ type ContractDeployOpts struct {
 	Name string
 	// Description is an optional contract description.
 	Description string
-	// DeployerNode is which magi node's identity to use (1-indexed, default 1).
+	// DeployerNode picks which magi node's identityConfig.json
+	// donates the HiveUsername + HiveActiveKey for broadcasting the
+	// L1 deploy tx + paying the deploy fee. Default 1. The
+	// contract.owner field on the resulting contract resolves to
+	// this node's Hive account. Note: the libp2p identity is ALWAYS
+	// fresh (separate from any running magi node) so the deployer
+	// joins the mesh without conflicting with the donor's libp2p
+	// connections — the field name pre-dates the dedicated-deployer
+	// refactor but the semantic "the magi node we borrow identity
+	// from" is unchanged.
 	DeployerNode int
-	// GQLNode is which magi node to request storage proof from (1-indexed, default 1).
+	// GQLNode is which magi node to request storage proof from
+	// (1-indexed, default 1). The deployer talks to this node over
+	// HTTP for the election lookup; libp2p discovery handles the
+	// signature-collection peers via DHT.
 	GQLNode int
 }
 
+// deployerSetupOnce guards setupDeployerIdentity() so concurrent
+// DeployContract callers don't race the init step.
+var deployerSetupOnce sync.Once
+
 // DeployContract deploys a WASM contract to the running devnet.
 //
-// The contract-deployer binary needs P2P connectivity (for storage
-// proof collection) and opens a badger DB lock, so it can't run
-// alongside the magi node that owns the same data directory. We
-// briefly stop the deployer node, run the deployer using that node's
-// data dir, then restart the node.
+// The deployer runs in its own dedicated container with a FRESH
+// libp2p identity (separate from any magi node) so no magi node has
+// to be stopped to free a badger lock. The deployer borrows a magi
+// node's Hive credentials (HiveUsername + HiveActiveKey + HiveURIs)
+// so it can broadcast the L1 deploy tx + pay the per-deploy fee, but
+// joins the libp2p mesh as a separate peer.
+//
+// Why this matters: the prior design stopped magi-1, ran the deployer
+// reusing magi-1's data-dir + identity, then restarted magi-1. The
+// other magi nodes still held stale connections to magi-1's
+// pre-stop libp2p identity, and DHT discovery of the "reincarnated"
+// peer took longer than the deployer's 15s RequestProof timeout —
+// causing intermittent "subscription cancelled" failures with no
+// contract id, especially under fast-fail circumstances. Tracked
+// under "TestOracleDashChainRelay devnet flake investigation" in
+// the dash_is_login_audit_loop memory note.
 func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (string, error) {
 	if !d.started {
 		return "", fmt.Errorf("devnet not started")
@@ -48,16 +76,6 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	if opts.GQLNode == 0 {
 		opts.GQLNode = 1
 	}
-	// GQL node must be different from deployer node since deployer
-	// node will be stopped during deployment.
-	if opts.GQLNode == opts.DeployerNode {
-		for i := 1; i <= d.cfg.Nodes; i++ {
-			if i != opts.DeployerNode {
-				opts.GQLNode = i
-				break
-			}
-		}
-	}
 
 	wasmPath, err := filepath.Abs(opts.WasmPath)
 	if err != nil {
@@ -67,22 +85,32 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 		return "", fmt.Errorf("wasm file not found: %w", err)
 	}
 
+	// Lazy one-shot setup of the deployer's identity. After this
+	// runs, the deployer data-dir at <devnetDir>/deployer has:
+	//   - identityConfig.json with magi-N's Hive creds but a fresh
+	//     libp2p priv key + fresh BLS seed
+	//   - hiveConfig.json with magi-N's HiveURIs (in-docker HAF
+	//     endpoint)
+	//   - p2pConfig.json with defaults (Bootnodes=[], peers via
+	//     DHT)
+	var setupErr error
+	deployerSetupOnce.Do(func() {
+		setupErr = d.setupDeployerIdentity(ctx, opts.DeployerNode)
+	})
+	if setupErr != nil {
+		return "", fmt.Errorf("setting up deployer identity: %w", setupErr)
+	}
+
 	wasmDir := filepath.Dir(wasmPath)
 	wasmFile := filepath.Base(wasmPath)
-	nodeName := fmt.Sprintf("magi-%d", opts.DeployerNode)
 
-	log.Printf("[devnet] deploying contract %q (stopping %s, using node %d for GQL)...",
-		opts.Name, nodeName, opts.GQLNode)
-
-	// Stop the deployer node to release the badger lock.
-	if err := d.compose(ctx, "stop", nodeName); err != nil {
-		return "", fmt.Errorf("stopping %s: %w", nodeName, err)
-	}
+	log.Printf("[devnet] deploying contract %q (dedicated deployer, GQL via magi-%d)...",
+		opts.Name, opts.GQLNode)
 
 	deployCmd := []string{
 		"./contract-deployer",
 		"-network=devnet",
-		fmt.Sprintf("-data-dir=/data/devnet/data-%d", opts.DeployerNode),
+		"-data-dir=/data/devnet/deployer",
 		fmt.Sprintf("-wasmPath=/wasm/%s", wasmFile),
 		fmt.Sprintf("-name=%s", opts.Name),
 		fmt.Sprintf("-gqlUrl=http://magi-%d:8080/api/v1/graphql", opts.GQLNode),
@@ -98,57 +126,122 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	}
 	args = append(args, deployCmd...)
 
-	// Round-14 follow-up: the deployer container's libp2p DHT
-	// bootstrap is flaky if the remaining magi nodes haven't fully
-	// formed their mesh by the time we stop the deployer node.
-	// Concrete symptom: subprocess stdout = "DHT Bootstrap error:
-	// <nil>\nError in subscription: subscription cancelled" with no
-	// "contract id:" line. Mitigation: retry the docker-compose run
-	// up to 3 times with a 10s mesh-settle wait between attempts.
-	// Persistent failures past retry-3 still surface the full
-	// output for diagnosis. Tracked under
-	// "TestOracleDashChainRelay devnet flake investigation" in the
-	// dash_is_login_audit_loop memory note.
-	var out string
-	const maxAttempts = 3
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		out, err = d.composeOutput(ctx, args...)
-		if err == nil && parseContractId(out) != "" {
-			break
-		}
-		if attempt < maxAttempts {
-			log.Printf("[devnet] deploy attempt %d/%d returned no contract id; "+
-				"sleeping 10s for libp2p mesh to settle before retry. output:\n%s",
-				attempt, maxAttempts, out)
-			select {
-			case <-time.After(10 * time.Second):
-			case <-ctx.Done():
-				err = ctx.Err()
-				goto restart
-			}
-		}
-	}
-restart:
-	// Always restart the node, even if deploy failed.
-	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
-		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
-	}
-	// Give the restarted node time to reconnect to peers.
-	time.Sleep(5 * time.Second)
-
+	out, err := d.composeOutput(ctx, args...)
 	if err != nil {
-		return "", fmt.Errorf("contract deployment failed after %d attempts: %w\noutput: %s", maxAttempts, err, out)
+		return "", fmt.Errorf("contract deployment failed: %w\noutput: %s", err, out)
 	}
 
 	log.Printf("[devnet] contract-deployer output:\n%s", out)
 
 	contractId := parseContractId(out)
 	if contractId == "" {
-		return "", fmt.Errorf("could not parse contract ID from output after %d attempts:\n%s", maxAttempts, out)
+		return "", fmt.Errorf("could not parse contract ID from output:\n%s", out)
 	}
 
 	log.Printf("[devnet] contract deployed: %s", contractId)
 	return contractId, nil
+}
+
+// identityConfigFile mirrors modules/common/config.go:identityConfig.
+// Kept private to this package since the harness only needs the
+// subset of fields that drives the deployer-identity wiring.
+type identityConfigFile struct {
+	BlsPrivKeySeed string `json:"BlsPrivKeySeed"`
+	HiveActiveKey  string `json:"HiveActiveKey"`
+	HiveUsername   string `json:"HiveUsername"`
+	Libp2pPrivKey  string `json:"Libp2pPrivKey"`
+}
+
+// setupDeployerIdentity creates a dedicated data-dir for the
+// contract-deployer container at <devnetDir>/deployer, with:
+//   - a fresh libp2p identity (so it doesn't conflict with any magi
+//     node's existing libp2p mesh entry)
+//   - magi-N's Hive credentials (so it can pay the deploy fee + the
+//     contract.owner field resolves to a funded testnet account)
+//   - magi-N's hiveConfig.json (so the in-docker HAF URI is reachable)
+//
+// Idempotent — re-running on an existing deployer dir is a no-op.
+// Called once per Devnet lifetime via deployerSetupOnce.
+func (d *Devnet) setupDeployerIdentity(ctx context.Context, donorNode int) error {
+	deployerDir := filepath.Join(d.devnetDir, "deployer")
+	if err := os.MkdirAll(deployerDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir deployer data-dir: %w", err)
+	}
+
+	// 1. Run `contract-deployer -init` to bootstrap fresh configs.
+	//    This creates identityConfig.json + hiveConfig.json +
+	//    p2pConfig.json with default values, but most importantly
+	//    generates a fresh Libp2pPrivKey + BlsPrivKeySeed for us.
+	log.Printf("[devnet] initialising dedicated deployer identity at %s...", deployerDir)
+	initOut, err := d.composeOutput(ctx,
+		"run", "--rm",
+		"contract-deployer",
+		"./contract-deployer",
+		"-network=devnet",
+		"-data-dir=/data/devnet/deployer",
+		"-init",
+	)
+	if err != nil {
+		return fmt.Errorf("contract-deployer -init: %w\noutput: %s", err, initOut)
+	}
+
+	// 2. Read the donor node's identityConfig.json. We borrow
+	//    HiveUsername + HiveActiveKey from there.
+	donorIdentityPath := filepath.Join(d.devnetDir,
+		fmt.Sprintf("data-%d", donorNode), "identityConfig.json")
+	donorBytes, err := os.ReadFile(donorIdentityPath)
+	if err != nil {
+		return fmt.Errorf("reading donor identityConfig at %s: %w", donorIdentityPath, err)
+	}
+	var donor identityConfigFile
+	if err := json.Unmarshal(donorBytes, &donor); err != nil {
+		return fmt.Errorf("parsing donor identityConfig: %w", err)
+	}
+	if donor.HiveUsername == "" || donor.HiveActiveKey == "" {
+		return fmt.Errorf("donor magi-%d has empty Hive credentials — devnet bootstrap broken?", donorNode)
+	}
+
+	// 3. Read the freshly-initialised deployer identityConfig.json.
+	deployerIdentityPath := filepath.Join(deployerDir, "identityConfig.json")
+	deployerBytes, err := os.ReadFile(deployerIdentityPath)
+	if err != nil {
+		return fmt.Errorf("reading deployer identityConfig at %s: %w", deployerIdentityPath, err)
+	}
+	var deployer identityConfigFile
+	if err := json.Unmarshal(deployerBytes, &deployer); err != nil {
+		return fmt.Errorf("parsing deployer identityConfig: %w", err)
+	}
+
+	// 4. Patch deployer's Hive creds with donor's, KEEP deployer's
+	//    fresh Libp2pPrivKey + BlsPrivKeySeed. The libp2p identity
+	//    differing is THE point — no mesh-conflict with the donor's
+	//    running magi node.
+	deployer.HiveActiveKey = donor.HiveActiveKey
+	deployer.HiveUsername = donor.HiveUsername
+
+	merged, err := json.MarshalIndent(deployer, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshalling merged deployer identity: %w", err)
+	}
+	if err := os.WriteFile(deployerIdentityPath, merged, 0o600); err != nil {
+		return fmt.Errorf("writing merged deployer identityConfig: %w", err)
+	}
+
+	// 5. Copy donor's hiveConfig.json verbatim — HiveURIs point at
+	//    the in-docker HAF instance which the deployer needs.
+	donorHivePath := filepath.Join(d.devnetDir,
+		fmt.Sprintf("data-%d", donorNode), "hiveConfig.json")
+	deployerHivePath := filepath.Join(deployerDir, "hiveConfig.json")
+	hiveBytes, err := os.ReadFile(donorHivePath)
+	if err != nil {
+		return fmt.Errorf("reading donor hiveConfig at %s: %w", donorHivePath, err)
+	}
+	if err := os.WriteFile(deployerHivePath, hiveBytes, 0o600); err != nil {
+		return fmt.Errorf("writing deployer hiveConfig: %w", err)
+	}
+
+	log.Printf("[devnet] deployer identity ready (donor=magi-%d, libp2p=fresh)", donorNode)
+	return nil
 }
 
 // BuildCallTssContract builds the call-tss WASM contract using Docker
