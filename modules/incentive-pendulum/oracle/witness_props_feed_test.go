@@ -11,8 +11,9 @@ import (
 )
 
 // realSteempeakExchangeRate is the verbatim hbd_exchange_rate prop value pulled
-// from a live mainnet steempeak witness_set_properties op:
-//   base  = 0.061 SBD  (HBD), quote = 1.000 STEEM (HIVE)  ->  0.061 HBD/HIVE
+// from a live mainnet witness_set_properties op published by account steempeak:
+//
+//	base  = 0.061 SBD  (HBD), quote = 1.000 STEEM (HIVE)  ->  0.061 HBD/HIVE
 const realSteempeakExchangeRate = "3d000000000000000353424400000000e80300000000000003535445454d0000"
 
 // legacyAssetHex builds one 16-byte legacy Hive asset (int64 LE amount +

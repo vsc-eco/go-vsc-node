@@ -17,12 +17,32 @@ const (
 	DefaultTickIntervalBlocks = 100
 	defaultMovingAvgTicks     = 3
 
-	// WarmupDistanceBlocks is the minimum span of replayed Hive blocks
-	// required to fully populate the rolling signature window (100 blocks)
-	// AND the moving-average ring (3 ticks × 100 blocks = 300 blocks).
-	// 400 leaves a one-tick buffer so the explicit warmup pass crosses at
-	// least three tick boundaries even if the head sits mid-tick.
-	WarmupDistanceBlocks = 400
+	// FeedFreshnessBlocks is how recently a witness must have published a price
+	// (feed_publish or witness_set_properties.hbd_exchange_rate) for that quote
+	// to count toward the trusted mean. It is deliberately DECOUPLED from the
+	// 100-block production window: that window still gates *who* is an eligible
+	// top-witness (>= DefaultMinBlocksProduced of the last 100 blocks), but a
+	// witness who is actively producing yet last refreshed their feed up to ~1
+	// hour ago still contributes. Pinning freshness to the 100-block (~5 min)
+	// window made the trusted set collapse to empty whenever no eligible witness
+	// happened to republish inside a given tick window — Hive witnesses refresh
+	// feeds far less often than every 5 minutes — which surfaced as intermittent
+	// errSnapshotUnavailable on swaps. ~1200 blocks ≈ 1 hour at 3s/block; the
+	// price feeds a slowly-varying fee-split parameter, so an hour-old quote is
+	// well within tolerance.
+	FeedFreshnessBlocks = 1200
+
+	// WarmupDistanceBlocks is the span of replayed Hive blocks Warmup replays so
+	// a restarted node's in-memory state matches a long-running peer. It MUST
+	// cover the freshness window (so the replay reconstructs every quote a
+	// continuous peer still holds) plus the moving-average ring
+	// (defaultMovingAvgTicks × 100 blocks); otherwise a freshly-warmed node
+	// would hold fewer quotes than its peers, compute a different trusted mean,
+	// and fork the chain at the next swap. Derived from FeedFreshnessBlocks to
+	// keep the two in lockstep — widen the freshness window and this widens
+	// automatically. The extra two ticks of margin absorb a head sitting
+	// mid-tick plus one spare tick boundary.
+	WarmupDistanceBlocks = FeedFreshnessBlocks + (defaultMovingAvgTicks+2)*DefaultTickIntervalBlocks
 
 	// bsonFieldPrefix matches hive_blocks.makeBSONCompatible nested-array encoding.
 	bsonFieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
@@ -277,19 +297,15 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	width := t.win.Width
-	if width < 1 {
-		width = 100
-	}
-
-	// Evict feed entries that have aged out of the trust window. The trust
-	// check below uses `lastFeedBlk + width > blockHeight`; entries failing
-	// that predicate can't contribute to this tick or any future tick
-	// without a fresh feed_publish (which re-populates the maps), so
-	// holding them is pure overhead. Bounds the maps by the actively-
-	// publishing witness count.
+	// Evict feed entries whose last publish has aged past the freshness window.
+	// The trust check below uses `lastFeedBlk + FeedFreshnessBlocks > blockHeight`;
+	// entries failing that can't contribute to this tick or any future one
+	// without a fresh publish (which re-populates the maps), so holding them is
+	// pure overhead. Bounds the maps by the witnesses who published within the
+	// freshness window. NOTE: freshness is intentionally decoupled from the
+	// 100-block production window used just below — see FeedFreshnessBlocks.
 	for w, last := range t.lastFeedBlk {
-		if last+uint64(width) <= blockHeight {
+		if last+FeedFreshnessBlocks <= blockHeight {
 			delete(t.quotes, w)
 			delete(t.lastFeedBlk, w)
 			delete(t.witnessProps, w)
@@ -300,8 +316,11 @@ func (t *FeedTracker) TickIfDue(blockHeight uint64) {
 	trusted := make(map[string]bool)
 	blocksProduced := make(map[string]int)
 	for w := range t.quotes {
+		// Eligibility stays the narrow 100-block production window (identifies
+		// the currently-rotating top-witnesses)...
 		blocksProduced[w] = t.win.BlocksProducedBy(w)
-		published := t.lastFeedBlk[w] > 0 && t.lastFeedBlk[w]+uint64(width) > blockHeight
+		// ...but the price only has to be within the wider freshness window.
+		published := t.lastFeedBlk[w] > 0 && t.lastFeedBlk[w]+FeedFreshnessBlocks > blockHeight
 		trusted[w] = FeedTrust(blocksProduced[w], published, DefaultMinBlocksProduced)
 	}
 

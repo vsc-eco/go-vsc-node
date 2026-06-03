@@ -241,7 +241,7 @@ func TestFeedTracker_IngestGate_RejectsNonProducer(t *testing.T) {
 	tr := NewFeedTracker(false)
 	// "spammer" never appears in RecordWitnessBlock — so BlocksProducedBy=0.
 	tr.IngestTransactionOps(50, feedPublishOp("spammer"))
-	tr.IngestTransactionOps(50, witnessSetPropsOp("spammer", "1500"))
+	tr.IngestTransactionOps(50, witnessSetPropsOp("spammer", interestRateHex(1500)))
 
 	if _, ok := tr.quotes["spammer"]; ok {
 		t.Fatalf("spammer's feed_publish was accepted; quotes=%v", tr.quotes)
@@ -285,35 +285,26 @@ func TestFeedTracker_IngestGate_PublishAlongsideOwnProduction(t *testing.T) {
 	}
 }
 
-// TestFeedTracker_TickEvictsAgedOutFeeds verifies that a witness whose
-// feed has aged out of the trust window is removed from the in-memory
-// maps at the next tick. Caps map size at the actively-publishing set.
+// TestFeedTracker_TickEvictsAgedOutFeeds verifies that a witness whose feed has
+// aged past FeedFreshnessBlocks is removed from the in-memory maps at the next
+// tick. Caps map size at the witnesses who published within the freshness
+// window. Eviction is independent of production — it only checks lastFeedBlk.
 func TestFeedTracker_TickEvictsAgedOutFeeds(t *testing.T) {
 	tr := NewFeedTracker(false)
-
-	// Build up 100 blocks of "alice" producing, and have her publish at
-	// block 1. At tick 100, alice's lastFeedBlk=1 satisfies 1+100>100 → trusted.
-	for h := uint64(1); h <= 100; h++ {
-		tr.RecordWitnessBlock("alice")
-	}
+	tr.RecordWitnessBlock("alice") // pass the ingest gate (>=1 production)
 	tr.IngestTransactionOps(1, feedPublishOp("alice"))
-	tr.IngestTransactionOps(1, witnessSetPropsOp("alice", "1500"))
+	tr.IngestTransactionOps(1, witnessSetPropsOp("alice", interestRateHex(1500)))
 
-	tr.TickIfDue(100)
-	// At tick 100: 1+100=101>100 is the trust check, eviction is at
-	// 1+100<=100 → false. Entry kept.
+	// Feed at block 1 is still fresh at the freshness-cap tick: 1+1200>1200.
+	tr.TickIfDue(FeedFreshnessBlocks)
 	if _, ok := tr.quotes["alice"]; !ok {
-		t.Fatal("alice's feed should still be in window at tick 100")
+		t.Fatal("alice's feed should still be in window at the freshness-cap tick")
 	}
 
-	// Advance to tick 200 with continued production but no republish.
-	for h := uint64(101); h <= 200; h++ {
-		tr.RecordWitnessBlock("alice")
-	}
-	tr.TickIfDue(200)
-	// At tick 200: lastFeedBlk[alice]=1, 1+100=101<=200 → evict.
+	// One tick later it has aged out: 1+1200 <= 1300 → evict.
+	tr.TickIfDue(FeedFreshnessBlocks + DefaultTickIntervalBlocks)
 	if _, ok := tr.quotes["alice"]; ok {
-		t.Fatalf("alice's feed should have been evicted at tick 200; quotes=%v", tr.quotes)
+		t.Fatalf("alice's feed should have been evicted; quotes=%v", tr.quotes)
 	}
 	if _, ok := tr.lastFeedBlk["alice"]; ok {
 		t.Fatalf("lastFeedBlk should be evicted")
@@ -323,39 +314,79 @@ func TestFeedTracker_TickEvictsAgedOutFeeds(t *testing.T) {
 	}
 }
 
-// TestFeedTracker_TickKeepsRecentFeed verifies the boundary: a feed
-// published exactly at blockHeight - width + 1 is still inside the trust
+// TestFeedTracker_TickKeepsRecentFeed verifies the boundary: a feed published
+// exactly at blockHeight - FeedFreshnessBlocks + 1 is still inside the freshness
 // window and must not be evicted.
 func TestFeedTracker_TickKeepsRecentFeed(t *testing.T) {
 	tr := NewFeedTracker(false)
-	for h := uint64(1); h <= 200; h++ {
-		tr.RecordWitnessBlock("alice")
-	}
-	// Publish at block 101: 101+100=201>200 → trusted at tick 200.
-	tr.IngestTransactionOps(101, feedPublishOp("alice"))
-	tr.TickIfDue(200)
+	tr.RecordWitnessBlock("alice") // pass the ingest gate
+	const tick = FeedFreshnessBlocks + DefaultTickIntervalBlocks // 1300
+	const pub = tick - FeedFreshnessBlocks + 1                    // 101: 101+1200=1301>1300
+	tr.IngestTransactionOps(pub, feedPublishOp("alice"))
+	tr.TickIfDue(tick)
 	if _, ok := tr.quotes["alice"]; !ok {
-		t.Fatal("publish at block 101 should still be in window at tick 200")
+		t.Fatal("publish at the freshness boundary should still be in window")
 	}
 }
 
-// TestFeedTracker_RepublishAfterEvictionReadmits confirms the eviction
-// is non-permanent: once aged out, a witness can be re-added by publishing
-// again, with the gate still enforcing they're an active producer.
+// TestFeedTracker_RepublishAfterEvictionReadmits confirms the eviction is
+// non-permanent: once aged out, a witness can be re-added by publishing again,
+// with the gate still enforcing they're an active producer.
 func TestFeedTracker_RepublishAfterEvictionReadmits(t *testing.T) {
 	tr := NewFeedTracker(false)
-	for h := uint64(1); h <= 200; h++ {
+	const evictTick = FeedFreshnessBlocks + DefaultTickIntervalBlocks // 1300
+	// Produce continuously through the republish so the ingest gate still sees
+	// alice as an active producer when she re-publishes after eviction.
+	for h := uint64(1); h <= evictTick+1; h++ {
 		tr.RecordWitnessBlock("alice")
+		if h == 1 {
+			tr.IngestTransactionOps(1, feedPublishOp("alice"))
+		}
+		if h == evictTick {
+			tr.TickIfDue(evictTick) // evicts (1+1200 <= 1300)
+			if _, ok := tr.quotes["alice"]; ok {
+				t.Fatal("evict precondition failed")
+			}
+		}
 	}
-	tr.IngestTransactionOps(1, feedPublishOp("alice"))
-	tr.TickIfDue(200) // evicts (1+100 <= 200)
-	if _, ok := tr.quotes["alice"]; ok {
-		t.Fatal("evict precondition failed")
-	}
-	// Republish at 201 — alice still has 100 productions in window → gate passes.
-	tr.IngestTransactionOps(201, feedPublishOp("alice"))
+	tr.IngestTransactionOps(evictTick+1, feedPublishOp("alice"))
 	if _, ok := tr.quotes["alice"]; !ok {
 		t.Fatal("re-publish after eviction should be re-admitted")
+	}
+}
+
+// TestFeedTracker_FreshnessDecoupledFromProductionWindow locks in the phase-1
+// fix: a feed published well outside the 100-block production window but within
+// FeedFreshnessBlocks still counts toward the trusted mean. Under the old
+// width-coupled freshness this witness would have been evicted/untrusted nine
+// production windows earlier, collapsing the trusted set to empty.
+func TestFeedTracker_FreshnessDecoupledFromProductionWindow(t *testing.T) {
+	tr := NewFeedTracker(true) // mainnet symbols (SBD/STEEM)
+	const pub = 100   // publish once...
+	const tick = 1000 // ...900 blocks (9 production windows) before the tick
+	for h := uint64(1); h <= tick; h++ {
+		tr.RecordWitnessBlock("alice") // keep alice an eligible top-witness
+		if h == pub {
+			tr.IngestTransactionOps(pub, hive_blocks.Tx{
+				Operations: []hivego.Operation{{
+					Type: "witness_set_properties",
+					Value: map[string]interface{}{
+						"owner": "alice",
+						"props": []interface{}{
+							[]interface{}{"hbd_exchange_rate", realSteempeakExchangeRate},
+						},
+					},
+				}},
+			})
+		}
+	}
+	tr.TickIfDue(tick)
+	snap := tr.LastTick()
+	if !snap.TrustedHiveOK {
+		t.Fatal("a feed within FeedFreshnessBlocks but outside the 100-block production window must stay trusted")
+	}
+	if snap.TrustedHivePriceBps != 610 { // 0.061 HBD/HIVE
+		t.Fatalf("priceBps=%d want 610", snap.TrustedHivePriceBps)
 	}
 }
 
