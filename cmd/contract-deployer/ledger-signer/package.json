@@ -16,7 +16,9 @@
   "scripts": {
     "build": "tsc",
     "prepare": "tsc",
-    "sign": "node ./dist/sign.js"
+    "sign": "node ./dist/sign.js",
+    "pubkey": "node ./dist/whoami.js",
+    "findpath": "node ./dist/findpath.js"
   },
   "dependencies": {
     "@aioha/ledger-app-hive": "0.0.3",
@@ -25,11 +27,5 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.9.3"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "node-hid",
-      "usb"
-    ]
   }
 }

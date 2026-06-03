@@ -16,6 +16,8 @@
     ]
   },
   "include": [
-    "sign.ts"
+    "sign.ts",
+    "whoami.ts",
+    "findpath.ts"
   ]
 }

@@ -1,0 +1,3 @@
+allowBuilds:
+  node-hid: true
+  usb: true

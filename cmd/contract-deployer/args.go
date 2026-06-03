@@ -44,17 +44,49 @@ func ParseArgs() (args, error) {
 	desc := flag.String("description", "", "Description of the contract")
 	owner := flag.String("owner", "", "Owner of the contract (defaults to contract deployer)")
 	isInit := flag.Bool("init", false, "Generate credentials config files")
-	gqlUrl := flag.String("gqlUrl", "https://api.vsc.eco/api/v1/graphql", "GraphQL API URL for fetching latest election")
+	gqlUrl := flag.String(
+		"gqlUrl",
+		"https://api.vsc.eco/api/v1/graphql",
+		"GraphQL API URL for fetching latest election",
+	)
 	dataDir := flag.String("data-dir", "data", "Data directory for config")
-	contractId := flag.String("contractId", "", "Existing contract ID to update contract. Omit to deploy a new contract.")
+	contractId := flag.String(
+		"contractId",
+		"",
+		"Existing contract ID to update contract. Omit to deploy a new contract.",
+	)
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
-	noBroadcast := flag.Bool("no-broadcast", false, "Build and print the unsigned transaction + signing digest instead of broadcasting. Use to sign externally (e.g. a Ledger), then submit with -broadcast-signed.")
+	noBroadcast := flag.Bool(
+		"no-broadcast",
+		false,
+		"Build and print the unsigned transaction + signing digest instead of broadcasting. Use to sign externally (e.g. a Ledger), then submit with -broadcast-signed.",
+	)
 	out := flag.String("out", "", "When used with -no-broadcast, also write the signing bundle JSON to this file path.")
-	expiration := flag.Int("expiration", 1800, "Seconds until the prepared transaction expires (max 3600). Larger values give more time to confirm on a hardware wallet. Only used with -no-broadcast.")
-	broadcastSigned := flag.String("broadcast-signed", "", "Path to a signing bundle previously produced by -no-broadcast. Broadcasts it using the signature from -signature. Requires no private key and no WASM proof.")
-	signature := flag.String("signature", "", "Hex-encoded signature (from the external signer) to attach when broadcasting with -broadcast-signed.")
-	ledgerSignCmd := flag.String("ledger-sign-cmd", "", "External command that signs the active authority (e.g. the bundled ledger-signer after 'pnpm install': \"node cmd/contract-deployer/ledger-signer/dist/sign.js\"). Run via 'sh -c'; receives the signing request JSON on stdin and must print the signature hex on stdout. When set, the tool prepares, signs, and broadcasts in one run.")
-	ledgerPath := flag.String("ledger-path", "m/48'/13'/0'/0'/0'", "BIP32 (SLIP-0048) derivation path passed to the external signer. Only used with -ledger-sign-cmd.")
+	expiration := flag.Int(
+		"expiration",
+		1800,
+		"Seconds until the prepared transaction expires (max 3600). Larger values give more time to confirm on a hardware wallet. Only used with -no-broadcast.",
+	)
+	broadcastSigned := flag.String(
+		"broadcast-signed",
+		"",
+		"Path to a signing bundle previously produced by -no-broadcast. Broadcasts it using the signature from -signature. Requires no private key and no WASM proof.",
+	)
+	signature := flag.String(
+		"signature",
+		"",
+		"Hex-encoded signature (from the external signer) to attach when broadcasting with -broadcast-signed.",
+	)
+	ledgerSignCmd := flag.String(
+		"ledger-sign-cmd",
+		"",
+		"External command that signs the active authority (e.g. the bundled ledger-signer after 'pnpm install': \"node cmd/contract-deployer/ledger-signer/dist/sign.js\"). Run via 'sh -c'; receives the signing request JSON on stdin and must print the signature hex on stdout. When set, the tool prepares, signs, and broadcasts in one run.",
+	)
+	ledgerPath := flag.String(
+		"ledger-path",
+		"m/48'/13'/1'/0'/0'",
+		"BIP32 (SLIP-0048) derivation path passed to the external signer. Only used with -ledger-sign-cmd.",
+	)
 	flag.Parse()
 
 	parsed := args{
@@ -78,7 +110,10 @@ func ParseArgs() (args, error) {
 	}
 
 	if parsed.expiration <= 0 || parsed.expiration > 3600 {
-		return parsed, fmt.Errorf("-expiration must be between 1 and 3600 seconds (Hive's maximum), got %d", parsed.expiration)
+		return parsed, fmt.Errorf(
+			"-expiration must be between 1 and 3600 seconds (Hive's maximum), got %d",
+			parsed.expiration,
+		)
 	}
 	if parsed.broadcastSigned != "" {
 		if parsed.noBroadcast {
