@@ -82,16 +82,21 @@ func (p *DashdPoller) Run(ctx context.Context) error {
 			err := p.tick(ctx)
 			if err != nil {
 				consecutiveFails++
+				// Audit R15-LOG-dashd-poller-no-rpc-url: include the
+				// dashd RPC URL so multi-validator deploys with shared
+				// dashd infra can identify the failing endpoint without
+				// SSH'ing into every host. The URL is operator-config,
+				// not user-credentialed, so logging it raw is fine.
 				if consecutiveFails == escalateAfter {
 					slog.Error("islock-attestation dashd poller: repeated failures — validator will sign nothing",
-						"consecutiveFails", consecutiveFails, "err", err)
+						"consecutiveFails", consecutiveFails, "rpc", p.client.url, "err", err)
 				} else if consecutiveFails > escalateAfter && consecutiveFails%30 == 0 {
 					slog.Error("islock-attestation dashd poller still failing",
-						"consecutiveFails", consecutiveFails, "err", err)
+						"consecutiveFails", consecutiveFails, "rpc", p.client.url, "err", err)
 				}
 			} else if consecutiveFails > 0 {
 				slog.Info("islock-attestation dashd poller recovered",
-					"previousConsecutiveFails", consecutiveFails)
+					"previousConsecutiveFails", consecutiveFails, "rpc", p.client.url)
 				consecutiveFails = 0
 			}
 		}
@@ -110,15 +115,30 @@ func (p *DashdPoller) tick(ctx context.Context) error {
 			continue
 		}
 		// Mark seen BEFORE fetching so a failed fetch doesn't loop
-		// forever on the same tx. Will be re-fetched if it ever
-		// drops out of `seen` (eviction below).
+		// forever on the same tx within ONE tick. Errored fetches +
+		// !instantlock txs unmark themselves below so the next tick
+		// retries.
 		p.seen[txid] = struct{}{}
 		p.seenQ = append(p.seenQ, txid)
 		txCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		tx, err := p.client.GetRawTransaction(txCtx, txid)
 		cancel()
 		if err != nil {
-			continue // re-fetch when tx is fully indexed
+			// Audit R15-CORR-dashd-poller-rpc-error-stranded: a
+			// transient RPC error (3s timeout, dashd-not-yet-indexed,
+			// JSON decode failure, RPC 500) used to leave the txid
+			// in `seen` permanently — until 50K-FIFO trim, which on
+			// a quiet chain is effectively never. On low-volume
+			// mainnet IS-locked Dash traffic, one timeout on a
+			// fresh tx caused the validator to silently refuse to
+			// attest forever. Roll back the pre-mark so the next
+			// tick retries (same shape as the !instantlock branch
+			// below).
+			delete(p.seen, txid)
+			if len(p.seenQ) > 0 && p.seenQ[len(p.seenQ)-1] == txid {
+				p.seenQ = p.seenQ[:len(p.seenQ)-1]
+			}
+			continue
 		}
 		if !tx.InstantLock && !p.acceptUnlocked {
 			// Not yet locked + production-mode — don't observe.
@@ -134,6 +154,13 @@ func (p *DashdPoller) tick(ctx context.Context) error {
 		// rawTxHash = sha256d(rawTxBytes) per Bitcoin convention.
 		rawBytes, err := hex.DecodeString(tx.Hex)
 		if err != nil {
+			// Same retry path as the RPC error above: a malformed
+			// hex blob (very unlikely, but defensive) shouldn't
+			// strand the txid forever.
+			delete(p.seen, txid)
+			if len(p.seenQ) > 0 && p.seenQ[len(p.seenQ)-1] == txid {
+				p.seenQ = p.seenQ[:len(p.seenQ)-1]
+			}
 			continue
 		}
 		first := sha256.Sum256(rawBytes)

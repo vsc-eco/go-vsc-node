@@ -181,9 +181,17 @@ func (p *IslockAttestationPlugin) Start() *promise.Promise[any] {
 							"err", err)
 					}
 				}()
+				// Audit R15-LOG-dashd-poller-no-rpc-url: log the dashd
+				// RPC URL at startup so operators have a log-grep
+				// anchor even when the poller never fails. Multi-
+				// validator deploys often share dashd infra; without
+				// the URL the on-call has to read the witness config
+				// to figure out which dashd a given log line refers
+				// to.
 				slog.Info("islock-attestation: dashd-RPC MemoryReader configured",
 					"acceptUnlocked", p.acceptUnlocked,
-					"network", p.network)
+					"network", p.network,
+					"rpc", p.dashdRPC)
 				memory = realMem
 			} else {
 				slog.Warn("islock-attestation: trust-all MemoryReader (deprecated; configure MAGI_ISLOCK_DASHD_RPC for production-shape backing)",
