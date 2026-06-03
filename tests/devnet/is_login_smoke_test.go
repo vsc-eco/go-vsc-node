@@ -2,7 +2,6 @@ package devnet
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -87,6 +86,17 @@ func TestIsLoginSmoke(t *testing.T) {
 	cfg.GenesisNode = 5
 	cfg.LogLevel = "info,is-service=debug"
 	cfg.EnableDashd = true
+	// Activate the magi-side islock-attestation plugin. With
+	// MAGI_ISLOCK_TRUST_ALL=true the per-validator MemoryReader
+	// returns ok=true for every txid, so the witness signs any
+	// well-formed attestation request from the IS service via the
+	// libp2p gossip topic. cmd/vsc-node/islock_wiring.go gates
+	// this combo at startup so production deploys cannot enable
+	// it by accident.
+	cfg.MagiEnv = map[string]string{
+		"MAGI_ISLOCK_ENABLE":     "true",
+		"MAGI_ISLOCK_TRUST_ALL":  "true",
+	}
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
@@ -211,6 +221,16 @@ func TestIsLoginSmoke(t *testing.T) {
 	//    wire setValidatorSet on the contract (the orchestrator's
 	//    DID↔pubkey expected-set is nil in log-only mode, so it
 	//    accepts any BLS-valid attestation).
+	// Compute magi-1's libp2p multiaddr so the IS service dials it
+	// for the real attestation-gossip path. Without this the IS
+	// service would have no peers to publish requests to and the
+	// session would stall at ATTESTING.
+	magi1Addr, err := d.MagiPeerMultiaddr(1)
+	if err != nil {
+		t.Fatalf("MagiPeerMultiaddr: %v", err)
+	}
+	t.Logf("IS service bootstrap peer: %s", magi1Addr)
+
 	isOpts := IsServiceOpts{
 		PrimaryPubkey:       primaryPub,
 		BackupPubkey:        backupPub,
@@ -222,10 +242,17 @@ func TestIsLoginSmoke(t *testing.T) {
 		L2GqlURL:       "http://magi-1:8080/api/v1/graphql",
 		L2PrivKeyHex:   l2Priv,
 		L2DashContract: mappingId,
+		// Bootstrap to magi-1's libp2p so the IS service joins the
+		// islock-attestation gossip topic. Magi witnesses (running
+		// with MAGI_ISLOCK_ENABLE=true via MagiEnv above) respond
+		// with real BLS-signed attestations. Replaces the
+		// previously-required /test/attestation HTTP injection.
+		BootstrapPeers: magi1Addr,
 		// Devnet test bypass: enables -testBypassDashdISLock AND
-		// TestEndpointsEnabled (wires `/test/observed/{sid}` +
-		// `/test/attestation/{sid}`). args.go gates this to
-		// -network=devnet so production deploys cannot enable it.
+		// TestEndpointsEnabled (wires `/test/observed/{sid}`). The
+		// /test/attestation endpoint is no longer used by this
+		// smoke test, but the flag stays to bypass the regtest
+		// dashd IS-lock check (no LLMQ on regtest).
 		TestBypassDashdISLock: true,
 	}
 	if err := d.StartIsService(ctx, isOpts); err != nil {
@@ -326,23 +353,14 @@ func TestIsLoginSmoke(t *testing.T) {
 	t.Logf("session reached ATTESTING; injecting signed attestation from magi-1 over real rawTxHex (%d bytes)...",
 		len(rawTxHex)/2)
 
-	// 7. Build a real signed attestation from magi-1's BLS key and
-	//    inject it via /test/attestation. The orchestrator's per-sig
-	//    BLS verify (modules/islock-attestation Verify) requires the
-	//    canonical message to match what the orchestrator computed —
-	//    same rawTxHex + same Instruction string. We decode the
-	//    instruction from depositInstructionHex (the IS service's
-	//    /session/start response carries it).
-	instructionBytes, err := hex.DecodeString(resp.DepositInstructionHex)
-	if err != nil {
-		t.Fatalf("decoding depositInstructionHex: %v", err)
-	}
-	if err := d.IsForceAttestation(ctx, resp.Sid, dashTxId, rawTxHex, string(instructionBytes), 1); err != nil {
-		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
-			t.Logf("is-service logs (post-attestation):\n%s", isLogs)
-		}
-		t.Fatalf("IsForceAttestation: %v", err)
-	}
+	// 7. Wait for the IS service's broadcaster to publish an
+	//    attestation request on the islock-attestation gossip
+	//    topic + the magi-1 witness (running with
+	//    MAGI_ISLOCK_ENABLE=true) to respond with a BLS-signed
+	//    response. No /test/attestation injection — the witness
+	//    signs via the production gossip path.
+	_ = rawTxHex // no longer needed for harness signing; orchestrator captures it from the watcher
+	t.Logf("waiting for real gossip attestation from magi-1...")
 
 	// 8. Verify the orchestrator advances through L2_SUBMITTED →
 	//    ON_CHAIN. With the LogOnly submitter both steps return
