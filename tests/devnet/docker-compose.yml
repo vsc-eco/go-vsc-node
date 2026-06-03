@@ -399,6 +399,7 @@ services:
       - -addressSignerSecret=${IS_ADDRESS_SIGNER_SECRET:-}
       - -p2pBootstrapPeers=${IS_BOOTSTRAP_PEERS:-}
       - -testBypassDashdISLock=${IS_TEST_BYPASS_ISLOCK:-false}
+      - -validatorSetCacheTTLSeconds=${IS_VALIDATOR_SET_CACHE_TTL_SECONDS:-30}
       - -debug=true
 
 volumes:

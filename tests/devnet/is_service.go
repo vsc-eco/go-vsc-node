@@ -72,6 +72,12 @@ type IsServiceOpts struct {
 	// tests/devnet to drive the IS_OBSERVED transition without an
 	// LLMQ quorum.
 	TestBypassDashdISLock bool
+	// ValidatorSetCacheTTLSeconds overrides the IS service's per-epoch
+	// validator-set cache TTL (default 30s when 0). Used by the
+	// validator-set rotation devnet test to shrink the wait between
+	// rotating the contract's validator set and the IS service
+	// observing the new set. Production defaults remain 30s.
+	ValidatorSetCacheTTLSeconds int
 }
 
 // GenerateIsTestKeys returns three randomly-generated, well-formed
@@ -171,6 +177,11 @@ func (d *Devnet) StartIsService(ctx context.Context, opts IsServiceOpts) error {
 	}
 	if opts.TestBypassDashdISLock {
 		extraEnv = append(extraEnv, "IS_TEST_BYPASS_ISLOCK=true")
+	}
+	if opts.ValidatorSetCacheTTLSeconds > 0 {
+		extraEnv = append(extraEnv,
+			fmt.Sprintf("IS_VALIDATOR_SET_CACHE_TTL_SECONDS=%d",
+				opts.ValidatorSetCacheTTLSeconds))
 	}
 
 	args := []string{
