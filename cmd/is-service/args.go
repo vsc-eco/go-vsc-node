@@ -178,8 +178,20 @@ func parseArgs() (args, error) {
 		} else if a.chainID != "vsc-testnet" {
 			return a, fmt.Errorf("-network=testnet requires -chainID=vsc-testnet, got %q", a.chainID)
 		}
+	case "devnet":
+		// Devnet support is for tests/devnet/* multi-node E2E runs
+		// only — vsc-devnet is the net_id devnet-setup stamps onto
+		// L2 broadcasts. Production deploys MUST use mainnet or
+		// testnet; the default-deny on unknown -network values
+		// guards against an operator typo silently shipping under
+		// the wrong chain.
+		if a.chainID == "" {
+			a.chainID = "vsc-devnet"
+		} else if a.chainID != "vsc-devnet" {
+			return a, fmt.Errorf("-network=devnet requires -chainID=vsc-devnet, got %q", a.chainID)
+		}
 	default:
-		return a, fmt.Errorf("-network must be 'mainnet' or 'testnet', got %q", a.network)
+		return a, fmt.Errorf("-network must be 'mainnet', 'testnet' or 'devnet', got %q", a.network)
 	}
 	if a.port < 1 || a.port > 65535 {
 		return a, fmt.Errorf("-port must be between 1 and 65535")

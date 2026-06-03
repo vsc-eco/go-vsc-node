@@ -356,6 +356,50 @@ services:
       retries: 20
       start_period: 30s
 
+  # IS-service for Dash InstantSend login devnet tests. Gated by the
+  # "is-service" profile so default-tag tests don't pay the startup
+  # cost. Command-line flags are read from environment variables the
+  # test harness sets via -e at runtime (see DevnetConfig.MagiEnv-
+  # style wiring inside compose.go's writeNodesOverride). Required
+  # vars when this service is started:
+  #   - IS_PRIMARY_PUBKEY     (33-byte hex compressed)
+  #   - IS_BACKUP_PUBKEY      (33-byte hex compressed)
+  #   - IS_L2_GQL_URL         (e.g. http://magi-1:8080/api/v1/graphql)
+  #   - IS_L2_PRIVKEY         (secp256k1 hex)
+  #   - IS_L2_DASH_CONTRACT   (vsc1... — mapping contract id)
+  # Optional:
+  #   - IS_BOOTSTRAP_PEERS    (libp2p multiaddrs, comma-separated)
+  is-service:
+    image: ${MAGI_IMAGE}
+    profiles: ["is-service"]
+    depends_on:
+      dashd:
+        condition: service_healthy
+    networks:
+      - devnet
+    ports:
+      - "127.0.0.1:${IS_SERVICE_PORT:-13030}:3030"
+    # Default-blank substitution (`${VAR:-}`) so `docker compose ps`
+    # and friends don't emit stderr warnings when these env vars
+    # aren't set during a default-tag devnet run (the harness's
+    # waitForService captures CombinedOutput and parses the first
+    # line — warning lines would otherwise be misread as the
+    # service's health/state).
+    command:
+      - ./is-service
+      - -network=devnet
+      - -primaryPubkey=${IS_PRIMARY_PUBKEY:-}
+      - -backupPubkey=${IS_BACKUP_PUBKEY:-}
+      - -dashdRPC=http://dashd:19898
+      - -dashdRPCUser=vsc-node-user
+      - -dashdRPCPassword=vsc-node-pass
+      - -l2GqlURL=${IS_L2_GQL_URL:-}
+      - -l2PrivKey=${IS_L2_PRIVKEY:-}
+      - -l2DashMappingContract=${IS_L2_DASH_CONTRACT:-}
+      - -addressSignerSecret=${IS_ADDRESS_SIGNER_SECRET:-}
+      - -p2pBootstrapPeers=${IS_BOOTSTRAP_PEERS:-}
+      - -debug=true
+
 volumes:
   db: {}
 
