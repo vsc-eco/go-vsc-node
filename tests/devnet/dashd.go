@@ -112,6 +112,19 @@ func (d *Devnet) SendDashTo(ctx context.Context, addr string, amountDash string)
 	return txid, nil
 }
 
+// GetDashRawTransaction returns the raw transaction hex for `txid`
+// via dashd's `getrawtransaction <txid> 0` (verbose=0 → just hex).
+// Used by tests/devnet's IS-login E2E to fetch the same rawTxHex the
+// IS-service watcher passed into onObserved, so the harness can build
+// canonical-message hashes that match what the orchestrator computes.
+func (d *Devnet) GetDashRawTransaction(ctx context.Context, txid string) (string, error) {
+	out, err := d.dashCli(ctx, "getrawtransaction", txid, "0")
+	if err != nil {
+		return "", fmt.Errorf("getrawtransaction %s: %w", txid, err)
+	}
+	return out, nil
+}
+
 // WaitForDashHeight blocks until the dashd regtest tip is at least `target`
 // blocks tall, or the timeout expires.
 func (d *Devnet) WaitForDashHeight(ctx context.Context, target uint64, timeout time.Duration) error {

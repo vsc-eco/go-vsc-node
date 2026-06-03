@@ -69,8 +69,13 @@ func TestSessionStart_Auth_HappyPath(t *testing.T) {
 	var resp SessionStartResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Len(t, resp.Sid, 32, "sid must be 32 hex chars")
-	assert.True(t, strings.HasPrefix(resp.DepositAddress, "tdash1"),
-		"testnet deposit address should be tdash1...; got %q", resp.DepositAddress)
+	// Dash testnet P2SH addresses start with '8' or '9' (PubKeyHashAddrID
+	// 0x13 → base58 prefix range). Was 'tdash1' (bech32 P2WSH) before
+	// the Dash-compat fix; dashd v23 rejects bech32 since Dash never
+	// activated SegWit.
+	assert.True(t,
+		strings.HasPrefix(resp.DepositAddress, "8") || strings.HasPrefix(resp.DepositAddress, "9"),
+		"testnet deposit address should be Dash testnet P2SH (8.../9...); got %q", resp.DepositAddress)
 	assert.NotEmpty(t, resp.AddressSignature)
 	assert.Equal(t, MinDustDuffs, resp.RequiredAmountDuffs)
 	assert.NotEmpty(t, resp.ExpiresAt)
@@ -115,7 +120,9 @@ func TestSessionStart_Call_HappyPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, int64(100_000_000), resp.RequiredAmountDuffs,
 		"value-bearing op=call requires the declared amount")
-	assert.True(t, strings.HasPrefix(resp.DepositAddress, "tdash1"))
+	assert.True(t,
+		strings.HasPrefix(resp.DepositAddress, "8") || strings.HasPrefix(resp.DepositAddress, "9"),
+		"testnet deposit address should be Dash P2SH (8.../9...); got %q", resp.DepositAddress)
 }
 
 func TestSessionStart_Call_AmountZeroIsDust(t *testing.T) {

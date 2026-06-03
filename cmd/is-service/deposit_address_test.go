@@ -14,6 +14,14 @@ import (
 // To regenerate after a deliberate algorithm change, run dash-mapping-contract
 // against the same (primaryPubKey, backupPubKey, instruction, params) inputs and
 // update the expected addresses below.
+//
+// Vectors below are P2SH (Dash testnet `8`/`9` prefix, mainnet `7` prefix).
+// Pre-existing vectors were P2WSH (`tdash1...`/`dash1...`) bech32 — those
+// addresses are unspendable on real Dash because Dash never activated
+// SegWit (validateaddress on dashd v23 returns "Invalid address format"
+// for bech32 addresses). The redeem-script bytes are unchanged; only
+// the on-chain commitment shifts from 32-byte sha256 (P2WSH witness
+// program) to 20-byte HASH160 (P2SH script hash).
 
 const (
 	// Test bridge pubkeys (same ones the existing gen-address tool uses).
@@ -28,11 +36,11 @@ func TestDepositAddress_ParityWithContract_Testnet(t *testing.T) {
 	}{
 		{
 			instruction: "op=auth;sid=test1",
-			expected:    "tdash1q8d8rp9gk8mljvlt5tdpg5296h94vawzvtf5hkvl2rg0jwyjqlhrsx6u4sz",
+			expected:    "8i92eC73yb2mMgf4BfnG8KA2R1kY1LFgQ3",
 		},
 		{
 			instruction: "deposit_to=hive:tibfox",
-			expected:    "tdash1qmjaexgarq8ckt3mjeas0um0vu04cxznydtns935ldysntajruryq5e8pjy",
+			expected:    "8v28WKnneY5WKXpeGCf3BUmaeQP88wyhJ9",
 		},
 	}
 	for _, c := range cases {
@@ -52,11 +60,11 @@ func TestDepositAddress_ParityWithContract_Mainnet(t *testing.T) {
 	}{
 		{
 			instruction: "op=auth;sid=test1",
-			expected:    "dash1qtd9samgpvaqsp8g35wfnpcrqg5ffp3m4825mavqg9mldzat7rx6qrr9m32",
+			expected:    "7h3njsQDVUe5cnjTgfj9AFtnNbnawFas6m",
 		},
 		{
 			instruction: "deposit_to=hive:tibfox",
-			expected:    "dash1q8ukr0pf4z6rataxe9ly0fqqhsp9t2nst2aggxmwdwpzl9dffq20sd22qju",
+			expected:    "7VopAqnSkLjRExJzfUkgx3WAYhnpDapeCx",
 		},
 	}
 	for _, c := range cases {

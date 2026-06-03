@@ -2,7 +2,6 @@ package devnet
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -103,13 +102,13 @@ func TestIsLoginSmoke(t *testing.T) {
 		t.Fatalf("starting devnet: %v", err)
 	}
 
-	// Mine a few blocks so seedBlocks has something to chain onto.
-	// We don't need COINBASE_MATURITY headroom because we drive the
-	// IS_OBSERVED transition via the /test/observed endpoint
-	// directly — Dash never activated SegWit, so the bech32 P2WSH
-	// address the IS service generates can't be paid via
-	// `sendtoaddress` on dashd regtest at all.
-	if _, err := d.MineDashBlocks(ctx, 5); err != nil {
+	// Mine 110 dashd regtest blocks: 1 for the seedBlocks baseline,
+	// and >=100 for the regtest wallet's coinbase reward to mature
+	// before we call `sendtoaddress`. (After the Dash-compat fix,
+	// the IS service generates legacy P2SH addresses dashd v23
+	// recognises, so we drive the watcher with a real payment
+	// instead of the previous /test/observed bypass.)
+	if _, err := d.MineDashBlocks(ctx, 110); err != nil {
 		t.Fatalf("mining initial dash blocks: %v", err)
 	}
 	seedHeader, err := d.GetDashBlockHeaderHex(ctx, 1)
@@ -280,51 +279,34 @@ func TestIsLoginSmoke(t *testing.T) {
 		t.Errorf("expected non-empty statusUrl in /session/start response")
 	}
 
-	// 6. Drive WAITING_FOR_IS → IS_OBSERVED via /test/observed.
-	//    We supply a synthesised Bitcoin-wire-format rawTxHex with
-	//    one P2PKH input + one P2WSH output paying the IS-service-
-	//    issued deposit address. This satisfies BOTH the contract's
-	//    FindOutputAmount (the P2WSH output matches the address)
-	//    AND ResolveSenderDashDID (the P2PKH-style input recovers
-	//    to a Dash address via txscript.ComputePkScript). See
-	//    tests/devnet/synthetic_dashtx.go for the construction.
-	//
-	//    Decode the deposit address into a btcutil.Address using
-	//    the same Dash testnet params the IS service uses (R5 devnet
-	//    case inherits testnet params).
-	depositAddr, err := DecodeDashP2WSH(resp.DepositAddress, dashTestNetParamsForHarness())
+	// 6. Drive WAITING_FOR_IS → IS_OBSERVED via a REAL dashd payment.
+	//    Now that the IS service uses P2SH (Dash-compatible)
+	//    addresses, `sendtoaddress` accepts the deposit address.
+	//    The watcher polls dashd's mempool, finds our tx, and
+	//    fires onObserved (with -testBypassDashdISLock bypassing
+	//    the regtest-lacks-LLMQ IS-lock check). The orchestrator
+	//    captures the REAL rawTxHex from dashd's getrawtransaction.
+	t.Logf("paying real Dash to %s...", resp.DepositAddress)
+	dashTxId, err := d.SendDashTo(ctx, resp.DepositAddress, "0.001")
 	if err != nil {
-		t.Fatalf("decoding deposit address: %v", err)
+		t.Fatalf("SendDashTo: %v", err)
 	}
-	rawTxHex, syntheticSender, err := BuildSyntheticDashTxToAddress(
-		depositAddr, 100_000, dashTestNetParamsForHarness())
-	if err != nil {
-		t.Fatalf("BuildSyntheticDashTxToAddress: %v", err)
-	}
-	t.Logf("synthetic Dash tx: rawTxHex=%s… sender=%s amount=100000 duffs",
-		rawTxHex[:32], syntheticSender)
+	t.Logf("dashd tx broadcast: %s", dashTxId)
 
-	// BuildResponse requires a 32-byte hex txid (64 lowercase hex
-	// chars). The contract uses the actual SHA256d of rawTxBytes as
-	// the txid (Bitcoin convention); synthesise it here so the
-	// orchestrator + contract see the same value.
-	txidBytes := make([]byte, 32)
-	if _, err := rand.Read(txidBytes); err != nil {
-		t.Fatalf("rand: %v", err)
-	}
-	fakeTxid := hex.EncodeToString(txidBytes)
-	t.Logf("force-observing session sid=%s via /test/observed (rawTxHex=%s…)",
-		resp.Sid, rawTxHex[:16])
-	if err := d.IsForceObservedWithRawTx(ctx, resp.Sid, fakeTxid, rawTxHex); err != nil {
+	// Wait for the watcher to observe the tx + fire onObserved.
+	// The orchestrator stores DashTxId on the session as it
+	// transitions WAITING_FOR_IS → IS_OBSERVED.
+	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
+		[]string{"IS_OBSERVED", "ATTESTING", "L2_SUBMITTED", "ON_CHAIN"},
+		60*time.Second); err != nil {
 		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
-			t.Logf("is-service logs (post-force):\n%s", isLogs)
+			t.Logf("is-service logs (waiting for IS_OBSERVED):\n%s", isLogs)
 		}
-		t.Fatalf("IsForceObserved: %v", err)
+		t.Fatalf("session did not reach IS_OBSERVED: %v", err)
 	}
+	t.Logf("watcher fired onObserved (real Dash tx)")
 
-	// Wait for ATTESTING — the orchestrator transitions
-	// IS_OBSERVED → ATTESTING in Drive() before publishing to the
-	// (noop) broadcaster + awaiting collector responses.
+	// Wait for ATTESTING.
 	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
 		[]string{"ATTESTING", "L2_SUBMITTED", "ON_CHAIN"},
 		60*time.Second); err != nil {
@@ -333,7 +315,16 @@ func TestIsLoginSmoke(t *testing.T) {
 		}
 		t.Fatalf("session did not reach ATTESTING: %v", err)
 	}
-	t.Logf("session reached ATTESTING; injecting signed attestation from magi-1...")
+
+	// Fetch the same rawTxHex the orchestrator passed into Drive().
+	// We need it to compute the canonical-message hashes that match
+	// when we sign the attestation.
+	rawTxHex, err := d.GetDashRawTransaction(ctx, dashTxId)
+	if err != nil {
+		t.Fatalf("GetDashRawTransaction: %v", err)
+	}
+	t.Logf("session reached ATTESTING; injecting signed attestation from magi-1 over real rawTxHex (%d bytes)...",
+		len(rawTxHex)/2)
 
 	// 7. Build a real signed attestation from magi-1's BLS key and
 	//    inject it via /test/attestation. The orchestrator's per-sig
@@ -346,7 +337,7 @@ func TestIsLoginSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decoding depositInstructionHex: %v", err)
 	}
-	if err := d.IsForceAttestation(ctx, resp.Sid, fakeTxid, rawTxHex, string(instructionBytes), 1); err != nil {
+	if err := d.IsForceAttestation(ctx, resp.Sid, dashTxId, rawTxHex, string(instructionBytes), 1); err != nil {
 		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
 			t.Logf("is-service logs (post-attestation):\n%s", isLogs)
 		}
@@ -374,8 +365,8 @@ func TestIsLoginSmoke(t *testing.T) {
 	if final.State != "L2_SUBMITTED" && final.State != "ON_CHAIN" {
 		t.Errorf("expected L2_SUBMITTED or ON_CHAIN, got %s", final.State)
 	}
-	if final.DashTxId != fakeTxid {
-		t.Errorf("expected dashTxId=%q, got %q", fakeTxid, final.DashTxId)
+	if final.DashTxId != dashTxId {
+		t.Errorf("expected dashTxId=%q, got %q", dashTxId, final.DashTxId)
 	}
 	if final.L2TxId == "" {
 		t.Errorf("expected non-empty l2TxId, got empty")
