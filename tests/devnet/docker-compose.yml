@@ -398,6 +398,7 @@ services:
       - -l2DashMappingContract=${IS_L2_DASH_CONTRACT:-}
       - -addressSignerSecret=${IS_ADDRESS_SIGNER_SECRET:-}
       - -p2pBootstrapPeers=${IS_BOOTSTRAP_PEERS:-}
+      - -testBypassDashdISLock=${IS_TEST_BYPASS_ISLOCK:-false}
       - -debug=true
 
 volumes:

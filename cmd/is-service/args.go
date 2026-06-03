@@ -90,6 +90,13 @@ type args struct {
 	// cache. Round-5 audit R5-DRIFT-06 — made operator-configurable so
 	// admin rotation latency is tunable in production. Default 30s.
 	validatorSetCacheTTLSeconds int
+	// testBypassDashdISLock: when true, the dashd watcher treats every
+	// observed tx as IS-locked regardless of dashd's `instantlock`
+	// field. **TEST-ONLY** — gated to `-network=devnet` at startup so
+	// production deploys cannot enable it. Used by tests/devnet's
+	// IS-login E2E because regtest dashd doesn't have an LLMQ quorum
+	// to produce real IS-locks.
+	testBypassDashdISLock bool
 }
 
 func parseArgs() (args, error) {
@@ -147,6 +154,13 @@ func parseArgs() (args, error) {
 			"R5-DRIFT-06). Lower = faster reflection of admin-side rotations; "+
 			"higher = fewer L2 GraphQL probes per Drive(). Default 30s.")
 
+	fs.BoolVar(&a.testBypassDashdISLock, "testBypassDashdISLock", false,
+		"TEST ONLY: treat every dashd-observed tx as IS-locked, "+
+			"bypassing the `instantlock` field check. Gated to "+
+			"-network=devnet at startup. Used by tests/devnet's "+
+			"IS-login E2E because regtest dashd doesn't have an LLMQ "+
+			"quorum to produce real IS-locks.")
+
 	fs.IntVar(&a.drainTimeoutSeconds, "drainTimeoutSeconds", 240,
 		"Graceful-shutdown drain timeout in seconds. MUST be >= orchestrator's "+
 			"CollectTimeout(15s) + SubmitTimeout(30s) + reconcileL2 budget(~180s including "+
@@ -192,6 +206,16 @@ func parseArgs() (args, error) {
 		}
 	default:
 		return a, fmt.Errorf("-network must be 'mainnet', 'testnet' or 'devnet', got %q", a.network)
+	}
+	// Test-only bypass: refuse to start with -testBypassDashdISLock=true
+	// when -network isn't devnet. This is a defense-in-depth gate so a
+	// production operator who flips the flag by mistake (or via a
+	// compromised orchestrator) can't accidentally short-circuit the
+	// IS-lock check on a live deployment.
+	if a.testBypassDashdISLock && a.network != "devnet" {
+		return a, fmt.Errorf(
+			"-testBypassDashdISLock=true requires -network=devnet (got %q); " +
+				"the flag is gated to the devnet-only test surface", a.network)
 	}
 	if a.port < 1 || a.port > 65535 {
 		return a, fmt.Errorf("-port must be between 1 and 65535")

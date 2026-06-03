@@ -329,12 +329,16 @@ func (d *Devnet) Stop() error {
 	defer cancel()
 
 	// Include all profiles so compose down also tears down profile-gated
-	// services (bitcoind, bitcoind-pruned). No-op if they weren't started.
+	// services (bitcoind, bitcoind-pruned, dashd, is-service). No-op if
+	// they weren't started. Missing a profile here leaves an orphan
+	// container holding its mapped host port; the next test run fails
+	// with "Bind for 127.0.0.1:NNNN failed: port is already allocated".
 	if err := d.compose(ctx,
 		"--profile", "bitcoind",
 		"--profile", "bitcoind-pruned",
 		"--profile", "bitcoind-mainnet-pruned",
 		"--profile", "dashd",
+		"--profile", "is-service",
 		"down", "-v", "--remove-orphans",
 	); err != nil {
 		log.Printf("[devnet] warning: compose down failed: %v", err)

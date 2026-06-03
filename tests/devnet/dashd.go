@@ -88,6 +88,30 @@ func (d *Devnet) GetDashBlockHeaderHex(ctx context.Context, height uint64) (stri
 	return hdr, nil
 }
 
+// SendDashTo sends `amountDash` to `addr` from the dashd regtest wallet
+// and returns the txid. `amountDash` is a decimal string (e.g. "0.001"
+// for 100_000 duffs). The wallet must be loaded — usually
+// MineDashBlocks(ctx, N) is called first to seed coins.
+//
+// Used by tests/devnet's IS-login E2E to fund the per-session deposit
+// address after /session/start hands one back. With the IS service's
+// -testBypassDashdISLock=true flag active, the dashd watcher fires
+// onObserved as soon as the tx hits mempool (without waiting for the
+// regtest-unavailable LLMQ IS-lock).
+func (d *Devnet) SendDashTo(ctx context.Context, addr string, amountDash string) (string, error) {
+	// Ensure the wallet exists + has a spendable balance. Mining N
+	// blocks gives the wallet the coinbase reward but it needs
+	// `COINBASE_MATURITY=100` confirmations on regtest. Caller is
+	// responsible for mining enough headroom (~110 blocks before
+	// expecting a spend to succeed).
+	_, _ = d.dashCli(ctx, "-named", "createwallet", "wallet_name=devnet", "load_on_startup=true")
+	txid, err := d.dashCli(ctx, "sendtoaddress", addr, amountDash)
+	if err != nil {
+		return "", fmt.Errorf("sendtoaddress %s %s: %w", addr, amountDash, err)
+	}
+	return txid, nil
+}
+
 // WaitForDashHeight blocks until the dashd regtest tip is at least `target`
 // blocks tall, or the timeout expires.
 func (d *Devnet) WaitForDashHeight(ctx context.Context, target uint64, timeout time.Duration) error {

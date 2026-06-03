@@ -110,6 +110,8 @@ type Server struct {
 	// dashboards compute rate() over orchestrator counters
 	// (R5-OP-03 — counters are atomic.Int64 and reset on restart).
 	processStartedAt time.Time
+	// testEndpointsEnabled: see ServerConfig.TestEndpointsEnabled doc.
+	testEndpointsEnabled bool
 }
 
 type ServerConfig struct {
@@ -151,6 +153,16 @@ type ServerConfig struct {
 	// from which X-Forwarded-For is honoured. Audit TC2-06: M5 docstring
 	// promised this and the field didn't exist; now it does.
 	TrustedProxies []string
+	// TestEndpointsEnabled wires the test-only `/test/observed/{sid}`
+	// endpoint that synthesises an onISLockObserved callback from the
+	// HTTP request body. **TEST-ONLY** — main.go only sets this when
+	// args.testBypassDashdISLock is true (which args.go in turn gates
+	// to -network=devnet). Used by tests/devnet's IS-login E2E
+	// because Dash never activated SegWit and dashd v23 doesn't
+	// recognise the bech32 P2WSH deposit addresses the IS service
+	// generates — so the dashd watcher's address-fan-out can never
+	// fire on its own under regtest.
+	TestEndpointsEnabled bool
 }
 
 // NewServer constructs a Server. Returns an error if config is invalid.
@@ -205,9 +217,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		broadcasterHealth: cfg.BroadcasterHealth,
 		dashdHealth:       cfg.DashdHealth,
 		submitterHealth:   cfg.SubmitterHealth,
-		trustedProxies:    append([]string(nil), cfg.TrustedProxies...),
-		driveCtx:          driveCtx,
-		driveCancel:       driveCancel,
+		trustedProxies:       append([]string(nil), cfg.TrustedProxies...),
+		testEndpointsEnabled: cfg.TestEndpointsEnabled,
+		driveCtx:             driveCtx,
+		driveCancel:          driveCancel,
 		processStartedAt:  time.Now(),
 	}, nil
 }
@@ -305,7 +318,56 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /session/{sid}/status", s.handleSessionStatus)
 	mux.HandleFunc("POST /session/{sid}/cancel", s.handleSessionCancel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	// Test-only endpoint — registered only when TestEndpointsEnabled
+	// is true (which main.go gates on -testBypassDashdISLock, which
+	// args.go gates on -network=devnet). Lets tests/devnet drive
+	// the orchestrator's WAITING_FOR_IS → IS_OBSERVED transition
+	// directly, bypassing the dashd watcher entirely — Dash never
+	// activated SegWit so the bech32 P2WSH deposit address the IS
+	// service generates can't actually be paid on regtest dashd.
+	if s.testEndpointsEnabled {
+		mux.HandleFunc("POST /test/observed/{sid}", s.handleTestObserved)
+	}
 	return mux
+}
+
+// TestObservedRequest carries the synthesised observation payload
+// for the test-only /test/observed/{sid} endpoint.
+type TestObservedRequest struct {
+	TxId     string `json:"txid"`
+	RawTxHex string `json:"rawTxHex,omitempty"`
+}
+
+// handleTestObserved synthesises an onISLockObserved callback. The
+// orchestrator's downstream behaviour is unchanged — broadcast
+// attestation requests, collect, submit L2. Returns 200 on success
+// (the orchestrator goroutine spawns asynchronously; the caller
+// should poll /session/{sid}/status to observe the transition).
+func (s *Server) handleTestObserved(w http.ResponseWriter, r *http.Request) {
+	if !s.testEndpointsEnabled {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	sid := r.PathValue("sid")
+	if sid == "" {
+		writeError(w, http.StatusBadRequest, "missing sid")
+		return
+	}
+	var req TestObservedRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.TxId == "" {
+		req.TxId = "test-observed-" + sid
+	}
+	// onISLockObserved no-ops if the session isn't in
+	// StateWaitingForIS, so calling against a missing/terminal
+	// session is safe. Use the configured handler so all the same
+	// side effects (Unwatch, orchestrator Drive goroutine, etc.) fire.
+	s.onISLockObserved(sid, req.TxId, req.RawTxHex)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
 }
 
 // ===== request / response types =====

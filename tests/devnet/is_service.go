@@ -56,6 +56,13 @@ type IsServiceOpts struct {
 	// gossip topic. Leave empty for the noop broadcaster — sessions
 	// will stall at ATTESTING but /session/start still works.
 	BootstrapPeers string
+	// TestBypassDashdISLock toggles the IS service's
+	// -testBypassDashdISLock flag. When true, the dashd watcher treats
+	// every observed tx as IS-locked. **TEST-ONLY** — the IS service
+	// args.go refuses to honour it unless -network=devnet. Used by
+	// tests/devnet to drive the IS_OBSERVED transition without an
+	// LLMQ quorum.
+	TestBypassDashdISLock bool
 }
 
 // GenerateIsTestKeys returns three randomly-generated, well-formed
@@ -127,6 +134,9 @@ func (d *Devnet) StartIsService(ctx context.Context, opts IsServiceOpts) error {
 	}
 	if opts.BootstrapPeers != "" {
 		extraEnv = append(extraEnv, "IS_BOOTSTRAP_PEERS="+opts.BootstrapPeers)
+	}
+	if opts.TestBypassDashdISLock {
+		extraEnv = append(extraEnv, "IS_TEST_BYPASS_ISLOCK=true")
 	}
 
 	args := []string{
@@ -215,6 +225,121 @@ type IsSessionStartResp struct {
 	RequiredAmountDuffs   int64  `json:"requiredAmountDuffs"`
 	ExpiresAt             string `json:"expiresAt"`
 	StatusURL             string `json:"statusUrl"`
+}
+
+// IsForceObserved POSTs to the IS service's test-only
+// /test/observed/{sid} endpoint to synthesise an onISLockObserved
+// callback. The endpoint is only present when the IS service is
+// started with -testBypassDashdISLock=true (devnet-gated). Used by
+// tests/devnet to drive the orchestrator's WAITING_FOR_IS →
+// IS_OBSERVED transition without actually sending a dashd tx —
+// regtest dashd doesn't recognise the bech32 P2WSH deposit address
+// the IS service generates (Dash never activated SegWit).
+//
+// txid is optional; if empty the IS service synthesises one. The
+// orchestrator's downstream behaviour is unchanged: it broadcasts
+// attestation requests, collects the quorum, submits L2.
+func (d *Devnet) IsForceObserved(ctx context.Context, sid, txid string) error {
+	url := d.IsServiceHttpURL() + "/test/observed/" + sid
+	bodyJSON := `{}`
+	if txid != "" {
+		bodyJSON = fmt.Sprintf(`{"txid":%q}`, txid)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(bodyJSON))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting /test/observed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("/test/observed returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// IsSessionStatusResp mirrors cmd/is-service/handlers.go's
+// SessionStatusResponse. State is the orchestrator phase string
+// ("WAITING_FOR_IS", "IS_OBSERVED", "ATTESTING", "ON_CHAIN", etc.) —
+// see modules/is-service/session.go for the full set.
+type IsSessionStatusResp struct {
+	Sid           string `json:"sid"`
+	State         string `json:"state"`
+	DashTxId      string `json:"dashTxId,omitempty"`
+	SenderAddress string `json:"senderAddress,omitempty"`
+	ForwardedAt   string `json:"forwardedAt,omitempty"`
+	SessionToken  string `json:"sessionToken,omitempty"`
+	L2TxId        string `json:"l2TxId,omitempty"`
+	ForwardError  string `json:"forwardError,omitempty"`
+	ExpiresAt     string `json:"expiresAt"`
+}
+
+// IsGetStatus GETs /session/{sid}/status and returns the parsed
+// response. Returns an error with the raw response body on non-2xx.
+func (d *Devnet) IsGetStatus(ctx context.Context, sid string) (*IsSessionStatusResp, error) {
+	url := d.IsServiceHttpURL() + "/session/" + sid + "/status"
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting /session/status: %w", err)
+	}
+	defer resp.Body.Close()
+	rawBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("/session/status returned %d: %s", resp.StatusCode, string(rawBody))
+	}
+	var out IsSessionStatusResp
+	if err := json.Unmarshal(rawBody, &out); err != nil {
+		return nil, fmt.Errorf("decoding response: %w (raw=%s)", err, string(rawBody))
+	}
+	return &out, nil
+}
+
+// WaitForIsSessionState polls /session/status until `state` matches
+// or the timeout expires. Returns the final response (regardless of
+// whether the target state was reached) so the caller can log
+// terminal-error fields. Returns an error if the timeout expires
+// without reaching `state` or any other state in `acceptableStates`.
+func (d *Devnet) WaitForIsSessionState(ctx context.Context, sid string, acceptableStates []string, timeout time.Duration) (*IsSessionStatusResp, error) {
+	deadline := time.Now().Add(timeout)
+	var last *IsSessionStatusResp
+	accept := make(map[string]struct{}, len(acceptableStates))
+	for _, s := range acceptableStates {
+		accept[s] = struct{}{}
+	}
+	for {
+		resp, err := d.IsGetStatus(ctx, sid)
+		if err == nil {
+			last = resp
+			if _, ok := accept[resp.State]; ok {
+				return resp, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return last, fmt.Errorf(
+				"session %s did not reach one of %v within %s (last state: %v)",
+				sid, acceptableStates, timeout, lastState(last))
+		}
+		select {
+		case <-ctx.Done():
+			return last, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+}
+
+func lastState(r *IsSessionStatusResp) string {
+	if r == nil {
+		return "<no response>"
+	}
+	return r.State
 }
 
 // IsStartSession POSTs /session/start and returns the parsed

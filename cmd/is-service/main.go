@@ -91,6 +91,14 @@ func main() {
 			os.Exit(1)
 		}
 		dashd = NewDashdWatcher(client)
+		if args.testBypassDashdISLock {
+			// Args.go has already verified -network=devnet, so this
+			// branch is unreachable on production. Warn loudly so the
+			// log makes the test-only mode obvious in the devnet logs.
+			dashd.SetBypassISLockCheck(true)
+			slog.Warn("dashd watcher: TEST-ONLY IS-lock bypass active — every observed tx will be treated as IS-locked",
+				"network", args.network)
+		}
 		slog.Info("dashd watcher configured + probed",
 			"rpc", sanitizeURLForLogWithFlag("-dashdRPC", args.dashdRPCURL))
 	} else {
@@ -306,6 +314,11 @@ func main() {
 		DashdHealth:       dashdHealthFn,
 		SubmitterHealth:   submitterHealthFn,
 		TrustedProxies:    trustedProxies,
+		// Same gate as -testBypassDashdISLock (args.go enforces
+		// -network=devnet) — wires the /test/observed/{sid}
+		// endpoint that lets tests/devnet drive the
+		// WAITING_FOR_IS → IS_OBSERVED transition without dashd.
+		TestEndpointsEnabled: args.testBypassDashdISLock,
 	})
 	if err != nil {
 		slog.Error("server config invalid", "err", err)

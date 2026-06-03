@@ -205,6 +205,12 @@ type DashdWatcher struct {
 	consecutiveFails int
 	lastErr          error
 	lastErrAt        time.Time
+	// bypassISLockCheck: when true, the poll loop treats every observed
+	// tx as IS-locked regardless of dashd's `instantlock` field.
+	// **TEST-ONLY** — set via -testBypassDashdISLock=true, gated by
+	// args.go to -network=devnet. Used by tests/devnet's IS-login E2E
+	// because regtest dashd has no LLMQ to produce real IS-locks.
+	bypassISLockCheck bool
 }
 
 type watchedAddress struct {
@@ -218,6 +224,14 @@ func NewDashdWatcher(client *DashdRPCClient) *DashdWatcher {
 		watched:      make(map[string]watchedAddress),
 		pollInterval: 2 * time.Second,
 	}
+}
+
+// SetBypassISLockCheck toggles the test-only IS-lock bypass. See the
+// `bypassISLockCheck` field comment. Should only be called from main
+// when -testBypassDashdISLock=true (which args.go gates to
+// -network=devnet).
+func (w *DashdWatcher) SetBypassISLockCheck(bypass bool) {
+	w.bypassISLockCheck = bypass
 }
 
 // Watch registers an address for IS-lock observation.
@@ -335,8 +349,10 @@ func (w *DashdWatcher) poll(ctx context.Context, seen map[string]bool) error {
 		if err != nil {
 			continue // skip; might be in mempool but not yet fully indexed
 		}
-		if !tx.InstantLock {
+		if !tx.InstantLock && !w.bypassISLockCheck {
 			// Not yet locked — don't mark seen so we re-check on next poll.
+			// bypassISLockCheck=true (devnet test-only) short-circuits this
+			// check; see field doc.
 			continue
 		}
 		seen[txid] = true
