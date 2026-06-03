@@ -2,28 +2,30 @@
 // Self-contained Ledger signer for the VSC contract-deployer.
 //
 // Contract (matches cmd/contract-deployer's -ledger-sign-cmd hook):
-//   stdin : a signing-bundle JSON, e.g.
-//           { "chain_id": "<hex>", "signing_digest": "<hex>", "path": "m/48'/13'/0'/0'/0'",
-//             "transaction": { ref_block_num, ref_block_prefix, expiration, operations, extensions, signatures } }
+//   stdin : a signing-bundle JSON. Only two fields are used:
+//             { "signing_digest": "<64 hex chars>", "path": "m/48'/13'/0'/0'/0'" }
 //   stdout: ONLY the signature hex (so the caller can read it cleanly)
 //   stderr: all diagnostics / prompts
-//   exit  : non-zero on any failure (missing deps, no device, digest mismatch, user rejection)
+//   exit  : non-zero on any failure (missing deps, no device, user rejection)
 //
-// Before signing it recomputes the digest with the Hive Ledger library and
-// refuses to sign if it disagrees with the digest the Go side computed (a
-// serialization mismatch) — so a mismatch can never produce a signature you'd
-// broadcast by mistake.
+// This signer does NOT serialize, re-serialize, or re-hash anything. It takes the
+// exact 32-byte digest the Go side already computed (hivego, NAI/HF26 asset
+// serialization) and asks the Ledger to sign that hash directly via the Hive
+// app's INS_SIGN_HASH ("hash signing") path. The bytes the node broadcasts and the
+// bytes the device signs therefore come from a single source — Go — so there is
+// no second serializer to disagree, and no digest verification to perform here.
 //
-// Deps are loaded dynamically so a clean checkout (deps not installed) fails
-// with an actionable message instead of a stack trace. They're typed `any`
-// deliberately: this file must not be coupled to the upstream type surface.
+// Tradeoff: hash signing is "blind" — the device displays only the hash, not a
+// decoded transaction. The Hive app's hash-signing policy must be enabled on the
+// device ("Sign raw hashes" in the app settings), or the app rejects the request.
+//
+// Deps are loaded dynamically so a clean checkout (deps not installed) fails with
+// an actionable message instead of a stack trace. They're typed `any` deliberately:
+// this file must not be coupled to the upstream type surface.
 
 interface SigningRequest {
-  transaction?: unknown
-  chain_id?: string
   signing_digest?: string
   path?: string
-  account?: string
 }
 
 function fail(msg: string, code?: number): never {
@@ -65,26 +67,13 @@ async function main(): Promise<void> {
     fail('could not parse signing request JSON on stdin: ' + e.message, 1)
   }
 
-  const tx = req.transaction
-  const chainId = req.chain_id
-  const expectedDigest = req.signing_digest
+  const digest = req.signing_digest
   const path = req.path
-  if (!tx || !path) fail('signing request must include "transaction" and "path"', 1)
-
-  // Refuse to sign unless this library reproduces the caller's digest. This is
-  // the safety net against the two libraries serializing the tx differently —
-  // signing a digest the node won't accept would just waste a device approval.
-  try {
-    const libDigest: string | undefined = Hive.getTransactionDigest(tx, chainId)
-    if (expectedDigest && libDigest && libDigest.toLowerCase() !== expectedDigest.toLowerCase()) {
-      fail(
-        `digest mismatch — refusing to sign.\n  signer computed: ${libDigest}\n  caller expected: ${expectedDigest}\n` +
-          `(the Go and JS Hive serializers disagree; do not broadcast this.)`,
-        3,
-      )
-    }
-  } catch (e: any) {
-    process.stderr.write('warning: could not pre-verify digest with the library: ' + e.message + '\n')
+  if (!path) fail('signing request must include "path"', 1)
+  // Sanity-check only the *shape* of the digest (32 bytes of hex) — this does not
+  // recompute or verify it, it just avoids sending obvious garbage to the device.
+  if (!digest || !/^[0-9a-fA-F]{64}$/.test(digest)) {
+    fail('signing request must include "signing_digest" as 64 hex chars (32 bytes)', 1)
   }
 
   let transport: any
@@ -95,10 +84,26 @@ async function main(): Promise<void> {
   }
 
   try {
-    process.stderr.write('review and approve the transaction on your Ledger...\n')
     const hive = new Hive(transport)
-    const signed: any = await hive.signTransaction(tx, path, chainId)
-    const sig = Array.isArray(signed?.signatures) ? signed.signatures[0] : signed?.signatures
+
+    // Hash signing must be enabled in the Hive app, otherwise the device rejects
+    // the request. Surface a clear, actionable message instead of a raw status.
+    try {
+      const settings: any = await hive.getSettings()
+      if (settings && settings.hashSignPolicy === false) {
+        fail(
+          'the Ledger Hive app has hash signing disabled. Enable it on the device:\n' +
+            '  Hive app > Settings > "Sign raw hashes" (or "Hash signing") > Enabled\n' +
+            'then run this again. (This signer signs the digest directly, which requires that policy.)',
+          6,
+        )
+      }
+    } catch {
+      /* older apps may not implement getSettings; let the sign attempt surface it */
+    }
+
+    process.stderr.write('review and approve the hash on your Ledger...\n')
+    const sig: any = await hive.signHash(digest, path)
     if (!sig) fail('device returned no signature', 5)
     process.stdout.write(String(sig).trim())
   } catch (e: any) {
