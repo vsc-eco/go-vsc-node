@@ -64,6 +64,15 @@ type args struct {
 	backupPubKey        string
 	addressSignerSecret         string
 	addressSignerEd25519KeyFile string
+	// Vault Transit signer (recommended for production per spec
+	// §5.7). When -signerVaultAddr is set, the IS service signs
+	// each /session/start's addressSignature via a single
+	// transit/sign HTTP call. The private key never leaves Vault.
+	signerVaultAddr      string
+	signerVaultMount     string // default "transit"
+	signerVaultKeyName   string
+	signerVaultToken     string // discouraged inline; prefer TokenFile
+	signerVaultTokenFile string
 	sessionTTLMinutes   int
 	dashdRPCURL         string
 	dashdRPCUser        string
@@ -121,8 +130,25 @@ func parseArgs() (args, error) {
 			"asymmetric address signer — Altera pins the derived public key in "+
 			"PUBLIC_IS_SERVICE_SIGNER_PUBKEY and verifies each /session/start's "+
 			"addressSignature. Takes precedence over -addressSignerSecret. "+
-			"HSM/KMS-backed implementation is the next workstream and will share "+
-			"the AddressSigner interface.")
+			"For full HSM-backed signing (spec §5.7), use -signerVaultAddr instead.")
+	fs.StringVar(&a.signerVaultAddr, "signerVaultAddr", "",
+		"HashiCorp Vault address (e.g. https://vault.internal:8200). When set, "+
+			"the IS service signs each /session/start's addressSignature via "+
+			"Vault's transit/sign API. Takes precedence over the file-based "+
+			"Ed25519 signer + the HMAC stub. The private key never leaves Vault.")
+	fs.StringVar(&a.signerVaultMount, "signerVaultMount", "transit",
+		"Vault transit-engine mount path. Default 'transit'.")
+	fs.StringVar(&a.signerVaultKeyName, "signerVaultKeyName", "",
+		"Vault transit key name (must be type=ed25519). Required when "+
+			"-signerVaultAddr is set.")
+	fs.StringVar(&a.signerVaultToken, "signerVaultToken", "",
+		"Vault token (NOT RECOMMENDED — appears in process tables/logs). "+
+			"Prefer -signerVaultTokenFile or VAULT_TOKEN env.")
+	fs.StringVar(&a.signerVaultTokenFile, "signerVaultTokenFile", "",
+		"Path to a file containing the Vault token (preferred). Whitespace "+
+			"is trimmed. File permissions are NOT checked because Vault tokens "+
+			"are short-lived rotatable secrets, but operators should still "+
+			"set 0o600.")
 	fs.IntVar(&a.sessionTTLMinutes, "sessionTTLMinutes", 30, "how long sessions stay active before expiry")
 
 	fs.StringVar(&a.dashdRPCURL, "dashdRPC", "",

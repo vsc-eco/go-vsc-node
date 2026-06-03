@@ -65,13 +65,36 @@ func main() {
 	// file. NOT FOR PRODUCTION — production needs an HSM/KMS asymmetric
 	// signer per spec §5.7. Refusing to start with an empty secret prevents
 	// accidental no-signature deployment.
-	// Signer selection — production-shape Ed25519 file-based path
-	// takes precedence over the dev HMAC stub. Either path is
-	// required (both blank = fail-fast). HSM/KMS implementation is
-	// the next workstream and will plug into the same AddressSigner
-	// interface.
+	// Signer selection — precedence order:
+	//   1. Vault Transit (production §5.7 compliant; key never
+	//      leaves Vault)
+	//   2. Ed25519 file-based (production-shape; key on disk)
+	//   3. HMAC stub (DEV/TEST ONLY)
+	// At least one MUST be configured (fail-fast otherwise).
 	var signer AddressSigner
 	switch {
+	case args.signerVaultAddr != "":
+		token, err := ResolveVaultToken(args.signerVaultToken, args.signerVaultTokenFile)
+		if err != nil {
+			slog.Error("resolving Vault token", "err", err)
+			os.Exit(1)
+		}
+		s, pubHex, err := NewAddressSignerVaultTransit(VaultTransitConfig{
+			Addr:    args.signerVaultAddr,
+			Token:   token,
+			Mount:   args.signerVaultMount,
+			KeyName: args.signerVaultKeyName,
+		})
+		if err != nil {
+			slog.Error("building Vault transit signer", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("address signer: Vault Transit (HSM/KMS-shape; pin pubkey in PUBLIC_IS_SERVICE_SIGNER_PUBKEY)",
+			"vaultAddr", sanitizeURLForLogWithFlag("-signerVaultAddr", args.signerVaultAddr),
+			"mount", args.signerVaultMount,
+			"key", args.signerVaultKeyName,
+			"pubkey", pubHex)
+		signer = s
 	case args.addressSignerEd25519KeyFile != "":
 		s, pubHex, err := NewAddressSignerEd25519FromFile(args.addressSignerEd25519KeyFile)
 		if err != nil {
@@ -82,10 +105,10 @@ func main() {
 			"pubkey", pubHex)
 		signer = s
 	case args.addressSignerSecret != "":
-		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -addressSignerEd25519KeyFile or HSM/KMS per §5.7)")
+		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -signerVaultAddr (Vault Transit) or -addressSignerEd25519KeyFile per §5.7)")
 		signer = NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 	default:
-		slog.Error("address signer required: set -addressSignerEd25519KeyFile (production) or -addressSignerSecret (dev HMAC stub)")
+		slog.Error("address signer required: set -signerVaultAddr (Vault Transit, recommended) or -addressSignerEd25519KeyFile (file-based) or -addressSignerSecret (dev HMAC stub)")
 		os.Exit(1)
 	}
 

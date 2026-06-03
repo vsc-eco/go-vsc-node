@@ -29,7 +29,13 @@ need to change per-deploy.
 | **`-chainID`** | derived from `-network` | no | Override the Magi chain ID baked into the canonical signed message. `mainnet`→`vsc-mainnet`, `testnet`→`vsc-testnet`. Set this only if you've pinned a non-default chainID at the contract layer too — mismatch surfaces as silent ATTESTATION_TIMEOUT (R3-OP-010). |
 | **`-primaryPubkey`** | — | **yes** | 33-byte hex compressed secp256k1 pubkey of the bridge TSS primary key. Stamped into every deposit address. |
 | **`-backupPubkey`** | — | **yes** | 33-byte hex compressed pubkey for the backup TSS key. |
-| **`-addressSignerSecret`** | empty | testnet only | HMAC secret for signing `(deposit_address, instruction)` tuples returned by `/session/start`. **Production must replace this with an HSM/KMS asymmetric signer** — see spec §5.7. When unset the service runs a logged-warning fallback and clients verify only via the visual fingerprint. |
+| **`-addressSignerSecret`** | empty | dev/test only | HMAC secret for signing `(deposit_address, instruction)` tuples. **DEPRECATED** for production — use `-signerVaultAddr` (Vault Transit) or `-addressSignerEd25519KeyFile` instead. The HMAC stub is gated by the explicit DEV/TEST log on every startup. |
+| `-addressSignerEd25519KeyFile` | empty | production-shape | Path to a 32-byte Ed25519 seed (hex-encoded, 0o600). Asymmetric signer — the private key lives on disk, the derived public key is pinned in Altera's `PUBLIC_IS_SERVICE_SIGNER_PUBKEY`. Spec §5.7 compatible but the private key still on the IS-service host's filesystem. Takes precedence over `-addressSignerSecret`. |
+| **`-signerVaultAddr`** | empty | production-recommended | HashiCorp Vault address (e.g. `https://vault.internal:8200`). When set, the IS service signs every `/session/start` via Vault's `transit/sign` API — **the private key never leaves Vault**. Spec §5.7's strongest interpretation. Takes precedence over both the Ed25519 file path and the HMAC stub. See §1.3 below for the Vault setup recipe. |
+| `-signerVaultMount` | `transit` | no | Vault transit-engine mount path. |
+| `-signerVaultKeyName` | empty | yes (with `-signerVaultAddr`) | Vault transit key name. Must be `type=ed25519` so the on-wire signature shape matches the other signer kinds. |
+| `-signerVaultToken` | empty | no | Vault token inline. **NOT RECOMMENDED** — tokens leak via process tables / shell history. Prefer `-signerVaultTokenFile`. |
+| `-signerVaultTokenFile` | empty | yes (one of) | Path to a file containing the Vault token. Whitespace trimmed. Operator should set 0o600. Alternative: `VAULT_TOKEN` env. |
 | **`-port`** | `3030` | no | HTTP listen port. |
 | **`-sessionTTLMinutes`** | `30` | no | How long a session stays open before the server marks it expired. Don't shrink below the user-side trap deadline (240s post-cancel) or you'll race the client. |
 | **`-dashdRPC`** | empty | recommended | dashd JSON-RPC URL for the IS_OBSERVED transition (e.g. `http://vsc-dashd-testnet:9998`). When unset, IS_OBSERVED must be driven externally and the happy-path tests skip the dashd-driven branch. URL parse rejects userinfo, query, fragment, smuggled `;` paths (R9–R12 audit). |
@@ -65,7 +71,65 @@ need to change per-deploy.
 
 - `-network=mainnet`, `-chainID=vsc-mainnet` (or omit and let it derive).
 - `-l2DashMappingContract` = the mainnet contract ID (set at contract-deploy time; capture from the deploy log).
-- **`-addressSignerSecret` must be replaced with an HSM/KMS asymmetric signer**. The HMAC variant is dev-only; spec §5.7. Track this swap before mainnet flip.
+- **`-addressSignerSecret` must be replaced with `-signerVaultAddr` (Vault Transit) per spec §5.7**. The HMAC stub still works (gated by an explicit DEV/TEST log) but is deprecated for production.
+
+### 1.3 Vault Transit signer — operator recipe
+
+Vault Transit is the production-recommended signer backend (spec §5.7 compliant — the Ed25519 private key never leaves the Vault process). Setup is one-shot per IS service deployment:
+
+```bash
+# 1. Enable the transit secrets engine (one-time, idempotent).
+vault secrets enable transit
+
+# 2. Create the IS service's signing key. Type MUST be ed25519 so
+#    the wire-format signature shape matches Altera's verification.
+vault write -f transit/keys/is-service-signer type=ed25519
+
+# 3. Read out the public key. Pin this hex (the 32-byte raw pubkey
+#    expressed as 64 hex chars) in Altera's
+#    PUBLIC_IS_SERVICE_SIGNER_PUBKEY env var.
+vault read transit/keys/is-service-signer
+#   → grab data.keys.1.public_key (base64), decode it, hex-encode
+#     the 32-byte result.
+#   IS service logs the same hex at startup ("address signer:
+#   Vault Transit ... pubkey=<hex>") — match against Altera's pin.
+
+# 4. Create a scoped policy + token for the IS service. Only grants
+#    update on transit/sign/<key> + read on transit/keys/<key>.
+cat <<'EOF' | vault policy write is-signer -
+path "transit/sign/is-service-signer"   { capabilities = ["update"] }
+path "transit/keys/is-service-signer"   { capabilities = ["read"]   }
+EOF
+
+# 5. Issue a renewable token bound to that policy. Period defines
+#    the renewal window — set to a few hours so a leaked token has
+#    a bounded TTL even if cleanup misfires.
+vault token create -policy=is-signer -period=6h -display-name=is-service
+
+#   → put the `token` field into a file readable only by the IS
+#     service uid:
+echo '<token>' > /etc/is-service/vault.token
+chmod 0600 /etc/is-service/vault.token
+
+# 6. Set up token-renewal as a sidecar / cron / systemd timer:
+#    every ~3h, call `vault token renew` and rewrite the token
+#    file. The IS service re-reads the file on every sign call.
+#    (Renewal isn't built into the IS service itself — that's
+#    deliberate; operators are best positioned to plug into their
+#    existing secret-rotation tooling.)
+```
+
+Then start the IS service with:
+
+```bash
+./is-service \
+  ...
+  -signerVaultAddr=https://vault.internal:8200 \
+  -signerVaultKeyName=is-service-signer \
+  -signerVaultTokenFile=/etc/is-service/vault.token
+```
+
+At startup the IS service fetches the public key from Vault + logs its hex. The IS service refuses to start if Vault is unreachable, the token is invalid, or the key isn't `type=ed25519` — fail-fast guarantees you never silently issue unverifiable signatures.
 - `-p2pBootstrapPeers` = mainnet validator fleet multiaddrs. Empty = service runs but no real attestations land.
 - Client-side: set `PUBLIC_DASH_NETWORK=mainnet` and add the production IS host to `MAINNET_HOST_SUFFIXES` in `src/lib/auth/dash/config.ts` *before* flipping the URL (otherwise the client rejects the URL/network mismatch).
 
@@ -200,7 +264,7 @@ are rejected without state mutation.
 
 ## 6. Open items for mainnet flip
 
-- [ ] `-addressSignerSecret` HMAC → HSM/KMS asymmetric signer (spec §5.7).
+- [ ] `-addressSignerSecret` HMAC → `-signerVaultAddr` Vault Transit (spec §5.7) per §1.3 above. The recipe is operator-runnable; no IS service code changes required.
 - [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera (currently
       falls back to visual fingerprint when blank).
 - [ ] `MAINNET_HOST_SUFFIXES` populated in `src/lib/auth/dash/config.ts`.
