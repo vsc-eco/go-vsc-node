@@ -2,6 +2,8 @@ package devnet
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"testing"
@@ -27,18 +29,35 @@ import (
 //   - /session/start over HTTP returns a well-shaped response
 //     (sid, deposit_address, address_signature, instruction).
 //
-// Beyond the original smoke scope (added in a follow-up commit):
-//   - dashd → IS_OBSERVED transition: drives the watcher with
-//     -testBypassDashdISLock=true (devnet-gated), funds the deposit
-//     address from dashd's regtest wallet, and polls /session/status
-//     until the orchestrator transitions past WAITING_FOR_IS.
+// Full state-machine coverage (added in a follow-up commit):
+//   - WAITING_FOR_IS → IS_OBSERVED: synthesised via the test-only
+//     /test/observed/{sid} endpoint with a 32-byte rawTxHex.
+//     Bypasses the dashd watcher entirely because Dash never
+//     activated SegWit (dashd v23 returns "Invalid address format"
+//     for `tdash1...` P2WSH bech32 addresses).
+//   - IS_OBSERVED → ATTESTING: orchestrator's normal transition
+//     inside Drive() after the observation callback fires.
+//   - ATTESTING → L2_SUBMITTED → ON_CHAIN: synthesised via the
+//     test-only /test/attestation/{sid} endpoint. The harness reads
+//     magi-1's BLS private-key seed from
+//     <devnetDir>/data-1/config/identityConfig.json, signs the
+//     canonical IsLockAttestationRequest (same hashes the
+//     orchestrator computes), posts the response. The IS service's
+//     per-sig BLS Verify accepts (no validator-set check in
+//     log-only submitter mode), the aggregator + LogOnly submitter
+//     return success, and the orchestrator drives through ON_CHAIN.
 //
 // What it does NOT verify (still out of scope, future work):
-//   - Validator BLS attestation gossip (would need
-//     setValidatorSet + per-magi-node BLS PoP wiring against
-//     lib/dids host fns).
-//   - mapInstantSendV2 L2 submission landing on the contract.
-//   - End-to-end state assertions on forwardQueue entries.
+//   - Real validator gossip: would need to wire islock-attestation
+//     into cmd/vsc-node so magi witnesses participate in the
+//     topic, plus a Bootnodes helper that exposes magi-N's libp2p
+//     multiaddrs to the IS service.
+//   - Real L2 submission landing on the contract: requires
+//     funding the IS service's L2 did:pkh:eip155 account with HBD
+//     for RC (we use the LogOnly submitter to skip this).
+//   - setValidatorSet round-trip + forwardQueue state assertions:
+//     would require a real L2 submission + the dash-forwarder-
+//     contract deployed.
 //
 // Marked as a smoke test in the comment so future contributors don't
 // expect full-IS-login regression coverage here. The real E2E test
@@ -118,31 +137,39 @@ func TestIsLoginSmoke(t *testing.T) {
 		t.Fatalf("seedBlocks: %v", err)
 	}
 
-	// 3. Generate dummy keys for the IS service. The smoke path
-	//    never exercises spending against the deposit address or
-	//    L2 submission, so the keys don't need to own anything.
-	primaryPub, backupPub, l2Priv, err := GenerateIsTestKeys()
+	// 3. Generate dummy bridge TSS pubkeys for the IS service. The
+	//    keys don't need to own anything — the deposit address they
+	//    derive is never paid against, and we drive the
+	//    WAITING_FOR_IS / ATTESTING transitions via test-only HTTP
+	//    endpoints.
+	primaryPub, backupPub, _, err := GenerateIsTestKeys()
 	if err != nil {
 		t.Fatalf("generating IS test keys: %v", err)
 	}
 
-	// 4. Start the IS service. dashd was started by EnableDashd=true
-	//    so the RPC startup probe will succeed.
+	// 4. Start the IS service in log-only L2 mode. The L2 GraphQL
+	//    trio is left unset, so the orchestrator uses the
+	//    SubmitterLogOnly path: SubmitMapInstantSend returns
+	//    "log-only:no-l2-tx" + FetchTransactionStatus returns
+	//    CONFIRMED. That advances the session through L2_SUBMITTED →
+	//    ON_CHAIN without needing to fund an L2 did:pkh account or
+	//    wire setValidatorSet on the contract (the orchestrator's
+	//    DID↔pubkey expected-set is nil in log-only mode, so it
+	//    accepts any BLS-valid attestation).
 	isOpts := IsServiceOpts{
 		PrimaryPubkey:       primaryPub,
 		BackupPubkey:        backupPub,
-		L2GqlURL:            "http://magi-1:8080/api/v1/graphql",
-		L2PrivKeyHex:        l2Priv,
-		L2DashContract:      mappingId,
 		AddressSignerSecret: "smoke-test-hmac-secret-dev-only-do-not-ship",
-		// Devnet bypass: regtest dashd has no LLMQ quorum so it
-		// never produces real IS-locks; the watcher would never fire
-		// onObserved on its own. With the bypass active, every tx
-		// the watcher matches to a deposit address gets treated as
-		// IS-locked. args.go refuses to honour this flag unless
-		// -network=devnet, so production deploys are unaffected.
+		// Devnet test bypass: enables -testBypassDashdISLock AND
+		// TestEndpointsEnabled (wires `/test/observed/{sid}` +
+		// `/test/attestation/{sid}`). args.go gates this to
+		// -network=devnet so production deploys cannot enable it.
 		TestBypassDashdISLock: true,
 	}
+	// mappingId is stashed only to keep the cleanup helpers happy +
+	// surface it in the test log; the IS service doesn't use it in
+	// log-only mode.
+	_ = mappingId
 	if err := d.StartIsService(ctx, isOpts); err != nil {
 		// Pull is-service's own logs first so the actual binary
 		// startup error surfaces — dumpLogs() only covers
@@ -194,46 +221,91 @@ func TestIsLoginSmoke(t *testing.T) {
 		t.Errorf("expected non-empty statusUrl in /session/start response")
 	}
 
-	// 6. Drive the WAITING_FOR_IS → IS_OBSERVED transition via the
-	//    test-only /test/observed/{sid} endpoint. This bypasses the
-	//    dashd watcher entirely — Dash never activated SegWit so
-	//    dashd v23 doesn't recognise the bech32 P2WSH deposit
-	//    address the IS service generates (validateaddress on
-	//    `tdash1...` returns "Invalid address format"). The
-	//    orchestrator's downstream behaviour is unchanged: it
-	//    broadcasts attestation requests, collects, submits L2.
-	t.Logf("force-observing session sid=%s via /test/observed", resp.Sid)
-	if err := d.IsForceObserved(ctx, resp.Sid, "smoke-test-observed-txid"); err != nil {
+	// 6. Drive WAITING_FOR_IS → IS_OBSERVED via /test/observed.
+	//    We supply a synthesised rawTxHex (32 random bytes) and a
+	//    txid; the orchestrator picks them up via
+	//    Drive(sid, txid, rawTxHex) → builds the canonical
+	//    attestation request using these.
+	rawTxBytes := make([]byte, 32)
+	if _, err := rand.Read(rawTxBytes); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	rawTxHex := hex.EncodeToString(rawTxBytes)
+	// BuildResponse requires a 32-byte hex txid (64 lowercase hex
+	// chars). Synthesise a random one — the IS service stores it
+	// verbatim on the session and the orchestrator's canonical
+	// message embeds it.
+	txidBytes := make([]byte, 32)
+	if _, err := rand.Read(txidBytes); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	fakeTxid := hex.EncodeToString(txidBytes)
+	t.Logf("force-observing session sid=%s via /test/observed (rawTxHex=%s…)",
+		resp.Sid, rawTxHex[:16])
+	if err := d.IsForceObservedWithRawTx(ctx, resp.Sid, fakeTxid, rawTxHex); err != nil {
 		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
 			t.Logf("is-service logs (post-force):\n%s", isLogs)
 		}
 		t.Fatalf("IsForceObserved: %v", err)
 	}
 
-	// After the orchestrator receives onObserved it transitions the
-	// session past WAITING_FOR_IS. Without validator gossip wired,
-	// it then stalls in ATTESTING (the noop broadcaster never
-	// collects sigs); both IS_OBSERVED and ATTESTING are acceptable
-	// terminal states for the smoke test — they prove the
-	// orchestrator transitioned. Cap the wait at 60s.
-	acceptable := []string{"IS_OBSERVED", "ATTESTING", "L2_SUBMITTED", "ON_CHAIN"}
-	status, err := d.WaitForIsSessionState(ctx, resp.Sid, acceptable, 60*time.Second)
-	if err != nil {
-		// Surface the IS service logs so we can see whether the
-		// watcher fired but the orchestrator stuck somewhere
-		// downstream, vs the watcher never seeing the tx.
+	// Wait for ATTESTING — the orchestrator transitions
+	// IS_OBSERVED → ATTESTING in Drive() before publishing to the
+	// (noop) broadcaster + awaiting collector responses.
+	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
+		[]string{"ATTESTING", "L2_SUBMITTED", "ON_CHAIN"},
+		60*time.Second); err != nil {
 		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
-			t.Logf("is-service logs (post-funding):\n%s", isLogs)
+			t.Logf("is-service logs (waiting for ATTESTING):\n%s", isLogs)
 		}
-		t.Fatalf("session did not advance past WAITING_FOR_IS: %v", err)
+		t.Fatalf("session did not reach ATTESTING: %v", err)
 	}
-	t.Logf("session advanced to state=%s (dashTxId=%s)", status.State, status.DashTxId)
+	t.Logf("session reached ATTESTING; injecting signed attestation from magi-1...")
 
-	if status.State == "WAITING_FOR_IS" {
-		t.Errorf("session still in WAITING_FOR_IS — /test/observed did not advance")
+	// 7. Build a real signed attestation from magi-1's BLS key and
+	//    inject it via /test/attestation. The orchestrator's per-sig
+	//    BLS verify (modules/islock-attestation Verify) requires the
+	//    canonical message to match what the orchestrator computed —
+	//    same rawTxHex + same Instruction string. We decode the
+	//    instruction from depositInstructionHex (the IS service's
+	//    /session/start response carries it).
+	instructionBytes, err := hex.DecodeString(resp.DepositInstructionHex)
+	if err != nil {
+		t.Fatalf("decoding depositInstructionHex: %v", err)
 	}
-	if status.DashTxId == "" {
-		t.Errorf("expected non-empty dashTxId once observed; state=%s", status.State)
+	if err := d.IsForceAttestation(ctx, resp.Sid, fakeTxid, rawTxHex, string(instructionBytes), 1); err != nil {
+		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
+			t.Logf("is-service logs (post-attestation):\n%s", isLogs)
+		}
+		t.Fatalf("IsForceAttestation: %v", err)
+	}
+
+	// 8. Verify the orchestrator advances through L2_SUBMITTED →
+	//    ON_CHAIN. With the LogOnly submitter both steps return
+	//    success without any actual L2 broadcast; what we're really
+	//    proving is that the orchestrator's per-sig BLS verify
+	//    accepted our attestation + the aggregator + submitter +
+	//    reconciler all run their state-machine transitions.
+	final, err := d.WaitForIsSessionState(ctx, resp.Sid,
+		[]string{"L2_SUBMITTED", "ON_CHAIN"},
+		60*time.Second)
+	if err != nil {
+		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
+			t.Logf("is-service logs (post-attestation):\n%s", isLogs)
+		}
+		t.Fatalf("session did not reach L2_SUBMITTED/ON_CHAIN: %v", err)
+	}
+	t.Logf("session advanced to state=%s (l2TxId=%s dashTxId=%s)",
+		final.State, final.L2TxId, final.DashTxId)
+
+	if final.State != "L2_SUBMITTED" && final.State != "ON_CHAIN" {
+		t.Errorf("expected L2_SUBMITTED or ON_CHAIN, got %s", final.State)
+	}
+	if final.DashTxId != fakeTxid {
+		t.Errorf("expected dashTxId=%q, got %q", fakeTxid, final.DashTxId)
+	}
+	if final.L2TxId == "" {
+		t.Errorf("expected non-empty l2TxId, got empty")
 	}
 
 	// Note: we do NOT chase the session through ATTESTING → ON_CHAIN

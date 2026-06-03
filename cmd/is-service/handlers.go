@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
+
+	islock "vsc-node/modules/islock-attestation"
 )
 
 // AddressSigner produces a signature over (depositAddress || instruction)
@@ -327,6 +329,7 @@ func (s *Server) Routes() *http.ServeMux {
 	// service generates can't actually be paid on regtest dashd.
 	if s.testEndpointsEnabled {
 		mux.HandleFunc("POST /test/observed/{sid}", s.handleTestObserved)
+		mux.HandleFunc("POST /test/attestation/{sid}", s.handleTestAttestation)
 	}
 	return mux
 }
@@ -366,6 +369,35 @@ func (s *Server) handleTestObserved(w http.ResponseWriter, r *http.Request) {
 	// session is safe. Use the configured handler so all the same
 	// side effects (Unwatch, orchestrator Drive goroutine, etc.) fire.
 	s.onISLockObserved(sid, req.TxId, req.RawTxHex)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// handleTestAttestation forwards a JSON-supplied
+// IsLockAttestationResponse straight into the orchestrator's
+// collector. Bypasses the libp2p gossip — used by tests/devnet so
+// the test driver can synthesise attestations without wiring real
+// validators into the magi-node binary. Returns 200 on accept.
+func (s *Server) handleTestAttestation(w http.ResponseWriter, r *http.Request) {
+	if !s.testEndpointsEnabled {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if s.orch == nil {
+		writeError(w, http.StatusServiceUnavailable, "orchestrator not configured")
+		return
+	}
+	var resp islock.IsLockAttestationResponse
+	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if resp.TxId == "" || resp.ValidatorDID == "" || resp.PubkeyHex == "" || resp.BlsSigHex == "" {
+		writeError(w, http.StatusBadRequest,
+			"required fields: txid, validatorDid, pubkey, sig")
+		return
+	}
+	s.orch.DeliverAttestation(resp)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }

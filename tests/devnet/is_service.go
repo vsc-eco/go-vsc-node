@@ -4,16 +4,23 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"vsc-node/lib/dids"
+	islock "vsc-node/modules/islock-attestation"
+
+	blsAPI "github.com/protolambda/bls12-381-util"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
 
@@ -111,8 +118,19 @@ func (d *Devnet) StartIsService(ctx context.Context, opts IsServiceOpts) error {
 	if opts.PrimaryPubkey == "" || opts.BackupPubkey == "" {
 		return fmt.Errorf("PrimaryPubkey and BackupPubkey are required")
 	}
-	if opts.L2GqlURL == "" || opts.L2PrivKeyHex == "" || opts.L2DashContract == "" {
-		return fmt.Errorf("L2GqlURL, L2PrivKeyHex, L2DashContract are required (trio)")
+	// L2 trio is all-or-nothing: IS service refuses to start with a
+	// partial config (cmd/is-service/main.go L143-165). Allow ALL
+	// unset to use the log-only submitter, which still advances the
+	// orchestrator through L2_SUBMITTED → ON_CHAIN — convenient for
+	// tests that exercise the state machine without standing up an
+	// L2 GraphQL endpoint or funding an L2 RC account.
+	hasL2URL := opts.L2GqlURL != ""
+	hasL2Key := opts.L2PrivKeyHex != ""
+	hasL2Contract := opts.L2DashContract != ""
+	if hasL2URL || hasL2Key || hasL2Contract {
+		if !(hasL2URL && hasL2Key && hasL2Contract) {
+			return fmt.Errorf("L2GqlURL, L2PrivKeyHex, L2DashContract must be all set or all unset (trio)")
+		}
 	}
 	if opts.AddressSignerSecret == "" {
 		return fmt.Errorf("AddressSignerSecret is required (IS service refuses to start without it)")
@@ -227,25 +245,137 @@ type IsSessionStartResp struct {
 	StatusURL             string `json:"statusUrl"`
 }
 
+// IsForceAttestation reads magi-N's BLS private-key seed from its
+// data-dir, constructs the canonical IsLockAttestationRequest using
+// the same formula the orchestrator computes, signs the canonical
+// message, and POSTs the resulting IsLockAttestationResponse to the
+// IS service's test-only /test/attestation/{sid} endpoint.
+//
+// Mirrors the orchestrator's request shape from cmd/is-service/
+// orchestrator.go:248 (sha256d(rawTxBytes) reversed → RawTxHashHex,
+// sha256(instruction) → InstructionHashHex, epoch=0 in log-only
+// mode, chainId="vsc-devnet"). Pass the exact same `rawTxHex` and
+// `instruction` values that were registered on /session/start +
+// /test/observed so the canonical messages match byte-for-byte.
+//
+// On success the orchestrator's collector receives the attestation
+// and (assuming the quorumThreshold is met — default 1) aggregates
+// + submits via the log-only submitter, advancing the session to
+// L2_SUBMITTED → ON_CHAIN.
+func (d *Devnet) IsForceAttestation(
+	ctx context.Context,
+	sid, txid, rawTxHex, instruction string,
+	donorNode int,
+) error {
+	// 1. Read donor magi's identityConfig.json. The file lives at
+	//    <devnetDir>/data-N/config/identityConfig.json (the config
+	//    package appends /config to the dataDir).
+	donorPath := filepath.Join(d.devnetDir,
+		fmt.Sprintf("data-%d", donorNode), "config", "identityConfig.json")
+	donorBytes, err := os.ReadFile(donorPath)
+	if err != nil {
+		return fmt.Errorf("reading donor identityConfig at %s: %w", donorPath, err)
+	}
+	var donor struct {
+		BlsPrivKeySeed string `json:"BlsPrivKeySeed"`
+	}
+	if err := json.Unmarshal(donorBytes, &donor); err != nil {
+		return fmt.Errorf("parsing donor identityConfig: %w", err)
+	}
+	if len(donor.BlsPrivKeySeed) != 64 {
+		return fmt.Errorf("donor BlsPrivKeySeed must be 32 hex bytes, got len=%d", len(donor.BlsPrivKeySeed))
+	}
+	seedBytes, err := hex.DecodeString(donor.BlsPrivKeySeed)
+	if err != nil {
+		return fmt.Errorf("decoding BlsPrivKeySeed: %w", err)
+	}
+	var seed [32]byte
+	copy(seed[:], seedBytes)
+	priv := &dids.BlsPrivKey{}
+	if err := priv.Deserialize(&seed); err != nil {
+		return fmt.Errorf("deserializing BLS priv: %w", err)
+	}
+	pub, err := blsAPI.SkToPk(priv)
+	if err != nil {
+		return fmt.Errorf("derive pubkey: %w", err)
+	}
+	did, err := dids.NewBlsDID(pub)
+	if err != nil {
+		return fmt.Errorf("derive DID: %w", err)
+	}
+
+	// 2. Build the canonical IsLockAttestationRequest. epoch=0
+	//    matches the log-only submitter's EpochFor stub. chainId
+	//    matches the IS service's -chainID derived from
+	//    -network=devnet (vsc-devnet).
+	rawTxBytes, err := hex.DecodeString(rawTxHex)
+	if err != nil {
+		return fmt.Errorf("decoding rawTxHex: %w", err)
+	}
+	first := sha256.Sum256(rawTxBytes)
+	internal := sha256.Sum256(first[:])
+	displayHash := islock.ReverseBytesCopy(internal[:])
+	instrHash := sha256.Sum256([]byte(instruction))
+
+	req := islock.IsLockAttestationRequest{
+		TxId:               txid,
+		RawTxHashHex:       hex.EncodeToString(displayHash),
+		InstructionHashHex: hex.EncodeToString(instrHash[:]),
+		Epoch:              0,
+		ChainId:            "vsc-devnet",
+	}
+
+	// 3. Sign the canonical message + build the response.
+	resp, err := islock.BuildResponse(req, did.String(), priv)
+	if err != nil {
+		return fmt.Errorf("BuildResponse: %w", err)
+	}
+
+	// 4. POST to /test/attestation/{sid}.
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshalling attestation response: %w", err)
+	}
+	url := d.IsServiceHttpURL() + "/test/attestation/" + sid
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("building request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpResp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("posting /test/attestation: %w", err)
+	}
+	defer httpResp.Body.Close()
+	respBody, _ := io.ReadAll(httpResp.Body)
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return fmt.Errorf("/test/attestation returned %d: %s", httpResp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // IsForceObserved POSTs to the IS service's test-only
 // /test/observed/{sid} endpoint to synthesise an onISLockObserved
-// callback. The endpoint is only present when the IS service is
-// started with -testBypassDashdISLock=true (devnet-gated). Used by
-// tests/devnet to drive the orchestrator's WAITING_FOR_IS →
-// IS_OBSERVED transition without actually sending a dashd tx —
-// regtest dashd doesn't recognise the bech32 P2WSH deposit address
-// the IS service generates (Dash never activated SegWit).
-//
-// txid is optional; if empty the IS service synthesises one. The
-// orchestrator's downstream behaviour is unchanged: it broadcasts
-// attestation requests, collects the quorum, submits L2.
+// callback. txid is optional; if empty the IS service synthesises
+// one. rawTxHex feeds the orchestrator's canonical-message
+// computation — caller must supply the same bytes when signing the
+// attestation later (otherwise the per-sig BLS verify rejects).
 func (d *Devnet) IsForceObserved(ctx context.Context, sid, txid string) error {
+	return d.IsForceObservedWithRawTx(ctx, sid, txid, "")
+}
+
+// IsForceObservedWithRawTx is the rawTxHex-aware variant.
+func (d *Devnet) IsForceObservedWithRawTx(ctx context.Context, sid, txid, rawTxHex string) error {
 	url := d.IsServiceHttpURL() + "/test/observed/" + sid
-	bodyJSON := `{}`
+	body := map[string]string{}
 	if txid != "" {
-		bodyJSON = fmt.Sprintf(`{"txid":%q}`, txid)
+		body["txid"] = txid
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(bodyJSON))
+	if rawTxHex != "" {
+		body["rawTxHex"] = rawTxHex
+	}
+	bodyJSON, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return fmt.Errorf("building request: %w", err)
 	}
@@ -255,9 +385,9 @@ func (d *Devnet) IsForceObserved(ctx context.Context, sid, txid string) error {
 		return fmt.Errorf("posting /test/observed: %w", err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("/test/observed returned %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("/test/observed returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

@@ -127,6 +127,19 @@ type CountersSnapshot struct {
 	PreSubmitRefusals          int64 `json:"preSubmitRefusals"`
 }
 
+// DeliverAttestation forwards an attestation response into the
+// orchestrator's collector — equivalent to what the real broadcaster
+// does when it receives a sig from a magi validator on the
+// islock-attestation gossip topic. Used by the test-only
+// `/test/attestation/{sid}` HTTP endpoint to inject synthesised
+// attestations during tests/devnet's IS-login E2E. **TEST-ONLY**:
+// the handler that calls this is gated to -network=devnet via the
+// args.go testBypassDashdISLock check, which mirrors into
+// TestEndpointsEnabled. No production caller exists.
+func (o *Orchestrator) DeliverAttestation(resp islock.IsLockAttestationResponse) {
+	o.collector.Deliver(resp)
+}
+
 // Counters returns an atomic snapshot of the orchestrator's counters.
 func (o *Orchestrator) Counters() CountersSnapshot {
 	return CountersSnapshot{
