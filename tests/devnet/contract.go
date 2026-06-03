@@ -174,6 +174,39 @@ func TestContractPath() string {
 	return filepath.Join(findSourceRoot(), "modules", "e2e", "artifacts", "contract_test.wasm")
 }
 
+// DashForwarderContractPath returns the absolute path to the
+// prebuilt dash-forwarder-contract WASM. Used by the IS-login
+// op=call devnet test to deploy the forwarder alongside the
+// mapping contract. Resolution order mirrors
+// DashMappingContractPath: DASH_FORWARDER_WASM_PATH env > sibling
+// repo at <go-vsc-node>/../utxo-mapping/dash-forwarder-contract/
+// bin/testnet.wasm.
+func DashForwarderContractPath() (string, error) {
+	candidates := make([]string, 0, 2)
+	if p := os.Getenv("DASH_FORWARDER_WASM_PATH"); p != "" {
+		candidates = append(candidates, p)
+	}
+	candidates = append(candidates,
+		filepath.Join(findSourceRoot(), "..", "utxo-mapping", "dash-forwarder-contract", "bin", "testnet.wasm"),
+	)
+	for _, p := range candidates {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		if info, err := os.Stat(abs); err == nil && !info.IsDir() && info.Size() > 0 {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"dash-forwarder-contract WASM not found. Tried: %v\n"+
+			"Build it first:\n"+
+			"  cd <utxo-mapping>/dash-forwarder-contract && USE_DOCKER=1 make testnet\n"+
+			"Or set DASH_FORWARDER_WASM_PATH to an absolute path.",
+		candidates,
+	)
+}
+
 // DashMappingContractPath returns the absolute path to the prebuilt
 // dash-mapping-contract WASM used by the oracle Dash chain-relay devnet
 // test. Unlike btc-stub, this is the REAL mapping contract that we expect
