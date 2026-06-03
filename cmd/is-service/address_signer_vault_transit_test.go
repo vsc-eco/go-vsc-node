@@ -244,3 +244,148 @@ func TestResolveVaultToken_PrecedenceAndErrors(t *testing.T) {
 	_, err = ResolveVaultToken("", emptyPath)
 	require.Error(t, err)
 }
+
+// TestAddressSignerVaultTransit_KeyVersionPinned exercises the audit
+// SEC-1 fix: the signer captures Vault's latest_version at startup,
+// pins it into every Sign() request, and refuses prefixes from any
+// other version. A Vault rotation (operator does `vault write -f
+// transit/keys/<k>/rotate`) while the IS service is running must keep
+// producing v<startup> signatures + the cached pubkey, NOT silently
+// migrate to v<startup+1>.
+func TestAddressSignerVaultTransit_KeyVersionPinned(t *testing.T) {
+	fv := newFakeVault(t, "transit", "is-signer", "tok")
+	fv.signRespOverride = func() (int, string) {
+		// Simulate Vault rotation: fake returns v2 prefix instead of v1.
+		return http.StatusOK, fmt.Sprintf(`{"data":{"signature":%q}}`,
+			"vault:v2:"+base64.StdEncoding.EncodeToString(make([]byte, 64)))
+	}
+	srv := httptest.NewServer(fv)
+	t.Cleanup(srv.Close)
+
+	signer, _, err := NewAddressSignerVaultTransit(VaultTransitConfig{
+		Addr: srv.URL, Token: "tok", KeyName: "is-signer",
+	})
+	require.NoError(t, err)
+
+	_, err = signer.Sign("addr", "instr")
+	require.Error(t, err,
+		"a vault:v2: response when startup pinned v1 must surface, "+
+			"not silently slip through as a misverified signature")
+	assert.Contains(t, err.Error(), "vault:v1:",
+		"error message must call out which prefix was expected so "+
+			"operator triage points at key rotation")
+	assert.Contains(t, err.Error(), "vault:v2:",
+		"error message must show the actual prefix observed")
+}
+
+// TestAddressSignerVaultTransit_KeyVersionInRequestBody verifies the
+// SEC-1 fix at the wire level: every Sign() POST body must carry
+// `key_version=<startup-version>`. Without this, Vault defaults to
+// "latest" and a rotation breaks the signer mid-flight.
+func TestAddressSignerVaultTransit_KeyVersionInRequestBody(t *testing.T) {
+	fv := newFakeVault(t, "transit", "is-signer", "tok")
+	srv := httptest.NewServer(fv)
+	t.Cleanup(srv.Close)
+
+	// Wrap the fake in a verifier that asserts the request body
+	// shape. NewFakeVault's default sign handler doesn't inspect
+	// key_version, so we re-route POST /sign through a verifier
+	// that re-encodes the body and forwards to the fake.
+	var sawKeyVersion int
+	wrappedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/sign/is-signer") {
+			var body struct {
+				Input      string `json:"input"`
+				KeyVersion int    `json:"key_version"`
+			}
+			raw, _ := io.ReadAll(r.Body)
+			require.NoError(t, json.Unmarshal(raw, &body))
+			sawKeyVersion = body.KeyVersion
+			// Hand the request back to the fake so the signature
+			// itself round-trips correctly.
+			r.Body = io.NopCloser(strings.NewReader(string(raw)))
+		}
+		// Forward to the fake server.
+		fv.ServeHTTP(w, r)
+	}))
+	t.Cleanup(wrappedSrv.Close)
+
+	signer, _, err := NewAddressSignerVaultTransit(VaultTransitConfig{
+		Addr: wrappedSrv.URL, Token: "tok", KeyName: "is-signer",
+	})
+	require.NoError(t, err)
+
+	_, err = signer.Sign("addr", "instr")
+	require.NoError(t, err)
+	assert.Equal(t, 1, sawKeyVersion,
+		"Sign() body must pin key_version=<startup latest_version>; "+
+			"without this Vault defaults to 'latest' + rotation breaks the signer")
+}
+
+// TestAddressSignerVaultTransit_TokenFileReread exercises the audit
+// OPS-R15-01 fix: when configured with TokenFile, Sign() re-reads
+// the file on each call so a vault-agent token rotation (15-min
+// cadence in production) is picked up without IS-service restart.
+func TestAddressSignerVaultTransit_TokenFileReread(t *testing.T) {
+	fv := newFakeVault(t, "transit", "is-signer", "initial-token")
+	srv := httptest.NewServer(fv)
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("initial-token"), 0o600))
+
+	signer, _, err := NewAddressSignerVaultTransit(VaultTransitConfig{
+		Addr:      srv.URL,
+		Token:     "initial-token", // startup token + tokenFile both set
+		TokenFile: tokenPath,
+		KeyName:   "is-signer",
+	})
+	require.NoError(t, err)
+
+	// Initial Sign with the original token works.
+	_, err = signer.Sign("addr", "instr-1")
+	require.NoError(t, err, "initial Sign with valid token must succeed")
+
+	// Rotate: write a NEW token to the file + update what the fake
+	// expects. With the OPS-R15-01 fix, Sign() re-reads the file
+	// and uses the new token. Without it, Sign would keep sending
+	// the cached "initial-token" and the fake would 403.
+	fv.token = "rotated-token"
+	require.NoError(t, os.WriteFile(tokenPath, []byte("rotated-token\n"), 0o600))
+
+	_, err = signer.Sign("addr", "instr-2")
+	require.NoError(t, err,
+		"after writing a rotated token to TokenFile, Sign() must re-read "+
+			"the file and use the new token; otherwise vault-agent rotation "+
+			"requires an IS-service restart (audit OPS-R15-01)")
+}
+
+// TestAddressSignerVaultTransit_TokenFileFallback ensures that an
+// unreadable / empty / missing TokenFile falls back to the cached
+// startup token rather than blowing up. The cached token may itself
+// have lapsed, but a 403 from Vault is a clearer failure mode than
+// an exception inside the signer.
+func TestAddressSignerVaultTransit_TokenFileFallback(t *testing.T) {
+	fv := newFakeVault(t, "transit", "is-signer", "startup-token")
+	srv := httptest.NewServer(fv)
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "missing")
+
+	signer, _, err := NewAddressSignerVaultTransit(VaultTransitConfig{
+		Addr:      srv.URL,
+		Token:     "startup-token",
+		TokenFile: tokenPath, // file doesn't exist
+		KeyName:   "is-signer",
+	})
+	require.NoError(t, err,
+		"missing TokenFile at startup is tolerated; startup probe uses "+
+			"the literal Token instead")
+
+	_, err = signer.Sign("addr", "instr")
+	require.NoError(t, err,
+		"with TokenFile unreadable, Sign() must fall back to the cached "+
+			"startup token rather than panic")
+}

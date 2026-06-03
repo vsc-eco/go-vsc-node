@@ -82,8 +82,16 @@ func main() {
 		s, pubHex, err := NewAddressSignerVaultTransit(VaultTransitConfig{
 			Addr:    args.signerVaultAddr,
 			Token:   token,
-			Mount:   args.signerVaultMount,
-			KeyName: args.signerVaultKeyName,
+			// TokenFile threading: when the operator supplied
+			// -signerVaultTokenFile, the signer re-reads the file on
+			// every Sign() so vault-agent rotation works without
+			// IS-service restart. A literal token (-signerVaultToken
+			// or VAULT_TOKEN env) skips this — empty TokenFile means
+			// the cached startup token is used for the process life.
+			// Audit OPS-R15-01 (R15).
+			TokenFile: args.signerVaultTokenFile,
+			Mount:     args.signerVaultMount,
+			KeyName:   args.signerVaultKeyName,
 		})
 		if err != nil {
 			slog.Error("building Vault transit signer", "err", err)

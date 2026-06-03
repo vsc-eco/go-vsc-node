@@ -43,11 +43,30 @@ import (
 // `transit/keys/<key>` (for pubkey export). Wider grants are a
 // production smell.
 type AddressSignerVaultTransit struct {
-	addr     string // e.g. https://vault.internal:8200
-	token    string
-	mount    string // default "transit"
-	keyName  string
-	http     *http.Client
+	addr    string // e.g. https://vault.internal:8200
+	token   string
+	// tokenFile is the optional path the token was sourced from at
+	// startup. When set, Sign() and fetchLatestPublicKey() re-read
+	// it on every call so vault-agent-style short-lived tokens
+	// (15min cadence) refresh without an IS-service restart.
+	// Audit OPS-R15-01 (R15).
+	tokenFile string
+	mount     string // default "transit"
+	keyName   string
+	// keyVersion is the Vault transit key version chosen at startup
+	// (from fetchLatestPublicKey's latest_version response). Sign()
+	// pins this value in the request body so a Vault key rotation
+	// while the IS service is running keeps producing v<startup>
+	// signatures — the cached pubKeyHex stays consistent, Altera's
+	// PUBLIC_IS_SERVICE_SIGNER_PUBKEY pin doesn't break, and the
+	// fixed prefix-strip below stays correct.
+	// Audit SEC-1 (R15).
+	keyVersion int
+	// sigPrefix is "vault:v<keyVersion>:" — derived once at startup
+	// so Sign()'s prefix-strip doesn't have to re-scan or parse
+	// per call.
+	sigPrefix string
+	http      *http.Client
 	pubKeyB64 string // cached at startup; Ed25519 pubkey, base64 std
 	pubKeyHex string // 64-char hex for Altera pinning
 }
@@ -64,6 +83,13 @@ type VaultTransitConfig struct {
 	Token   string // resolved at call site
 	Mount   string // default "transit"
 	KeyName string // required
+	// TokenFile is the optional path the token was loaded from. When
+	// set, Sign() re-reads the file on each call so vault-agent
+	// rotation works without IS-service restart. Pass empty when
+	// the token is a static literal (env or CLI flag); the cached
+	// token is then used for the process lifetime.
+	// Audit OPS-R15-01 (R15).
+	TokenFile string
 	// HTTPClient is optional; nil falls back to a 10s-timeout client.
 	HTTPClient *http.Client
 }
@@ -90,11 +116,12 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
 	s := &AddressSignerVaultTransit{
-		addr:    strings.TrimRight(cfg.Addr, "/"),
-		token:   cfg.Token,
-		mount:   mount,
-		keyName: cfg.KeyName,
-		http:    httpClient,
+		addr:      strings.TrimRight(cfg.Addr, "/"),
+		token:     cfg.Token,
+		tokenFile: cfg.TokenFile,
+		mount:     mount,
+		keyName:   cfg.KeyName,
+		http:      httpClient,
 	}
 	// Fetch the pubkey at startup — fail-fast if Vault is
 	// unreachable, the token is invalid, or the key doesn't exist.
@@ -102,11 +129,13 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 	// signatures to every /session/start.
 	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	pubB64, err := s.fetchLatestPublicKey(probeCtx)
+	pubB64, version, err := s.fetchLatestPublicKey(probeCtx)
 	if err != nil {
 		return nil, "", fmt.Errorf("vault transit startup probe: %w", err)
 	}
 	s.pubKeyB64 = pubB64
+	s.keyVersion = version
+	s.sigPrefix = fmt.Sprintf("vault:v%d:", version)
 	pubRaw, err := base64.StdEncoding.DecodeString(pubB64)
 	if err != nil {
 		return nil, "", fmt.Errorf("decoding vault pubkey: %w", err)
@@ -116,6 +145,30 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 	}
 	s.pubKeyHex = hex.EncodeToString(pubRaw)
 	return s, s.pubKeyHex, nil
+}
+
+// currentToken returns the active Vault token, re-reading tokenFile if
+// configured so vault-agent rotation picks up automatically. Falls back
+// to the cached startup token when tokenFile is empty or unreadable —
+// the cached token may have lapsed but is better than no token at all
+// (Sign() will surface the 403 to the caller).
+// Audit OPS-R15-01 (R15).
+func (s *AddressSignerVaultTransit) currentToken() string {
+	if s.tokenFile == "" {
+		return s.token
+	}
+	raw, err := os.ReadFile(s.tokenFile)
+	if err != nil {
+		// Token file lapsed (permissions, disk full, agent crashed).
+		// Use the cached startup token as a fallback; Sign()'s caller
+		// sees the Vault-level failure if both are invalid.
+		return s.token
+	}
+	t := strings.TrimSpace(string(raw))
+	if t == "" {
+		return s.token
+	}
+	return t
 }
 
 // Sign produces an Ed25519 signature via Vault transit/sign.
@@ -128,7 +181,18 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	buf = append(buf, []byte(instruction)...)
 	inputB64 := base64.StdEncoding.EncodeToString(buf)
 
-	body, _ := json.Marshal(map[string]any{"input": inputB64})
+	// Audit SEC-1 (R15): pin key_version to the version chosen at
+	// startup. Vault's default is "latest", so without this pin a
+	// rotation while the IS service is running would start producing
+	// vault:v<N+1>: signatures + a v<N+1> pubkey, breaking both the
+	// hardcoded prefix-strip below and Altera's
+	// PUBLIC_IS_SERVICE_SIGNER_PUBKEY pin. By pinning we keep the
+	// version stable across the process lifetime; rotation requires
+	// a coordinated IS-service restart + Altera pubkey update.
+	body, _ := json.Marshal(map[string]any{
+		"input":       inputB64,
+		"key_version": s.keyVersion,
+	})
 	endpoint := fmt.Sprintf("%s/v1/%s/sign/%s", s.addr, s.mount, s.keyName)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -136,7 +200,7 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	if err != nil {
 		return "", fmt.Errorf("building vault sign request: %w", err)
 	}
-	req.Header.Set("X-Vault-Token", s.token)
+	req.Header.Set("X-Vault-Token", s.currentToken())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.http.Do(req)
 	if err != nil {
@@ -155,16 +219,16 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	if err := json.Unmarshal(rawBody, &out); err != nil {
 		return "", fmt.Errorf("decoding vault response: %w (raw=%s)", err, string(rawBody))
 	}
-	// Vault wraps signatures with "vault:v1:" so callers can
-	// auto-detect the key version that signed. We only sign with
-	// the latest version (Vault's default), so strip the prefix to
-	// hand Altera the raw base64-encoded Ed25519 sig — same shape
-	// AddressSignerEd25519 produces.
-	const prefix = "vault:v1:"
-	if !strings.HasPrefix(out.Data.Signature, prefix) {
-		return "", fmt.Errorf("unexpected vault signature format: %q", out.Data.Signature)
+	// Vault wraps signatures with "vault:v<keyVersion>:" so callers
+	// can auto-detect the key version that signed. We pinned
+	// key_version at startup, so the prefix is fixed for the process
+	// lifetime — strip it to hand Altera the raw base64-encoded
+	// Ed25519 sig (same shape AddressSignerEd25519 produces).
+	if !strings.HasPrefix(out.Data.Signature, s.sigPrefix) {
+		return "", fmt.Errorf("unexpected vault signature format: want prefix %q, got %q",
+			s.sigPrefix, out.Data.Signature)
 	}
-	sigB64 := strings.TrimPrefix(out.Data.Signature, prefix)
+	sigB64 := strings.TrimPrefix(out.Data.Signature, s.sigPrefix)
 	// Sanity-check: it should be valid base64 + 64 bytes (Ed25519
 	// sig size) once decoded.
 	sigRaw, err := base64.StdEncoding.DecodeString(sigB64)
@@ -184,23 +248,25 @@ func (s *AddressSignerVaultTransit) PubkeyHex() string {
 }
 
 // fetchLatestPublicKey calls GET /v1/<mount>/keys/<key> and returns
-// the public_key for the key's latest_version. Vault returns the
-// public key as base64-StdEncoded raw Ed25519 pubkey (32 bytes).
-func (s *AddressSignerVaultTransit) fetchLatestPublicKey(ctx context.Context) (string, error) {
+// the public_key + version-number for the key's latest_version. Vault
+// returns the public key as base64-StdEncoded raw Ed25519 pubkey
+// (32 bytes). The version-number is captured so Sign() can pin
+// key_version per audit SEC-1 (R15).
+func (s *AddressSignerVaultTransit) fetchLatestPublicKey(ctx context.Context) (string, int, error) {
 	endpoint := fmt.Sprintf("%s/v1/%s/keys/%s", s.addr, s.mount, s.keyName)
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("building vault keys request: %w", err)
+		return "", 0, fmt.Errorf("building vault keys request: %w", err)
 	}
-	req.Header.Set("X-Vault-Token", s.token)
+	req.Header.Set("X-Vault-Token", s.currentToken())
 	resp, err := s.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("calling vault transit/keys: %w", err)
+		return "", 0, fmt.Errorf("calling vault transit/keys: %w", err)
 	}
 	defer resp.Body.Close()
 	rawBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("vault transit/keys returned %d: %s", resp.StatusCode, string(rawBody))
+		return "", 0, fmt.Errorf("vault transit/keys returned %d: %s", resp.StatusCode, string(rawBody))
 	}
 	var out struct {
 		Data struct {
@@ -210,20 +276,20 @@ func (s *AddressSignerVaultTransit) fetchLatestPublicKey(ctx context.Context) (s
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rawBody, &out); err != nil {
-		return "", fmt.Errorf("decoding vault keys response: %w (raw=%s)", err, string(rawBody))
+		return "", 0, fmt.Errorf("decoding vault keys response: %w (raw=%s)", err, string(rawBody))
 	}
 	if out.Data.Type != "ed25519" {
-		return "", fmt.Errorf("vault key type is %q; expected ed25519 (recreate with -type=ed25519)", out.Data.Type)
+		return "", 0, fmt.Errorf("vault key type is %q; expected ed25519 (recreate with -type=ed25519)", out.Data.Type)
 	}
 	if out.Data.LatestVersion <= 0 {
-		return "", fmt.Errorf("vault key has no version yet (latest_version=%d)", out.Data.LatestVersion)
+		return "", 0, fmt.Errorf("vault key has no version yet (latest_version=%d)", out.Data.LatestVersion)
 	}
 	versionKey := fmt.Sprintf("%d", out.Data.LatestVersion)
 	entry, ok := out.Data.Keys[versionKey]
 	if !ok || entry.PublicKey == "" {
-		return "", fmt.Errorf("vault did not return a public_key for version %s", versionKey)
+		return "", 0, fmt.Errorf("vault did not return a public_key for version %s", versionKey)
 	}
-	return entry.PublicKey, nil
+	return entry.PublicKey, out.Data.LatestVersion, nil
 }
 
 type versionEntry struct {
