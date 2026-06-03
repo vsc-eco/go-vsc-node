@@ -3,7 +3,6 @@ package oracle
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -56,9 +55,11 @@ type FeedTickSnapshot struct {
 }
 
 // FeedTracker ingests Hive L1 blocks: witness producer schedule, feed_publish (HIVE/HBD),
-// and witness_set_properties (hbd_interest_rate). Every DefaultTickIntervalBlocks it
-// recomputes the trusted interquartile-mean HIVE price and mode HBD APR from the top
-// trusted witnesses.
+// and witness_set_properties (hbd_exchange_rate price + hbd_interest_rate). Every
+// DefaultTickIntervalBlocks it recomputes the trusted interquartile-mean HIVE price and
+// mode HBD APR from the top trusted witnesses. Many mainnet top-witnesses publish their
+// price exclusively via witness_set_properties.hbd_exchange_rate rather than the legacy
+// feed_publish op, so both sources feed the same per-witness quote.
 type FeedTracker struct {
 	mu sync.Mutex
 
@@ -260,7 +261,7 @@ func (t *FeedTracker) IngestTransactionOps(blockHeight uint64, tx hive_blocks.Tx
 		case "feed_publish":
 			t.ingestFeedPublish(blockHeight, op.Value)
 		case "witness_set_properties":
-			t.ingestWitnessSetProperties(op.Value)
+			t.ingestWitnessSetProperties(blockHeight, op.Value)
 		}
 	}
 }
@@ -376,7 +377,7 @@ func (t *FeedTracker) ingestFeedPublish(blockHeight uint64, value map[string]int
 	t.seenWitness[pub] = struct{}{}
 }
 
-func (t *FeedTracker) ingestWitnessSetProperties(value map[string]interface{}) {
+func (t *FeedTracker) ingestWitnessSetProperties(blockHeight uint64, value map[string]interface{}) {
 	owner, _ := value["owner"].(string)
 	if owner == "" {
 		return
@@ -388,14 +389,29 @@ func (t *FeedTracker) ingestWitnessSetProperties(value map[string]interface{}) {
 	if !ok || propsVal == nil {
 		return
 	}
-	rate, ok := hbdInterestFromProps(propsVal)
-	if !ok {
-		return
+
+	// Price feed via witness_set_properties.hbd_exchange_rate. Many mainnet
+	// top-witnesses publish their HIVE price exclusively through this op rather
+	// than the legacy feed_publish op; without ingesting it those witnesses
+	// contribute no quote and the trusted-price set can collapse to empty,
+	// which makes the swap-time geometry refuse every swap. Flows into the same
+	// quotes/lastFeedBlk maps as ingestFeedPublish so the trust gate,
+	// freshness-eviction, and moving-average logic treat both sources
+	// identically; if a witness publishes both, last-write-wins by block/op
+	// order (deterministic across nodes).
+	if q, ok := exchangeRateFromProps(propsVal, t.onMainnet); ok {
+		t.quotes[owner] = q
+		t.lastFeedBlk[owner] = blockHeight
+		t.seenWitness[owner] = struct{}{}
 	}
-	wp := t.witnessProps[owner]
-	wp.HBDInterestRateBps = rate
-	t.witnessProps[owner] = wp
-	t.seenWitness[owner] = struct{}{}
+
+	// HBD interest rate (APR input), independent of the price above.
+	if rate, ok := interestRateFromProps(propsVal); ok {
+		wp := t.witnessProps[owner]
+		wp.HBDInterestRateBps = rate
+		t.witnessProps[owner] = wp
+		t.seenWitness[owner] = struct{}{}
+	}
 }
 
 // normalizeTestnetAsset replaces devnet/testnet asset symbols with their
@@ -475,28 +491,6 @@ func parseAssetAmount(s string) (amount int64, sym string, ok bool) {
 		return 0, "", false
 	}
 	return amt, sym, true
-}
-
-func hbdInterestFromProps(props interface{}) (int, bool) {
-	pairs := flattenPropsPairs(props)
-	for _, p := range pairs {
-		if strings.EqualFold(strings.TrimSpace(p[0]), "hbd_interest_rate") {
-			return parseIntProp(p[1])
-		}
-	}
-	return 0, false
-}
-
-func parseIntProp(s string) (int, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, false
-	}
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, false
-	}
-	return v, true
 }
 
 // flattenPropsPairs normalizes Hive/BSON prop encodings into [key,value] pairs.

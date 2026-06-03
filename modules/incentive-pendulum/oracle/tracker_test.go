@@ -21,9 +21,11 @@ func TestParseHbdPerHivePair(t *testing.T) {
 func TestHbdInterestFromProps(t *testing.T) {
 	props := []interface{}{
 		[]interface{}{"account_creation_fee", "1.000 TESTS"},
-		[]interface{}{"hbd_interest_rate", "2000"},
+		// hbd_interest_rate arrives as a raw fc-serialized uint16 LE hex value,
+		// not a decimal string. 2000 = 0x07D0 -> LE bytes "d007".
+		[]interface{}{"hbd_interest_rate", "d007"},
 	}
-	v, ok := hbdInterestFromProps(props)
+	v, ok := interestRateFromProps(props)
 	if !ok || v != 2000 {
 		t.Fatalf("v=%d ok=%v", v, ok)
 	}
@@ -53,7 +55,8 @@ func TestFeedTrackerTick(t *testing.T) {
 			Value: map[string]interface{}{
 				"owner": "alice",
 				"props": []interface{}{
-					[]interface{}{"hbd_interest_rate", "1500"},
+					// 1500 bps = 0x05DC -> LE bytes "dc05".
+					[]interface{}{"hbd_interest_rate", "dc05"},
 				},
 			},
 		}},
