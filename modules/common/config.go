@@ -90,6 +90,16 @@ func (ac *identityConfigStruct) blsPrivateKey() (*dids.BlsPrivKey, error) {
 	return blsPrivKey, nil
 }
 
+// BlsPrivKey exposes the validator's BLS private key for callers that
+// need to sign raw byte buffers (e.g. modules/islock-attestation's
+// CanonicalSigningMessage path). Most callers should prefer
+// BlsProvider() which signs over CIDs through the standard DID
+// interface; this accessor is for protocol-specific byte-signing
+// surfaces only.
+func (ac *identityConfigStruct) BlsPrivKey() (*dids.BlsPrivKey, error) {
+	return ac.blsPrivateKey()
+}
+
 func (ac *identityConfigStruct) BlsProvider() (dids.BlsProvider, error) {
 	blsPrivKey, err := ac.blsPrivateKey()
 	if err != nil {
