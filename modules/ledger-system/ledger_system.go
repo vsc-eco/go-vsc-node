@@ -771,7 +771,7 @@ func blockingRetry(what string, read func() error) {
 }
 
 func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
-	fmt.Println("ClaimHBDInterest", lastClaim, blockHeight, amount)
+	log.Verbose("ClaimHBDInterest", "lastClaim", lastClaim, "bh", blockHeight, "amount", amount)
 	//Do distribution of HBD interest on an going forward basis
 	//Save to ledger DB the difference.
 	//
@@ -810,12 +810,12 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		// Overflow-safe — see review4 HIGH #15 / computeEndingAvg.
 		endingAvg, okAvg := computeEndingAvg(balance.HBD_AVG, balance.HBD_SAVINGS, int64(A), int64(B))
 		if !okAvg {
-			fmt.Println("ClaimHBD endingAvg overflows int64", balance.Account)
+			log.Warn("ClaimHBD endingAvg overflows int64", "account", balance.Account)
 			continue
 		}
 
 		if endingAvg < 1 {
-			fmt.Println("ClaimHBD endingAvg is sub zero", balance.Account, endingAvg)
+			log.Verbose("ClaimHBD endingAvg sub-zero", "account", balance.Account, "avg", endingAvg)
 			continue
 		}
 
@@ -825,9 +825,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		totalAvg = totalAvg + endingAvg
 	}
 
-	bsj, _ := json.Marshal(processedBalRecords)
-
-	fmt.Println("Processed bal records", ledgerBalances, string(bsj))
+	log.Verbose("processed bal records", "count", len(processedBalRecords), "totalAvg", totalAvg)
 
 	for id, balance := range processedBalRecords {
 		// if balance.HBD_AVG == 0 {
@@ -837,7 +835,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		// Overflow-safe HBD_AVG * amount / totalAvg — see review4 HIGH #15.
 		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvg)
 		if !okDist {
-			fmt.Println("ClaimHBD distributeAmt overflows int64", balance.Account)
+			log.Warn("ClaimHBD distributeAmt overflows int64", "account", balance.Account)
 			continue
 		}
 
@@ -1146,10 +1144,9 @@ func (ls *ledgerSystem) CalculationFractStats(accountList []string, blockHeight 
 		belowBal = belowBal + v
 	}
 
-	fmt.Println("Top Balances", topBalances)
-	fmt.Println("Top 5", topBal, "Below 5", belowBal)
+	log.Verbose("balance distribution", "topCount", len(topBalances), "top5", topBal, "below5", belowBal)
 	stakedAmt := belowBal / 3
-	fmt.Println("StakedAmt", stakedAmt)
+	log.Verbose("staked amount computed", "stakedAmt", stakedAmt)
 
 	StakedBalance := int64(0)
 

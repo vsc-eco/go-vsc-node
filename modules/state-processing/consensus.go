@@ -2,7 +2,6 @@ package state_engine
 
 import (
 	"encoding/binary"
-	"fmt"
 	"math/rand"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -108,7 +107,7 @@ func CalculateSlotLeader(blockHeight uint64, witnessList []Witness, seed [32]byt
 		}
 	}
 
-	fmt.Println("selectedSlot", selectedSlot)
+	log.Verbose("selectedSlot", "slot", selectedSlot)
 
 	return selectedSlot
 }
@@ -121,12 +120,11 @@ type ConsensusStreamer struct {
 func (consensus *ConsensusStreamer) StreamFunc(block hive_blocks.HiveBlock, extraInfo ProcessExtraInfo) {
 	epochInfo := CalculateEpochRound(uint64(block.BlockNumber))
 
-	fmt.Println("EpochInfo", epochInfo)
+	log.Verbose("EpochInfo", "epoch", epochInfo)
 	for _, tx := range block.Transactions {
-		fmt.Println(tx)
+		log.Verbose("tx", "tx", tx)
 		for opIdx, op := range tx.Operations {
-			fmt.Println(opIdx, op)
-			// opIdx
+			log.Verbose("op", "idx", opIdx, "op", op)
 		}
 	}
 }

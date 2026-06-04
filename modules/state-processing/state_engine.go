@@ -182,6 +182,46 @@ type StateEngine struct {
 	// doubleSignRehydrated guards the one-shot rehydrateDoubleSignMap so it runs
 	// only on the first block processed after (re)start.
 	doubleSignRehydrated bool
+
+	// Block-status getter for live-sync detection. Wired from main.go after
+	// the block consumer is constructed; nil in tests, in which case
+	// IsLiveSynced returns true.
+	blockStatus common_types.BlockStatusGetter
+
+	// L1 height at which the last per-Magi-block log was emitted. Used to
+	// throttle the log to once per 10k L1 blocks during catchup.
+	lastMagiLogHeight uint64
+}
+
+// SetBlockStatus wires the block-status getter so the state engine can
+// distinguish live-sync from catchup. Must be called after the block consumer
+// is constructed; safe to leave unset in tests.
+func (se *StateEngine) SetBlockStatus(bs common_types.BlockStatusGetter) {
+	se.blockStatus = bs
+}
+
+// IsLiveSynced returns true if the given L1 block height is within 20 blocks of
+// the chain head. Mirrors the threshold used in tss.BlockTick. Returns true if
+// no block status has been wired (tests, devnet) so log behavior is unaffected.
+func (se *StateEngine) IsLiveSynced(bh int) bool {
+	if se.blockStatus == nil {
+		return true
+	}
+	hh := se.blockStatus.HeadHeight()
+	if hh == nil {
+		return true
+	}
+	return *hh <= 20 || uint64(bh) >= *hh-20
+}
+
+// tssLogSync logs at Info level during live sync and Debug level during catchup
+// to reduce noise when indexing historical blocks.
+func (se *StateEngine) tssLogSync(bh uint64, msg string, args ...any) {
+	if se.IsLiveSynced(int(bh)) {
+		tssLog.Info(msg, args...)
+	} else {
+		tssLog.Debug(msg, args...)
+	}
 }
 
 //Transaction
@@ -382,24 +422,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			if owner == se.sconf.GatewayWallet() {
 				interest, ok := virtualOp.Op.Value["interest"].(map[string]any)
 				if !ok {
-					fmt.Println("interest_operation: unexpected interest field type", "block", block.BlockNumber)
+					log.Warn("interest_operation: unexpected interest field type", "block", block.BlockNumber)
 					continue
 				}
 				amountStr, ok := interest["amount"].(string)
 				if !ok {
-					fmt.Println("interest_operation: unexpected amount field type", "block", block.BlockNumber)
+					log.Warn("interest_operation: unexpected amount field type", "block", block.BlockNumber)
 					continue
 				}
 				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
 				if err != nil {
-					fmt.Println(
-						"interest_operation: failed to parse amount",
-						"block",
-						block.BlockNumber,
-						"amount",
-						amountStr,
-						"err",
-						err,
+					log.Warn("interest_operation: failed to parse amount",
+						"block", block.BlockNumber,
+						"amount", amountStr,
+						"err", err,
 					)
 					continue
 				}
@@ -448,7 +484,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}{}
 					json.Unmarshal(cj.Json, &frSync)
 
-					fmt.Println("frSync", frSync)
+					log.Verbose("frSync", "stakeAmt", frSync.StakedAmount, "unstakeAmt", frSync.UnstakedAmount)
 
 					var amt int64
 
@@ -1132,11 +1168,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							if keyCache[sigPack.KeyId] == nil {
 								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
 								if err != nil {
-									log.Warn("failed to find key", "keyId", sigPack.KeyId, "err", err)
+									log.Debug("failed to find key", "keyId", sigPack.KeyId, "err", err)
 									continue
 								}
 								if tssKey.Status != tss_db.TssKeyActive {
-									log.Warn(
+									log.Debug(
 										"signing attempted for non-active key, skipping",
 										"keyId",
 										tssKey.Id,
@@ -1180,6 +1216,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Sig:    sigPack.Sig,
 												Status: tss_db.SignComplete,
 											})
+											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "ecdsa")
 										}
 									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
 										pk := ed25519.PublicKey(publicKey)
@@ -1193,6 +1230,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Sig:    sigPack.Sig,
 												Status: tss_db.SignComplete,
 											})
+											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "eddsa")
 										}
 									}
 								}
@@ -1207,7 +1245,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err := json.Unmarshal(cj.Json, &commitments); err != nil {
 						commitmentMap := make(map[string]tss_helpers.SignedCommitment)
 						if err := json.Unmarshal(cj.Json, &commitmentMap); err != nil {
-							tssLog.Warn("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
+							tssLog.Debug("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
 							continue
 						}
 						for _, c := range commitmentMap {
@@ -1215,10 +1253,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 
-					tssLog.Verbose("processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
+					se.tssLogSync(block.BlockNumber, "processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
 					for _, commitment := range commitments {
-						tssLog.Verbose("commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+						se.tssLogSync(block.BlockNumber, "commitment entry", "sessionId", commitment.SessionId, "keyId", commitment.KeyId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 
 						members := make([]dids.BlsDID, 0)
 
@@ -1236,7 +1274,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						electionData, elErr := se.electionDb.GetElectionByHeight(commitment.BlockHeight)
 
 						if elErr != nil || electionData.Members == nil {
-							tssLog.Warn("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
+							tssLog.Debug("election lookup failed", "keyId", commitment.KeyId, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "err", elErr)
 							continue
 						}
 						for _, mbr := range electionData.Members {
@@ -1258,7 +1296,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						commitmentCid, err := common.HashBytes(data, multicodec.DagCbor)
 						if err != nil {
-							tssLog.Warn("CID hash error", "keyId", commitment.KeyId, "err", err)
+							tssLog.Debug("CID hash error", "keyId", commitment.KeyId, "err", err)
 							continue
 						}
 
@@ -1267,7 +1305,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 						if derr != nil || circuit == nil {
-							tssLog.Warn("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
+							tssLog.Debug("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
 							continue
 						}
 
@@ -1275,7 +1313,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						tssIndexHeight := se.SystemConfig().ConsensusParams().TssIndexHeight
 
 						if !verified {
-							tssLog.Warn("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							tssLog.Debug("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
 							continue
 						}
 						// review2 CRITICAL #6: a valid aggregate is not enough —
@@ -1288,11 +1326,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 						if block.BlockNumber <= tssIndexHeight {
-							tssLog.Verbose("skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
+							se.tssLogSync(block.BlockNumber, "skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
 						}
 
-						tssLog.Verbose("writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
+						se.tssLogSync(block.BlockNumber, "writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
 							BlockHeight: commitment.BlockHeight,
@@ -1334,10 +1372,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								if keyInfo.Epochs > 0 {
 									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
-								tssLog.Info("key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
+								se.tssLogSync(block.BlockNumber, "key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
 							} else if newKey {
-								tssLog.Verbose("keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
+								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
 								// S8: never rewind an active key's Epoch.
 								// keyInfo.Epoch drives the on-disk keystore-path
@@ -1349,7 +1387,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									continue
 								}
 								keyInfo.Epoch = commitment.Epoch
-								tssLog.Info("key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
@@ -1747,7 +1785,7 @@ func (se *StateEngine) ExecuteBatch() {
 			continue
 		}
 
-		fmt.Println("Executing item in batch", idx, len(se.TxBatch))
+		log.Verbose("executing batch item", "idx", idx, "total", len(se.TxBatch))
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
 		// Pass the current temp outputs so calls within this slot see the
@@ -1764,7 +1802,7 @@ func (se *StateEngine) ExecuteBatch() {
 		outputs := make([]ContractIdResult, 0)
 		ok := true
 		for idx, vscTx := range tx.Ops {
-			fmt.Println("Execute tx.bh", vscTx.TxSelf().BlockHeight)
+			log.Verbose("executing tx", "bh", vscTx.TxSelf().BlockHeight)
 
 			if vscTx.Type() == "deposit" {
 				continue
@@ -2121,7 +2159,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// accounts already wrote), but we surface the failure so it shows
 		// up in operator monitoring instead of vanishing.
 		if err := se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord); err != nil {
-			fmt.Println("ExecuteBatch: UpdateBalanceRecord failed", k, endBlock, err)
+			log.Error("ExecuteBatch: UpdateBalanceRecord failed", "account", k, "bh", endBlock, "err", err)
 		}
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
@@ -2325,7 +2363,6 @@ func (se *StateEngine) GetContractInfo(id string, height uint64) (contracts.Cont
 	if err == mongo.ErrNoDocuments {
 		return contracts.Contract{}, false
 	} else if err != nil {
-		fmt.Println("GetContractInfo: db error", "id", id, "height", height, "err", err)
 		return contracts.Contract{}, false
 	}
 

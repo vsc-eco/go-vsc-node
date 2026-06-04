@@ -2,12 +2,14 @@ package db
 
 import (
 	"context"
-	"fmt"
 	"slices"
+	"vsc-node/lib/vsclog"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
+
+var log = vsclog.Module("db")
 
 var REINDEX_ID = 18
 
@@ -33,11 +35,11 @@ func (dbr *DbReindex) Init() error {
 		indexId = 0
 	} else {
 		indexId = *result.ReindexId
-		fmt.Println("result", result)
+		log.Verbose("reindex metadata", "reindex_id", indexId)
 	}
 
 	if indexId != uint64(REINDEX_ID) {
-		fmt.Println("Reindexing database...")
+		log.Info("reindexing database", "from", indexId, "to", REINDEX_ID)
 		cols, _ := dbr.ListCollectionNames(ctx, bson.M{})
 
 		for _, name := range cols {
