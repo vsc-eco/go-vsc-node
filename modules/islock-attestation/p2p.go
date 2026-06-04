@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -253,10 +254,23 @@ func (s *Service) handleRequest(
 	// relaxes its own RawTxHashHex recompute.
 	reqHashDisplay, err := hex.DecodeString(req.RawTxHashHex)
 	if err != nil || len(reqHashDisplay) != 32 {
+		// Audit R16-CORR-sec5-validator-handler-no-domain-check-on-
+		// decoded-length (INFO): debug-log so test runs + operator
+		// audits see WHEN a request is dropped for malformed hash
+		// (vs. silently absorbed). Bounded: gossip rate-limit caps
+		// volume + Debug level is off in production.
+		slog.Debug("islock-attestation: rejecting request with malformed RawTxHashHex",
+			"txid", req.TxId, "rawTxHashHex_len", len(req.RawTxHashHex), "err", err)
 		return
 	}
 	reqHashInternal := ReverseBytesCopy(reqHashDisplay)
 	if !bytes.Equal(reqHashInternal, memoryRawTxHash) {
+		// Audit R16-CORR-sec5-validator-handler-no-domain-check-on-
+		// decoded-length: same debug log for the SEC-5 mismatch
+		// drop so the operator sees CPU-burn-attack attempts during
+		// runtime instead of finding nothing in the logs.
+		slog.Debug("islock-attestation: rejecting request whose RawTxHashHex disagrees with local observation",
+			"txid", req.TxId)
 		return
 	}
 	// NOTE: instructionHash is fully requester-supplied; the validator

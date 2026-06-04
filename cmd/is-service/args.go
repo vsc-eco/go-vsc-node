@@ -58,7 +58,7 @@ func validateOperatorURL(flag, raw string) error {
 type args struct {
 	debug               bool
 	port                int
-	network             string // "mainnet" or "testnet"
+	network             string // "mainnet", "testnet", or "devnet" (test-only)
 	chainID             string // "vsc-mainnet" or "vsc-testnet"
 	primaryPubKey       string
 	backupPubKey        string
@@ -115,7 +115,9 @@ func parseArgs() (args, error) {
 
 	fs.BoolVar(&a.debug, "debug", false, "verbose logging")
 	fs.IntVar(&a.port, "port", 3030, "HTTP port to listen on")
-	fs.StringVar(&a.network, "network", "testnet", "Dash network: mainnet or testnet")
+	fs.StringVar(&a.network, "network", "testnet",
+		"Dash network: mainnet | testnet | devnet (devnet is test-only; "+
+			"used by tests/devnet's IS-login E2E with a regtest dashd)")
 	fs.StringVar(&a.chainID, "chainID", "", "Magi chain ID, e.g. vsc-mainnet / vsc-testnet (defaults derived from -network)")
 	fs.StringVar(&a.primaryPubKey, "primaryPubkey", "",
 		"hex-encoded 33-byte compressed pubkey for the bridge TSS primary key")

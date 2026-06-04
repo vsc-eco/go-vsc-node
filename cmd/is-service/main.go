@@ -13,8 +13,10 @@
 //     The address is per-session unique because the sid is embedded
 //     in the instruction. No on-chain registration is needed.
 //  3. Frontend shows the QR. User pays via DashPay InstantSend.
-//  4. IS service watches dashd ZMQ rawtxlock; when the lock fires for
-//     one of our addresses, transitions session to IS_OBSERVED.
+//  4. IS service watches dashd via HTTP RPC (getrawmempool +
+//     getrawtransaction, filtering on instantlock=true); when a
+//     watched address receives a payment, transitions session to
+//     IS_OBSERVED.
 //  5. IS service requests attestations from Magi validators via p2p
 //     (modules/islock-attestation). Collects N-of-M BLS-signed
 //     responses.
@@ -26,11 +28,11 @@
 //     effectiveCaller=DashDID via the call_as host function.
 //  7. Session transitions to ON_CHAIN; frontend gets sessionToken.
 //
-// Scope of v1: HTTP API, deposit-address derivation, session state
-// machine, in-memory store, rate limits, address-signature HMAC stub.
-// ZMQ subscriber, p2p attestation collection, GraphQL polling, and L2
-// tx submission are stubs that will be wired up in follow-up commits
-// once the supporting infra (workstreams 5/6) is in place.
+// Audit R16-CONS-mainmd-zmq-stale-header: this header used to claim
+// "dashd ZMQ" + describe attestation collection / GraphQL polling /
+// L2 submission as TODO stubs. All of those shipped in the R15-fix
+// run; the design pivoted to HTTP RPC polling (no ZMQ bind) for ops
+// simplicity. The header now reflects the current shipped design.
 //
 // Run with: `go run ./cmd/is-service -primaryPubkey <hex> -backupPubkey <hex> -network testnet -port 3030`
 package main

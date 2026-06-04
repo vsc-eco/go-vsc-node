@@ -8,9 +8,27 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
+
+// sanitizeDashdRPCURLForLog strips userinfo (user:pass@) from a dashd
+// RPC URL so embedded basic-auth credentials don't leak via log
+// lines + log-shipping pipelines. Audit R16-CORR-dashd-rpc-url-
+// logged-raw-may-leak-credentials. Mirror of the validator-side
+// helper in modules/islock-attestation/dashd_poller.go.
+func sanitizeDashdRPCURLForLog(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
 
 // DashdRPCClient is a minimal RPC client for the few methods we need:
 //   - getrawtransaction <txid> 1 — returns tx details including
@@ -278,17 +296,22 @@ func (w *DashdWatcher) Run(ctx context.Context) error {
 		case <-ticker.C:
 			if err := w.poll(ctx, seen); err != nil {
 				consecutiveFailures++
+				// Audit R16-OPS-is-service-dashd-watcher-no-rpc-url +
+				// R16-CONS-dashd-watcher-rpc-url-still-missing: mirror
+				// the validator-side dashd_poller fix (commit 1ec40c77)
+				// so multi-dashd deploys can identify the failing
+				// endpoint from a single log line.
 				if consecutiveFailures == escalateAfter {
 					slog.Error("dashd watcher: poll has failed repeatedly — sessions will stall in WAITING_FOR_IS",
-						"consecutiveFailures", consecutiveFailures, "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
 				} else if consecutiveFailures > escalateAfter && consecutiveFailures%30 == 0 {
 					// Once we've escalated, sample every ~30 polls
 					// (~1 min at default cadence) so the log isn't flooded.
 					slog.Error("dashd watcher still failing",
-						"consecutiveFailures", consecutiveFailures, "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
 				} else {
 					slog.Debug("dashd watcher poll error",
-						"consecutiveFailures", consecutiveFailures, "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
 				}
 				w.healthMu.Lock()
 				w.lastErr = err
@@ -300,7 +323,7 @@ func (w *DashdWatcher) Run(ctx context.Context) error {
 				// surfaces the degraded state.
 			} else if consecutiveFailures > 0 {
 				slog.Info("dashd watcher recovered",
-					"previousConsecutiveFailures", consecutiveFailures)
+					"previousConsecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url))
 				consecutiveFailures = 0
 				w.healthMu.Lock()
 				w.lastErr = nil

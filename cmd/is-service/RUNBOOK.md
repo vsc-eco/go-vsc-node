@@ -71,7 +71,7 @@ need to change per-deploy.
 
 - `-network=mainnet`, `-chainID=vsc-mainnet` (or omit and let it derive).
 - `-l2DashMappingContract` = the mainnet contract ID (set at contract-deploy time; capture from the deploy log).
-- **`-addressSignerSecret` must be replaced with `-signerVaultAddr` (Vault Transit) per spec §5.7**. The HMAC stub still works (gated by an explicit DEV/TEST log) but is deprecated for production. See §1.3 below for the Vault Transit setup recipe.
+- **`-addressSignerSecret` must be replaced with either `-signerVaultAddr` (Vault Transit, recommended per spec §5.7) OR `-addressSignerEd25519KeyFile` (file-based Ed25519)**. The HMAC stub still works (gated by an explicit DEV/TEST log) but is deprecated for production. See §1.3 below for the Vault Transit setup recipe; the file-based signer is a one-liner: point the flag at a 0o600 32-byte-hex seed file.
 - `-p2pBootstrapPeers` = mainnet validator fleet multiaddrs. Empty = service runs but no real attestations land.
 - Client-side: set `PUBLIC_DASH_NETWORK=mainnet` and add the production IS host to `MAINNET_HOST_SUFFIXES` in `src/lib/auth/dash/config.ts` *before* flipping the URL (otherwise the client rejects the URL/network mismatch).
 

@@ -193,7 +193,7 @@ func (p *IslockAttestationPlugin) Start() *promise.Promise[any] {
 				slog.Info("islock-attestation: dashd-RPC MemoryReader configured",
 					"acceptUnlocked", p.acceptUnlocked,
 					"network", p.network,
-					"rpc", p.dashdRPC)
+					"rpc", islock.SanitizeRPCURLForLog(p.dashdRPC))
 				memory = realMem
 			} else {
 				slog.Warn("islock-attestation: trust-all MemoryReader (deprecated; configure MAGI_ISLOCK_DASHD_RPC for production-shape backing)",

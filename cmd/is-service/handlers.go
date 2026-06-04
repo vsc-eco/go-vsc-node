@@ -71,7 +71,8 @@ type Server struct {
 	sessions      *SessionStore
 	sessionTTL    time.Duration
 	signer        AddressSigner
-	rateLimitsIP  *rateLimiter
+	rateLimitsIP             *rateLimiter
+	rateLimitsStatusCancelIP *rateLimiter // R16-SEC-status-cancel-no-rate-limit
 	// dashd is optional — when nil, the IS-observed transition is
 	// driven externally (e.g. for tests). When non-nil, Server.Run
 	// starts the watcher goroutine.
@@ -216,6 +217,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		sessionTTL:        cfg.SessionTTL,
 		signer:            cfg.Signer,
 		rateLimitsIP:      newRateLimiter(10, time.Minute),
+		// Audit R16-SEC-status-cancel-no-rate-limit (LOW): /status +
+		// /cancel are higher-volume than /start (Altera polls /status
+		// every ~2s during waiting). Use a separate 60/min bucket so
+		// the legitimate polling cadence isn't gated by the tighter
+		// 10/min /start bucket, while still bounding the unauthenticated
+		// DoS surface against the session-store mutex.
+		rateLimitsStatusCancelIP: newRateLimiter(60, time.Minute),
 		dashd:             cfg.Dashd,
 		orch:              cfg.Orch,
 		broadcasterHealth: cfg.BroadcasterHealth,
@@ -730,6 +738,16 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
+	// Audit R16-SEC-status-cancel-no-rate-limit (LOW): per-IP cap on
+	// /status so a flood-attacker can't DoS the session-store mutex
+	// via unbounded polling. 60/min is the SAME cap shared by /status
+	// + /cancel; legitimate Altera clients poll ~2s = 30/min during
+	// waiting, so the cap accommodates a single user with headroom.
+	ip := s.clientIP(r)
+	if !s.rateLimitsStatusCancelIP.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
 	sid := r.PathValue("sid")
 	if sid == "" {
 		writeError(w, http.StatusBadRequest, "missing sid in path")
@@ -757,6 +775,15 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
+	// Audit R16-SEC-status-cancel-no-rate-limit (LOW): per-IP cap on
+	// /cancel mirrors /status. Cancel is one-shot per session in
+	// normal flows, so the 60/min bucket is loose for legitimate
+	// usage but bounds attacker spam against MutateState.
+	ip := s.clientIP(r)
+	if !s.rateLimitsStatusCancelIP.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
 	sid := r.PathValue("sid")
 	if sid == "" {
 		writeError(w, http.StatusBadRequest, "missing sid in path")

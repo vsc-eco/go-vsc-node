@@ -48,10 +48,13 @@ type AddressSignerVaultTransit struct {
 	addr    string // e.g. https://vault.internal:8200
 	token   string
 	// tokenFile is the optional path the token was sourced from at
-	// startup. When set, Sign() and fetchLatestPublicKey() re-read
-	// it on every call so vault-agent-style short-lived tokens
-	// (15min cadence) refresh without an IS-service restart.
-	// Audit OPS-R15-01 (R15).
+	// startup. When set, currentToken() re-reads it on every
+	// invocation so vault-agent-style short-lived tokens (15min
+	// cadence) refresh without an IS-service restart. Sign() calls
+	// currentToken() per request; fetchLatestPublicKey() also calls
+	// it but only runs at startup, so the practical effect of the
+	// re-read is on the Sign() hot path. Audit OPS-R15-01 (R15) +
+	// R16-CONS-vault-token-docstring-fetch-claim-misleading.
 	tokenFile string
 	mount     string // default "transit"
 	keyName   string
@@ -202,6 +205,24 @@ func (s *AddressSignerVaultTransit) currentToken() string {
 	return t
 }
 
+// tokenSource returns a human-readable label naming where the Vault
+// token came from at startup ("tokenFile=<path>", "literal", or
+// "env VAULT_TOKEN"). Used in auth-failure error messages so the
+// operator knows which input to investigate first.
+// Audit R16-OPS-vault-sign-401-no-token-source-identity.
+func (s *AddressSignerVaultTransit) tokenSource() string {
+	if s.tokenFile != "" {
+		return "tokenFile=" + s.tokenFile
+	}
+	// Both the literal-flag and VAULT_TOKEN-env paths land here with
+	// tokenFile == ""; we can't tell them apart at this layer without
+	// threading a richer source label through VaultTransitConfig.
+	// Operators reading the log line will know from their own
+	// systemd/k8s config which one applies — distinguishing here would
+	// require persisting a field that may itself leak the secret.
+	return "literal or env (no TokenFile configured)"
+}
+
 // warnTokenFallbackOnce logs at WARN exactly once across the process
 // lifetime that we fell back to the cached startup token because the
 // configured TokenFile was unusable. Bounded so a long-running outage
@@ -268,18 +289,23 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	defer resp.Body.Close()
 	rawBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Audit OPS-R15-04 (R15): tag the status class so on-call sees
-		// at-a-glance whether it's an auth issue (token rotation /
+		// Audit OPS-R15-04 (R15) + R16-OPS-vault-sign-401-no-token-
+		// source-identity (R16, MED): tag the status class so on-call
+		// sees at-a-glance whether it's an auth issue (token rotation /
 		// permission denied), a config issue (mount or key missing /
-		// renamed), or a Vault-internal failure. Pre-fix every code
-		// mapped to the same wrapped error string; bisect required
-		// reading the raw response body.
+		// renamed), or a Vault-internal failure. For 401 specifically,
+		// include the token source (file / env / literal) so the
+		// operator knows whether to inspect the TokenFile or rotate
+		// the env-supplied token. Pre-fix every code mapped to the
+		// same wrapped error string; bisect required reading the raw
+		// response body + cross-referencing with the binary's
+		// startup logs to figure out which token path was in play.
 		var kind string
 		switch {
 		case resp.StatusCode == 401:
-			kind = "unauthenticated (token expired or invalid — check token rotation)"
+			kind = "unauthenticated (token expired or invalid — check token rotation; source=" + s.tokenSource() + ")"
 		case resp.StatusCode == 403:
-			kind = "permission denied (policy missing update on transit/sign/<key>)"
+			kind = "permission denied (policy missing update on transit/sign/<key>; source=" + s.tokenSource() + ")"
 		case resp.StatusCode == 404:
 			kind = "not found (check -signerVaultMount + -signerVaultKeyName)"
 		case resp.StatusCode == 429:

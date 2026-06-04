@@ -10,9 +10,28 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
+
+// SanitizeRPCURLForLog strips userinfo (user:pass@) from the URL so a
+// dashd RPC config that embedded basic-auth credentials doesn't leak
+// them via log lines + log-shipping pipelines. Audit R16-CORR-dashd-
+// rpc-url-logged-raw-may-leak-credentials. Returns the original
+// string when parsing fails so a malformed config is still
+// log-grep-anchorable.
+func SanitizeRPCURLForLog(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
+}
 
 // DashdPoller is the validator-side bridge between dashd's RPC and the
 // in-memory IsLockMemory cache that islock-attestation.Service consults
@@ -89,14 +108,14 @@ func (p *DashdPoller) Run(ctx context.Context) error {
 				// not user-credentialed, so logging it raw is fine.
 				if consecutiveFails == escalateAfter {
 					slog.Error("islock-attestation dashd poller: repeated failures — validator will sign nothing",
-						"consecutiveFails", consecutiveFails, "rpc", p.client.url, "err", err)
+						"consecutiveFails", consecutiveFails, "rpc", SanitizeRPCURLForLog(p.client.url), "err", err)
 				} else if consecutiveFails > escalateAfter && consecutiveFails%30 == 0 {
 					slog.Error("islock-attestation dashd poller still failing",
-						"consecutiveFails", consecutiveFails, "rpc", p.client.url, "err", err)
+						"consecutiveFails", consecutiveFails, "rpc", SanitizeRPCURLForLog(p.client.url), "err", err)
 				}
 			} else if consecutiveFails > 0 {
 				slog.Info("islock-attestation dashd poller recovered",
-					"previousConsecutiveFails", consecutiveFails, "rpc", p.client.url)
+					"previousConsecutiveFails", consecutiveFails, "rpc", SanitizeRPCURLForLog(p.client.url))
 				consecutiveFails = 0
 			}
 		}
