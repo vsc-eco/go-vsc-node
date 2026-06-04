@@ -15,22 +15,49 @@ import (
 	"time"
 )
 
-// SanitizeRPCURLForLog strips userinfo (user:pass@) from the URL so a
-// dashd RPC config that embedded basic-auth credentials doesn't leak
-// them via log lines + log-shipping pipelines. Audit R16-CORR-dashd-
-// rpc-url-logged-raw-may-leak-credentials. Returns the original
-// string when parsing fails so a malformed config is still
-// log-grep-anchorable.
+// SanitizeRPCURLForLog reduces a dashd RPC URL to "<scheme>://<host>"
+// so embedded credentials (basic-auth userinfo, query-string tokens,
+// fragments, paths that happen to encode secrets) don't leak via log
+// lines + log-shipping pipelines.
+//
+// Audit history:
+//   - R16-CORR-dashd-rpc-url-logged-raw-may-leak-credentials added the
+//     initial sanitiser as `url.Parse + u.User=nil + u.String()`.
+//   - R17-SEC-sanitizeRPCURL-leaks-on-parse-edge-cases (HIGH) found
+//     three concrete bypasses in that first cut:
+//       1. Query strings (`?token=secret`) were preserved verbatim.
+//       2. url.Parse errors fell through to `return raw`, so
+//          malformed inputs (backslash, control bytes, mismatched
+//          IPv6 brackets) emitted the ORIGINAL value with creds
+//          intact.
+//       3. Inputs that parsed successfully but had empty
+//          scheme/host (opaque `user:pass@host` form) still rendered
+//          the userinfo via u.String().
+//
+// Behaviour now matches the sister-helper cmd/is-service/
+// orchestrator.go:sanitizeURLForLogWithFlag (used for the L2
+// GraphQL URL — Round-7/8 audits R7-OP-01-logleak + R8-SEC-01 /
+// R8-DESIGN-DOC-01 closed the same gaps there):
+//
+//   - empty input → empty output
+//   - url.Parse failure → "<redacted: unparseable URL>"
+//     (NEVER the raw input)
+//   - missing scheme OR host (e.g. "user:pass@host" opaque form,
+//     "junk_no_url") → "<redacted: missing scheme>"
+//   - well-formed URL → "<scheme>://<host>" (host preserves port +
+//     IPv6 brackets; userinfo + query + fragment + path dropped)
 func SanitizeRPCURLForLog(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return "<redacted: unparseable URL>"
 	}
-	u.User = nil
-	return u.String()
+	if u.Scheme == "" || u.Host == "" {
+		return "<redacted: missing scheme>"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // DashdPoller is the validator-side bridge between dashd's RPC and the

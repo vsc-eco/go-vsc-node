@@ -266,14 +266,17 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	})
 	endpoint := fmt.Sprintf("%s/v1/%s/sign/%s", s.addr, s.mount, s.keyName)
 	// Audit R15-CORR-vault-sign-5s-timeout-under-load (LOW): bumped
-	// from 5s → 30s. Vault under load (HSM-backed key, high concurrency
+	// from 5s → 30s. Vault under HSM-backed load (high concurrency
 	// on a single Transit key, or seal-wrapped operations) routinely
 	// sees >5s p99 latencies; a tight 5s causes a 500 → user retries →
-	// retry storm cascade. The HTTP client default Timeout is 10s, so
-	// the WithTimeout(30s) only kicks in when the HTTP roundtrip
-	// itself somehow exceeds 10s (a misbehaving proxy or a TCP stall
-	// that survives the HTTP timeout); 30s gives that case a clear
-	// upper bound rather than indefinite waiting.
+	// retry storm cascade.
+	//
+	// Audit R17-CONS-vault-sign-30s-context-comment-stale: the 30s
+	// WithTimeout is now the sole deadline on the request — R16's
+	// httpClient.Timeout=0 fix removed the conflicting 10s client cap
+	// that previously silently overrode this context. Per-call layers
+	// in effect today: startup probe = 5s (fail-fast), Sign() = 30s
+	// (under-load tolerance).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))

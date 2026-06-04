@@ -120,8 +120,8 @@ type Server struct {
 type ServerConfig struct {
 	PrimaryPubKeyHex string
 	BackupPubKeyHex  string
-	Network          string // "mainnet" or "testnet"
-	ChainID          string // "vsc-mainnet" or "vsc-testnet"
+	Network          string // "mainnet", "testnet", or "devnet" (test-only)
+	ChainID          string // "vsc-mainnet", "vsc-testnet", or "vsc-devnet" (test-only)
 	SessionTTL       time.Duration
 	Signer           AddressSigner
 	// Dashd is optional. If non-nil, the Server registers each new

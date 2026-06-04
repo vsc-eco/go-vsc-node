@@ -164,12 +164,17 @@ func main() {
 	}
 
 	// Orchestrator drives the IS_OBSERVED → ATTESTING → ON_CHAIN
-	// progression. v1 wiring uses a no-op broadcaster (logs only) and
-	// the log-only submitter — both are placeholders for the real p2p
-	// libp2p host and L2 client that production deployments configure
-	// via the server-with-p2p variant of NewServer (TODO: add a
-	// production main wiring once the libp2p host is exposed in this
-	// command's main).
+	// progression. The libp2p broadcaster + L2 submitter both ship
+	// here and are wired conditionally below: -p2pBootstrapPeers
+	// selects the islock-attestation libp2p broadcaster; the L2 trio
+	// (-l2GqlURL, -l2PrivKey, -l2DashMappingContract) selects the
+	// real submitter that broadcasts mapInstantSendV2 to the
+	// dash-mapping-contract. With those unset the noop broadcaster +
+	// log-only submitter take over — useful for the smoke / op=call
+	// devnet tests which exercise the state machine without standing
+	// up a real validator fleet. Audit R17-CONS-mainmd-v1-stub-stale
+	// retired the "v1 placeholders + TODO production main wiring"
+	// framing — both wirings shipped in the R15-fix run.
 	collector := newAttestationCollector()
 
 	// libp2p broadcaster — when -p2pBootstrapPeers is set, the IS

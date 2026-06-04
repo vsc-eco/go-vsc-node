@@ -337,11 +337,19 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 				return
 			case <-t.C:
 				if err := o.broadcaster.BroadcastRequest(collectCtx, req); err != nil {
-					if errors.Is(err, context.Canceled) {
-						// Benign: collectCtx was cancelled mid-publish
-						// because quorum reached just now or the
-						// timeout fired. The select on collectCtx.Done
-						// above will pick it up next iteration.
+					// Benign cancellations: collectCtx either was
+					// explicitly cancelled (quorum reached just now)
+					// or hit its WithTimeout deadline (collect window
+					// naturally expired without quorum). Both happen
+					// every session that fails to reach quorum, so
+					// without suppressing BOTH we'd emit benign
+					// "rebroadcast failed" warns on every
+					// ATTESTATION_TIMEOUT — the original R15 fix
+					// suppressed only context.Canceled and audit
+					// R17-CORR-rebroadcast-deadline-exceeded-not-
+					// suppressed flagged the natural-timeout path.
+					if errors.Is(err, context.Canceled) ||
+						errors.Is(err, context.DeadlineExceeded) {
 						continue
 					}
 					// Don't fail the session for a rebroadcast error —

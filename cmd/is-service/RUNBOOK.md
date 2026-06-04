@@ -25,8 +25,8 @@ need to change per-deploy.
 
 | Flag | Default | Required | Purpose |
 |---|---|---|---|
-| **`-network`** | `testnet` | yes (mainnet) | `mainnet` or `testnet`. Drives the CAIP-2 genesis-hex used in the DashDID and the bridge address derivation. |
-| **`-chainID`** | derived from `-network` | no | Override the Magi chain ID baked into the canonical signed message. `mainnet`→`vsc-mainnet`, `testnet`→`vsc-testnet`. Set this only if you've pinned a non-default chainID at the contract layer too — mismatch surfaces as silent ATTESTATION_TIMEOUT (R3-OP-010). |
+| **`-network`** | `testnet` | yes (mainnet) | `mainnet` \| `testnet` \| `devnet`. Drives the CAIP-2 genesis-hex used in the DashDID and the bridge address derivation. `devnet` is test-only (the IS service refuses some production gates — see SEC-3 / SEC-6). |
+| **`-chainID`** | derived from `-network` | no | Override the Magi chain ID baked into the canonical signed message. `mainnet`→`vsc-mainnet`, `testnet`→`vsc-testnet`, `devnet`→`vsc-devnet`. Set this only if you've pinned a non-default chainID at the contract layer too — mismatch surfaces as silent ATTESTATION_TIMEOUT (R3-OP-010). |
 | **`-primaryPubkey`** | — | **yes** | 33-byte hex compressed secp256k1 pubkey of the bridge TSS primary key. Stamped into every deposit address. |
 | **`-backupPubkey`** | — | **yes** | 33-byte hex compressed pubkey for the backup TSS key. |
 | **`-addressSignerSecret`** | empty | dev/test only | HMAC secret for signing `(deposit_address, instruction)` tuples. **DEPRECATED** for production — use `-signerVaultAddr` (Vault Transit) or `-addressSignerEd25519KeyFile` instead. The HMAC stub is gated by the explicit DEV/TEST log on every startup. |
@@ -34,7 +34,7 @@ need to change per-deploy.
 | **`-signerVaultAddr`** | empty | production-recommended | HashiCorp Vault address (e.g. `https://vault.internal:8200`). When set, the IS service signs every `/session/start` via Vault's `transit/sign` API — **the private key never leaves Vault**. Spec §5.7's strongest interpretation. Takes precedence over both the Ed25519 file path and the HMAC stub. See §1.3 below for the Vault setup recipe. |
 | `-signerVaultMount` | `transit` | no | Vault transit-engine mount path. |
 | `-signerVaultKeyName` | empty | yes (with `-signerVaultAddr`) | Vault transit key name. Must be `type=ed25519` so the on-wire signature shape matches the other signer kinds. |
-| `-signerVaultToken` | empty | no | Vault token inline. **NOT RECOMMENDED** — tokens leak via process tables / shell history. Prefer `-signerVaultTokenFile`. |
+| `-signerVaultToken` | empty | no | Vault token inline. **DEV/TEST ONLY — REJECTED on any -network != devnet** (SEC-6 / R16-SEC-sec6-testnet-not-gated). Tokens leak via process tables / shell history / kubectl describe / docker inspect. Use `-signerVaultTokenFile`. |
 | `-signerVaultTokenFile` | empty | yes (one of) | Path to a file containing the Vault token. Whitespace trimmed. Operator should set 0o600. Alternative: `VAULT_TOKEN` env. |
 | **`-port`** | `3030` | no | HTTP listen port. |
 | **`-sessionTTLMinutes`** | `30` | no | How long a session stays open before the server marks it expired. Don't shrink below the user-side trap deadline (240s post-cancel) or you'll race the client. |
@@ -268,7 +268,7 @@ are rejected without state mutation.
 
 ## 6. Open items for mainnet flip
 
-- [ ] `-addressSignerSecret` HMAC → `-signerVaultAddr` Vault Transit (spec §5.7) per §1.3 above. The recipe is operator-runnable; no IS service code changes required.
+- [ ] `-addressSignerSecret` HMAC → either `-signerVaultAddr` Vault Transit (recommended, spec §5.7, see §1.3 above for the operator-runnable recipe) OR `-addressSignerEd25519KeyFile` (file-based Ed25519 signer; same wire format as Vault, the private key lives on the IS-service host filesystem at 0o600).
 - [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera (currently
       falls back to visual fingerprint when blank).
 - [ ] `MAINNET_HOST_SUFFIXES` populated in `src/lib/auth/dash/config.ts`.

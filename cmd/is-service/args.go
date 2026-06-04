@@ -59,7 +59,7 @@ type args struct {
 	debug               bool
 	port                int
 	network             string // "mainnet", "testnet", or "devnet" (test-only)
-	chainID             string // "vsc-mainnet" or "vsc-testnet"
+	chainID             string // "vsc-mainnet", "vsc-testnet", or "vsc-devnet" (test-only)
 	primaryPubKey       string
 	backupPubKey        string
 	addressSignerSecret         string
@@ -118,7 +118,9 @@ func parseArgs() (args, error) {
 	fs.StringVar(&a.network, "network", "testnet",
 		"Dash network: mainnet | testnet | devnet (devnet is test-only; "+
 			"used by tests/devnet's IS-login E2E with a regtest dashd)")
-	fs.StringVar(&a.chainID, "chainID", "", "Magi chain ID, e.g. vsc-mainnet / vsc-testnet (defaults derived from -network)")
+	fs.StringVar(&a.chainID, "chainID", "",
+		"Magi chain ID: vsc-mainnet | vsc-testnet | vsc-devnet "+
+			"(defaults derived from -network; devnet is test-only)")
 	fs.StringVar(&a.primaryPubKey, "primaryPubkey", "",
 		"hex-encoded 33-byte compressed pubkey for the bridge TSS primary key")
 	fs.StringVar(&a.backupPubKey, "backupPubkey", "",
@@ -144,10 +146,12 @@ func parseArgs() (args, error) {
 		"Vault transit key name (must be type=ed25519). Required when "+
 			"-signerVaultAddr is set.")
 	fs.StringVar(&a.signerVaultToken, "signerVaultToken", "",
-		"Vault token (DEV/TEST ONLY — REJECTED when -network=mainnet "+
-			"per audit SEC-6 because the literal value leaks via "+
-			"/proc/<pid>/cmdline, ps, systemd journal, and orchestrator "+
-			"inspect surfaces). Always prefer -signerVaultTokenFile or "+
+		"Vault token (DEV/TEST ONLY — REJECTED on any -network != devnet "+
+			"per audit SEC-6 / R16-SEC-sec6-testnet-not-gated, because "+
+			"the literal value leaks via /proc/<pid>/cmdline, ps, systemd "+
+			"journal, and orchestrator inspect surfaces. Mainnet AND real "+
+			"testnet both run on production-shape infrastructure with the "+
+			"same leak surface). Always prefer -signerVaultTokenFile or "+
 			"VAULT_TOKEN env for production.")
 	fs.StringVar(&a.signerVaultTokenFile, "signerVaultTokenFile", "",
 		"Path to a file containing the Vault token (preferred). Whitespace "+

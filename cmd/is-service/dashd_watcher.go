@@ -8,39 +8,35 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
+
+	islock "vsc-node/modules/islock-attestation"
 )
 
-// sanitizeDashdRPCURLForLog strips userinfo (user:pass@) from a dashd
-// RPC URL so embedded basic-auth credentials don't leak via log
-// lines + log-shipping pipelines. Audit R16-CORR-dashd-rpc-url-
-// logged-raw-may-leak-credentials. Mirror of the validator-side
-// helper in modules/islock-attestation/dashd_poller.go.
-func sanitizeDashdRPCURLForLog(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	u.User = nil
-	return u.String()
-}
+// Audit R17-SEC-sanitizeRPCURL-leaks-on-parse-edge-cases (HIGH) +
+// R17-OPS-sanitize-rpc-url-helper-duplicated (INFO): the local
+// islock.SanitizeRPCURLForLog used to be a byte-for-byte copy of
+// islock.SanitizeRPCURLForLog with the same parse-error + query-
+// string + opaque-userinfo bugs. Now there's exactly one
+// implementation — call the exported one in modules/islock-
+// attestation so a future bug-fix lands once.
 
 // DashdRPCClient is a minimal RPC client for the few methods we need:
 //   - getrawtransaction <txid> 1 — returns tx details including
 //     `instantlock` flag (Dash-specific extension)
 //   - getrawmempool — list of txids currently in mempool
 //
-// We do NOT use ZMQ because the dependencies are heavy (cgo or another
-// new pure-Go dep) and the IS Service's latency budget (10-15s
-// end-to-end) absorbs a 1-2s RPC poll cycle with no UX impact.
+// HTTP RPC polling was chosen over ZMQ for ops simplicity: no extra
+// dependency (pure-Go net/http), no extra port to expose on the
+// dashd side, no PUB/SUB filter config. The IS service's overall
+// latency budget (~10-15s end-to-end per /session/start) absorbs a
+// 1-2s RPC poll cycle with no UX impact.
 //
-// Validators (eventually) will use ZMQ for tighter coupling — that
-// belongs in modules/islock-attestation/ZMQ subscriber, NOT here.
+// Validators use the same HTTP RPC poll model — see
+// modules/islock-attestation/dashd_poller.go. Audit R17-CONS-zmq-
+// comment-survives-in-dashd-watcher retired the prior "ZMQ vs RPC
+// trade-off + validators will use ZMQ eventually" wording.
 type DashdRPCClient struct {
 	url      string
 	user     string
@@ -303,15 +299,15 @@ func (w *DashdWatcher) Run(ctx context.Context) error {
 				// endpoint from a single log line.
 				if consecutiveFailures == escalateAfter {
 					slog.Error("dashd watcher: poll has failed repeatedly — sessions will stall in WAITING_FOR_IS",
-						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", islock.SanitizeRPCURLForLog(w.client.url), "err", err)
 				} else if consecutiveFailures > escalateAfter && consecutiveFailures%30 == 0 {
 					// Once we've escalated, sample every ~30 polls
 					// (~1 min at default cadence) so the log isn't flooded.
 					slog.Error("dashd watcher still failing",
-						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", islock.SanitizeRPCURLForLog(w.client.url), "err", err)
 				} else {
 					slog.Debug("dashd watcher poll error",
-						"consecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url), "err", err)
+						"consecutiveFailures", consecutiveFailures, "rpc", islock.SanitizeRPCURLForLog(w.client.url), "err", err)
 				}
 				w.healthMu.Lock()
 				w.lastErr = err
@@ -323,7 +319,7 @@ func (w *DashdWatcher) Run(ctx context.Context) error {
 				// surfaces the degraded state.
 			} else if consecutiveFailures > 0 {
 				slog.Info("dashd watcher recovered",
-					"previousConsecutiveFailures", consecutiveFailures, "rpc", sanitizeDashdRPCURLForLog(w.client.url))
+					"previousConsecutiveFailures", consecutiveFailures, "rpc", islock.SanitizeRPCURLForLog(w.client.url))
 				consecutiveFailures = 0
 				w.healthMu.Lock()
 				w.lastErr = nil
