@@ -128,7 +128,10 @@ func TestParseArgs_RejectsLiteralVaultTokenOnMainnet(t *testing.T) {
 		})
 	})
 
-	t.Run("testnet allows literal token", func(t *testing.T) {
+	t.Run("testnet refuses literal token (R16 widened gate)", func(t *testing.T) {
+		// R16-SEC-sec6-testnet-not-gated: testnet now also refuses
+		// because real testnet runs on operator infra with the same
+		// leak surface (ps, journal, kubectl describe, etc.) as mainnet.
 		args := append([]string(nil), baseArgs...)
 		args = append(args,
 			"-network=testnet",
@@ -137,10 +140,26 @@ func TestParseArgs_RejectsLiteralVaultTokenOnMainnet(t *testing.T) {
 		)
 		withArgs(t, args, func() {
 			_, err := parseArgs()
-			// May still error on missing -addressSignerSecret etc., but NOT on the SEC-6 gate.
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "signerVaultToken")
+			assert.Contains(t, err.Error(), "testnet")
+		})
+	})
+
+	t.Run("devnet still allows literal token", func(t *testing.T) {
+		args := append([]string(nil), baseArgs...)
+		args = append(args,
+			"-network=devnet",
+			"-chainID=vsc-devnet",
+			"-signerVaultToken=hvs.SECRETSECRETSECRET",
+		)
+		withArgs(t, args, func() {
+			_, err := parseArgs()
+			// Devnet is the only mode that keeps the literal path
+			// (local-dev ergonomics; no production infra to leak to).
 			if err != nil {
 				assert.NotContains(t, strings.ToLower(err.Error()), "signervaulttoken",
-					"testnet must NOT reject on the SEC-6 gate; got %v", err)
+					"devnet must NOT reject on the SEC-6 gate; got %v", err)
 			}
 		})
 	})

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -298,19 +299,37 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
-	// Sidecar goroutine that re-broadcasts the attestation request every
-	// 4s within the collect window. Defends against the race where a
-	// validator's dashd-RPC poller hadn't yet observed the tx when the
-	// first publish landed — without a retry the validator silently
-	// drops + the request is lost for the whole window. Production
-	// gossipsub mesh also has propagation jitter under churn; a second
-	// publish lets the IHAVE/IWANT lazy-push fill any missed peers.
-	// Stops as soon as collectCtx is cancelled (quorum reached OR the
-	// collect timeout fires).
+	// Sidecar goroutine that re-broadcasts the attestation request
+	// every 6s within the collect window. Defends against the race
+	// where a validator's dashd-RPC poller hadn't yet observed the
+	// tx when the first publish landed — without a retry the
+	// validator silently drops + the request is lost for the whole
+	// window. Production gossipsub mesh also has propagation jitter
+	// under churn; a second publish lets the IHAVE/IWANT lazy-push
+	// fill any missed peers.
+	//
+	// Interval tuning (audit R16-OPS-rebroadcast-validator-rate-
+	// limit-exhaust HIGH): 4s would fit 3 retries in the 15s
+	// collectTimeout (initial + 3 rebroadcasts = 4 total per
+	// session), which at the validator-side 100 msg/min per-peer
+	// cap exhausts the bucket at ~6 concurrent sessions. 6s caps
+	// total per-session broadcasts at 3 (initial + 2 rebroadcasts),
+	// pushing the concurrent-session ceiling to ~11. Tighter than
+	// production needs (mainnet attestation latency is dominated by
+	// gossip-mesh propagation + BLS sign time, both ~hundreds of
+	// ms), so the 1× extra retry margin is the trade we're making
+	// for ops headroom.
+	//
+	// Stops as soon as collectCtx is cancelled (quorum reached OR
+	// collect timeout fires). Audit R16-OPS-rebroadcast-error-
+	// includes-context-cancel-noise (LOW): suppress
+	// context.Canceled errors from the warn log so the success path
+	// (quorum reached just before a tick fires) doesn't emit benign
+	// noise.
 	rebroadcastDone := make(chan struct{})
 	go func() {
 		defer close(rebroadcastDone)
-		t := time.NewTicker(4 * time.Second)
+		t := time.NewTicker(6 * time.Second)
 		defer t.Stop()
 		for {
 			select {
@@ -318,6 +337,13 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 				return
 			case <-t.C:
 				if err := o.broadcaster.BroadcastRequest(collectCtx, req); err != nil {
+					if errors.Is(err, context.Canceled) {
+						// Benign: collectCtx was cancelled mid-publish
+						// because quorum reached just now or the
+						// timeout fired. The select on collectCtx.Done
+						// above will pick it up next iteration.
+						continue
+					}
 					// Don't fail the session for a rebroadcast error —
 					// the original publish + future ticks may still get
 					// quorum. Log + continue.

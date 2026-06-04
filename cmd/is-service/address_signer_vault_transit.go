@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -69,6 +71,11 @@ type AddressSignerVaultTransit struct {
 	http      *http.Client
 	pubKeyB64 string // cached at startup; Ed25519 pubkey, base64 std
 	pubKeyHex string // 64-char hex for Altera pinning
+	// tokenFallbackOnce gates the slog.Warn emitted when currentToken
+	// falls back to the cached startup token because TokenFile became
+	// unreadable. Bounded to one log line per process lifetime. Audit
+	// R16-SEC-vault-currenttoken-silent-fallback.
+	tokenFallbackOnce sync.Once
 }
 
 // NewAddressSignerVaultTransit constructs a signer + verifies it
@@ -166,7 +173,15 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 // to the cached startup token when tokenFile is empty or unreadable —
 // the cached token may have lapsed but is better than no token at all
 // (Sign() will surface the 403 to the caller).
-// Audit OPS-R15-01 (R15).
+//
+// Audit OPS-R15-01 (R15) + R16-SEC-vault-currenttoken-silent-fallback
+// (MED): the fallback is intentional so a transient
+// permission/disk-full glitch doesn't take Sign() down outright, but
+// pre-R16 it was SILENT — an operator whose vault-agent crashed kept
+// seeing successful signs (with a stale token, until that lapsed too)
+// instead of getting an immediate signal. We now log a Warn the FIRST
+// time the fallback triggers per process lifetime so the operator can
+// notice + investigate, but don't spam on every Sign() call.
 func (s *AddressSignerVaultTransit) currentToken() string {
 	if s.tokenFile == "" {
 		return s.token
@@ -176,13 +191,34 @@ func (s *AddressSignerVaultTransit) currentToken() string {
 		// Token file lapsed (permissions, disk full, agent crashed).
 		// Use the cached startup token as a fallback; Sign()'s caller
 		// sees the Vault-level failure if both are invalid.
+		s.warnTokenFallbackOnce("read failed", err)
 		return s.token
 	}
 	t := strings.TrimSpace(string(raw))
 	if t == "" {
+		s.warnTokenFallbackOnce("file empty after trim", nil)
 		return s.token
 	}
 	return t
+}
+
+// warnTokenFallbackOnce logs at WARN exactly once across the process
+// lifetime that we fell back to the cached startup token because the
+// configured TokenFile was unusable. Bounded so a long-running outage
+// doesn't fill log aggregators. The reason + (optional) error give the
+// operator enough hint to triage. Audit R16-SEC-vault-currenttoken-
+// silent-fallback.
+func (s *AddressSignerVaultTransit) warnTokenFallbackOnce(reason string, err error) {
+	s.tokenFallbackOnce.Do(func() {
+		args := []any{"reason", reason, "tokenFile", s.tokenFile}
+		if err != nil {
+			args = append(args, "err", err)
+		}
+		args = append(args,
+			"behaviour", "using cached startup token; rotation is currently disabled until TokenFile is readable",
+			"action", "check vault-agent / sink file permissions / disk")
+		slog.Warn("vault TokenFile unreadable — falling back to cached startup token", args...)
+	})
 }
 
 // Sign produces an Ed25519 signature via Vault transit/sign.

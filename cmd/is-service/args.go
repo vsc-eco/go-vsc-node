@@ -255,22 +255,28 @@ func parseArgs() (args, error) {
 			"-testBypassDashdISLock=true requires -network=devnet (got %q); " +
 				"the flag is gated to the devnet-only test surface", a.network)
 	}
-	// Audit SEC-6 (R15): refuse to start with -signerVaultToken=<literal>
-	// on a production network. A literal token in argv leaks via
-	// /proc/<pid>/cmdline (world-readable on default Linux), `ps auxw`,
-	// systemd journal, and container-orchestrator inspect surfaces
-	// (k8s describe, docker inspect). Within the token's TTL anyone
-	// with shell access to a co-tenant container or read access to
-	// systemd journal can sign arbitrary deposit addresses. The
-	// safer paths (-signerVaultTokenFile, VAULT_TOKEN env) stay
-	// allowed everywhere. Testnet/devnet keep the literal-token path
-	// for ergonomic local testing.
-	if a.signerVaultToken != "" && a.network == "mainnet" {
+	// Audit SEC-6 (R15) + R16-SEC-sec6-testnet-not-gated (MED):
+	// refuse to start with -signerVaultToken=<literal> on any
+	// production-shape deployment (mainnet OR real testnet). A
+	// literal token in argv leaks via /proc/<pid>/cmdline
+	// (world-readable on default Linux), `ps auxw`, systemd journal,
+	// and container-orchestrator inspect surfaces (k8s describe,
+	// docker inspect). Within the token's TTL anyone with shell
+	// access to a co-tenant container or read access to systemd
+	// journal can sign arbitrary deposit addresses. R15 originally
+	// gated only mainnet; the real testnet runs against operator
+	// infrastructure too (not just a dev laptop) so the same leak
+	// surface applies. Devnet is the only acceptably-local mode
+	// and keeps the literal path for ergonomic local testing.
+	if a.signerVaultToken != "" && a.network != "devnet" {
 		return a, fmt.Errorf(
-			"-signerVaultToken=<literal> is forbidden when -network=mainnet — " +
-				"the token would leak via /proc/<pid>/cmdline, ps, " +
-				"systemd journal, and container-orchestrator inspect surfaces. " +
-				"Use -signerVaultTokenFile=<path> or the VAULT_TOKEN env var instead.")
+			"-signerVaultToken=<literal> is forbidden when -network=%s — "+
+				"the token would leak via /proc/<pid>/cmdline, ps, "+
+				"systemd journal, and container-orchestrator inspect surfaces. "+
+				"Use -signerVaultTokenFile=<path> (preferred — supports vault-agent rotation) "+
+				"or the VAULT_TOKEN env var. Note: env vars also leak via kubectl describe "+
+				"and docker inspect — TokenFile is the safest production option.",
+			a.network)
 	}
 	if a.port < 1 || a.port > 65535 {
 		return a, fmt.Errorf("-port must be between 1 and 65535")
