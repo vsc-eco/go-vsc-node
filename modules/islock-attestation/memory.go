@@ -6,9 +6,13 @@ import (
 )
 
 // IsLockMemory is a validator's bounded, FIFO-evicting cache of recently
-// observed Dash InstantSend locks. Populated from dashd ZMQ rawtxlock
-// events (NEVER from rawtx — only IS-locked txs belong here, see spec
-// §5.6 rev 3 fix).
+// observed Dash InstantSend locks. Populated from the DashdPoller
+// (modules/islock-attestation/dashd_poller.go), which polls the
+// validator's dashd via getrawmempool + getrawtransaction and admits
+// only txids reporting `instantlock=true`. The earlier design proposed
+// dashd ZMQ rawtxlock subscription, but the RPC poller was preferred
+// for ops simplicity (no ZMQ bind + secret). Either path enforces the
+// "only IS-locked txs" invariant from spec §5.6 rev 3.
 //
 // Concurrent use: safe (mutex-guarded). Designed for a ~1-100 IS-lock/sec
 // observation rate on testnet/mainnet — memory pressure is negligible.
@@ -67,8 +71,9 @@ func (m *IsLockMemory) WithNowFunc(now func() time.Time) *IsLockMemory {
 }
 
 // Observe records that this validator saw an IS-lock for txid with the
-// given raw tx bytes. Called from the validator's dashd ZMQ rawtxlock
-// subscriber. Idempotent: re-observing the same txid updates nothing.
+// given raw tx bytes. Called from the validator's DashdPoller after a
+// getrawtransaction returns instantlock=true. Idempotent: re-observing
+// the same txid updates nothing.
 func (m *IsLockMemory) Observe(txid, rawTxHex string, rawTxHash []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -158,12 +158,11 @@ type ServerConfig struct {
 	// TestEndpointsEnabled wires the test-only `/test/observed/{sid}`
 	// endpoint that synthesises an onISLockObserved callback from the
 	// HTTP request body. **TEST-ONLY** — main.go only sets this when
-	// args.testBypassDashdISLock is true (which args.go in turn gates
-	// to -network=devnet). Used by tests/devnet's IS-login E2E
-	// because Dash never activated SegWit and dashd v23 doesn't
-	// recognise the bech32 P2WSH deposit addresses the IS service
-	// generates — so the dashd watcher's address-fan-out can never
-	// fire on its own under regtest.
+	// args.testBypassDashdISLock is true. The IS service now generates
+	// base58 P2SH deposit addresses (commit acfb268) so the dashd
+	// watcher's address-fan-out works natively against regtest dashd
+	// — the /test/observed bypass is retained for historical paths +
+	// /test/attestation that don't go through the watcher.
 	TestEndpointsEnabled bool
 }
 
@@ -320,13 +319,16 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /session/{sid}/status", s.handleSessionStatus)
 	mux.HandleFunc("POST /session/{sid}/cancel", s.handleSessionCancel)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
-	// Test-only endpoint — registered only when TestEndpointsEnabled
-	// is true (which main.go gates on -testBypassDashdISLock, which
-	// args.go gates on -network=devnet). Lets tests/devnet drive
-	// the orchestrator's WAITING_FOR_IS → IS_OBSERVED transition
-	// directly, bypassing the dashd watcher entirely — Dash never
-	// activated SegWit so the bech32 P2WSH deposit address the IS
-	// service generates can't actually be paid on regtest dashd.
+	// Test-only endpoints — registered only when TestEndpointsEnabled
+	// is true (which main.go gates on -testBypassDashdISLock).
+	// Originally added because Dash never activated SegWit, so an
+	// earlier bech32 P2WSH deposit-address implementation was
+	// unpayable on regtest dashd; tests had to inject observation
+	// state directly. The IS service now generates P2SH addresses
+	// (commit acfb268) so the watcher works against regtest natively
+	// — the /test/observed + /test/attestation endpoints are kept
+	// for tests that synthesise specific orchestrator states without
+	// involving the watcher or gossip path.
 	if s.testEndpointsEnabled {
 		mux.HandleFunc("POST /test/observed/{sid}", s.handleTestObserved)
 		mux.HandleFunc("POST /test/attestation/{sid}", s.handleTestAttestation)

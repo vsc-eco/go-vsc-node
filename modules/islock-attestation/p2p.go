@@ -22,13 +22,12 @@ import (
 // the reference pattern and the workstream-0 scoping spike for the
 // design rationale).
 //
-// Live wiring is TODO — the parts marked "WIRING NEEDED" require:
-//   - A validator-side construction site (e.g. inside the main validator
-//     boot path) that calls NewService with a populated AttestationSigner
-//     and a MemoryReader backed by the dashd ZMQ subscriber.
-//   - An IS-Service-side construction site (cmd/is-service) that calls
-//     NewService with an empty AttestationSigner (it doesn't sign) and
-//     uses its own request-broadcast helper instead of HandleMessage.
+// Live wiring landed in commits 3412c573 (validator-side, cmd/vsc-node/
+// islock_wiring.go: AttestationSigner + DashdPoller-backed
+// MemoryReader) and the IS-service-side broadcaster
+// (cmd/is-service/broadcaster_libp2p.go: requests only; never signs).
+// Audit R15-CONS-06 retired the earlier "ZMQ subscriber" wording —
+// validators now poll dashd via HTTP RPC.
 
 // p2pTopic is the gossipsub topic for the lazy-attestation protocol.
 // Versioned so future schema changes can roll out via /v2 without
@@ -62,10 +61,10 @@ type AttestationSigner interface {
 	Sign(req IsLockAttestationRequest) (string, error)
 }
 
-// MemoryReader exposes the read side of an IsLockMemory. Validators back
-// this with their dashd ZMQ subscriber's rolling buffer; the IS Service
-// passes nil and doesn't sign attestation requests it receives (it's a
-// consumer, not an attester).
+// MemoryReader exposes the read side of an IsLockMemory. Validators
+// back this with the DashdPoller's RPC-fed IsLockMemory; the IS
+// Service passes nil and doesn't sign attestation requests it receives
+// (it's a consumer, not an attester).
 type MemoryReader interface {
 	Lookup(txid string) (rawTxHex string, rawTxHash []byte, ok bool)
 }
@@ -242,10 +241,15 @@ func (s *Service) handleRequest(
 		return
 	}
 	_ = rawTxHex
-	// TODO: defense-in-depth — call dashd RPC `getrawtransaction txid verbose`
-	// and confirm `instantlock == true` before signing. Closes the ZMQ-bug
-	// attack surface where a buggy dashd might emit rawtxlock for a
-	// non-IS-locked tx.
+	// TODO (audit SEC-5): defense-in-depth — verify req.RawTxHashHex
+	// matches sha256d(memory[req.TxId].rawTxHex), and re-confirm
+	// instantlock=true via a fresh getrawtransaction (the poller
+	// already filters on instantlock when admitting, but the cached
+	// entry could be stale by the time an attestation request lands).
+	// Without this the validator signs over requester-supplied hashes,
+	// burning CPU on contract-rejected forgeries and creating a
+	// forgery primitive if a future contract change relaxes its own
+	// recompute step.
 
 	sigHex, err := s.signer.Sign(req)
 	if err != nil {

@@ -61,13 +61,16 @@ func dashTestNetParams() *chaincfg.Params {
 	p := chaincfg.TestNet3Params
 	p.PubKeyHashAddrID = 0x8c // 'y' prefix
 	p.ScriptHashAddrID = 0x13 // '8'/'9' prefix
+	// Bech32 HRP set defensively for any leftover utilities; the
+	// IS service derives base58 P2SH (Dash has no SegWit), not bech32.
 	p.Bech32HRPSegwit = "tdash"
 	return &p
 }
 
-// createP2WSHAddressWithBackup builds the Dash P2WSH deposit address whose
+// createP2SHAddressWithBackup builds the Dash P2SH deposit address whose
 // redeem script binds (primary spending pubkey, backup pubkey + CSV timelock,
-// instruction tag). Faithful port of utxo-mapping/dash-mapping-contract/contract/mapping/utils.go.
+// instruction tag). Faithful port of utxo-mapping/dash-mapping-contract/
+// contract/mapping/utils.go (createP2SHAddressWithBackup).
 //
 // Script shape:
 //
@@ -83,12 +86,17 @@ func dashTestNetParams() *chaincfg.Params {
 //	    OP_CHECKSIG
 //	OP_ENDIF
 //
-// Returns (bech32 address string, raw witness script bytes, error).
-func createP2WSHAddressWithBackup(
+// Returns (base58 P2SH address string, redeem-script bytes, error).
+// Naming history (audit R15-CONS-01): the function was originally
+// `createP2WSHAddressWithBackup` returning a `witnessScript`. After the
+// P2WSH→P2SH switch (the IS service mirror of dash-mapping-contract
+// commit acfb268) the names lagged behind for one release; this is the
+// catch-up rename.
+func createP2SHAddressWithBackup(
 	primaryPubKey, backupPubKey CompressedPubKey,
 	tag []byte,
 	network *chaincfg.Params,
-) (string, []byte, error) {
+) (address string, redeemScript []byte, err error) {
 	csvBlocks := backupCSVBlocksMainnet
 	if network.Net != chaincfg.MainNetParams.Net {
 		csvBlocks = backupCSVBlocksTestnet
@@ -128,8 +136,8 @@ func createP2WSHAddressWithBackup(
 	// they're unspendable in practice. P2SH is the equivalent
 	// pre-SegWit primitive that Dash DOES support (mainnet `7...`,
 	// testnet `8...`/`9...`). The redeem-script bytes are
-	// unchanged; only the on-chain commitment shifts from
-	// 32-byte sha256 (P2WSH) to 20-byte hash160 (P2SH).
+	// unchanged across the switch; only the on-chain commitment
+	// shifted from 32-byte sha256 (P2WSH) to 20-byte hash160 (P2SH).
 	addr, err := btcutil.NewAddressScriptHash(script, network)
 	if err != nil {
 		return "", nil, err
@@ -150,7 +158,7 @@ func createP2WSHAddressWithBackup(
 func DepositAddress(
 	primaryPubKeyHex, backupPubKeyHex, instruction string,
 	network *chaincfg.Params,
-) (address string, witnessScript []byte, err error) {
+) (address string, redeemScript []byte, err error) {
 	primary, err := decodeCompressedPubKey(primaryPubKeyHex)
 	if err != nil {
 		return "", nil, fmt.Errorf("primary pubkey: %w", err)
@@ -160,5 +168,5 @@ func DepositAddress(
 		return "", nil, fmt.Errorf("backup pubkey: %w", err)
 	}
 	sum := sha256.Sum256([]byte(instruction))
-	return createP2WSHAddressWithBackup(primary, backup, sum[:], network)
+	return createP2SHAddressWithBackup(primary, backup, sum[:], network)
 }

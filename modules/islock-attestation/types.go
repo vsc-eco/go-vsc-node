@@ -7,23 +7,26 @@
 //
 // The protocol is request-driven (not push):
 //
-//  1. The IS Service sees a Dash IS-lock via its own dashd ZMQ for a deposit
-//     address one of its sessions is waiting on.
+//  1. The IS Service sees a Dash IS-lock for a deposit address one of
+//     its sessions is waiting on (via its dashd-RPC watcher).
 //  2. IS Service broadcasts an IsLockAttestationRequest over a Magi p2p
 //     gossip topic.
-//  3. Each Magi validator's local dashd has also seen the same rawtxlock
-//     (Dash gossip is fast). The validator checks its own bounded in-memory
-//     cache, verifies the IS-lock independently via dashd RPC, and signs an
-//     IsLockAttestationResponse with its consensus BLS key + domain prefix.
-//     Validators that never saw the lock ignore the request silently.
+//  3. Each Magi validator's DashdPoller has also seen the same tx
+//     (validators poll their own dashd via getrawmempool every 2s and
+//     admit txids that report instantlock=true). The validator checks
+//     its bounded in-memory cache and, on a hit, signs an
+//     IsLockAttestationResponse with its consensus BLS key + domain
+//     prefix. Validators that never saw the lock ignore the request
+//     silently.
 //  4. IS Service collects N-of-M responses and submits one L2 tx
 //     (mapInstantSend) carrying the bundle.
 //  5. The dash-mapping-contract verifies the BLS aggregate against the
 //     active validator set at the request's epoch.
 //
-// This file defines the wire types. Memory store and signing live in
-// sibling files. Validator integration (p2p wiring) is a separate
-// follow-up workstream — these types are self-contained and testable.
+// Wire types live in this file; memory store + signing in sibling
+// files; p2p wiring + validator-side observation in dashd_poller.go
+// (Audit R15-CONS-06: the original "ZMQ" wording predated the
+// production-shape RPC poller in commit 4a8a4fd8).
 package islock_attestation
 
 // IsLockAttestationRequest is a broadcast from the IS Service (or any
@@ -32,8 +35,10 @@ package islock_attestation
 //
 // The validator does NOT trust any field in this request blindly. It
 // independently:
-//   - Verifies it has seen this txid via its own dashd ZMQ (or via RPC).
-//   - Confirms instantlock=true on the tx (defense-in-depth).
+//   - Verifies it has seen this txid via its own dashd RPC poller
+//     (modules/islock-attestation/dashd_poller.go).
+//   - Confirms instantlock=true on the tx (defense-in-depth; the
+//     poller already filters on this before populating IsLockMemory).
 //   - Confirms the destination address in rawTxHex matches the address
 //     derived from (primaryPubkey, backupPubkey, instruction).
 //
@@ -42,7 +47,8 @@ type IsLockAttestationRequest struct {
 	// TxId is the Dash txid being attested. Hex-encoded.
 	TxId string `json:"txid"`
 	// RawTxHashHex is hex(sha256d(rawTxBytes)). Validators verify this
-	// matches what they saw in their own ZMQ memory before signing.
+	// matches what they observed via their own dashd RPC poller before
+	// signing.
 	RawTxHashHex string `json:"rawTxHash"`
 	// InstructionHashHex is hex(sha256(instruction_bytes)). Binds the
 	// attestation to the specific deposit instruction the user paid for.

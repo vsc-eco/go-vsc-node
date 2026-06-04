@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/btcutil/bech32"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -25,12 +24,15 @@ import (
 //     ExtractPkScriptAddrs returns the Dash address. This satisfies
 //     the dash-mapping-contract's ResolveSenderDashDID without
 //     needing a real on-chain spend.
-//   - One output of `amountSats` paying to `addr` via the
-//     standard P2WSH script
-//     (OP_0 <32-byte witness program>). The contract's
-//     FindOutputAmount uses txscript.ExtractPkScriptAddrs on the
-//     PkScript with `netParams` to recognise the address → matches
-//     against the contract's re-derived deposit address.
+//   - One output of `amountSats` paying to `addr` via whatever
+//     pkScript txscript.PayToAddrScript derives for that address.
+//     For the deposit-address use case the IS service hands the
+//     test a base58 P2SH address (Dash has no SegWit; see audit
+//     R15-CONS-01), so the pkScript is OP_HASH160 <20-byte> OP_EQUAL.
+//     The contract's FindOutputAmount uses
+//     txscript.ExtractPkScriptAddrs on the PkScript with `netParams`
+//     to recognise the address → matches against the contract's
+//     re-derived deposit address.
 //
 // Returns the rawTxHex and the synthetic sender's Dash P2PKH address
 // (so the test can correlate the contract-side sender resolution).
@@ -42,41 +44,10 @@ import (
 // real ECDSA proof, the input outpoint is a null hash, etc.
 //
 // Used by the IS-login devnet E2E to drive the contract's
-// mapInstantSendV2 success path without an actual Dash regtest
-// payment — which is infeasible anyway because Dash never activated
-// SegWit and dashd v23 rejects `tdash1...` P2WSH addresses at
-// `sendtoaddress` time.
-// DecodeDashP2WSH decodes a Dash-flavoured bech32 P2WSH address
-// (`tdash1...` / `dash1...`) into its witness program. btcutil's
-// DecodeAddress rejects unregistered HRPs ("decoded address is of
-// unknown format"), and registering a forked Dash chaincfg has
-// side effects across the global registry, so we strip the HRP +
-// 5-bit decode manually and rebuild via NewAddressWitnessScriptHash
-// against the harness-local params (which DON'T need to be
-// registered for NewAddressWitnessScriptHash to work).
-func DecodeDashP2WSH(addr string, netParams *chaincfg.Params) (*btcutil.AddressWitnessScriptHash, error) {
-	_, decoded, err := bech32.Decode(addr)
-	if err != nil {
-		return nil, fmt.Errorf("bech32 decode: %w", err)
-	}
-	if len(decoded) < 1 {
-		return nil, fmt.Errorf("empty bech32 program")
-	}
-	version := decoded[0]
-	if version != 0 {
-		return nil, fmt.Errorf("unsupported witness version %d (expected 0 for P2WSH)", version)
-	}
-	// Convert the 5-bit groups to 8-bit bytes.
-	prog, err := bech32.ConvertBits(decoded[1:], 5, 8, false)
-	if err != nil {
-		return nil, fmt.Errorf("bech32 5→8 conversion: %w", err)
-	}
-	if len(prog) != 32 {
-		return nil, fmt.Errorf("P2WSH program must be 32 bytes, got %d", len(prog))
-	}
-	return btcutil.NewAddressWitnessScriptHash(prog, netParams)
-}
-
+// mapInstantSendV2 success path. With the P2SH switch real regtest
+// payments now work too — this fixture remains for callers that
+// need a controlled raw-tx layout (specific sender address pattern,
+// exact amount placement) without actually mining a tx.
 func BuildSyntheticDashTxToAddress(
 	addr btcutil.Address,
 	amountSats int64,
@@ -156,6 +127,8 @@ func dashTestNetParamsForHarness() *chaincfg.Params {
 	p := chaincfg.TestNet3Params
 	p.PubKeyHashAddrID = 0x8c // 'y' prefix
 	p.ScriptHashAddrID = 0x13 // '8'/'9' prefix
+	// Bech32 HRP set defensively for any leftover utilities; the
+	// deposit-address derivation uses base58 P2SH (Dash has no SegWit).
 	p.Bech32HRPSegwit = "tdash"
 	return &p
 }

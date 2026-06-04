@@ -25,14 +25,16 @@ import (
 // gossip topic, signing canonical messages for txids they have in
 // memory.
 //
-// **Devnet gating**: the plugin only constructs the Service when
-// MAGI_ISLOCK_ENABLE=true. Production wiring (real dashd ZMQ
-// memory backing) is a separate follow-up — the current stub
-// MemoryReader returns ok=true for every txid, which is safe
-// ONLY when the validator-set + attestation request validator
-// (modules/islock-attestation:HandleMessage rate-limiting +
-// signature shape checks) bound the surface. See
-// `MAGI_ISLOCK_TRUST_ALL` for the explicit ack.
+// **Enable gating**: the plugin only constructs the Service when
+// MAGI_ISLOCK_ENABLE=true. Production wiring uses an HTTP-RPC-based
+// DashdPoller (modules/islock-attestation/dashd_poller.go) that polls
+// the validator's dashd via getrawmempool + getrawtransaction every 2s,
+// admitting txids only after instantlock=true. The legacy trust-all
+// stub MemoryReader is still selectable via MAGI_ISLOCK_TRUST_ALL for
+// devnet/CI runs that need the validator to sign without a backing
+// dashd. Audit R15-CONS-05 corrected the earlier "dashd ZMQ memory
+// backing is a separate follow-up" wording — the RPC-poller backing
+// shipped in commit 4a8a4fd8.
 type IslockAttestationPlugin struct {
 	chainID   string
 	network   string
@@ -274,12 +276,11 @@ func (s *identityAttestationSigner) Sign(req islock.IsLockAttestationRequest) (s
 // trustAllMemoryReader is a stub IsLockMemory implementation that
 // returns ok=true for every txid lookup. **TEST-ONLY** — gated by
 // MAGI_ISLOCK_TRUST_ALL=true, which the plugin's Init() refuses to
-// run without explicitly. Real production deployments need a
-// dashd-ZMQ-backed memory reader that only returns ok=true after
-// the validator independently observed `instantlock=true` for the
-// txid via its own dashd. Until that wiring lands, the trust-all
-// stub lets the devnet harness exercise the gossip pipeline
-// without a real LLMQ quorum.
+// run without explicitly. Production deployments use the
+// DashdPoller-backed memory reader (HTTP RPC polling of the
+// validator's own dashd, admitting only instantlock=true txids).
+// The trust-all stub lets the devnet harness exercise the gossip
+// pipeline without a real LLMQ quorum or even a backing dashd.
 type trustAllMemoryReader struct{ enabled bool }
 
 func newTrustAllMemoryReader(enabled bool) *trustAllMemoryReader {
