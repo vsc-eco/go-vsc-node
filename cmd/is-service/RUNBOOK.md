@@ -311,21 +311,50 @@ are rejected without state mutation.
 ## 7. Open items for mainnet flip
 
 - [ ] `-addressSignerSecret` HMAC → either `-signerVaultAddr` Vault Transit (recommended, spec §5.7, see §1.3 above for the operator-runnable recipe) OR `-addressSignerEd25519KeyFile` (file-based Ed25519 signer; same wire format as Vault, the private key lives on the IS-service host filesystem at 0o600).
-- [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera. When
-      blank, Altera renders a yellow warn-panel titled
-      "Verification not configured"; when the user's browser
-      lacks Ed25519 WebCrypto the panel title is instead
-      "Verification unavailable in this browser" (these are the
-      strings an operator can grep DashLogin.svelte for — audit
-      R21-OPS-runbook-warn-panel-prose-quotes-stale-title-string
-      replaced the prior parenthetical "cryptographic verification
-      unavailable" wording that no longer matches the rendered
-      copy). The panel does NOT instruct the user to compare a
-      fingerprint against an operator-published value, because the
-      fingerprint is per-session (audit R19-SEC-fingerprint-warn-
-      panel-no-canonical-source-exists). Pinning this pubkey
-      enables the green 'verified' badge + the fail-closed
-      'invalid' branch.
+- [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera, with
+      a sane prefix (`ed25519:<hex>`; the dev-mode `hmac:` prefix
+      is NOT verifiable client-side per spec §5.7). The pubkey
+      env-var drives DashLogin's yellow warn-panel through the
+      signature.ts verdict union as follows (operators debugging
+      a yellow panel should grep the title strings in
+      DashLogin.svelte; matching the verdict to the trigger
+      requires checking the network response prefix BEFORE
+      blaming the browser):
+
+      - verdict `unconfigured` → title "Verification not
+        configured". Trigger: env-var blank. Fix: pin the
+        IS-service operator's current pubkey + rebuild Altera.
+      - verdict `unsupported` → title "Verification unavailable
+        in this browser" (a misnomer kept for grep-stability —
+        the title is BROWSER-shaped even when the cause isn't
+        the browser; the body copy is cause-agnostic). THREE
+        independent triggers funnel into this verdict:
+          (1) browser lacks Ed25519 WebCrypto (older Chrome /
+              Firefox / Safari — the original v0 cause);
+          (2) the pinned pubkey starts with `hmac:` (IS service
+              still on the dev-mode HMAC stub; spec §5.7 says
+              client-side verify is impossible without sharing
+              the symmetric secret);
+          (3) the `ed25519:` verifier throws (malformed pubkey
+              hex, malformed signature b64, WebCrypto runtime
+              error). Reason text is surfaced in the verdict's
+              `.reason` field for operator-side debugging.
+
+      The panel does NOT instruct the user to compare a
+      fingerprint against an operator-published value, because
+      the fingerprint is per-session (audit R19-SEC-fingerprint-
+      warn-panel-no-canonical-source-exists). Pinning a valid
+      `ed25519:` pubkey enables the green 'verified' badge + the
+      fail-closed 'invalid' branch.
+
+      Audits R21-OPS-runbook-warn-panel-prose-quotes-stale-title-
+      string (replaced the prior parenthetical "cryptographic
+      verification unavailable" wording that no longer matches
+      the rendered copy) + R22-OPS-runbook-section7-unsupported-
+      trigger-incomplete-only-mentions-webcrypto (the prior R21
+      enumeration mapped `unsupported` to browser-cause only;
+      this rewrite lists all three triggers so on-call doesn't
+      misdiagnose `hmac:` pubkeys as old-browser issues).
 - [ ] `MAINNET_HOST_SUFFIXES` populated in `src/lib/auth/dash/config.ts`.
 - [ ] Mainnet validator-set epoch cadence + `setValidatorSet` cron wired.
 - [ ] Prometheus metrics endpoint enabled + scrape targets configured.

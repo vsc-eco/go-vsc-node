@@ -25,13 +25,22 @@ import (
 // is itself race-safe and lets the race detector's signal fire on
 // any OTHER unsafe sharing.
 //
-// signBarrier (optional): if non-nil, the FIRST Sign call blocks on
-// <-signBarrier until the test releases it. Used by the singleflight
-// test to force overlap between the leader's Sign and follower
-// register-on-the-gate window (audit R20-CORR-singleflight-test-
-// does-not-force-race: without a barrier the test could pass even
-// if singleflight is a no-op, because the Go scheduler may serialise
-// goroutines on a single P).
+// signBarrier (optional): if non-nil, EVERY Sign() call blocks on
+// <-signBarrier until the channel is closed (no first-call guard —
+// closed-channel broadcast semantics: every subsequent reader returns
+// immediately with the zero value). Used by the singleflight tests to
+// force the leader to park inside Sign while followers register on
+// signSF.do (audit R20-CORR-singleflight-test-does-not-force-race:
+// without a barrier the test could pass even if singleflight is a
+// no-op, because the Go scheduler may serialise goroutines on a
+// single P). In practice only the LEADER hits this branch — followers
+// replay the leader's result via singleflight.do without re-entering
+// Sign — so the "every-call blocks" semantic is an invariant about
+// the field, not a runtime cost in the current tests. Audit R22-CONS-
+// go-vsc-signbarrier-field-godoc-still-says-first-sign-call-same-
+// drift-as-signpanic-fix retired the prior "FIRST Sign call" wording
+// that mirrored the bug R21 fixed on the signPanic field directly
+// below.
 type countingSigner struct {
 	inner       *fakeSigner
 	signCalls   atomic.Int64
@@ -79,10 +88,15 @@ func (c *countingSigner) Sign(req IsLockAttestationRequest) (string, error) {
 		// in the singleflight test only the leader's Sign call hits
 		// this branch (followers replay from cache), but a future test
 		// that re-enters Sign multiple times is also safe because
-		// closed-channel reads are non-blocking + race-free. Audit
+		// closed-channel reads are non-blocking + race-free. Audits
 		// R21-CONS-signbarrier-comment-claims-nil-out-but-test-uses-
-		// close: the prior comment described a nil-out mechanism the
-		// tests do not implement.
+		// close + R21-OPS-go-vsc-test-comment-claims-signbarrier-
+		// nil-out-from-outside-never-happens + R22-CONS-go-vsc-r21-
+		// ops-signbarrier-nil-out-from-outside-id-cited-in-commit-
+		// body-absent-from-source: the prior comment described a
+		// nil-out mechanism the tests do not implement; R22 added
+		// the missing second audit-ID cite so both R21 findings on
+		// this comment are anchored in source.
 	}
 	if c.signPanic != nil {
 		if v := c.signPanic(req); v != nil {
@@ -502,7 +516,7 @@ func TestHandleRequest_SingleFlightPanicDoesNotStrand(t *testing.T) {
 // Design: install signBarrier so the leader stops inside Sign() —
 // followers register on signSF and park on <-call.done. Use
 // waitersForKey() to wait until ALL N-1 followers are parked (audit
-// R21-CORR-singleflight-test-eventually-cond-does-not-actually-
+// R21-CORR-go-vsc-singleflight-test-eventually-cond-does-not-actually-
 // prove-follower-registered: previously the test only proved the
 // leader had registered itself, not that followers were parked).
 // THEN close the barrier so the leader unblocks + hits signPanic.
