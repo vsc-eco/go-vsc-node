@@ -45,5 +45,14 @@ func BlsQuorumMet(included []dids.BlsDID, members []elections.ElectionMember, we
 		signedWeight += weightByDID[d] // unknown DID → 0
 	}
 
-	return signedWeight*3 >= weightTotal*2
+	// GV-L9: overflow-safe 2/3 quorum. The naive `signedWeight*3 >= weightTotal*2`
+	// wraps mod 2^64 once weightTotal > MaxUint64/2 (weightTotal*2 wraps to a small
+	// value), so a zero-weight commitment could falsely satisfy quorum. The identity
+	// ceil(2N/3) == N - floor(N/3) holds for every non-negative N and involves only
+	// one subtraction and one division — no intermediate product, so it cannot
+	// overflow for any uint64 weight. It is byte-identical to the original on the
+	// entire non-overflow domain (weightTotal <= MaxUint64/2), which is the only
+	// reachable range at any realistic election scale.
+	quorumThreshold := weightTotal - weightTotal/3
+	return signedWeight >= quorumThreshold
 }

@@ -88,6 +88,12 @@ func ParseBlsDID(did string) (BlsDID, error) {
 
 	// ensure pub key is valid
 	pubKeyBytes := data[2:]
+	// audit GV-L4: guard the length before the (*[48]byte) cast (the sibling
+	// Identifier() at bls.go:127 already does this); a <48-byte body otherwise
+	// panics with an index-out-of-range slice conversion.
+	if len(pubKeyBytes) != 48 {
+		return "", fmt.Errorf("invalid BLS pub key length: got %d, want 48", len(pubKeyBytes))
+	}
 	pubKey := new(BlsPubKey)
 	if err := pubKey.Deserialize((*[48]byte)(pubKeyBytes)); err != nil {
 		return "", fmt.Errorf("failed to deserialize pub key: %w", err)
