@@ -14,10 +14,13 @@ import (
 // MagiPeerMultiaddr returns the in-docker libp2p multiaddr for
 // magi-N. Computed by reading the witness's libp2p private key from
 // `<devnetDir>/data-N/config/identityConfig.json`, deriving the peer
-// ID, and concatenating with the dns4 hostname + the magi default
-// libp2p port (10720, set by modules/p2p/config.go NewConfig).
+// ID, and concatenating with the dns4 hostname + the per-node libp2p
+// port (10720 + N − 1, see the port computation at the bottom of
+// this function — magi-1 → 10720, magi-2 → 10721, etc.). Audit
+// R15-CONS-12: the previous docstring claimed a fixed 10720 across
+// all nodes but the body always computed the offset.
 //
-// Format: `/dns4/magi-N/tcp/10720/p2p/<peerID>`
+// Format: `/dns4/magi-N/tcp/<10720+N-1>/p2p/<peerID>`
 //
 // Used by the IS-login devnet E2E to bootstrap the IS service into
 // magi-1's libp2p gossip so attestation requests reach the witness

@@ -71,7 +71,9 @@ need to change per-deploy.
 
 - `-network=mainnet`, `-chainID=vsc-mainnet` (or omit and let it derive).
 - `-l2DashMappingContract` = the mainnet contract ID (set at contract-deploy time; capture from the deploy log).
-- **`-addressSignerSecret` must be replaced with `-signerVaultAddr` (Vault Transit) per spec §5.7**. The HMAC stub still works (gated by an explicit DEV/TEST log) but is deprecated for production.
+- **`-addressSignerSecret` must be replaced with `-signerVaultAddr` (Vault Transit) per spec §5.7**. The HMAC stub still works (gated by an explicit DEV/TEST log) but is deprecated for production. See §1.3 below for the Vault Transit setup recipe.
+- `-p2pBootstrapPeers` = mainnet validator fleet multiaddrs. Empty = service runs but no real attestations land.
+- Client-side: set `PUBLIC_DASH_NETWORK=mainnet` and add the production IS host to `MAINNET_HOST_SUFFIXES` in `src/lib/auth/dash/config.ts` *before* flipping the URL (otherwise the client rejects the URL/network mismatch).
 
 ### 1.3 Vault Transit signer — operator recipe
 
@@ -89,10 +91,12 @@ vault write -f transit/keys/is-service-signer type=ed25519
 #    expressed as 64 hex chars) in Altera's
 #    PUBLIC_IS_SERVICE_SIGNER_PUBKEY env var.
 vault read transit/keys/is-service-signer
-#   → grab data.keys.1.public_key (base64), decode it, hex-encode
-#     the 32-byte result.
-#   IS service logs the same hex at startup ("address signer:
-#   Vault Transit ... pubkey=<hex>") — match against Altera's pin.
+#   → look at `data.latest_version` (e.g. 1, or higher after rotations),
+#     then grab `data.keys.<that-version>.public_key` (base64),
+#     decode it, hex-encode the 32-byte result.
+#   The IS service reads the SAME latest_version + public key at
+#   startup and logs the hex ("address signer: Vault Transit ...
+#   pubkey=<hex>") — match against Altera's pin.
 
 # 4. Create a scoped policy + token for the IS service. Only grants
 #    update on transit/sign/<key> + read on transit/keys/<key>.
@@ -130,8 +134,8 @@ Then start the IS service with:
 ```
 
 At startup the IS service fetches the public key from Vault + logs its hex. The IS service refuses to start if Vault is unreachable, the token is invalid, or the key isn't `type=ed25519` — fail-fast guarantees you never silently issue unverifiable signatures.
-- `-p2pBootstrapPeers` = mainnet validator fleet multiaddrs. Empty = service runs but no real attestations land.
-- Client-side: set `PUBLIC_DASH_NETWORK=mainnet` and add the production IS host to `MAINNET_HOST_SUFFIXES` in `src/lib/auth/dash/config.ts` *before* flipping the URL (otherwise the client rejects the URL/network mismatch).
+
+The IS service captures Vault's `latest_version` at startup and pins `key_version=<startup>` in every `Sign()` request. A Vault key rotation while the IS service is running is therefore a NO-OP for ongoing requests; rotation requires a coordinated IS service restart + Altera `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` update (see audit SEC-1).
 
 ---
 
@@ -155,9 +159,9 @@ oracle on mainnet).
 **Recipes.** The payload for step 3 must be produced by
 `dash-mapping-contract/cmd/gen-validator-set-payload` so the announcer-side
 BLS PoP (`domain || pkBytes || accountBytes`) matches what the contract's
-`SaveValidatorSetForEpoch` reconstructs. See
-[dash-mapping-contract/cmd/gen-validator-set-payload/README.md] for the
-exact CLI form. R4-CSM-01 critical fix coverage relies on this binding.
+`SaveValidatorSetForEpoch` reconstructs. Run with `--help` for the
+flag list; `cmd/gen-validator-set-payload/main.go` is the canonical
+source. R4-CSM-01 critical fix coverage relies on this binding.
 
 **Rollback.** If step 3 lands with a bad payload, immediately call it again
 with a corrected payload for the **same epoch** — the contract overwrites

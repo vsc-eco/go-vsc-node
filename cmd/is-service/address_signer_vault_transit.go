@@ -91,6 +91,12 @@ type VaultTransitConfig struct {
 	// Audit OPS-R15-01 (R15).
 	TokenFile string
 	// HTTPClient is optional; nil falls back to a 10s-timeout client.
+	// Note: each Sign() + fetchLatestPublicKey() call additionally
+	// wraps a 5s context.WithTimeout, so per-call deadline is 5s
+	// even though the underlying HTTP client allows up to 10s. Audit
+	// R15-CONS-10 + R15-CORR-vault-sign-5s-timeout-under-load
+	// (the latter flags the 5s context as too tight for an under-load
+	// Vault — out of scope for this docstring fix).
 	HTTPClient *http.Client
 }
 
@@ -219,11 +225,16 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	if err := json.Unmarshal(rawBody, &out); err != nil {
 		return "", fmt.Errorf("decoding vault response: %w (raw=%s)", err, string(rawBody))
 	}
-	// Vault wraps signatures with "vault:v<keyVersion>:" so callers
-	// can auto-detect the key version that signed. We pinned
-	// key_version at startup, so the prefix is fixed for the process
-	// lifetime — strip it to hand Altera the raw base64-encoded
-	// Ed25519 sig (same shape AddressSignerEd25519 produces).
+	// Vault returns signatures prefixed with "vault:v<keyVersion>:".
+	// Audit R15-CONS-09: we explicitly do NOT auto-detect from the
+	// prefix at sign time — we capture latest_version at startup and
+	// pin it into both the request key_version field AND s.sigPrefix.
+	// A mismatched prefix here means Vault produced a different
+	// version than the pinned one (e.g. someone wrote
+	// `min_decryption_version` mid-flight or hacked the response),
+	// and we error out rather than silently accept. Strip the fixed
+	// prefix to hand Altera the raw base64-encoded Ed25519 sig (same
+	// shape AddressSignerEd25519 produces).
 	if !strings.HasPrefix(out.Data.Signature, s.sigPrefix) {
 		return "", fmt.Errorf("unexpected vault signature format: want prefix %q, got %q",
 			s.sigPrefix, out.Data.Signature)

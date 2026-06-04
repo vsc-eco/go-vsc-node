@@ -191,10 +191,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		// tests/devnet IS-login E2E suite. Address encoding
 		// inherits testnet params — the test driver doesn't
 		// validate against a strict regtest prefix set
-		// because (a) tests/devnet's dashd RPC works fine with
-		// the testnet prefixes and (b) production deploys
-		// never set -network=devnet (args.go gates it as a
-		// test-only mode).
+		// because tests/devnet's dashd RPC works fine with
+		// the testnet prefixes. Audit R15-CONS-11: args.go
+		// accepts -network=devnet without refusing in production;
+		// the only devnet-gated flag is -testBypassDashdISLock.
+		// Operational expectation: production deploys MUST use
+		// -network=mainnet or -network=testnet (and the
+		// fail-fast on unknown values still backstops typos).
 		params = dashTestNetParams()
 	default:
 		return nil, fmt.Errorf("network must be 'mainnet', 'testnet' or 'devnet', got %q", cfg.Network)
