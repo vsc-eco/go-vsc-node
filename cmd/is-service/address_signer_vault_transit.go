@@ -222,7 +222,29 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	defer resp.Body.Close()
 	rawBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("vault transit/sign returned %d: %s", resp.StatusCode, string(rawBody))
+		// Audit OPS-R15-04 (R15): tag the status class so on-call sees
+		// at-a-glance whether it's an auth issue (token rotation /
+		// permission denied), a config issue (mount or key missing /
+		// renamed), or a Vault-internal failure. Pre-fix every code
+		// mapped to the same wrapped error string; bisect required
+		// reading the raw response body.
+		var kind string
+		switch {
+		case resp.StatusCode == 401:
+			kind = "unauthenticated (token expired or invalid — check token rotation)"
+		case resp.StatusCode == 403:
+			kind = "permission denied (policy missing update on transit/sign/<key>)"
+		case resp.StatusCode == 404:
+			kind = "not found (check -signerVaultMount + -signerVaultKeyName)"
+		case resp.StatusCode == 429:
+			kind = "rate limited by Vault (back off + retry)"
+		case resp.StatusCode >= 500:
+			kind = "vault server error (5xx — investigate vault logs)"
+		default:
+			kind = "unexpected status"
+		}
+		return "", fmt.Errorf("vault transit/sign %d [%s]: %s",
+			resp.StatusCode, kind, string(rawBody))
 	}
 	var out struct {
 		Data struct {
