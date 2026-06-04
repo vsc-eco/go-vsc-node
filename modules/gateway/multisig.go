@@ -665,7 +665,9 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	slices.SortFunc(
 		unstakeOps,
 		func(a ledgerDb.ActionRecord, b ledgerDb.ActionRecord) int {
-			return int(a.Amount) - int(b.Amount)
+			// audit GV-L7: int(a)-int(b) overflows / inverts sign for large int64
+			// amounts → non-transitive order. Compare the int64 amounts directly.
+			return cmp.Compare(a.Amount, b.Amount)
 		},
 	)
 
@@ -744,7 +746,10 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	balRecord, _ := ms.balanceDb.GetBalanceRecord("system:fr_balance", bh)
 
 	if balRecord != nil {
-		if balRecord.BlockHeight > bh-SYNC_INTERVAL {
+		// audit GV-L6: guard the bh-SYNC_INTERVAL subtract — on a fresh chain
+		// (bh < SYNC_INTERVAL) it underflows to ~MaxUint64, making the freshness
+		// check always false and bypassing the "no sync to process" guard.
+		if bh < SYNC_INTERVAL || balRecord.BlockHeight > bh-SYNC_INTERVAL {
 			return signingPackage{}, errors.New("no sync to process")
 		}
 	}

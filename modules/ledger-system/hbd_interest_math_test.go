@@ -2,6 +2,7 @@ package ledgerSystem
 
 import (
 	"math"
+	"math/big"
 	"testing"
 )
 
@@ -55,15 +56,24 @@ func TestComputeEndingAvg_BoundaryFitsInt64(t *testing.T) {
 
 func TestComputeDistributeAmount_Normal(t *testing.T) {
 	// HBD_AVG=1000, amount=100, totalAvg=10_000 → 1000*100/10_000 = 10
-	got, ok := computeDistributeAmount(1000, 100, 10_000)
+	got, ok := computeDistributeAmount(1000, 100, big.NewInt(10_000))
 	if !ok || got != 10 {
 		t.Fatalf("got=%d ok=%v want=10 ok=true", got, ok)
 	}
 }
 
 func TestComputeDistributeAmount_ZeroTotalAvgFailsClosed(t *testing.T) {
-	if _, ok := computeDistributeAmount(1000, 100, 0); ok {
+	if _, ok := computeDistributeAmount(1000, 100, big.NewInt(0)); ok {
 		t.Fatalf("expected ok=false on totalAvg=0")
+	}
+	// GV-L2: a nil denominator must also fail closed, not panic.
+	if _, ok := computeDistributeAmount(1000, 100, nil); ok {
+		t.Fatalf("expected ok=false on nil totalAvg")
+	}
+	// GV-L2: a negative denominator (what the pre-fix int64 accumulator
+	// produced on overflow) must fail closed, never return a negative share.
+	if _, ok := computeDistributeAmount(1000, 100, big.NewInt(-1)); ok {
+		t.Fatalf("expected ok=false on negative totalAvg")
 	}
 }
 
@@ -73,7 +83,7 @@ func TestComputeDistributeAmount_LargeOperands(t *testing.T) {
 	// fail-closed in that case.
 	hbdAvg := int64(1) << 50
 	amount := int64(1) << 50
-	totalAvg := int64(1) << 50
+	totalAvg := new(big.Int).Lsh(big.NewInt(1), 50)
 	got, ok := computeDistributeAmount(hbdAvg, amount, totalAvg)
 	if !ok {
 		t.Fatalf("ok=false on large-but-quotient-in-range inputs")
