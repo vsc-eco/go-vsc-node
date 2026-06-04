@@ -31,17 +31,17 @@ import (
 // CRITICAL BYTE-ORDER NOTE — fixes audit finding
 // `canonical-message-txid-byte-order-drift`:
 //
-//   The canonical message embeds txid and rawTxHash in INTERNAL byte order
-//   (the raw output of sha256d(rawTxBytes)), NOT Bitcoin's display order.
-//   Display order is internal-reversed; dashd's getrawtransaction returns
-//   txids in display form.
+//	The canonical message embeds txid and rawTxHash in INTERNAL byte order
+//	(the raw output of sha256d(rawTxBytes)), NOT Bitcoin's display order.
+//	Display order is internal-reversed; dashd's getrawtransaction returns
+//	txids in display form.
 //
-//   Wire format (req.TxId, req.RawTxHashHex) carries DISPLAY-ORDER hex so
-//   operators / logs can copy-paste txids straight from explorers. The
-//   reversal happens here, inside the signing-message builder, on BOTH
-//   the sign and verify paths so the BLS aggregate computed by validators
-//   matches what the dash-mapping-contract recomputes via
-//   sha256.Sum256(sha256.Sum256(rawTxBytes)).
+//	Wire format (req.TxId, req.RawTxHashHex) carries DISPLAY-ORDER hex so
+//	operators / logs can copy-paste txids straight from explorers. The
+//	reversal happens here, inside the signing-message builder, on BOTH
+//	the sign and verify paths so the BLS aggregate computed by validators
+//	matches what the dash-mapping-contract recomputes via
+//	sha256.Sum256(sha256.Sum256(rawTxBytes)).
 func CanonicalSigningMessage(req IsLockAttestationRequest) ([]byte, error) {
 	txidDisplay, err := hex.DecodeString(req.TxId)
 	if err != nil || len(txidDisplay) != 32 {

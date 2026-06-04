@@ -93,7 +93,12 @@ type Service struct {
 	// cost. Audit R19-OPS-handle-request-not-single-flight-concurrent-
 	// rebroadcast-double-signs caught the previous get/Sign/put sequence
 	// admitting two flights on a race; this closes the gap.
-	signSF singleflightMap
+	//
+	// Pointer field (audit R20-CONS-go-vsc-singleflight-embedded-by-
+	// value-go-vet-fails): the contained sync.Mutex would otherwise
+	// trip go vet's copylocks pass on any value-receiver Service
+	// method. Held as *singleflightMap allocated by NewService.
+	signSF *singleflightMap
 
 	// WIRING NEEDED: assigned in NewService once the libp2p.PubSubService is built.
 	svc libp2p.PubSubService[p2pMessage]
@@ -120,6 +125,7 @@ func NewService(
 		onResponse: onResponse,
 		rateLimits: newRequestRateLimiter(),
 		signCache:  newSignRequestCache(),
+		signSF:     newSingleflightMap(),
 	}
 }
 
@@ -236,9 +242,26 @@ func (s *Service) HandleMessage(
 	return nil
 }
 
-// handleRequest is the validator-side path: look up in memory, sign if
-// found, send response. Silent on miss — no negative response (avoid
-// side channel that leaks "I never saw this lock" timing info).
+// handleRequest is the validator-side pipeline that produces a
+// signed attestation response for an incoming request. The flow:
+//
+//  1. memory.Lookup(req.TxId) — must have observed this tx locally.
+//     Miss → silently ignore (no negative response, avoids side
+//     channel leaking "I never saw this lock" timing).
+//  2. SEC-5 hash check (R15) — req.RawTxHashHex must match what
+//     the local dashd-RPC poller observed (byte-order reverse).
+//     Mismatch → debug log + silent drop.
+//  3. signRequestCache.get(cacheKey) — replay the cached response
+//     if a prior identical request was signed within signCacheTTL
+//     (audit R17). cacheKey covers (TxId, RawTxHashHex,
+//     InstructionHashHex, Epoch).
+//  4. signSF.do(cacheKey, ...) — single-flight gate (R19/R20) so
+//     concurrent rebroadcasts of the same key share ONE Sign() +
+//     cache.put. Panic-safe per R20.
+//  5. send() the response to the gossip topic.
+//
+// Audit R20-CONS-go-vsc-handlerequest-godoc-still-describes-pre-r19-
+// sequence updated this godoc to match the post-R19/R20 pipeline.
 func (s *Service) handleRequest(
 	ctx context.Context,
 	req IsLockAttestationRequest,
@@ -361,11 +384,11 @@ func (s *Service) handleRequest(
 // map writes trigger Go's runtime throw which bypasses defer/recover —
 // audit `rate-limiter-no-mutex-concurrent-map-panic`.
 type requestRateLimiter struct {
-	mu            sync.Mutex
-	state         map[string]*requestBucket
-	maxPerWindow  int
-	window        time.Duration
-	maxPeers      int
+	mu           sync.Mutex
+	state        map[string]*requestBucket
+	maxPerWindow int
+	window       time.Duration
+	maxPeers     int
 }
 
 type requestBucket struct {

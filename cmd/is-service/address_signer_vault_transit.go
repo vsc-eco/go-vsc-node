@@ -45,8 +45,8 @@ import (
 // `transit/keys/<key>` (for pubkey export). Wider grants are a
 // production smell.
 type AddressSignerVaultTransit struct {
-	addr    string // e.g. https://vault.internal:8200
-	token   string
+	addr  string // e.g. https://vault.internal:8200
+	token string
 	// tokenFile is the optional path the token was sourced from at
 	// startup. When set, currentToken() re-reads it on every
 	// invocation so vault-agent-style short-lived tokens — operator-
@@ -159,13 +159,13 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 		httpClient = &http.Client{Timeout: 0}
 	}
 	s := &AddressSignerVaultTransit{
-		addr:        strings.TrimRight(cfg.Addr, "/"),
-		token:       cfg.Token,
-		tokenFile:   cfg.TokenFile,
-		tokenSrc:    cfg.TokenSource,
-		mount:       mount,
-		keyName:     cfg.KeyName,
-		http:        httpClient,
+		addr:      strings.TrimRight(cfg.Addr, "/"),
+		token:     cfg.Token,
+		tokenFile: cfg.TokenFile,
+		tokenSrc:  cfg.TokenSource,
+		mount:     mount,
+		keyName:   cfg.KeyName,
+		http:      httpClient,
 	}
 	// Fetch the pubkey at startup — fail-fast if Vault is
 	// unreachable, the token is invalid, or the key doesn't exist.

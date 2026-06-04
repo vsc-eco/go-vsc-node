@@ -56,12 +56,12 @@ func validateOperatorURL(flag, raw string) error {
 }
 
 type args struct {
-	debug               bool
-	port                int
-	network             string // "mainnet", "testnet", or "devnet" (test-only)
-	chainID             string // "vsc-mainnet", "vsc-testnet", or "vsc-devnet" (test-only)
-	primaryPubKey       string
-	backupPubKey        string
+	debug                       bool
+	port                        int
+	network                     string // "mainnet", "testnet", or "devnet" (test-only)
+	chainID                     string // "vsc-mainnet", "vsc-testnet", or "vsc-devnet" (test-only)
+	primaryPubKey               string
+	backupPubKey                string
 	addressSignerSecret         string
 	addressSignerEd25519KeyFile string
 	// Vault Transit signer (recommended for production per spec
@@ -73,10 +73,10 @@ type args struct {
 	signerVaultKeyName   string
 	signerVaultToken     string // discouraged inline; prefer TokenFile
 	signerVaultTokenFile string
-	sessionTTLMinutes   int
-	dashdRPCURL         string
-	dashdRPCUser        string
-	dashdRPCPassword    string
+	sessionTTLMinutes    int
+	dashdRPCURL          string
+	dashdRPCUser         string
+	dashdRPCPassword     string
 	// L2 submitter — when l2GqlURL + l2PrivKeyHex are both set, the IS
 	// service will actually post mapInstantSendV2 transactions instead
 	// of using the log-only stub. The submitter's derived DID needs to
@@ -258,7 +258,7 @@ func parseArgs() (args, error) {
 	// IS-lock check on a live deployment.
 	if a.testBypassDashdISLock && a.network != "devnet" {
 		return a, fmt.Errorf(
-			"-testBypassDashdISLock=true requires -network=devnet (got %q); " +
+			"-testBypassDashdISLock=true requires -network=devnet (got %q); "+
 				"the flag is gated to the devnet-only test surface", a.network)
 	}
 	// Audit SEC-6 (R15) + R16-SEC-sec6-testnet-not-gated (MED):

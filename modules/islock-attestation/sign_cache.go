@@ -32,13 +32,20 @@ import (
 //   - gossipsub mesh degree (D=6 default) caps the FAN-OUT a single
 //     attacker can reach; an attacker has to control multiple peers
 //     to multiply.
-//   - validator-set membership: rebroadcasts arrive from N
-//     legitimate IS-service instances (typically 1 per deployment),
-//     so the "100 malicious peers" model assumes a much-larger
-//     compromise.
+//   - IS-service-instance count: legitimate rebroadcasts arrive from
+//     N IS-service instances (typically 1 per deployment), so the
+//     "100 malicious peers all gossiping" model assumes a much-larger
+//     compromise of the validator-set gossip topology. NOTE the
+//     gossipsub topic itself has NO peer-allowlist enforcement at
+//     this layer — anyone on the libp2p mesh can publish — so this
+//     is an observational property of normal deployments, not a
+//     hard membership filter. Audit R20-SEC-sign-cache-godoc-
+//     validator-set-membership-claim-is-not-enforced corrected the
+//     prior phrasing that implied an enforced filter.
 //   - BLS-sign latency (~tens of ms) caps the validator's own
 //     throughput at ~100 signs/sec/core — eviction churn is the
 //     observable, not CPU exhaustion.
+//
 // In the realistic 1-5 peer threat, capacity=1000 + 60s TTL is
 // over-provisioned. For larger compromises an LRU layer (rather
 // than FIFO) over recent cache HITS would protect legitimate

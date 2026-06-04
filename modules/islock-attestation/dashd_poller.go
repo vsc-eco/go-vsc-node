@@ -25,14 +25,14 @@ import (
 //     initial sanitiser as `url.Parse + u.User=nil + u.String()`.
 //   - R17-SEC-sanitizeRPCURL-leaks-on-parse-edge-cases (HIGH) found
 //     three concrete bypasses in that first cut:
-//       1. Query strings (`?token=secret`) were preserved verbatim.
-//       2. url.Parse errors fell through to `return raw`, so
-//          malformed inputs (backslash, control bytes, mismatched
-//          IPv6 brackets) emitted the ORIGINAL value with creds
-//          intact.
-//       3. Inputs that parsed successfully but had empty
-//          scheme/host (opaque `user:pass@host` form) still rendered
-//          the userinfo via u.String().
+//     1. Query strings (`?token=secret`) were preserved verbatim.
+//     2. url.Parse errors fell through to `return raw`, so
+//     malformed inputs (backslash, control bytes, mismatched
+//     IPv6 brackets) emitted the ORIGINAL value with creds
+//     intact.
+//     3. Inputs that parsed successfully but had empty
+//     scheme/host (opaque `user:pass@host` form) still rendered
+//     the userinfo via u.String().
 //
 // Behaviour now matches the sister-helper cmd/is-service/
 // orchestrator.go:sanitizeURLForLogWithFlag (used for the L2

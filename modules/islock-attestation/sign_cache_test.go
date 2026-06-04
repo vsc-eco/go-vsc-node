@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +17,30 @@ import (
 // countingSigner wraps a real BLS signer + records how many times
 // Sign() was called. Used to prove the cache short-circuits Sign() on
 // rebroadcast.
+//
+// signCalls is an atomic.Int64 (audit R20-SEC-singleflight-test-
+// signcalls-non-atomic-race-on-failure): the prior int field with
+// `c.signCalls++` had a non-atomic increment that the race detector
+// flagged when the singleflight path is broken. The atomic counter
+// is itself race-safe and lets the race detector's signal fire on
+// any OTHER unsafe sharing.
+//
+// signBarrier (optional): if non-nil, the FIRST Sign call blocks on
+// <-signBarrier until the test releases it. Used by the singleflight
+// test to force overlap between the leader's Sign and follower
+// register-on-the-gate window (audit R20-CORR-singleflight-test-
+// does-not-force-race: without a barrier the test could pass even
+// if singleflight is a no-op, because the Go scheduler may serialise
+// goroutines on a single P).
 type countingSigner struct {
-	inner     *fakeSigner
-	signCalls int
+	inner       *fakeSigner
+	signCalls   atomic.Int64
+	signBarrier chan struct{}
+	// signPanic, when non-nil, is called the FIRST time Sign() runs
+	// with the request that triggered it; if it returns a non-nil
+	// value, Sign panics with that value. Used by the panic-safety
+	// test (audit R20-CORR-singleflight-panic-leaks-followers-forever).
+	signPanic func(IsLockAttestationRequest) any
 }
 
 func newCountingSigner(t *testing.T, did string) *countingSigner {
@@ -39,7 +61,23 @@ func newCountingSigner(t *testing.T, did string) *countingSigner {
 func (c *countingSigner) ValidatorDID() string { return c.inner.did }
 func (c *countingSigner) PubkeyHex() string    { return c.inner.pkHex }
 func (c *countingSigner) Sign(req IsLockAttestationRequest) (string, error) {
-	c.signCalls++
+	// Increment FIRST so the test can assert ordering: when the
+	// barrier blocks the leader, the test sees signCalls==1 BEFORE
+	// releasing the barrier and observing the followers register.
+	c.signCalls.Add(1)
+	if c.signBarrier != nil {
+		<-c.signBarrier
+		// Only block on the first Sign — close + nil-out so
+		// subsequent calls (after the leader unblocks) run free.
+		// Race-safe pattern: close once via a separate sync.Once would
+		// be cleaner, but the test sets signBarrier=nil from outside
+		// after releasing.
+	}
+	if c.signPanic != nil {
+		if v := c.signPanic(req); v != nil {
+			panic(v)
+		}
+	}
 	return c.inner.Sign(req)
 }
 
@@ -85,7 +123,7 @@ func TestHandleRequest_DedupesAcrossRebroadcasts(t *testing.T) {
 	svc.handleRequest(context.Background(), req, send)
 
 	require.Len(t, sent, 3, "all 3 rebroadcasts must produce a response (cached or fresh)")
-	assert.Equal(t, 1, signer.signCalls,
+	assert.Equal(t, int64(1), signer.signCalls.Load(),
 		"validator must call Sign() exactly ONCE across the 3 rebroadcasts — "+
 			"audit R17 says re-signing on every rebroadcast is the CPU-burn vector")
 
@@ -128,7 +166,7 @@ func TestHandleRequest_NoDedupeAcrossDistinctRequests(t *testing.T) {
 	svc.handleRequest(context.Background(), reqA, send)
 	svc.handleRequest(context.Background(), reqB, send)
 
-	assert.Equal(t, 2, signer.signCalls,
+	assert.Equal(t, int64(2), signer.signCalls.Load(),
 		"distinct requests must each trigger a fresh Sign(); cache must "+
 			"only collapse rebroadcasts of the SAME (txid, rawTxHash, "+
 			"instructionHash, epoch) tuple")
@@ -286,6 +324,14 @@ func TestSignCache_ExpireReputDoesNotGrowUnbounded(t *testing.T) {
 // the cache godoc's "exactly ONCE" claim.
 func TestHandleRequest_SingleFlightAcrossConcurrentRebroadcasts(t *testing.T) {
 	signer := newCountingSigner(t, "did:key:validator-1")
+	// Audit R20-CORR-singleflight-test-does-not-force-race: install a
+	// barrier so the FIRST Sign() blocks until the test explicitly
+	// releases it. Without this, on a serializing Go scheduler the
+	// leader could finish + put-into-cache before followers entered
+	// handleRequest, and they'd hit the OUTER cache (R17 path) — the
+	// test would pass even if singleflight itself were a no-op.
+	signer.signBarrier = make(chan struct{})
+
 	const hex32 = "0011223344556677889900112233445566778899001122334455667788990011"
 	svc := NewService("vsc-testnet", signer, fakeMemoryFor(t, hex32), nil)
 
@@ -316,17 +362,105 @@ func TestHandleRequest_SingleFlightAcrossConcurrentRebroadcasts(t *testing.T) {
 			})
 		}()
 	}
+
+	// Wait for the leader to enter Sign() (signCalls.Load() == 1) AND
+	// for at least one follower to register on signSF (svc.signSF.calls
+	// has the cacheKey). At that point the leader is parked on the
+	// barrier + at least one follower is parked on <-call.done. THEN
+	// release the barrier — followers must replay, NOT call Sign again.
+	require.Eventually(t, func() bool {
+		if signer.signCalls.Load() != 1 {
+			return false
+		}
+		// At least one follower must be registered (we have N-1
+		// followers in flight, so at least 1 is in signSF).
+		svc.signSF.mu.Lock()
+		defer svc.signSF.mu.Unlock()
+		return len(svc.signSF.calls) == 1
+	}, 5*time.Second, time.Millisecond,
+		"leader must enter Sign + at least one follower must register before release")
+
+	close(signer.signBarrier)
 	wg.Wait()
 
 	assert.Equal(t, concurrency, len(sent),
 		"all %d concurrent rebroadcasts must produce a response (leader + followers replay)", concurrency)
-	assert.Equal(t, 1, signer.signCalls,
+	assert.Equal(t, int64(1), signer.signCalls.Load(),
 		"single-flight: only ONE Sign() across %d concurrent identical "+
 			"rebroadcasts (audit R19) — the rest must wait + replay", concurrency)
 	for i, m := range sent {
 		require.NotNil(t, m.Response, "response %d nil", i)
 		assert.Equal(t, sent[0].Response.BlsSigHex, m.Response.BlsSigHex,
 			"every follower must replay the leader's signature")
+	}
+}
+
+// TestHandleRequest_SingleFlightPanicDoesNotStrand covers audit
+// R20-CORR-singleflight-panic-leaks-followers-forever (HIGH).
+// If the leader's Sign() panics, the singleflight cleanup MUST still
+// run — followers must unblock with (nil, false), and the cacheKey
+// must NOT be permanently registered in s.signSF.calls.
+func TestHandleRequest_SingleFlightPanicDoesNotStrand(t *testing.T) {
+	signer := newCountingSigner(t, "did:key:validator-1")
+	signer.signPanic = func(_ IsLockAttestationRequest) any {
+		return "synthetic Sign panic for R20 regression test"
+	}
+
+	const hex32 = "0011223344556677889900112233445566778899001122334455667788990011"
+	svc := NewService("vsc-testnet", signer, fakeMemoryFor(t, hex32), nil)
+
+	req := IsLockAttestationRequest{
+		TxId:               hex32,
+		RawTxHashHex:       hex32,
+		InstructionHashHex: hex32,
+		Epoch:              1,
+		ChainId:            "vsc-testnet",
+	}
+
+	// Drive handleRequest in a goroutine + recover its panic. The
+	// panic SHOULD propagate out of handleRequest (the outer caller
+	// in production uses utils.RecoverGoroutine to swallow), but the
+	// singleflight cleanup MUST run via defer before propagation.
+	done := make(chan struct{})
+	var recovered any
+	go func() {
+		defer close(done)
+		defer func() { recovered = recover() }()
+		svc.handleRequest(context.Background(), req, func(p2pMessage) error { return nil })
+	}()
+	<-done
+
+	require.NotNil(t, recovered,
+		"signPanic stub must produce a panic that propagates to the test goroutine")
+
+	// The cacheKey must be GONE from the singleflight map. If the
+	// pre-R20 (panic-unsafe) code path is in effect, the entry would
+	// remain forever + any subsequent handleRequest with the same key
+	// would deadlock as a follower.
+	svc.signSF.mu.Lock()
+	calls := len(svc.signSF.calls)
+	svc.signSF.mu.Unlock()
+	assert.Zero(t, calls,
+		"singleflight map must be CLEAN after a panic-during-Sign — "+
+			"audit R20-CORR-singleflight-panic-leaks-followers-forever; "+
+			"pre-fix the cacheKey would stay registered + every future "+
+			"follower would block on a never-closed done channel")
+
+	// And a fresh request with the same key (after clearing the panic
+	// stub) must complete cleanly — proves we didn't leave the cache
+	// poisoned. Use Eventually to handle the case where the leader
+	// has not yet released signCache state.
+	signer.signPanic = nil
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		svc.handleRequest(context.Background(), req, func(p2pMessage) error { return nil })
+	}()
+	select {
+	case <-done2:
+		// Good: fresh request completed (didn't deadlock).
+	case <-time.After(2 * time.Second):
+		t.Fatal("post-panic handleRequest deadlocked — singleflight cleanup failed")
 	}
 }
 

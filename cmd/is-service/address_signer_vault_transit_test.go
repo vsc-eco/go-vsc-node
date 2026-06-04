@@ -27,11 +27,11 @@ import (
 // the production code path (encoding, prefix-stripping, etc.)
 // without any mocks in the adapter itself.
 type fakeVault struct {
-	pub    ed25519.PublicKey
-	priv   ed25519.PrivateKey
-	mount  string
-	key    string
-	token  string
+	pub   ed25519.PublicKey
+	priv  ed25519.PrivateKey
+	mount string
+	key   string
+	token string
 	// Hook fields for failure-injection tests; nil = use defaults.
 	signRespOverride func() (status int, body string)
 }

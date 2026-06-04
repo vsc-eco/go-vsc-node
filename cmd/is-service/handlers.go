@@ -74,13 +74,13 @@ func (h *AddressSignerHMAC) Sign(_ context.Context, depositAddress, instruction 
 
 // Server holds the IS service state. One per process.
 type Server struct {
-	primaryPubKey string
-	backupPubKey  string
-	chainParams   *chaincfg.Params
-	chainID       string
-	sessions      *SessionStore
-	sessionTTL    time.Duration
-	signer        AddressSigner
+	primaryPubKey      string
+	backupPubKey       string
+	chainParams        *chaincfg.Params
+	chainID            string
+	sessions           *SessionStore
+	sessionTTL         time.Duration
+	signer             AddressSigner
 	rateLimitsIP       *rateLimiter // /session/start — 10/min
 	rateLimitsStatusIP *rateLimiter // /status — 60/min (polling-friendly)
 	rateLimitsCancelIP *rateLimiter // /cancel — 10/min (one-shot per session)
@@ -220,14 +220,14 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	driveCtx, driveCancel := context.WithCancel(context.Background())
 	return &Server{
-		primaryPubKey:     cfg.PrimaryPubKeyHex,
-		backupPubKey:      cfg.BackupPubKeyHex,
-		chainParams:       params,
-		chainID:           cfg.ChainID,
-		sessions:          sessions,
-		sessionTTL:        cfg.SessionTTL,
-		signer:            cfg.Signer,
-		rateLimitsIP: newRateLimiter(10, time.Minute),
+		primaryPubKey: cfg.PrimaryPubKeyHex,
+		backupPubKey:  cfg.BackupPubKeyHex,
+		chainParams:   params,
+		chainID:       cfg.ChainID,
+		sessions:      sessions,
+		sessionTTL:    cfg.SessionTTL,
+		signer:        cfg.Signer,
+		rateLimitsIP:  newRateLimiter(10, time.Minute),
 		// Audit R16-SEC-status-cancel-no-rate-limit (LOW) +
 		// R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails
 		// (LOW): /status + /cancel were originally rate-limited from a
@@ -239,18 +239,18 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		// /status keeps 60/min (loose for polling); /cancel uses 10/min
 		// (one-shot per session in normal flows, so 10/min is generous
 		// even with retries + multi-tab).
-		rateLimitsStatusIP: newRateLimiter(60, time.Minute),
-		rateLimitsCancelIP: newRateLimiter(10, time.Minute),
-		dashd:             cfg.Dashd,
-		orch:              cfg.Orch,
-		broadcasterHealth: cfg.BroadcasterHealth,
-		dashdHealth:       cfg.DashdHealth,
-		submitterHealth:   cfg.SubmitterHealth,
+		rateLimitsStatusIP:   newRateLimiter(60, time.Minute),
+		rateLimitsCancelIP:   newRateLimiter(10, time.Minute),
+		dashd:                cfg.Dashd,
+		orch:                 cfg.Orch,
+		broadcasterHealth:    cfg.BroadcasterHealth,
+		dashdHealth:          cfg.DashdHealth,
+		submitterHealth:      cfg.SubmitterHealth,
 		trustedProxies:       append([]string(nil), cfg.TrustedProxies...),
 		testEndpointsEnabled: cfg.TestEndpointsEnabled,
 		driveCtx:             driveCtx,
 		driveCancel:          driveCancel,
-		processStartedAt:  time.Now(),
+		processStartedAt:     time.Now(),
 	}, nil
 }
 

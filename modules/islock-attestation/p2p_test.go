@@ -16,9 +16,9 @@ import (
 // PubkeyHex from the signer; without this the producer/consumer
 // mismatch in the broadcaster + contract silently drops every response.
 type fakeSigner struct {
-	did    string
-	sk     *bls.SecretKey
-	pkHex  string
+	did   string
+	sk    *bls.SecretKey
+	pkHex string
 }
 
 func newFakeSigner(t *testing.T, did string) *fakeSigner {

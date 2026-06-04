@@ -125,7 +125,12 @@ func main() {
 			slog.Error("loading Ed25519 signer key file", "err", err)
 			os.Exit(1)
 		}
+		// Audit R20-OPS-ed25519-startup-log-missing-keyfile-path:
+		// mirror the R19 Vault Transit startup-log fix here so
+		// operators triaging the Ed25519 file signer have the same
+		// log-grep anchor (the keyFile path) that Vault operators do.
 		slog.Info("address signer: ed25519 file-backed (production-shape; pin pubkey in PUBLIC_IS_SERVICE_SIGNER_PUBKEY)",
+			"keyFile", args.addressSignerEd25519KeyFile,
 			"pubkey", pubHex)
 		signer = s
 	case args.addressSignerSecret != "":
