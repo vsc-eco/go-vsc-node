@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -484,13 +485,32 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		}
 		s.State = StateOnChain
 		s.OnChainAt = &now
-		// v1 session token: hex of (sid || dashTxId || chainID). This is a
-		// stable opaque handle the frontend can present to Altera; Altera
-		// validates it by checking the dash-mapping-contract state for
-		// the bound DashDID. Production may swap this for a JWT signed by
-		// the IS service's HSM/KMS once that lands.
-		h := sha256.Sum256([]byte(sid + "|" + txid + "|" + req.ChainId))
-		s.SessionToken = hex.EncodeToString(h[:])
+		// Audit SEC-8 (R15): SessionToken is server-side-random, NOT
+		// derived from public observables. The pre-SEC-8 implementation
+		// minted it as sha256(sid || dashTxId || chainID); all three
+		// inputs are public (sid is in every /status URL path; txid is
+		// broadcast on Dash; chainID is constant per deployment), so an
+		// attacker who scrapes a /status URL (referrer header, HTTP log,
+		// the QR-URI itself) could lift sid + dashTxId and compute the
+		// SessionToken locally — bypassing TLS confidentiality. The
+		// token's only role today is opaque-handle-for-the-frontend, but
+		// the comment "Altera validates it by checking the contract"
+		// implies it'll graduate to an auth credential; this commit
+		// prevents that graduation from silently inheriting the
+		// existence-oracle weakness.
+		//
+		// 32 bytes of crypto/rand → 64-hex-char token (~256 bits of
+		// entropy). Failing to read /dev/urandom is unrecoverable —
+		// minting a deterministic fallback would re-open the audit
+		// finding. Surface the error to the caller; the session stays
+		// in StateL2Submitted (idempotent retry on the next tick).
+		var tokenBytes [32]byte
+		if _, err := rand.Read(tokenBytes[:]); err != nil {
+			slog.Error("crypto/rand failed minting SessionToken; session held in L2_SUBMITTED for retry",
+				"sid", sid, "err", err)
+			return
+		}
+		s.SessionToken = hex.EncodeToString(tokenBytes[:])
 		advanced = true
 	})
 	if !advanced {

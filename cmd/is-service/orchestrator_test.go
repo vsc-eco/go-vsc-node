@@ -729,35 +729,56 @@ func TestOrchestrator_PerSigVerifyDropsJunk(t *testing.T) {
 		"junk responses MUST NOT reach the submitter (audit R2-N5)")
 }
 
-// regression: verifies the session token is deterministic for the same
-// (sid, txid, chainID) — Altera frontend needs idempotent lookup.
-func TestOrchestrator_SessionTokenIsDeterministic(t *testing.T) {
-	store := NewSessionStore(time.Hour)
-	collector := newAttestationCollector()
-	broadcaster := &fakeBroadcaster{collector: collector}
-	submitter := &fakeSubmitter{}
-	sk, _ := mkValidatorKey(t)
-	broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
-		go func() {
-			resp, err := islock.BuildResponse(req, "v1", sk)
-			if err != nil {
-				return
-			}
-			collector.Deliver(resp)
-		}()
+// TestOrchestrator_SessionTokenIsRandom — audit SEC-8 (R15) regression:
+// the SessionToken MUST be derived from crypto/rand, NOT from the
+// public (sid, txid, chainID) tuple. Two sessions with identical
+// inputs must mint DIFFERENT tokens.
+//
+// (The pre-SEC-8 implementation minted token = sha256(sid || txid
+// || chainID); anyone scraping a /status URL could compute the token
+// locally and bypass TLS confidentiality.)
+func TestOrchestrator_SessionTokenIsRandom(t *testing.T) {
+	mkOrch := func() *Orchestrator {
+		store := NewSessionStore(time.Hour)
+		collector := newAttestationCollector()
+		broadcaster := &fakeBroadcaster{collector: collector}
+		submitter := &fakeSubmitter{}
+		sk, _ := mkValidatorKey(t)
+		broadcaster.onBroadcast = func(req islock.IsLockAttestationRequest) {
+			go func() {
+				resp, err := islock.BuildResponse(req, "v1", sk)
+				if err != nil {
+					return
+				}
+				collector.Deliver(resp)
+			}()
+		}
+		return NewOrchestrator(OrchestratorConfig{
+			Sessions: store, Collector: collector, Broadcaster: broadcaster,
+			Submitter: submitter, ChainID: "vsc-testnet",
+			QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
+		})
 	}
-	orch := NewOrchestrator(OrchestratorConfig{
-		Sessions: store, Collector: collector, Broadcaster: broadcaster,
-		Submitter: submitter, ChainID: "vsc-testnet",
-		QuorumThreshold: 1, CollectTimeout: 200 * time.Millisecond, ReconcileBackoffs: testBackoffs,
-	})
-	putObservedSession(t, store, "sid-tok")
-	orch.Drive(context.Background(), "sid-tok", fakeTxid, fakeRawTxHex)
 
-	sess, _ := store.Get("sid-tok")
-	assert.Len(t, sess.SessionToken, 64, "token is 32-byte sha256 hex")
-	// Re-derive locally with the same primitive.
-	// (Don't re-call Drive — it would skip the now-terminal session.)
-	_, err := hex.DecodeString(sess.SessionToken)
-	assert.NoError(t, err)
+	orch1 := mkOrch()
+	putObservedSession(t, orch1.sessions, "sid-tok")
+	orch1.Drive(context.Background(), "sid-tok", fakeTxid, fakeRawTxHex)
+	sess1, _ := orch1.sessions.Get("sid-tok")
+	require.NotEmpty(t, sess1.SessionToken)
+	assert.Len(t, sess1.SessionToken, 64, "token is 32-byte hex (256 bits of entropy)")
+	_, err := hex.DecodeString(sess1.SessionToken)
+	require.NoError(t, err, "token must be valid hex")
+
+	// Same inputs (sid, txid, chainID) → DIFFERENT token. This is the
+	// SEC-8 regression assertion: pre-fix the two tokens would match
+	// because sha256(sid || txid || chainID) is deterministic.
+	orch2 := mkOrch()
+	putObservedSession(t, orch2.sessions, "sid-tok")
+	orch2.Drive(context.Background(), "sid-tok", fakeTxid, fakeRawTxHex)
+	sess2, _ := orch2.sessions.Get("sid-tok")
+	require.NotEmpty(t, sess2.SessionToken)
+	assert.NotEqual(t, sess1.SessionToken, sess2.SessionToken,
+		"SessionToken MUST be random (audit SEC-8); identical (sid, txid, "+
+			"chainID) inputs MUST produce different tokens or an attacker "+
+			"who scrapes /status URLs can compute the token locally")
 }
