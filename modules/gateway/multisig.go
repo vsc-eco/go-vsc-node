@@ -134,6 +134,35 @@ var ROTATION_INTERVAL = uint64(20 * 60) //One hour of Hive blocks
 var ACTION_INTERVAL = uint64(20)        // One minute of Hive blocks
 var SYNC_INTERVAL = uint64(7200)        // Every 6 hours
 
+// Canonical mainnet intervals. The VSC_GATEWAY_*_INTERVAL env overrides applied
+// in init() are devnet-only; on mainnet these are enforced regardless.
+const (
+	mainnetRotationInterval = uint64(20 * 60)
+	mainnetActionInterval   = uint64(20)
+	mainnetSyncInterval     = uint64(7200)
+)
+
+// enforceMainnetIntervals forces the canonical rotation/action/sync intervals on
+// mainnet, overriding any VSC_GATEWAY_*_INTERVAL value that init() picked up
+// from the environment. review7 C11-c: these intervals gate deterministic ticks
+// (bh % INTERVAL), so a mainnet node running a divergent interval — set
+// accidentally or maliciously by anyone with env access — would fork. The
+// overrides remain available off-mainnet for e2e tests.
+func enforceMainnetIntervals(onMainnet bool) {
+	if !onMainnet {
+		return
+	}
+	if ROTATION_INTERVAL != mainnetRotationInterval ||
+		ACTION_INTERVAL != mainnetActionInterval ||
+		SYNC_INTERVAL != mainnetSyncInterval {
+		log.Warn("ignoring VSC_GATEWAY_*_INTERVAL override on mainnet — forcing canonical intervals",
+			"rotationWas", ROTATION_INTERVAL, "actionWas", ACTION_INTERVAL, "syncWas", SYNC_INTERVAL)
+		ROTATION_INTERVAL = mainnetRotationInterval
+		ACTION_INTERVAL = mainnetActionInterval
+		SYNC_INTERVAL = mainnetSyncInterval
+	}
+}
+
 // Devnet-only env-var overrides so e2e tests can drive rotation/action
 // ticks on the order of seconds instead of an hour. Honoured only when
 // set to a positive value; production binaries leave the defaults alone.
@@ -526,6 +555,15 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	}
 	if len(actions) == 0 {
 		return signingPackage{}, errors.New("no actions to process")
+	}
+	// review7 C11-a: bound the per-batch action count so a flood of queued
+	// actions cannot make this build an unbounded ops slice / oversized L1
+	// multisig tx. GetPendingActions is already SetLimit-bounded at the DB
+	// layer (C11-b); this is the in-memory backstop, and uses the same
+	// deterministic cap so every cosigner reproduces the identical batch. The
+	// remainder is processed on subsequent ticks (sorted by block_height, id).
+	if len(actions) > ledgerDb.MaxGatewayActionBatch {
+		actions = actions[:ledgerDb.MaxGatewayActionBatch]
 	}
 
 	ops := []hivego.HiveOperation{}
@@ -1019,6 +1057,9 @@ func New(
 	identityConfig common.IdentityConfig,
 	hiveClient *hivego.HiveRpcNode,
 ) *MultiSig {
+	// C11-c: a mainnet node must use the canonical consensus intervals,
+	// regardless of any VSC_GATEWAY_*_INTERVAL env value.
+	enforceMainnetIntervals(sconf.OnMainnet())
 	return &MultiSig{
 		witnessDb:     witnessDb,
 		electionDb:    electionDb,
