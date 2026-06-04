@@ -91,12 +91,10 @@ type VaultTransitConfig struct {
 	// Audit OPS-R15-01 (R15).
 	TokenFile string
 	// HTTPClient is optional; nil falls back to a 10s-timeout client.
-	// Note: each Sign() + fetchLatestPublicKey() call additionally
-	// wraps a 5s context.WithTimeout, so per-call deadline is 5s
-	// even though the underlying HTTP client allows up to 10s. Audit
-	// R15-CONS-10 + R15-CORR-vault-sign-5s-timeout-under-load
-	// (the latter flags the 5s context as too tight for an under-load
-	// Vault — out of scope for this docstring fix).
+	// Per-call context.WithTimeout layers: startup probe = 5s
+	// (fail-fast), Sign() = 30s (audit R15-CORR-vault-sign-5s-timeout-
+	// under-load bumped from 5s because Vault under HSM-backed load
+	// routinely sees >5s p99).
 	HTTPClient *http.Client
 }
 
@@ -200,7 +198,16 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 		"key_version": s.keyVersion,
 	})
 	endpoint := fmt.Sprintf("%s/v1/%s/sign/%s", s.addr, s.mount, s.keyName)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Audit R15-CORR-vault-sign-5s-timeout-under-load (LOW): bumped
+	// from 5s → 30s. Vault under load (HSM-backed key, high concurrency
+	// on a single Transit key, or seal-wrapped operations) routinely
+	// sees >5s p99 latencies; a tight 5s causes a 500 → user retries →
+	// retry storm cascade. The HTTP client default Timeout is 10s, so
+	// the WithTimeout(30s) only kicks in when the HTTP roundtrip
+	// itself somehow exceeds 10s (a misbehaving proxy or a TCP stall
+	// that survives the HTTP timeout); 30s gives that case a clear
+	// upper bound rather than indefinite waiting.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {

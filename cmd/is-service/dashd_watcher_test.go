@@ -127,7 +127,7 @@ func TestWatcher_FiresOnInstantLock(t *testing.T) {
 				"instantlock": true,
 				"vout": []map[string]any{
 					{"scriptPubKey": map[string]any{
-						"addresses": []string{"tdash1qWatchedAddress"},
+						"addresses": []string{"8WatchedAddrTestStub"},
 					}},
 				},
 			}, nil
@@ -146,7 +146,7 @@ func TestWatcher_FiresOnInstantLock(t *testing.T) {
 		rawTxHex string
 		fired    int
 	}
-	w.Watch("tdash1qWatchedAddress", "sid-1", func(sid, txid, rawTxHex string) {
+	w.Watch("8WatchedAddrTestStub", "sid-1", func(sid, txid, rawTxHex string) {
 		observed.mu.Lock()
 		defer observed.mu.Unlock()
 		observed.sid = sid
@@ -335,7 +335,7 @@ func TestServer_OnISLockObserved_TransitionsState(t *testing.T) {
 	sess := &Session{
 		Sid:            "sid-x",
 		Op:             OpAuth,
-		DepositAddress: "tdash1q...",
+		DepositAddress: "8TestStubP2SH...",
 		State:          StateWaitingForIS,
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(30 * time.Minute),

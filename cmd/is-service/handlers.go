@@ -361,8 +361,12 @@ func (s *Server) handleTestObserved(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing sid")
 		return
 	}
+	// Audit SEC-11 (R15, LOW): cap body size at 64 KiB to defang a
+	// payload-bomb on devnet (legitimate TestObservedRequest is
+	// ~700 bytes — a rawTxHex hex + txid + sid). Without this any
+	// caller with reach to a devnet build could OOM the IS service.
 	var req TestObservedRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil && err.Error() != "EOF" {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -392,8 +396,9 @@ func (s *Server) handleTestAttestation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "orchestrator not configured")
 		return
 	}
+	// SEC-11 (R15): same 64 KiB cap as /test/observed.
 	var resp islock.IsLockAttestationResponse
-	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&resp); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}

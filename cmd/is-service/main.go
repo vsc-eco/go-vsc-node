@@ -116,7 +116,14 @@ func main() {
 		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -signerVaultAddr (Vault Transit) or -addressSignerEd25519KeyFile per §5.7)")
 		signer = NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 	default:
-		slog.Error("address signer required: set -signerVaultAddr (Vault Transit, recommended) or -addressSignerEd25519KeyFile (file-based) or -addressSignerSecret (dev HMAC stub)")
+		// Audit OPS-R15-08 (R15): -addressSignerSecret is DEV-ONLY;
+		// listing it as a peer alternative to the production options
+		// mis-implies it's acceptable for production. Reword to make
+		// the dev-only nature explicit.
+		slog.Error("address signer required: pick one of\n" +
+			"  -signerVaultAddr=<url> -signerVaultKeyName=<key>  (PRODUCTION: Vault Transit / HSM-shape per spec §5.7)\n" +
+			"  -addressSignerEd25519KeyFile=<path>               (PRODUCTION: file-based Ed25519)\n" +
+			"  -addressSignerSecret=<value>                      (DEV/TEST ONLY: HMAC stub)")
 		os.Exit(1)
 	}
 

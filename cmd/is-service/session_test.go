@@ -88,7 +88,7 @@ func TestSessionStore_PutGet(t *testing.T) {
 	sess := &Session{
 		Sid:            "sid1",
 		Op:             OpAuth,
-		DepositAddress: "tdash1q...",
+		DepositAddress: "8TestStubP2SH...",
 		State:          StateWaitingForIS,
 		CreatedAt:      now,
 		ExpiresAt:      now.Add(30 * time.Minute),
