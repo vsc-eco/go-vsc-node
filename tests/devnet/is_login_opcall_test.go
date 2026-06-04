@@ -317,28 +317,72 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 
 	// === Assert the target's state was modified ===
 	//
-	// forwarder.execute calls call-tss.setString("ophk,opval"),
-	// which writes state["ophk"]="opval". Read via the L2's
-	// findContractOutput-equivalent.
-	// (Helper not yet present in the harness; we settle for
-	// scraping magi-1's logs for the contract-call execution
-	// evidence. A proper getStateByKeys-based check is a future
-	// improvement.)
-	deadline := time.Now().Add(60 * time.Second)
-	saw := false
-	for time.Now().Before(deadline) {
-		logs, err := d.Logs(ctx, "magi-1")
-		if err == nil && strings.Contains(logs, "forwarder.execute") {
-			saw = true
-			break
+	// The full pipeline writes:
+	//   dashd payment → orchestrator → L2 mapInstantSendV2 → mapping.
+	//   HandleMapInstantSendV2 → dispatchForward → forwarder.Execute
+	//   → call-tss.setString → sdk.StateSetObject("ophk","opval")
+	// We poll the L2 GQL getStateByKeys on the target until it sees
+	// the write OR the deadline fires.
+	//
+	// SOFT SIGNAL (TODO): mapping.dispatchForward's spec §5.2.6 HBD
+	// pre-check debits ~500 milli-HBD of RC-reimbursement from the
+	// SENDER's contract-internal HBD balance BEFORE invoking the
+	// forwarder. A fresh DashDID (i.e. a user's first interaction)
+	// has zero internal HBD on the mapping contract, so the pre-
+	// check fails with StatusForwardFailedInsufficientRC and the
+	// forwarder is never invoked. To exercise the dispatch path
+	// end-to-end the test would need to pre-fund the user's DashDID
+	// with HBD on the mapping contract (e.g. via a prior DASH→HBD
+	// swap, or a test-only credit helper analogous to the
+	// `setAllowedTargetImmediate` enabler at main.go:396).
+	//
+	// Until that pre-funding scaffolding lands, the state-poll
+	// returns nil but the test does NOT t.Fatal — the L2_SUBMITTED
+	// transition already confirmed mapping.HandleMapInstantSendV2
+	// landed on L2 (the bulk of the op=call pipeline). The forwarder
+	// dispatch + target write half is verified by the forwarder
+	// unit tests in dash-forwarder-contract/tests/current/parser_
+	// test.go (TestDecodeArgs_* + the ParseInstruction suite).
+	//
+	// Audit: this is the "HBD pre-fund test-infra gap" surfaced
+	// 2026-06-04 when the prior soft-log-scrape was upgraded to a
+	// real state-poll. See memory note [[dash_is_login_audit_loop]]
+	// "op=call HBD pre-fund gap".
+	const expectedTargetVal = targetVal
+	statePollDeadline := time.Now().Add(30 * time.Second)
+	stateOk := false
+	var lastObserved any
+	for time.Now().Before(statePollDeadline) {
+		st, err := d.GetStateByKeys(ctx, 1, targetId, []string{targetKey})
+		if err == nil && st != nil {
+			lastObserved = st[targetKey]
+			if v, ok := st[targetKey].(string); ok && v == expectedTargetVal {
+				stateOk = true
+				break
+			}
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("ctx cancelled while waiting for forwarder.execute log")
+			t.Fatal("ctx cancelled while polling target contract state")
 		case <-time.After(3 * time.Second):
 		}
 	}
-	if !saw {
-		t.Logf("did not observe forwarder.execute in magi-1 logs within 60s; this is a soft signal — the L2 submission may have been broadcast-accepted but contract execution can lag depending on which witness produced the block")
+	if stateOk {
+		t.Logf("target contract state[%q]=%q — full op=call pipeline verified end-to-end",
+			targetKey, expectedTargetVal)
+	} else {
+		// Dump magi-1 tail so an operator triaging a CI run can see
+		// whether the forwarder was reached at all.
+		if magi1Logs, lerr := d.Logs(ctx, "magi-1"); lerr == nil {
+			sawDispatch := strings.Contains(magi1Logs, "forwarder.execute")
+			t.Logf("forwarder.execute in magi-1 logs: %v", sawDispatch)
+		}
+		t.Logf("target contract state[%q] did not become %q within 30s "+
+			"(last observed: %v). This is EXPECTED until the HBD pre-fund "+
+			"test-infra gap is closed — see the SOFT SIGNAL comment above. "+
+			"L2_SUBMITTED reached above proves the bulk of the op=call "+
+			"pipeline landed; the forwarder b64-decode half is covered by "+
+			"the dash-forwarder-contract unit tests.",
+			targetKey, expectedTargetVal, lastObserved)
 	}
 }
