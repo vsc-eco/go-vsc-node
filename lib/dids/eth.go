@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"slices"
@@ -106,7 +107,7 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	}
 
 	payload, err := ConvertCBORToEIP712TypedData("vsc.network", block.RawData(), "tx_container_v0", func(f float64) (*big.Int, error) {
-		return big.NewInt(int64(f)), nil
+		return EIP712AmountFloat(f)
 	})
 	// convert the sorted decoded data into EIP-712 typed data
 	// payload, err := ConvertToEIP712TypedData("vsc.network", decodedData, "tx_container_v0", func(f float64) (*big.Int, error) {
@@ -277,6 +278,17 @@ func isValidArr(s string) bool {
 
 	_, err := strconv.Atoi(s[len(arrayStart) : len(s)-len(arrayEnd)])
 	return err == nil
+}
+
+// EIP712AmountFloat converts a CBOR float amount to a big.Int for EIP-712
+// hashing. audit GV-L5: reject non-integer or out-of-int64-range floats with an
+// explicit error instead of silently truncating fractions / wrapping via
+// int64(f). Valid VSC amounts are integers, so this changes no valid signature.
+func EIP712AmountFloat(f float64) (*big.Int, error) {
+	if f != math.Trunc(f) || f >= 9223372036854775808.0 || f < -9223372036854775808.0 {
+		return nil, fmt.Errorf("invalid EIP-712 float amount %v: must be an integer within int64 range", f)
+	}
+	return big.NewInt(int64(f)), nil
 }
 
 func ConvertCBORToEIP712TypedData(domainName string, data []byte, primaryTypeName string, floatHandler func(f float64) (*big.Int, error)) (TypedData, error) {
@@ -515,7 +527,7 @@ func (e *EthProvider) Sign(block blocks.Block) (string, error) {
 	}
 
 	payload, err := ConvertCBORToEIP712TypedData("vsc.network", block.RawData(), "tx_container_v0", func(f float64) (*big.Int, error) {
-		return big.NewInt(int64(f)), nil
+		return EIP712AmountFloat(f)
 	})
 
 	if err != nil {

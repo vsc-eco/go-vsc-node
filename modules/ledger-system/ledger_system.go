@@ -762,7 +762,16 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	})
 
 	processedBalRecords := make([]ledger_db.BalanceRecord, 0)
-	totalAvg := int64(0)
+	// GV-L2: totalAvg is the cross-account SUM of every account's endingAvg.
+	// A single endingAvg fits int64 (computeEndingAvg guards it), but the SUM
+	// across all accounts is not int64-bounded. As an int64 accumulator it
+	// wrapped negative once the sum crossed math.MaxInt64, and a negative
+	// denominator passed straight through computeDistributeAmount's old
+	// `== 0` guard, producing negative per-account shares that the `> 0`
+	// filter below then dropped — skipping the whole epoch's distribution
+	// while SaveClaim still recorded the full amount. Keep the accumulator in
+	// arbitrary precision so it can never wrap.
+	totalAvgBig := new(big.Int)
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
 
@@ -795,20 +804,37 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		balance.HBD_AVG = endingAvg
 
 		processedBalRecords = append(processedBalRecords, balance)
-		totalAvg = totalAvg + endingAvg
+		totalAvgBig.Add(totalAvgBig, big.NewInt(endingAvg))
 	}
 
 	bsj, _ := json.Marshal(processedBalRecords)
 
 	fmt.Println("Processed bal records", ledgerBalances, string(bsj))
 
+	// GV-L1: computeDistributeAmount uses floor division, so the sum of all
+	// per-account shares is amount-(remainder), where remainder can be up to
+	// N-1 milli-HBD (N = recipients). The pre-fix code never credited that
+	// remainder anywhere yet SaveClaim recorded the full `amount`, so the
+	// claim record claimed more was paid out than the ledger actually
+	// received — a permanent accounting lie (and the same overstatement
+	// happened on the GV-L2 overflow path, where ZERO was credited but
+	// `amount` was still recorded).
+	//
+	// USER DECISION (accounting-only): do NOT redistribute the dust and do
+	// NOT write an extra ledger record. Leave the floor-division remainder
+	// un-distributed wherever it currently is, and make SaveClaim record the
+	// TRUTHFUL amount actually credited (`distributed` = sum of the floor-div
+	// shares that were genuinely written to the ledger). This keeps balances
+	// byte-for-byte IDENTICAL to pristine (no new credit anywhere) while the
+	// claim RECEIPT stops overstating. Track the running total below.
+	distributed := int64(0)
 	for id, balance := range processedBalRecords {
 		// if balance.HBD_AVG == 0 {
 		// 	continue
 		// }
 
 		// Overflow-safe HBD_AVG * amount / totalAvg — see review4 HIGH #15.
-		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvg)
+		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvgBig)
 		if !okDist {
 			fmt.Println("ClaimHBD distributeAmt overflows int64", balance.Account)
 			continue
@@ -845,20 +871,37 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 					"err",
 					err,
 				)
+				// GV-L1: only count toward `distributed` when the write
+				// actually succeeded — a failed write credited nothing, so
+				// counting it would re-introduce the overstatement this fix
+				// removes.
+				continue
 			}
+			distributed += distributeAmt
 		}
 	}
 	//Note this calculation is inaccurate and should be calculated based on N blocks of Y claim period
 	//Should not assume a static amount of time or 12 exactly claim interals per year. But since this is for statistics, it doesn't matter.
+	//
+	// GV-L2: totalAvgBig may exceed int64 range; observedApr is a non-consensus
+	// statistic, so a big.Float division is enough and never wraps. Guard on
+	// Sign()>0 instead of the old `> 0` int64 compare (which a wrapped-negative
+	// accumulator would have failed open on).
 	var observedApr float64
-	if totalAvg > 0 {
-		observedApr = (float64(amount) / float64(totalAvg)) * 12
+	if totalAvgBig.Sign() > 0 {
+		aprBig := new(big.Float).Quo(new(big.Float).SetInt64(amount), new(big.Float).SetInt(totalAvgBig))
+		aprBig.Mul(aprBig, big.NewFloat(12))
+		observedApr, _ = aprBig.Float64()
 	}
 
-	savedAmount := amount
-	if totalAvg == 0 {
-		savedAmount = 0
-	}
+	// GV-L1: record what was ACTUALLY distributed (the sum of the floor-div
+	// shares genuinely credited), NOT the nominal `amount`. The floor-division
+	// dust remains un-distributed and `distributed` is therefore <= `amount`.
+	// When no account qualified (or the GV-L2 overflow path skipped every
+	// share pre-fix — now prevented), `distributed` is 0, matching the old
+	// `totalAvg == 0 → savedAmount = 0` semantics while no longer overstating
+	// the claim when distribution was partial or skipped.
+	savedAmount := distributed
 	ls.ClaimDb.SaveClaim(ledger_db.ClaimRecord{
 		BlockHeight: blockHeight,
 		Amount:      savedAmount,

@@ -433,6 +433,30 @@ func (tx TxElectionResult) TxSelf() TxSelf {
 	return tx.Self
 }
 
+// aggregatePotentialWeight sums the signing weight of all members of an
+// election: 1 per member when the committee is unweighted, otherwise the sum of
+// the per-member Weights. GV-L11: the previous inline form ASSIGNED
+// potentialWeight = int(Weights[idx]) in the weighted branch instead of
+// accumulating, so it held only the LAST member's weight rather than the total.
+// Extracted as a pure function so the accumulation is directly testable and
+// consistent with the totalWeight computation in ExecuteTx (which already uses
+// += correctly).
+func aggregatePotentialWeight(election *elections.ElectionResult) int {
+	if election == nil {
+		return 0
+	}
+	if len(election.Weights) == 0 {
+		return len(election.Members)
+	}
+	potentialWeight := 0
+	for idx := range election.Members {
+		if idx < len(election.Weights) {
+			potentialWeight += int(election.Weights[idx])
+		}
+	}
+	return potentialWeight
+}
+
 // ProcessTx implements VSCTransaction.
 func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 	// ctx := context.Background()
@@ -483,17 +507,12 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 		}
 
 		//Weight that is calculated by aggregating number of signers
-		potentialWeight := 0
+		potentialWeight := aggregatePotentialWeight(prevElection)
 		memberDids := make([]dids.BlsDID, 0)
-		for idx, value := range prevElection.Members {
+		for _, value := range prevElection.Members {
 			memberDids = append(memberDids, dids.BlsDID(value.Key))
-
-			if len(prevElection.Weights) == 0 {
-				potentialWeight += 1
-			} else {
-				potentialWeight = int(prevElection.Weights[idx])
-			}
 		}
+		_ = potentialWeight
 
 		verifyObj := map[string]interface{}{
 			"__t":    "approve_election",
