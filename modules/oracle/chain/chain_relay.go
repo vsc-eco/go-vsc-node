@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -257,9 +258,33 @@ func (c *ChainOracle) Start() *promise.Promise[any] {
 			c.logger.Info("chain relay starting", "symbol", symbol, "height", fcl.blockHeight)
 		}
 	}
+	// review7 VD-M7: each configured chain's height probe above logs an error
+	// if its RPC (e.g. btcd) is unreachable, but the oracle resolves regardless
+	// — by design, so it starts and retries per tick rather than refusing to
+	// boot when a node is briefly down. Surface a degraded start distinctly so
+	// an unreachable RPC is unmistakable, not one error line among many.
+	if degraded := degradedStartSymbols(startSymbols); len(degraded) > 0 {
+		c.logger.Warn("oracle starting DEGRADED — chain RPC unreachable at startup; relaying will retry per tick",
+			"unreachable", strings.Join(degraded, ","), "configured", len(startSymbols))
+	}
 	return promise.New(func(resolve func(any), _ func(error)) {
 		resolve(nil)
 	})
+}
+
+// degradedStartSymbols returns the chain symbols whose startup height probe
+// failed. ChainOracle.Start stores the height string on a successful probe and
+// the error string on failure, so a non-numeric value marks an unreachable
+// chain RPC (review7 VD-M7). Sorted for deterministic logging.
+func degradedStartSymbols(startSymbols map[string]string) []string {
+	degraded := make([]string, 0)
+	for symbol, status := range startSymbols {
+		if _, err := strconv.Atoi(status); err != nil {
+			degraded = append(degraded, symbol)
+		}
+	}
+	sort.Strings(degraded)
+	return degraded
 }
 
 // Stop implements aggregate.Plugin.
