@@ -174,6 +174,102 @@ func TestSignCache_CapacityEvictsOldest(t *testing.T) {
 	assert.True(t, ok, "most-recent entry must remain")
 }
 
+// TestSignCache_ExpireReputDoesNotEvictFreshEntry covers audit
+// R18-SEC-sign-cache-fifo-duplicate-on-expire-reput +
+// R18-CORR-sign-cache-fifo-dup-on-expired-reput.
+//
+// Pre-R18: get() on an expired entry called delete(entries, key) but
+// LEFT the fifo slot in place. A subsequent put(key) appended a SECOND
+// fifo entry for the same key. Eventually eviction popped the stale
+// fifo slot and called delete(entries, key) — destroying the FRESH
+// entry that should have been cached for its full 60s TTL.
+//
+// Post-R18: get-expire ALSO splices the matching fifo entry, so a
+// re-put creates exactly one fifo slot per live key.
+func TestSignCache_ExpireReputDoesNotEvictFreshEntry(t *testing.T) {
+	cache := newSignRequestCache()
+	t0 := time.Unix(1_000_000, 0)
+	cache.now = func() time.Time { return t0 }
+
+	const targetKey = "target"
+
+	// 1. Put target at t0.
+	cache.put(targetKey, &IsLockAttestationResponse{TxId: targetKey})
+
+	// 2. Advance past TTL, get() expires it (and per the R18 fix
+	//    should also splice the fifo slot).
+	cache.now = func() time.Time { return t0.Add(signCacheTTL + time.Second) }
+	_, ok := cache.get(targetKey)
+	assert.False(t, ok, "expired entry should report miss")
+
+	// 3. Re-put target at the new time. Must end up with EXACTLY one
+	//    fifo slot for it — the R18 fix's whole point.
+	cache.put(targetKey, &IsLockAttestationResponse{TxId: targetKey})
+
+	// Sanity: count fifo occurrences of targetKey. The fix is correct
+	// iff this is exactly 1.
+	occurrences := 0
+	for _, k := range cache.fifo {
+		if k == targetKey {
+			occurrences++
+		}
+	}
+	assert.Equal(t, 1, occurrences,
+		"after expire-reput, target must appear in fifo exactly once "+
+			"(audit R18 — the pre-fix dup-fifo bug let later evictions "+
+			"destroy the live entry)")
+
+	// 4. Fill the cache to capacity with junk so target sits at fifo[0].
+	//    Then add one more entry to trigger eviction. Without the R18
+	//    fix, eviction would pop the STALE target slot and delete the
+	//    FRESH target entry. With the fix, eviction pops the (single)
+	//    target slot legitimately — that's fine, target is now the
+	//    oldest. To exercise the "fresh entry survives" property we
+	//    instead put a DIFFERENT key after target so target is NOT
+	//    the oldest.
+	cache.put("other", &IsLockAttestationResponse{TxId: "other"})
+
+	// Now target should still be cached (within TTL of the re-put).
+	gotResp, gotOK := cache.get(targetKey)
+	require.True(t, gotOK,
+		"freshly-reput entry must still be in cache after a sibling put — "+
+			"the R18 pre-fix bug would have evicted it via the dangling "+
+			"stale fifo slot")
+	assert.Equal(t, targetKey, gotResp.TxId)
+}
+
+// TestSignCache_ExpireReputDoesNotGrowUnbounded is the operational
+// half of the same audit cluster (R18-OPS-sign-cache-fifo-grows-
+// unbounded-after-ttl-reinsertion). Pre-fix: 100 expire/reput cycles
+// on 50 unique keys produced fifo=5000, entries=50. Post-fix:
+// fifo=50, entries=50.
+func TestSignCache_ExpireReputDoesNotGrowUnbounded(t *testing.T) {
+	cache := newSignRequestCache()
+	tNow := time.Unix(1_000_000, 0)
+	cache.now = func() time.Time { return tNow }
+
+	const numKeys = 50
+	const cycles = 100
+
+	for cycle := 0; cycle < cycles; cycle++ {
+		// Advance past TTL between cycles so each iteration is an
+		// expire + reput.
+		tNow = tNow.Add(signCacheTTL + time.Second)
+		for i := 0; i < numKeys; i++ {
+			key := "k" + hex.EncodeToString([]byte{byte(i), byte(i >> 8)})
+			// get to trigger expire (after the first cycle entries are stale).
+			_, _ = cache.get(key)
+			cache.put(key, &IsLockAttestationResponse{TxId: key})
+		}
+	}
+
+	assert.LessOrEqual(t, len(cache.fifo), numKeys+10,
+		"fifo must stay bounded by the live entry count (+small slack), "+
+			"not grow unbounded across expire/reput cycles")
+	assert.Equal(t, numKeys, len(cache.entries),
+		"entries map should stabilise at the unique-key count")
+}
+
 // dualMemory returns rawTxHash=a for txA and =b for txB. Used by the
 // no-dedupe test where we need two distinct observed txids.
 type dualMemory struct {

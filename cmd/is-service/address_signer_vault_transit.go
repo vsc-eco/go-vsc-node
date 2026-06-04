@@ -194,13 +194,16 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 // (Sign() will surface the 403 to the caller).
 //
 // Audit OPS-R15-01 (R15) + R16-SEC-vault-currenttoken-silent-fallback
-// (MED): the fallback is intentional so a transient
-// permission/disk-full glitch doesn't take Sign() down outright, but
-// pre-R16 it was SILENT — an operator whose vault-agent crashed kept
-// seeing successful signs (with a stale token, until that lapsed too)
-// instead of getting an immediate signal. We now log a Warn the FIRST
-// time the fallback triggers per process lifetime so the operator can
-// notice + investigate, but don't spam on every Sign() call.
+// (MED) + R17-CORR-token-fallback-once-no-recurrence-window (LOW):
+// the fallback is intentional so a transient permission/disk-full
+// glitch doesn't take Sign() down outright, but pre-R16 it was SILENT
+// — an operator whose vault-agent crashed kept seeing successful
+// signs (with a stale token, until that lapsed too) instead of
+// getting an immediate signal. R16 added a sync.Once-gated warn;
+// R17 replaced that with a 1-hour-throttled atomic so a recurring
+// crash (recover → re-crash hours later) still surfaces. Audit R18-
+// CONS-currenttoken-godoc-stale-first-time-vs-throttle caught this
+// docstring lagging the R17 behaviour change.
 func (s *AddressSignerVaultTransit) currentToken() string {
 	if s.tokenFile == "" {
 		return s.token
@@ -232,8 +235,16 @@ func (s *AddressSignerVaultTransit) currentToken() string {
 // "literal" vs "file" vs "env" precisely without leaking the secret
 // itself.
 func (s *AddressSignerVaultTransit) tokenSource() string {
+	// Audit R18-OPS-vault-token-file-path-included-in-error-message-
+	// discloses-fs-layout: prior version returned "file=" + s.tokenFile,
+	// which leaked the operator's literal filesystem path into Vault
+	// 401/403 HTTP response bodies. The path is "non-secret" per the
+	// R17 audit framing but still fingerprints the host's layout; we
+	// return only the category label here. Operators can still look
+	// up the configured path in startup logs (logged once at
+	// configuration time) when they need it for triage.
 	if s.tokenFile != "" {
-		return "file=" + s.tokenFile
+		return "file"
 	}
 	switch s.tokenSrc {
 	case VaultTokenSourceLiteral:
@@ -241,8 +252,11 @@ func (s *AddressSignerVaultTransit) tokenSource() string {
 	case VaultTokenSourceEnv:
 		return "env VAULT_TOKEN"
 	case VaultTokenSourceFile:
-		// Caller cleared tokenFile but kept the source label — fall
-		// through to the generic.
+		// Caller cleared tokenFile but kept the source label set to
+		// File — unusual but technically valid. Return a generic
+		// label rather than the (now-empty) path. Audit R18-CONS-
+		// tokensource-switch-case-comment-wrong-fall-through fixed
+		// the prior "fall through" wording (the case returns directly).
 		return "file (path cleared)"
 	}
 	return "unknown (TokenSource unset)"

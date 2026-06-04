@@ -35,7 +35,7 @@ need to change per-deploy.
 | `-signerVaultMount` | `transit` | no | Vault transit-engine mount path. |
 | `-signerVaultKeyName` | empty | yes (with `-signerVaultAddr`) | Vault transit key name. Must be `type=ed25519` so the on-wire signature shape matches the other signer kinds. |
 | `-signerVaultToken` | empty | no | Vault token inline. **DEV/TEST ONLY — REJECTED on any -network != devnet** (SEC-6 / R16-SEC-sec6-testnet-not-gated). Tokens leak via process tables / shell history / kubectl describe / docker inspect. Use `-signerVaultTokenFile`. |
-| `-signerVaultTokenFile` | empty | yes (one of) | Path to a file containing the Vault token. Whitespace trimmed. Operator should set 0o600. Alternative: `VAULT_TOKEN` env. |
+| `-signerVaultTokenFile` | empty | yes (production) | Path to a file containing the Vault token. Whitespace trimmed. Operator should set 0o600. Required for any -network != devnet — R17 widened the SEC-6 gate to also refuse `VAULT_TOKEN` env when this flag is unset (env vars leak via kubectl describe + docker inspect + /proc/<pid>/environ). Devnet keeps env + literal for local-dev ergonomics. |
 | **`-port`** | `3030` | no | HTTP listen port. |
 | **`-sessionTTLMinutes`** | `30` | no | How long a session stays open before the server marks it expired. Don't shrink below the user-side trap deadline (240s post-cancel) or you'll race the client. |
 | **`-dashdRPC`** | empty | recommended | dashd JSON-RPC URL for the IS_OBSERVED transition (e.g. `http://vsc-dashd-testnet:9998`). When unset, IS_OBSERVED must be driven externally and the happy-path tests skip the dashd-driven branch. URL parse rejects userinfo, query, fragment, smuggled `;` paths (R9–R12 audit). |
@@ -192,7 +192,7 @@ A clean witness-fleet bring-up runs as:
 
 ---
 
-### 3.1 Rate limits (built-in per-IP buckets)
+## 4. Built-in rate limits (per-IP buckets)
 
 Audit-driven caps applied at the HTTP layer; clients exceeding them
 get `429 Too Many Requests`. Buckets are per-source-IP, where the IP
@@ -206,12 +206,13 @@ comes from `X-Forwarded-For` (rightmost) when the peer is in
 | `POST /session/{sid}/cancel` | 10 / min | R16-SEC-status-cancel-no-rate-limit + R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails | Cancel is one-shot per session in normal flows. Separate from `/status` so a hot polling flow can't lock the user out of cancelling. |
 | `POST /test/observed/{sid}`, `POST /test/attestation/{sid}` | bodies capped at 64 KiB (SEC-11) | R15-SEC-11 | Test endpoints; only registered when `-testBypassDashdISLock=true` (devnet-only). |
 
-Operators behind a CDN / WAF can stack their own rate limits on top
-— these are defense-in-depth against direct-to-pod traffic.
+Combined per-IP budget across the three production endpoints is
+80/min. Operators behind a CDN / WAF can stack their own rate limits
+on top — these are defense-in-depth against direct-to-pod traffic.
 
 ---
 
-## 4. Monitoring + log patterns
+## 5. Monitoring + log patterns
 
 Operationally useful greps (search the structured log stream for these
 prefixes):
@@ -237,9 +238,9 @@ Suggested alert rules (Prometheus-shape, when metrics endpoint lands):
 
 ---
 
-## 5. Common operational scenarios
+## 6. Common operational scenarios
 
-### 5.1 Stuck session after dashd outage
+### 6.1 Stuck session after dashd outage
 
 Symptom: Client console shows repeated `/status backoff`. The IS service
 returned 5xx, the user is at the 30s steady cadence (post R14 edge-trigger
@@ -254,7 +255,7 @@ Resolution:
    sees `cancel acknowledged but session did not finish on the server in
    time`. They can retry; the new session is independent.
 
-### 5.2 Validator rotation mid-epoch
+### 6.2 Validator rotation mid-epoch
 
 The contract's epoch model assumes a fresh `setValidatorSet(epoch+1, ...)`
 lands BEFORE epoch+1 begins. If you miss the boundary, the contract falls
@@ -269,7 +270,7 @@ To rotate cleanly:
 4. Witnesses pick up the new set automatically at the next cache TTL
    (`-validatorSetCacheTTLSeconds`, default 30s).
 
-### 5.3 Rolling back a bad IS-service deploy
+### 6.3 Rolling back a bad IS-service deploy
 
 The service is stateless beyond the in-memory session map and the libp2p
 mesh registration. Safe rollback:
@@ -285,7 +286,7 @@ are rejected without state mutation.
 
 ---
 
-## 6. Open items for mainnet flip
+## 7. Open items for mainnet flip
 
 - [ ] `-addressSignerSecret` HMAC → either `-signerVaultAddr` Vault Transit (recommended, spec §5.7, see §1.3 above for the operator-runnable recipe) OR `-addressSignerEd25519KeyFile` (file-based Ed25519 signer; same wire format as Vault, the private key lives on the IS-service host filesystem at 0o600).
 - [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera (currently

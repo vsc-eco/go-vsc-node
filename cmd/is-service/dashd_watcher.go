@@ -16,11 +16,14 @@ import (
 
 // Audit R17-SEC-sanitizeRPCURL-leaks-on-parse-edge-cases (HIGH) +
 // R17-OPS-sanitize-rpc-url-helper-duplicated (INFO): the local
-// islock.SanitizeRPCURLForLog used to be a byte-for-byte copy of
-// islock.SanitizeRPCURLForLog with the same parse-error + query-
-// string + opaque-userinfo bugs. Now there's exactly one
-// implementation — call the exported one in modules/islock-
-// attestation so a future bug-fix lands once.
+// sanitizeDashdRPCURLForLog used to be a byte-for-byte copy of
+// modules/islock-attestation's SanitizeRPCURLForLog, with the same
+// parse-error + query-string + opaque-userinfo bugs. R17 deleted
+// the local copy + routed every call site here through the
+// exported helper so a future bug-fix lands once. Audit R18-CONS-
+// dashd-watcher-comment-self-reference-island caught the previous
+// version of this comment naming the same symbol on both halves of
+// "X was a copy of X".
 
 // DashdRPCClient is a minimal RPC client for the few methods we need:
 //   - getrawtransaction <txid> 1 — returns tx details including

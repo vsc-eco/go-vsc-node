@@ -13,6 +13,15 @@ import (
 // signs per legitimate session, and up to ~100/min per malicious peer
 // at the validator-side gossip rate limit.
 //
+// Amplification bypass (audit R18-SEC-cache-amplification-by-varying-
+// instruction-hash, INFO): an attacker can defeat this dedupe by
+// VARYING the InstructionHashHex (or any other key field) per
+// request. The validator will still see a fresh cache key each time
+// and pay the BLS-sign cost. The defense layer that bounds this is
+// the per-peer requestRateLimiter (100/min in p2p.go), NOT this
+// cache. The cache only collapses LEGITIMATE rebroadcasts of the
+// SAME request; the rate-limiter bounds adversarial spread.
+//
 // Cache key: (TxId, RawTxHashHex, InstructionHashHex, Epoch). ChainID
 // is constant per process so it's not part of the key. The cached
 // value is the full IsLockAttestationResponse (sig + pubkey + DID +
@@ -42,6 +51,13 @@ type signCacheEntry struct {
 	storedAt time.Time
 }
 
+// Cache tuning constants. Currently fixed; audit R18-OPS-sign-cache-
+// no-metrics-or-knob-impacts-tuning flagged the lack of observability
+// (no hit/miss/eviction counters) + no operator knob. Both are
+// deferred: the cache is small enough (~50KB worst-case at capacity)
+// and the trade-offs are well-understood from the audit reasoning,
+// so a metrics endpoint + env-var overrides can land in a dedicated
+// observability ticket rather than a fix-cluster sweep.
 const (
 	signCacheTTL      = 60 * time.Second
 	signCacheCapacity = 1000
@@ -58,10 +74,16 @@ func newSignRequestCache() *signRequestCache {
 // signCacheKey derives the cache key for a request. Concatenates the
 // four binding fields with NUL separators so distinct field
 // combinations can't collide via string overlap.
+//
+// Size: Dash txid is 64 hex chars; rawTxHash + instructionHash are
+// 64 hex chars each (sha256d / sha256 outputs); epoch is up to
+// ~20 decimal digits; plus 3 NUL separators ≈ 215 bytes typical.
+// Audit R18-CONS-sign-cache-key-comment-claims-pre-allocation-and-
+// 32-hex-txid: the prior comment claimed "pre-allocate" + "32-hex
+// txid"; neither was right. Append-from-nil-slice is fine here
+// (Go grows the slice in O(1) amortised), and the txid hex length
+// is 64, not 32.
 func signCacheKey(req IsLockAttestationRequest) string {
-	// Pre-allocate to avoid per-call growth; the 4 fields together are
-	// always ~200 bytes (32-hex txid + 64-hex two hashes + ~6 bytes
-	// epoch + 3 separator bytes).
 	var b []byte
 	b = append(b, req.TxId...)
 	b = append(b, 0)
@@ -101,10 +123,34 @@ func (c *signRequestCache) get(key string) (*IsLockAttestationResponse, bool) {
 		return nil, false
 	}
 	if c.now().Sub(e.storedAt) > signCacheTTL {
-		// Expired. Remove from the map; leave fifo alone — eviction
-		// will catch it later, and removing from a slice middle is O(n)
-		// which we don't want on the hot path.
+		// Expired. Remove from the map AND splice the key out of fifo.
+		//
+		// Audit R18-SEC-sign-cache-fifo-duplicate-on-expire-reput +
+		// R18-CORR-sign-cache-fifo-dup-on-expired-reput +
+		// R18-OPS-sign-cache-fifo-grows-unbounded-after-ttl-reinsertion:
+		// the pre-R18 code intentionally left fifo alone with the
+		// comment "eviction will catch it later". The pathology was: a
+		// subsequent put(key) — common because the same (TxId,
+		// rawTxHash, instructionHash, epoch) tuple is the exact case
+		// the dedupe was designed to memoise — sees entries[key] gone
+		// (deleted just now), falls through the dup-check, and appends
+		// ANOTHER fifo entry for the same key. fifo now has two slots
+		// for one entry. Later eviction pops the STALE fifo slot and
+		// calls delete(entries, key) — destroying the FRESH entry
+		// that was supposed to be cached for 60s. The dedupe quietly
+		// failed and the validator re-signed. fifo also grew without
+		// bound under sustained expire/reput cycles.
+		//
+		// Cost: O(n) splice on the expire branch. n ≤ signCacheCapacity
+		// (1000); per-call cost is microseconds. Expires are not the
+		// hot path so the trade is fine.
 		delete(c.entries, key)
+		for i, k := range c.fifo {
+			if k == key {
+				c.fifo = append(c.fifo[:i], c.fifo[i+1:]...)
+				break
+			}
+		}
 		return nil, false
 	}
 	return e.resp, true
