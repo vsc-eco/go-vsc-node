@@ -550,3 +550,50 @@ func TestAddressSignerHMAC_RefusesEmptySecret(t *testing.T) {
 	_, err := s.Sign("addr", "instr")
 	assert.Error(t, err, "empty secret must refuse to sign (would otherwise produce attacker-knowable signatures)")
 }
+
+// ===== clientIP — X-Forwarded-For parsing =====
+
+// TestClientIP_XFF_RightmostBehindTrustedProxy covers audit SEC-4 (R15).
+// Trusted proxies (nginx, traefik, etc.) APPEND the connecting IP to
+// the existing X-Forwarded-For header. An attacker connecting through
+// such a proxy can inject `X-Forwarded-For: bypass-0, bypass-1` and
+// the proxy turns it into `bypass-0, bypass-1, <attacker-real-ip>`.
+// The leftmost value is attacker-controlled and would let the attacker
+// rotate the per-IP rate-limit bucket per request. We MUST pick the
+// rightmost entry (the trusted proxy's just-appended connecting IP).
+func TestClientIP_XFF_RightmostBehindTrustedProxy(t *testing.T) {
+	srv := newTestServer(t)
+	// "127.0.0.1" is hardcoded as a trusted proxy by default.
+	r := httptest.NewRequest("GET", "/healthz", nil)
+	r.RemoteAddr = "127.0.0.1:54321"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 2.2.2.2, 3.3.3.3")
+	got := srv.clientIP(r)
+	assert.Equal(t, "3.3.3.3", got,
+		"clientIP must return the RIGHTMOST X-Forwarded-For entry "+
+			"(trusted proxy appended IP), not the leftmost "+
+			"(attacker-controlled value). Leftmost-parsing would let "+
+			"an attacker rotate the per-IP rate-limit bucket per "+
+			"request — audit SEC-4.")
+}
+
+// TestClientIP_XFF_SingleValue verifies the no-comma branch still
+// returns the single header value.
+func TestClientIP_XFF_SingleValue(t *testing.T) {
+	srv := newTestServer(t)
+	r := httptest.NewRequest("GET", "/healthz", nil)
+	r.RemoteAddr = "127.0.0.1:54321"
+	r.Header.Set("X-Forwarded-For", "5.5.5.5")
+	assert.Equal(t, "5.5.5.5", srv.clientIP(r))
+}
+
+// TestClientIP_XFF_IgnoredFromUntrustedProxy verifies the trusted-
+// proxy gate: if RemoteAddr isn't in the trusted set the XFF header
+// is ignored entirely (caller-spoofable otherwise).
+func TestClientIP_XFF_IgnoredFromUntrustedProxy(t *testing.T) {
+	srv := newTestServer(t)
+	r := httptest.NewRequest("GET", "/healthz", nil)
+	r.RemoteAddr = "9.9.9.9:54321"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 2.2.2.2")
+	assert.Equal(t, "9.9.9.9", srv.clientIP(r),
+		"untrusted RemoteAddr must ignore XFF entirely")
+}

@@ -846,6 +846,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // strip correctly. The previous hand-rolled splitHostPort returned
 // "[::1]" with brackets, breaking the trusted-proxy comparison
 // against the literal "::1" default.
+//
+// Audit SEC-4 (R15): pick the RIGHTMOST X-Forwarded-For entry, not
+// the leftmost. Trusted proxies (nginx, traefik, etc.) APPEND the
+// connecting IP to the existing X-Forwarded-For; an attacker
+// connecting through such a proxy can inject `X-Forwarded-For:
+// bypass-0, bypass-1, bypass-2` and the proxy turns it into
+// `bypass-0, bypass-1, bypass-2, <attacker-real-ip>`. The leftmost
+// value is attacker-controlled — using it lets the attacker rotate
+// the per-IP rate-limit bucket per-request. The rightmost value is
+// always the one the trusted proxy just added.
 func (s *Server) clientIP(r *http.Request) string {
 	hostPart, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -854,8 +864,11 @@ func (s *Server) clientIP(r *http.Request) string {
 	}
 	if s.isTrustedProxy(hostPart) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			if i := strings.Index(fwd, ","); i >= 0 {
-				return strings.TrimSpace(fwd[:i])
+			// Pick the rightmost entry: the trusted proxy's appended
+			// connecting-IP, NOT the leftmost which is the original
+			// client header (attacker-controlled).
+			if i := strings.LastIndex(fwd, ","); i >= 0 {
+				return strings.TrimSpace(fwd[i+1:])
 			}
 			return strings.TrimSpace(fwd)
 		}
