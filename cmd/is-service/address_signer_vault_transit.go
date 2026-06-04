@@ -90,11 +90,14 @@ type VaultTransitConfig struct {
 	// token is then used for the process lifetime.
 	// Audit OPS-R15-01 (R15).
 	TokenFile string
-	// HTTPClient is optional; nil falls back to a 10s-timeout client.
-	// Per-call context.WithTimeout layers: startup probe = 5s
-	// (fail-fast), Sign() = 30s (audit R15-CORR-vault-sign-5s-timeout-
-	// under-load bumped from 5s because Vault under HSM-backed load
-	// routinely sees >5s p99).
+	// HTTPClient is optional; nil falls back to a client with NO
+	// client-level Timeout — per-call context.WithTimeout drives the
+	// deadline: startup probe = 5s (fail-fast), Sign() = 30s (audit
+	// R15-CORR-vault-sign-5s-timeout-under-load bumped from 5s
+	// because Vault under HSM-backed load routinely sees >5s p99).
+	// Audit R16-CORR-vault-sign-30s-context-capped-by-10s-http-timeout
+	// removed the prior 10s client Timeout because it silently capped
+	// the context bump at 10s, making the 30s a dead value.
 	HTTPClient *http.Client
 }
 
@@ -117,7 +120,14 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		// Per-call WithTimeout drives the deadline (5s for startup
+		// probe; 30s for Sign per R15-CORR-vault-sign-5s-timeout-
+		// under-load). Audit R16-CORR-vault-sign-30s-context-capped-
+		// by-10s-http-timeout: a 10s client-level Timeout would silently
+		// override the 30s context — the bump landed but did nothing.
+		// Setting Timeout to 0 disables the client-level cap and lets
+		// per-call WithTimeout drive end-to-end.
+		httpClient = &http.Client{Timeout: 0}
 	}
 	s := &AddressSignerVaultTransit{
 		addr:      strings.TrimRight(cfg.Addr, "/"),

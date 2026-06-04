@@ -117,6 +117,7 @@ type orchestratorCounters struct {
 	AttestationVerifyDrops     atomic.Int64 // R3-07 per-sig verify failures
 	ReconcileTimeouts          atomic.Int64 // R3-04 reconcileL2 budget exhausted
 	PreSubmitRefusals          atomic.Int64 // R4-CSM-07 pre-submit state check
+	RandReadFailures           atomic.Int64 // R16-OPS-crypto-rand-fail-orphan-session
 }
 
 // CountersSnapshot is the read-only view of orchestrator counters
@@ -126,6 +127,7 @@ type CountersSnapshot struct {
 	AttestationVerifyDrops     int64 `json:"attestationVerifyDrops"`
 	ReconcileTimeouts          int64 `json:"reconcileTimeouts"`
 	PreSubmitRefusals          int64 `json:"preSubmitRefusals"`
+	RandReadFailures           int64 `json:"randReadFailures"`
 }
 
 // DeliverAttestation forwards an attestation response into the
@@ -148,6 +150,7 @@ func (o *Orchestrator) Counters() CountersSnapshot {
 		AttestationVerifyDrops:     o.counters.AttestationVerifyDrops.Load(),
 		ReconcileTimeouts:          o.counters.ReconcileTimeouts.Load(),
 		PreSubmitRefusals:          o.counters.PreSubmitRefusals.Load(),
+		RandReadFailures:           o.counters.RandReadFailures.Load(),
 	}
 }
 
@@ -509,6 +512,30 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
+	// Audit SEC-8 (R15) + R16-OPS-crypto-rand-fail-orphan-session:
+	// SessionToken is server-side-random, NOT derived from public
+	// observables (pre-SEC-8 used sha256(sid || dashTxId || chainID)
+	// — all three inputs are public, so an attacker who scrapes a
+	// /status URL could compute the token locally).
+	//
+	// 32 bytes of crypto/rand → 64-hex-char token (~256 bits of
+	// entropy). Mint BEFORE the MutateState closure (audit R16) so a
+	// crypto/rand failure routes the session to FORWARD_FAILED with
+	// a clear reason instead of stranding it in L2_SUBMITTED (the
+	// orchestrator has no re-drive worker for L2_SUBMITTED sessions,
+	// so a strand is effectively permanent — the user has paid Dash
+	// + the contract has credit but no auth token will ever issue).
+	var tokenBytes [32]byte
+	if _, err := rand.Read(tokenBytes[:]); err != nil {
+		o.counters.RandReadFailures.Add(1)
+		slog.Error("crypto/rand failed minting SessionToken; session marked FORWARD_FAILED",
+			"sid", sid, "l2TxId", l2TxID, "dashTxid", txid, "err", err,
+			"note", "L2 tx confirmed + contract credit minted, but no token can be issued — investigate /dev/urandom availability on this host")
+		o.fail(sid, fmt.Sprintf("crypto/rand failed: %v", err))
+		return
+	}
+	tokenHex := hex.EncodeToString(tokenBytes[:])
+
 	now := time.Now()
 	advanced = false
 	o.sessions.MutateState(sid, func(s *Session) {
@@ -517,32 +544,7 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		}
 		s.State = StateOnChain
 		s.OnChainAt = &now
-		// Audit SEC-8 (R15): SessionToken is server-side-random, NOT
-		// derived from public observables. The pre-SEC-8 implementation
-		// minted it as sha256(sid || dashTxId || chainID); all three
-		// inputs are public (sid is in every /status URL path; txid is
-		// broadcast on Dash; chainID is constant per deployment), so an
-		// attacker who scrapes a /status URL (referrer header, HTTP log,
-		// the QR-URI itself) could lift sid + dashTxId and compute the
-		// SessionToken locally — bypassing TLS confidentiality. The
-		// token's only role today is opaque-handle-for-the-frontend, but
-		// the comment "Altera validates it by checking the contract"
-		// implies it'll graduate to an auth credential; this commit
-		// prevents that graduation from silently inheriting the
-		// existence-oracle weakness.
-		//
-		// 32 bytes of crypto/rand → 64-hex-char token (~256 bits of
-		// entropy). Failing to read /dev/urandom is unrecoverable —
-		// minting a deterministic fallback would re-open the audit
-		// finding. Surface the error to the caller; the session stays
-		// in StateL2Submitted (idempotent retry on the next tick).
-		var tokenBytes [32]byte
-		if _, err := rand.Read(tokenBytes[:]); err != nil {
-			slog.Error("crypto/rand failed minting SessionToken; session held in L2_SUBMITTED for retry",
-				"sid", sid, "err", err)
-			return
-		}
-		s.SessionToken = hex.EncodeToString(tokenBytes[:])
+		s.SessionToken = tokenHex
 		advanced = true
 	})
 	if !advanced {
