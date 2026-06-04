@@ -460,6 +460,15 @@ func (actionsDb *actionsDb) SetStatus(id string, status string) {
 	})
 }
 
+// MaxGatewayActionBatch bounds how many pending bridge actions a single gateway
+// tick loads and processes. review7 C11-a/b: without a bound, an attacker who
+// queues many tiny withdraw/stake/unstake actions makes the gateway load an
+// unbounded result set into RAM and build an oversized L1 multisig tx (which
+// can exceed Hive's tx-size limit and stall the gateway). The query is sorted
+// (block_height, id) deterministically, so the remainder is processed on
+// subsequent ticks in a stable order across all nodes.
+const MaxGatewayActionBatch = 100
+
 func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {
 	options := options.Find().SetSort(bson.D{
 		{
@@ -470,7 +479,7 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionR
 			Key:   "id",
 			Value: 1,
 		},
-	})
+	}).SetLimit(int64(MaxGatewayActionBatch))
 	query := bson.M{
 		"status": "pending",
 		"block_height": bson.M{
