@@ -1,7 +1,9 @@
 package islock_attestation
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -236,20 +238,32 @@ func (s *Service) handleRequest(
 		// Not a validator — silently ignore the request.
 		return
 	}
-	rawTxHex, _, ok := s.memory.Lookup(req.TxId)
+	_, memoryRawTxHash, ok := s.memory.Lookup(req.TxId)
 	if !ok {
 		return
 	}
-	_ = rawTxHex
-	// TODO (audit SEC-5): defense-in-depth — verify req.RawTxHashHex
-	// matches sha256d(memory[req.TxId].rawTxHex), and re-confirm
-	// instantlock=true via a fresh getrawtransaction (the poller
-	// already filters on instantlock when admitting, but the cached
-	// entry could be stale by the time an attestation request lands).
-	// Without this the validator signs over requester-supplied hashes,
-	// burning CPU on contract-rejected forgeries and creating a
-	// forgery primitive if a future contract change relaxes its own
-	// recompute step.
+	// Audit SEC-5 (R15): require req.RawTxHashHex to match what THIS
+	// validator independently observed via its dashd-RPC poller. The
+	// poller stores INTERNAL-byte-order sha256d; req.RawTxHashHex is
+	// DISPLAY-order hex (see CanonicalSigningMessage's byte-order
+	// notes), so reverse the wire bytes before comparing. Without this
+	// check the validator would sign whatever hash the requester
+	// supplied — burning CPU on contract-rejected forgeries today and
+	// becoming a forgery primitive if a future contract change ever
+	// relaxes its own RawTxHashHex recompute.
+	reqHashDisplay, err := hex.DecodeString(req.RawTxHashHex)
+	if err != nil || len(reqHashDisplay) != 32 {
+		return
+	}
+	reqHashInternal := ReverseBytesCopy(reqHashDisplay)
+	if !bytes.Equal(reqHashInternal, memoryRawTxHash) {
+		return
+	}
+	// NOTE: instructionHash is fully requester-supplied; the validator
+	// can't verify it locally (it has no concept of "instruction" — that
+	// is the IS-service's domain). The contract recomputes
+	// sha256(instruction) at submission time, so an instruction-hash
+	// forgery fails at the contract verify. The audit accepts this gap.
 
 	sigHex, err := s.signer.Sign(req)
 	if err != nil {
