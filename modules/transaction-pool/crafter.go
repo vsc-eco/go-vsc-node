@@ -752,7 +752,9 @@ func (tx *VSCTransaction) HashEip712() (cid.Cid, []byte, error) {
 		signingShell2,
 		"tx_container_v0",
 		func(f float64) (*big.Int, error) {
-			return big.NewInt(int64(f)), nil
+			// audit GV-L5: reject non-integer / out-of-int64-range floats instead
+			// of silently truncating/wrapping (third floatHandler site).
+			return dids.EIP712AmountFloat(f)
 		},
 	)
 

@@ -1913,7 +1913,15 @@ func (tssMgr *TssManager) waitForSigs(
 		sigChan := tssMgr.sigChannels[sessionId]
 		tssMgr.bufferLock.RUnlock()
 
-		for signedWeight*3 < weightTotal*2 {
+		// GV-L9: overflow-safe 2/3 quorum threshold. `signedWeight*3 < weightTotal*2`
+		// wraps mod 2^64 once weightTotal > MaxUint64/2 (weightTotal*2 wraps to a
+		// small value), making the condition `0 < 0` → false so the loop exits
+		// immediately with signedWeight=0 and Finalize() runs on a zero-weight
+		// circuit. The identity ceil(2N/3) == N - floor(N/3) computes the same
+		// threshold with only a subtraction and a division — no product to overflow.
+		// Byte-identical to the original on the entire non-overflow domain.
+		quorumThreshold := weightTotal - weightTotal/3
+		for signedWeight < quorumThreshold {
 			var msg sigMsg
 			select {
 			case <-ctx.Done():

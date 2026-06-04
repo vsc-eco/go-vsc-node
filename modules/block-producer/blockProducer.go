@@ -445,14 +445,15 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	//This will allow us to test the e2e parsing
 
 	vlog.Trace("ProduceBlock", "bh", bp.bh.Load())
-	stTime := bp.bh.Load() + 1
-	for i := 0; i < 5; i++ {
-		if bh == stTime {
-			break
-		}
-
-		time.Sleep(1 * time.Second)
-	}
+	// NOTE: a dead busy-wait used to live here:
+	//   stTime := bp.bh.Load() + 1
+	//   for i := 0; i < 5; i++ { if bh == stTime { break }; time.Sleep(1s) }
+	// Since BlockTick stores bp.bh = bh before calling ProduceBlock, stTime was
+	// always bh+1, so `bh == stTime` (bh == bh+1) was never true and all 5
+	// sleeps always ran — an unconditional ~5s delay that ate into the BLS
+	// signature collection window. BlockTick only fires after the Hive block is
+	// processed by the state engine, so state is already current; the wait
+	// served no purpose. Removed so GenerateBlock runs immediately.
 
 	genBlock, transactions, err := bp.GenerateBlock(bh, generateBlockParams{
 		PopulateTxs: true,

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"math/rand"
 	"time"
 
@@ -161,17 +162,29 @@ func (t *TransactionCrafter) TransferToSavings(from string, to string, amount st
 }
 
 func (t *TransactionCrafter) TransferFromSavings(from string, to string, amount string, asset string, memo string, requestId int) hivego.HiveOperation {
+	// hivego.TransferFromSavings.RequestId is uint32 (Hive L1 wire type). Live
+	// callers pass int(bh) (block height) which is always in [0, MaxUint32].
+	// Guard against an out-of-range value silently wrapping the request id.
+	if requestId < 0 || requestId > math.MaxUint32 {
+		panic("hive: TransferFromSavings requestId out of uint32 range")
+	}
 	op := hivego.TransferFromSavings{
 		From:      from,
 		To:        to,
 		Amount:    amount + " " + asset,
 		Memo:      memo,
+		// hivego's RequestId field is int; its serializer truncates to uint32
+		// at wire-encode time, so the guard above is what prevents a negative /
+		// >uint32 value from silently wrapping. Assign the int directly.
 		RequestId: requestId,
 	}
 	return op
 }
 
 func (t *TransactionCrafter) CancelTransferFromSavings(from string, requestId int) hivego.HiveOperation {
+	if requestId < 0 || requestId > math.MaxUint32 {
+		panic("hive: CancelTransferFromSavings requestId out of uint32 range")
+	}
 	op := hivego.CancelTransferFromSavings{
 		From:      from,
 		RequestId: requestId,

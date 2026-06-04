@@ -1276,7 +1276,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// Using GetElection(commitment.Epoch) returns a different election
 						// when the epoch has advanced, causing BLS verification to fail
 						// because the member lists (and BLS keys) differ.
-						if commitment.BlockHeight+params.TSS_COMMITMENT_MAX_STALENESS < block.BlockNumber {
+						if commitment.BlockHeight+params.TSS_COMMITMENT_MAX_STALENESS <= block.BlockNumber {
 							tssLog.Warn("stale commitment rejected", "keyId", commitment.KeyId, "commitmentHeight", commitment.BlockHeight, "blockNumber", block.BlockNumber)
 							continue
 						}
