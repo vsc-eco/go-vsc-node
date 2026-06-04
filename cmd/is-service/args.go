@@ -142,8 +142,11 @@ func parseArgs() (args, error) {
 		"Vault transit key name (must be type=ed25519). Required when "+
 			"-signerVaultAddr is set.")
 	fs.StringVar(&a.signerVaultToken, "signerVaultToken", "",
-		"Vault token (NOT RECOMMENDED — appears in process tables/logs). "+
-			"Prefer -signerVaultTokenFile or VAULT_TOKEN env.")
+		"Vault token (DEV/TEST ONLY — REJECTED when -network=mainnet "+
+			"per audit SEC-6 because the literal value leaks via "+
+			"/proc/<pid>/cmdline, ps, systemd journal, and orchestrator "+
+			"inspect surfaces). Always prefer -signerVaultTokenFile or "+
+			"VAULT_TOKEN env for production.")
 	fs.StringVar(&a.signerVaultTokenFile, "signerVaultTokenFile", "",
 		"Path to a file containing the Vault token (preferred). Whitespace "+
 			"is trimmed. File permissions are NOT checked because Vault tokens "+
@@ -251,6 +254,23 @@ func parseArgs() (args, error) {
 		return a, fmt.Errorf(
 			"-testBypassDashdISLock=true requires -network=devnet (got %q); " +
 				"the flag is gated to the devnet-only test surface", a.network)
+	}
+	// Audit SEC-6 (R15): refuse to start with -signerVaultToken=<literal>
+	// on a production network. A literal token in argv leaks via
+	// /proc/<pid>/cmdline (world-readable on default Linux), `ps auxw`,
+	// systemd journal, and container-orchestrator inspect surfaces
+	// (k8s describe, docker inspect). Within the token's TTL anyone
+	// with shell access to a co-tenant container or read access to
+	// systemd journal can sign arbitrary deposit addresses. The
+	// safer paths (-signerVaultTokenFile, VAULT_TOKEN env) stay
+	// allowed everywhere. Testnet/devnet keep the literal-token path
+	// for ergonomic local testing.
+	if a.signerVaultToken != "" && a.network == "mainnet" {
+		return a, fmt.Errorf(
+			"-signerVaultToken=<literal> is forbidden when -network=mainnet — " +
+				"the token would leak via /proc/<pid>/cmdline, ps, " +
+				"systemd journal, and container-orchestrator inspect surfaces. " +
+				"Use -signerVaultTokenFile=<path> or the VAULT_TOKEN env var instead.")
 	}
 	if a.port < 1 || a.port > 65535 {
 		return a, fmt.Errorf("-port must be between 1 and 65535")

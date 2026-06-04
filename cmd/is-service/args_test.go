@@ -1,10 +1,12 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Round-9 audit R9-TEST-COV-01: validateOperatorURL is the
@@ -86,4 +88,77 @@ func TestValidateOperatorURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withArgs runs fn with os.Args overridden, restoring after.
+func withArgs(t *testing.T, args []string, fn func()) {
+	t.Helper()
+	orig := os.Args
+	t.Cleanup(func() { os.Args = orig })
+	os.Args = args
+	fn()
+}
+
+// TestParseArgs_RejectsLiteralVaultTokenOnMainnet covers audit SEC-6
+// (R15, MEDIUM, security). A literal -signerVaultToken on mainnet
+// leaks via /proc/<pid>/cmdline, ps, systemd journal, and container-
+// orchestrator inspect surfaces. Testnet + devnet keep the literal
+// path for ergonomic local testing.
+func TestParseArgs_RejectsLiteralVaultTokenOnMainnet(t *testing.T) {
+	baseArgs := []string{
+		"is-service",
+		"-primaryPubkey=02" + strings.Repeat("aa", 32),
+		"-backupPubkey=03" + strings.Repeat("bb", 32),
+		"-signerVaultAddr=https://vault.internal:8200",
+		"-signerVaultKeyName=is-service-signer",
+	}
+
+	t.Run("mainnet refuses literal token", func(t *testing.T) {
+		args := append([]string(nil), baseArgs...)
+		args = append(args,
+			"-network=mainnet",
+			"-chainID=vsc-mainnet",
+			"-signerVaultToken=hvs.SECRETSECRETSECRET",
+		)
+		withArgs(t, args, func() {
+			_, err := parseArgs()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "signerVaultToken")
+			assert.Contains(t, err.Error(), "mainnet")
+		})
+	})
+
+	t.Run("testnet allows literal token", func(t *testing.T) {
+		args := append([]string(nil), baseArgs...)
+		args = append(args,
+			"-network=testnet",
+			"-chainID=vsc-testnet",
+			"-signerVaultToken=hvs.SECRETSECRETSECRET",
+		)
+		withArgs(t, args, func() {
+			_, err := parseArgs()
+			// May still error on missing -addressSignerSecret etc., but NOT on the SEC-6 gate.
+			if err != nil {
+				assert.NotContains(t, strings.ToLower(err.Error()), "signervaulttoken",
+					"testnet must NOT reject on the SEC-6 gate; got %v", err)
+			}
+		})
+	})
+
+	t.Run("mainnet allows token file", func(t *testing.T) {
+		args := append([]string(nil), baseArgs...)
+		args = append(args,
+			"-network=mainnet",
+			"-chainID=vsc-mainnet",
+			"-signerVaultTokenFile=/etc/is-service/vault.token",
+		)
+		withArgs(t, args, func() {
+			_, err := parseArgs()
+			// May still error on other fields, but NOT on signerVaultToken.
+			if err != nil {
+				assert.NotContains(t, strings.ToLower(err.Error()), "signervaulttoken",
+					"mainnet must accept -signerVaultTokenFile (the safe path); got %v", err)
+			}
+		})
+	})
 }
