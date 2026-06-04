@@ -129,18 +129,28 @@ func TestFixGVL1_SaveClaimRecordsTruthfulDistributed(t *testing.T) {
 	credited := sumInterestCredited(ledgerDbMock)
 	const wantDistributed = int64(99)
 	if credited != wantDistributed {
-		t.Fatalf("GV-L1: total interest credited=%d, want=%d (floor shares only; dust left un-distributed)", credited, wantDistributed)
+		t.Fatalf(
+			"GV-L1: total interest credited=%d, want=%d (floor shares only; dust left un-distributed)",
+			credited,
+			wantDistributed,
+		)
 	}
 
 	// Accounting-only: the dust must NOT be credited anywhere. Credited must be
 	// strictly less than the nominal amount (this is the un-distributed dust).
 	if credited >= amount {
-		t.Fatalf("GV-L1 accounting-only: credited=%d must be < nominal amount=%d (the dust must stay un-distributed, not redistributed)", credited, amount)
+		t.Fatalf(
+			"GV-L1 accounting-only: credited=%d must be < nominal amount=%d (the dust must stay un-distributed, not redistributed)",
+			credited,
+			amount,
+		)
 	}
 
 	// No extra ledger record (no remainder-recipient row) may be written.
 	if hasAnyRemainderRecord(ledgerDbMock) {
-		t.Fatalf("GV-L1 accounting-only: a *_remainder ledger record was written — the fix must NOT add an extra ledger record")
+		t.Fatalf(
+			"GV-L1 accounting-only: a *_remainder ledger record was written — the fix must NOT add an extra ledger record",
+		)
 	}
 	// Exactly N=3 interest records, one per account, nothing extra.
 	if got := countInterestRecords(ledgerDbMock); got != 3 {
@@ -153,10 +163,19 @@ func TestFixGVL1_SaveClaimRecordsTruthfulDistributed(t *testing.T) {
 		t.Fatalf("GV-L1: expected exactly 1 SaveClaim, got %d", len(claimDbMock.Claims))
 	}
 	if claimDbMock.Claims[0].Amount != wantDistributed {
-		t.Fatalf("GV-L1: SaveClaim.Amount=%d, want=%d (must equal what was ACTUALLY distributed, NOT the nominal amount=%d)", claimDbMock.Claims[0].Amount, wantDistributed, amount)
+		t.Fatalf(
+			"GV-L1: SaveClaim.Amount=%d, want=%d (must equal what was ACTUALLY distributed, NOT the nominal amount=%d)",
+			claimDbMock.Claims[0].Amount,
+			wantDistributed,
+			amount,
+		)
 	}
 	if claimDbMock.Claims[0].Amount == amount {
-		t.Fatalf("GV-L1: SaveClaim.Amount overstated as nominal amount=%d while only %d was distributed", amount, wantDistributed)
+		t.Fatalf(
+			"GV-L1: SaveClaim.Amount overstated as nominal amount=%d while only %d was distributed",
+			amount,
+			wantDistributed,
+		)
 	}
 }
 
@@ -183,7 +202,11 @@ func TestFixGVL1_SingleAccountNoRemainder(t *testing.T) {
 		t.Fatalf("GV-L1 N=1: expected exactly 1 interest record, got %d", got)
 	}
 	if claimDbMock.Claims[0].Amount != amount {
-		t.Fatalf("GV-L1 N=1: SaveClaim.Amount=%d, want=%d (no truncation → distributed == amount)", claimDbMock.Claims[0].Amount, amount)
+		t.Fatalf(
+			"GV-L1 N=1: SaveClaim.Amount=%d, want=%d (no truncation → distributed == amount)",
+			claimDbMock.Claims[0].Amount,
+			amount,
+		)
 	}
 }
 
@@ -252,7 +275,10 @@ func TestFixGVL2_TotalAvgOverflowStillDistributes(t *testing.T) {
 
 	credited := sumInterestCredited(ledgerDbMock)
 	if credited <= 0 {
-		t.Fatalf("GV-L2 regressed: cross-account sum overflowed int64 and the whole epoch's distribution was skipped (credited=%d). big.Int accumulator must prevent this.", credited)
+		t.Fatalf(
+			"GV-L2 regressed: cross-account sum overflowed int64 and the whole epoch's distribution was skipped (credited=%d). big.Int accumulator must prevent this.",
+			credited,
+		)
 	}
 	// Two equal whales → each gets floor(amount/2) = 500000, summing to exactly
 	// amount. (No dust here because amount is even and weights are equal.)
@@ -261,9 +287,16 @@ func TestFixGVL2_TotalAvgOverflowStillDistributes(t *testing.T) {
 	}
 	// Accounting-only invariant: SaveClaim.Amount equals what was distributed.
 	if len(claimDbMock.Claims) != 1 || claimDbMock.Claims[0].Amount != credited {
-		t.Fatalf("GV-L2: SaveClaim.Amount=%d, want=%d (must reflect actual distribution, not be recorded while 0 was paid)", claimDbMock.Claims[0].Amount, credited)
+		t.Fatalf(
+			"GV-L2: SaveClaim.Amount=%d, want=%d (must reflect actual distribution, not be recorded while 0 was paid)",
+			claimDbMock.Claims[0].Amount,
+			credited,
+		)
 	}
 	if claimDbMock.Claims[0].ObservedApr <= 0 {
-		t.Fatalf("GV-L2: observedApr=%v, want a sensible positive value (big.Float path)", claimDbMock.Claims[0].ObservedApr)
+		t.Fatalf(
+			"GV-L2: observedApr=%v, want a sensible positive value (big.Float path)",
+			claimDbMock.Claims[0].ObservedApr,
+		)
 	}
 }

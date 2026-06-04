@@ -22,9 +22,23 @@ type HiveTransactionCreator interface {
 	CustomJson(requiredAuths []string, requiredPostingAuths []string, id string, json string) hivego.HiveOperation
 	Transfer(from string, to string, amount string, asset string, memo string) hivego.HiveOperation
 	TransferToSavings(from string, to string, amount string, asset string, memo string) hivego.HiveOperation
-	TransferFromSavings(from string, to string, amount string, asset string, memo string, requestId int) hivego.HiveOperation
+	TransferFromSavings(
+		from string,
+		to string,
+		amount string,
+		asset string,
+		memo string,
+		requestId int,
+	) hivego.HiveOperation
 
-	UpdateAccount(username string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string) hivego.HiveOperation
+	UpdateAccount(
+		username string,
+		owner *hivego.Auths,
+		active *hivego.Auths,
+		posting *hivego.Auths,
+		jsonMetadata string,
+		memoKey string,
+	) hivego.HiveOperation
 
 	MakeTransaction(ops []hivego.HiveOperation) hivego.HiveTransaction
 
@@ -119,7 +133,12 @@ func (t *TransactionBroadcaster) PopulateSigningProps(tx *hivego.HiveTransaction
 type TransactionCrafter struct {
 }
 
-func (t *TransactionCrafter) CustomJson(requiredAuths []string, requiredPostingAuths []string, id string, json string) hivego.HiveOperation {
+func (t *TransactionCrafter) CustomJson(
+	requiredAuths []string,
+	requiredPostingAuths []string,
+	id string,
+	json string,
+) hivego.HiveOperation {
 	op := hivego.CustomJsonOperation{
 		RequiredAuths:        requiredAuths,
 		RequiredPostingAuths: requiredPostingAuths,
@@ -129,7 +148,13 @@ func (t *TransactionCrafter) CustomJson(requiredAuths []string, requiredPostingA
 	return op
 }
 
-func (t *TransactionCrafter) Transfer(from string, to string, amount string, asset string, memo string) hivego.HiveOperation {
+func (t *TransactionCrafter) Transfer(
+	from string,
+	to string,
+	amount string,
+	asset string,
+	memo string,
+) hivego.HiveOperation {
 	op := hivego.TransferOperation{
 		From:   from,
 		To:     to,
@@ -139,7 +164,14 @@ func (t *TransactionCrafter) Transfer(from string, to string, amount string, ass
 	return op
 }
 
-func (t *TransactionCrafter) UpdateAccount(username string, owner *hivego.Auths, active *hivego.Auths, posting *hivego.Auths, jsonMetadata string, memoKey string) hivego.HiveOperation {
+func (t *TransactionCrafter) UpdateAccount(
+	username string,
+	owner *hivego.Auths,
+	active *hivego.Auths,
+	posting *hivego.Auths,
+	jsonMetadata string,
+	memoKey string,
+) hivego.HiveOperation {
 	op := hivego.AccountUpdateOperation{
 		Account:      username,
 		Owner:        owner,
@@ -151,7 +183,13 @@ func (t *TransactionCrafter) UpdateAccount(username string, owner *hivego.Auths,
 	return op
 }
 
-func (t *TransactionCrafter) TransferToSavings(from string, to string, amount string, asset string, memo string) hivego.HiveOperation {
+func (t *TransactionCrafter) TransferToSavings(
+	from string,
+	to string,
+	amount string,
+	asset string,
+	memo string,
+) hivego.HiveOperation {
 	op := hivego.TransferToSavings{
 		From:   from,
 		To:     to,
@@ -161,13 +199,23 @@ func (t *TransactionCrafter) TransferToSavings(from string, to string, amount st
 	return op
 }
 
-func (t *TransactionCrafter) TransferFromSavings(from string, to string, amount string, asset string, memo string, requestId int) hivego.HiveOperation {
+func (t *TransactionCrafter) TransferFromSavings(
+	from string,
+	to string,
+	amount string,
+	asset string,
+	memo string,
+	requestId int,
+) hivego.HiveOperation {
 	// Hive's request_id is a uint32 on the wire; the pinned hivego models it as
 	// int (RequestId int). Live callers pass int(bh) (block height), always in
 	// [0, MaxUint32]. Keep the range guard (a negative/oversized id would be a
 	// caller bug) and assign the int directly to match the pinned hivego type.
 	// (Base-commit 937ae771 cast to uint32 against a different hivego version —
 	// a build break vs the go.mod-pinned dep; this matches the pin.)
+	// hivego.TransferFromSavings.RequestId is uint32 (Hive L1 wire type). Live
+	// callers pass int(bh) (block height) which is always in [0, MaxUint32].
+	// Guard against an out-of-range value silently wrapping the request id.
 	if requestId < 0 || requestId > math.MaxUint32 {
 		panic("hive: TransferFromSavings requestId out of uint32 range")
 	}
