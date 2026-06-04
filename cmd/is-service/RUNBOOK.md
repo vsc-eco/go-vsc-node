@@ -312,13 +312,20 @@ are rejected without state mutation.
 
 - [ ] `-addressSignerSecret` HMAC → either `-signerVaultAddr` Vault Transit (recommended, spec §5.7, see §1.3 above for the operator-runnable recipe) OR `-addressSignerEd25519KeyFile` (file-based Ed25519 signer; same wire format as Vault, the private key lives on the IS-service host filesystem at 0o600).
 - [ ] `PUBLIC_IS_SERVICE_SIGNER_PUBKEY` pinned in Altera. When
-      blank Altera renders a yellow warn-panel (cryptographic
-      verification unavailable for this session) — the panel does
-      NOT instruct the user to compare a fingerprint against an
-      operator-published value, because the fingerprint is per-
-      session (audit R19-SEC-fingerprint-warn-panel-no-canonical-
-      source-exists). Pinning this pubkey enables the green
-      'verified' badge + the fail-closed 'invalid' branch.
+      blank, Altera renders a yellow warn-panel titled
+      "Verification not configured"; when the user's browser
+      lacks Ed25519 WebCrypto the panel title is instead
+      "Verification unavailable in this browser" (these are the
+      strings an operator can grep DashLogin.svelte for — audit
+      R21-OPS-runbook-warn-panel-prose-quotes-stale-title-string
+      replaced the prior parenthetical "cryptographic verification
+      unavailable" wording that no longer matches the rendered
+      copy). The panel does NOT instruct the user to compare a
+      fingerprint against an operator-published value, because the
+      fingerprint is per-session (audit R19-SEC-fingerprint-warn-
+      panel-no-canonical-source-exists). Pinning this pubkey
+      enables the green 'verified' badge + the fail-closed
+      'invalid' branch.
 - [ ] `MAINNET_HOST_SUFFIXES` populated in `src/lib/auth/dash/config.ts`.
 - [ ] Mainnet validator-set epoch cadence + `setValidatorSet` cron wired.
 - [ ] Prometheus metrics endpoint enabled + scrape targets configured.

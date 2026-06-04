@@ -36,10 +36,16 @@ type countingSigner struct {
 	inner       *fakeSigner
 	signCalls   atomic.Int64
 	signBarrier chan struct{}
-	// signPanic, when non-nil, is called the FIRST time Sign() runs
-	// with the request that triggered it; if it returns a non-nil
-	// value, Sign panics with that value. Used by the panic-safety
-	// test (audit R20-CORR-singleflight-panic-leaks-followers-forever).
+	// signPanic, when non-nil, is invoked on EVERY Sign() call (no
+	// first-call guard) with the request that triggered it; if it
+	// returns a non-nil value, Sign panics with that value. Used by
+	// the panic-safety test (audit R20-CORR-singleflight-panic-leaks-
+	// followers-forever). Tests that want one-shot semantics MUST
+	// nil-out the field after observing the panic (see the panic test
+	// for the pattern). Audit R21-CONS-signpanic-godoc-says-first-but-
+	// code-checks-every-call: the prior godoc claimed FIRST-call only,
+	// but the code at Sign() checks the field unconditionally — the
+	// honest contract is "always fires while non-nil".
 	signPanic func(IsLockAttestationRequest) any
 }
 
@@ -67,11 +73,16 @@ func (c *countingSigner) Sign(req IsLockAttestationRequest) (string, error) {
 	c.signCalls.Add(1)
 	if c.signBarrier != nil {
 		<-c.signBarrier
-		// Only block on the first Sign — close + nil-out so
-		// subsequent calls (after the leader unblocks) run free.
-		// Race-safe pattern: close once via a separate sync.Once would
-		// be cleaner, but the test sets signBarrier=nil from outside
-		// after releasing.
+		// Once the test does close(c.signBarrier), every subsequent
+		// <-c.signBarrier returns immediately with the zero value
+		// (closed-channel broadcast semantics). No nil-out needed —
+		// in the singleflight test only the leader's Sign call hits
+		// this branch (followers replay from cache), but a future test
+		// that re-enters Sign multiple times is also safe because
+		// closed-channel reads are non-blocking + race-free. Audit
+		// R21-CONS-signbarrier-comment-claims-nil-out-but-test-uses-
+		// close: the prior comment described a nil-out mechanism the
+		// tests do not implement.
 	}
 	if c.signPanic != nil {
 		if v := c.signPanic(req); v != nil {
@@ -364,21 +375,26 @@ func TestHandleRequest_SingleFlightAcrossConcurrentRebroadcasts(t *testing.T) {
 	}
 
 	// Wait for the leader to enter Sign() (signCalls.Load() == 1) AND
-	// for at least one follower to register on signSF (svc.signSF.calls
-	// has the cacheKey). At that point the leader is parked on the
-	// barrier + at least one follower is parked on <-call.done. THEN
-	// release the barrier — followers must replay, NOT call Sign again.
+	// for ALL N-1 followers to park on <-call.done (audit R21-CORR-go-
+	// vsc-singleflight-test-eventually-cond-does-not-actually-prove-
+	// follower-registered: the prior `len(svc.signSF.calls) == 1`
+	// predicate only proved the leader had registered itself in the
+	// map — it could not distinguish '1 leader, 0 followers' from
+	// '1 leader, N-1 followers' because the calls map holds one entry
+	// per cacheKey, not one per goroutine). waitersForKey() returns
+	// the count of follower goroutines currently parked on the call's
+	// done channel — only when that hits concurrency-1 do we KNOW
+	// every follower is in singleflight-coordination mode (not racing
+	// past the outer cache lookup). THEN release the barrier —
+	// followers must replay, NOT call Sign again.
+	cacheKey := signCacheKey(req)
 	require.Eventually(t, func() bool {
 		if signer.signCalls.Load() != 1 {
 			return false
 		}
-		// At least one follower must be registered (we have N-1
-		// followers in flight, so at least 1 is in signSF).
-		svc.signSF.mu.Lock()
-		defer svc.signSF.mu.Unlock()
-		return len(svc.signSF.calls) == 1
+		return svc.signSF.waitersForKey(cacheKey) >= int64(concurrency-1)
 	}, 5*time.Second, time.Millisecond,
-		"leader must enter Sign + at least one follower must register before release")
+		"leader must enter Sign + all %d followers must park on <-call.done before release", concurrency-1)
 
 	close(signer.signBarrier)
 	wg.Wait()
@@ -448,20 +464,132 @@ func TestHandleRequest_SingleFlightPanicDoesNotStrand(t *testing.T) {
 
 	// And a fresh request with the same key (after clearing the panic
 	// stub) must complete cleanly — proves we didn't leave the cache
-	// poisoned. Use Eventually to handle the case where the leader
-	// has not yet released signCache state.
+	// poisoned. Audit R21-CONS-singleflight-panic-test-comment-uses-
+	// eventually-but-code-does-not: the prior implementation used a
+	// fixed 2s deadline; the comment promised Eventually. require.
+	// Eventually polls every 10ms up to 2s so a slow CI runner
+	// surfaces "still alive" rather than spuriously failing on a
+	// scheduler stall, AND a real deadlock fails fast on the next
+	// poll instead of hanging the test runner.
 	signer.signPanic = nil
-	done2 := make(chan struct{})
+	freshDone := make(chan struct{})
 	go func() {
-		defer close(done2)
+		defer close(freshDone)
 		svc.handleRequest(context.Background(), req, func(p2pMessage) error { return nil })
 	}()
-	select {
-	case <-done2:
-		// Good: fresh request completed (didn't deadlock).
-	case <-time.After(2 * time.Second):
-		t.Fatal("post-panic handleRequest deadlocked — singleflight cleanup failed")
+	require.Eventually(t, func() bool {
+		select {
+		case <-freshDone:
+			return true
+		default:
+			return false
+		}
+	}, 2*time.Second, 10*time.Millisecond,
+		"post-panic handleRequest deadlocked — singleflight cleanup failed")
+}
+
+// TestHandleRequest_SingleFlightPanicWakesWaitingFollowers covers
+// audit R21-OPS-singleflight-panic-test-does-not-cover-follower-
+// already-waiting-during-leader-panic (MEDIUM) — the harder case of
+// the R20 panic-safety regression. The sibling
+// TestHandleRequest_SingleFlightPanicDoesNotStrand only exercises
+// SEQUENTIAL leader-panic-then-retry; it does NOT exercise the exact
+// pre-R20 production failure mode where N followers are ALREADY
+// parked on <-call.done when the leader panics. Pre-R20 those
+// followers would block on a never-closed done channel forever. The
+// R20 defer { delete; close } sequence MUST wake them all.
+//
+// Design: install signBarrier so the leader stops inside Sign() —
+// followers register on signSF and park on <-call.done. Use
+// waitersForKey() to wait until ALL N-1 followers are parked (audit
+// R21-CORR-singleflight-test-eventually-cond-does-not-actually-
+// prove-follower-registered: previously the test only proved the
+// leader had registered itself, not that followers were parked).
+// THEN close the barrier so the leader unblocks + hits signPanic.
+// The R20 defer runs → call.done closes → all N-1 followers MUST
+// wake within a bounded time and the singleflight map MUST be empty.
+func TestHandleRequest_SingleFlightPanicWakesWaitingFollowers(t *testing.T) {
+	signer := newCountingSigner(t, "did:key:validator-1")
+	signer.signBarrier = make(chan struct{})
+	signer.signPanic = func(_ IsLockAttestationRequest) any {
+		return "synthetic Sign panic with followers parked (R21)"
 	}
+
+	const hex32 = "0011223344556677889900112233445566778899001122334455667788990011"
+	svc := NewService("vsc-testnet", signer, fakeMemoryFor(t, hex32), nil)
+
+	req := IsLockAttestationRequest{
+		TxId:               hex32,
+		RawTxHashHex:       hex32,
+		InstructionHashHex: hex32,
+		Epoch:              1,
+		ChainId:            "vsc-testnet",
+	}
+
+	const concurrency = 4
+	var (
+		wg        sync.WaitGroup
+		recovered atomic.Int64
+	)
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			defer func() {
+				// One goroutine — the leader — will see a panic
+				// propagate out of svc.handleRequest. The N-1 followers
+				// return cleanly with (nil, false) from singleflight.do
+				// and handleRequest silently drops (no panic).
+				if r := recover(); r != nil {
+					recovered.Add(1)
+				}
+			}()
+			svc.handleRequest(context.Background(), req, func(p2pMessage) error { return nil })
+		}()
+	}
+
+	cacheKey := signCacheKey(req)
+	require.Eventually(t, func() bool {
+		if signer.signCalls.Load() != 1 {
+			return false
+		}
+		return svc.signSF.waitersForKey(cacheKey) >= int64(concurrency-1)
+	}, 5*time.Second, time.Millisecond,
+		"leader must enter Sign + all %d followers must park before barrier release", concurrency-1)
+
+	close(signer.signBarrier)
+
+	// All N goroutines MUST complete within a bounded time. Pre-R20
+	// the followers would be parked on a never-closed done channel +
+	// this test would deadlock here. Post-R20 the leader's defer
+	// closes call.done as part of cleanup → followers wake with
+	// resp==nil and return.
+	doneAll := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneAll)
+	}()
+	select {
+	case <-doneAll:
+	case <-time.After(3 * time.Second):
+		t.Fatal("panic-during-Sign stranded waiting followers — " +
+			"singleflight.do defer-close failed (audit R21-OPS-singleflight-" +
+			"panic-test-does-not-cover-follower-already-waiting-during-" +
+			"leader-panic; pre-R20 regression mode)")
+	}
+
+	assert.Equal(t, int64(1), recovered.Load(),
+		"exactly the leader goroutine should recover a panic; %d followers "+
+			"complete normally via (nil, false) from singleflight.do", concurrency-1)
+
+	svc.signSF.mu.Lock()
+	calls := len(svc.signSF.calls)
+	svc.signSF.mu.Unlock()
+	assert.Zero(t, calls,
+		"singleflight map must be CLEAN after leader-panic-with-N-followers-"+
+			"already-parked — audit R20-CORR-singleflight-panic-leaks-"+
+			"followers-forever + R21-OPS-singleflight-panic-test-does-"+
+			"not-cover-follower-already-waiting-during-leader-panic")
 }
 
 // dualMemory returns rawTxHash=a for txA and =b for txB. Used by the

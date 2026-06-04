@@ -1,6 +1,9 @@
 package islock_attestation
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // singleflightMap coordinates duplicate calls. When N goroutines call
 // do(key, fn) concurrently with the same key, only ONE runs fn(); the
@@ -47,6 +50,17 @@ type singleflightMap struct {
 type singleflightCall struct {
 	done chan struct{}
 	resp *IsLockAttestationResponse
+	// waiters counts follower goroutines that have entered the "wait
+	// on <-done" branch. Exposed for tests (audit R21-CORR-go-vsc-
+	// singleflight-test-eventually-cond-does-not-actually-prove-
+	// follower-registered) so the singleflight regression test can
+	// gate its barrier release on N-1 followers actually parked,
+	// not just on "leader registered + cacheKey exists in map".
+	// Incremented under s.mu in do(); read under s.mu via
+	// waitersForKey() — both with s.mu held → no atomic strictly
+	// required, but atomic.Int64 keeps the field race-detector-clean
+	// even if a future refactor lifts the read out of s.mu.
+	waiters atomic.Int64
 }
 
 func newSingleflightMap() *singleflightMap {
@@ -70,7 +84,10 @@ func newSingleflightMap() *singleflightMap {
 func (s *singleflightMap) do(key string, fn func() *IsLockAttestationResponse) (*IsLockAttestationResponse, bool) {
 	s.mu.Lock()
 	if call, ok := s.calls[key]; ok {
-		// Follower — wait for the leader.
+		// Follower — register on the waiters counter (under s.mu so
+		// the count is monotonic relative to the leader's defer-time
+		// observation) then wait for the leader.
+		call.waiters.Add(1)
 		s.mu.Unlock()
 		<-call.done
 		return call.resp, call.resp != nil
@@ -101,4 +118,19 @@ func (s *singleflightMap) do(key string, fn func() *IsLockAttestationResponse) (
 	resp := fn()
 	call.resp = resp
 	return resp, resp != nil
+}
+
+// waitersForKey returns the count of currently-parked followers on
+// key, or 0 if no flight is in progress. Test-only — used by the
+// singleflight regression tests to confirm followers ARE parked
+// before releasing the leader's barrier (audit R21-CORR-go-vsc-
+// singleflight-test-eventually-cond-does-not-actually-prove-
+// follower-registered).
+func (s *singleflightMap) waitersForKey(key string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if call, ok := s.calls[key]; ok {
+		return call.waiters.Load()
+	}
+	return 0
 }
