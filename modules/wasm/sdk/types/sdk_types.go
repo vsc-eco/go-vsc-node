@@ -1,13 +1,14 @@
 package sdk_types
 
 import (
-	"fmt"
-	"os"
 	"reflect"
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/wasm/sdk"
 
 	"github.com/second-state/WasmEdge-go/wasmedge"
 )
+
+var log = vsclog.Module("wasm-sdk")
 
 var SdkTypes = generateSdkTypes()
 
@@ -38,7 +39,7 @@ func generateSdkTypes() []SdkType {
 			})
 		}
 	}
-	fmt.Fprintln(os.Stderr, "sdk types", res)
+	log.Trace("generated sdk types", "count", len(res))
 	return res
 }
 

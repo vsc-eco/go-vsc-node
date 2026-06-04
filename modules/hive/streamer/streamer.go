@@ -491,7 +491,7 @@ func (s *Streamer) streamBlocks() {
 			}()
 			if storeErr != nil {
 				if storeErr.Error() != "empty blocks" {
-					log.Printf("processing blocks failed at %d, retrying in-process: %v\n", batchStart, storeErr)
+					vlog.Error("processing blocks failed, retrying in-process", "batchStart", batchStart, "err", storeErr)
 				}
 				// Interruptible backoff: a failing range is retried in
 				// place, but ctx cancel (Stop) must not wait out the
@@ -516,7 +516,7 @@ func (s *Streamer) streamBlocks() {
 }
 
 func (s *Streamer) fetchBlockBatch(startBlock, batchSize uint64) ([]hivego.Block, error) {
-	vlog.Info("fetching block range", "startBlock", startBlock, "endBlock", startBlock+batchSize-1)
+	vlog.Debug("fetching block range", "startBlock", startBlock, "endBlock", startBlock+batchSize-1)
 	p := promise.New(func(resolve func([]hivego.Block), reject func(error)) {
 		blocks, err := s.client.GetBlockRange(int(startBlock), int(batchSize))
 		if err != nil {
@@ -566,9 +566,6 @@ func (s *Streamer) storeBlocks(blocks []hivego.Block) error {
 			for _, op := range tx.Operations {
 				// remove any postfix of "_operation" if it exists from op.Type
 				if len(op.Type) > 10 && op.Type[len(op.Type)-10:] == "_operation" {
-					if len(op.Type)-10 == 350 {
-						println("350")
-					}
 					op.Type = op.Type[:len(op.Type)-10]
 				}
 				for _, filter := range s.filters {

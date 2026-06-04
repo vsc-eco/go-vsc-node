@@ -358,7 +358,7 @@ func (a *AnnouncementsManager) PeerConnect() {
 func (a *AnnouncementsManager) safePeerAddrs() (out []multiaddr.Multiaddr) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("peerInfo.GetPeerAddrs panic recovered: %v", r)
+			alog.Warn("peerInfo.GetPeerAddrs panic recovered", "err", r)
 			out = []multiaddr.Multiaddr{}
 		}
 	}()
@@ -368,7 +368,7 @@ func (a *AnnouncementsManager) safePeerAddrs() (out []multiaddr.Multiaddr) {
 func (a *AnnouncementsManager) safePeerId() (out string) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("peerInfo.GetPeerId panic recovered: %v", r)
+			alog.Warn("peerInfo.GetPeerId panic recovered", "err", r)
 			out = ""
 		}
 	}()
@@ -378,7 +378,7 @@ func (a *AnnouncementsManager) safePeerId() (out string) {
 func (a *AnnouncementsManager) safeStatus() (out network.Reachability) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("peerInfo.GetStatus panic recovered: %v", r)
+			alog.Warn("peerInfo.GetStatus panic recovered", "err", r)
 			out = network.ReachabilityUnknown
 		}
 	}()

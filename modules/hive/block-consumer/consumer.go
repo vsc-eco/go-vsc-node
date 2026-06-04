@@ -17,6 +17,7 @@ type HiveConsumer struct {
 	StateEngine *stateEngine.StateEngine
 
 	bh uint64
+	hh uint64
 
 	headFetcher HeadHeightGetter
 }
@@ -43,6 +44,9 @@ func (v *HiveConsumer) RegisterBlockTick(name string, funck BTFunc, async bool) 
 }
 
 func (v *HiveConsumer) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint64) {
+	if headHeight != nil {
+		v.hh = *headHeight
+	}
 	for _, tick := range v.ticks {
 		if tick.async {
 			go tick.funck(blk.BlockNumber, headHeight)
@@ -69,6 +73,10 @@ type blockGetter struct {
 func (b *blockGetter) HeadHeight() *uint64 {
 	if b.headFetcher != nil {
 		h := b.headFetcher()
+		return &h
+	}
+	if b.hh > 0 {
+		h := b.hh
 		return &h
 	}
 	return nil
