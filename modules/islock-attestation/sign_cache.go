@@ -13,14 +13,36 @@ import (
 // signs per legitimate session, and up to ~100/min per malicious peer
 // at the validator-side gossip rate limit.
 //
-// Amplification bypass (audit R18-SEC-cache-amplification-by-varying-
-// instruction-hash, INFO): an attacker can defeat this dedupe by
-// VARYING the InstructionHashHex (or any other key field) per
-// request. The validator will still see a fresh cache key each time
-// and pay the BLS-sign cost. The defense layer that bounds this is
-// the per-peer requestRateLimiter (100/min in p2p.go), NOT this
-// cache. The cache only collapses LEGITIMATE rebroadcasts of the
-// SAME request; the rate-limiter bounds adversarial spread.
+// Amplification bypass (audit R18-SEC-cache-amplification-by-
+// varying-instruction-hash + R19-OPS-cache-amplification-runtime-
+// defense-undersized-vs-multi-peer): an attacker can defeat this
+// dedupe by VARYING any cache-key field per request. The validator
+// pays the BLS-sign cost on every miss.
+//
+// Single-peer threat model: the per-peer requestRateLimiter
+// (100 msg/min in p2p.go) caps any one peer at ~1.67 msg/sec,
+// which is comfortably below the BLS-sign throughput. Capacity=1000
+// is ~10× the single-peer rate so legitimate hits aren't displaced.
+//
+// Multi-peer threat model (R19): with N malicious peers each
+// spending their full per-peer budget, total cache-miss rate scales
+// at N × 100/min. At N=10 the cache fills with junk in 60s; at
+// N=100 in 6s. The cache alone CANNOT bound this — the relevant
+// defenses are upstream:
+//   - gossipsub mesh degree (D=6 default) caps the FAN-OUT a single
+//     attacker can reach; an attacker has to control multiple peers
+//     to multiply.
+//   - validator-set membership: rebroadcasts arrive from N
+//     legitimate IS-service instances (typically 1 per deployment),
+//     so the "100 malicious peers" model assumes a much-larger
+//     compromise.
+//   - BLS-sign latency (~tens of ms) caps the validator's own
+//     throughput at ~100 signs/sec/core — eviction churn is the
+//     observable, not CPU exhaustion.
+// In the realistic 1-5 peer threat, capacity=1000 + 60s TTL is
+// over-provisioned. For larger compromises an LRU layer (rather
+// than FIFO) over recent cache HITS would protect legitimate
+// entries, but that's not in scope here.
 //
 // Cache key: (TxId, RawTxHashHex, InstructionHashHex, Epoch). ChainID
 // is constant per process so it's not part of the key. The cached

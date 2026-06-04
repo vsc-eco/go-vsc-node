@@ -210,6 +210,28 @@ Combined per-IP budget across the three production endpoints is
 80/min. Operators behind a CDN / WAF can stack their own rate limits
 on top — these are defense-in-depth against direct-to-pod traffic.
 
+### 4.1 Validator-side attestation sign cache
+
+When a magi validator runs the IS-login islock-attestation plugin
+(MAGI_ISLOCK_ENABLE=true), each BLS-signed attestation response is
+cached in-memory so rebroadcasts of the IDENTICAL request don't
+re-pay the BLS-sign cost. Audit R17-SEC-dash-rebroadcast-validator-
+no-per-txid-sign-dedupe established the cache; R18 + R19 audits
+hardened the eviction + single-flight semantics.
+
+Knobs (currently fixed; environment override TBD per audit
+R18-OPS-sign-cache-no-metrics-or-knob-impacts-tuning):
+
+| Constant | Value | Source | Rationale |
+|---|---|---|---|
+| `signCacheTTL` | 60s | modules/islock-attestation/sign_cache.go | 4× the orchestrator's 15s collect window — even a slow rebroadcast lands inside one cache lifetime. |
+| `signCacheCapacity` | 1000 | same | ~10× the validator-side per-peer rate limit (100 msg/min), so single-peer flooding can't evict legitimate entries. Multi-peer floods scale linearly with N — see the godoc on `signRequestCache` for the threat model trade-off. |
+
+Per-validator hit/miss metrics aren't exposed yet; the audit-named
+follow-up adds Prometheus counters but is a separate ticket. For now,
+the cache is a fire-and-forget optimisation — operators don't need to
+tune it for the v1 mainnet flip.
+
 ---
 
 ## 5. Monitoring + log patterns

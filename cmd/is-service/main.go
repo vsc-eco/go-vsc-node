@@ -104,10 +104,19 @@ func main() {
 			slog.Error("building Vault transit signer", "err", err)
 			os.Exit(1)
 		}
+		// Audit R19-OPS-vault-tokenfile-path-missing-from-startup-log:
+		// R18 tokenSource() dropped the path from per-request error
+		// messages with the justification that operators can find it
+		// in startup logs. That claim was wrong — no startup log
+		// emitted the path. Now it does, exactly once at boot, as a
+		// stable on-call anchor that doesn't propagate into per-request
+		// HTTP responses.
 		slog.Info("address signer: Vault Transit (HSM/KMS-shape; pin pubkey in PUBLIC_IS_SERVICE_SIGNER_PUBKEY)",
 			"vaultAddr", sanitizeURLForLogWithFlag("-signerVaultAddr", args.signerVaultAddr),
 			"mount", args.signerVaultMount,
 			"key", args.signerVaultKeyName,
+			"tokenSource", string(tokenSrc),
+			"tokenFile", args.signerVaultTokenFile,
 			"pubkey", pubHex)
 		signer = s
 	case args.addressSignerEd25519KeyFile != "":

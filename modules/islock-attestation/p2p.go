@@ -87,6 +87,13 @@ type Service struct {
 	onResponse ResponseCallback    // nil on validator side
 	rateLimits *requestRateLimiter // bounds per-peer attestation cost
 	signCache  *signRequestCache   // dedupe Sign() across rebroadcasts
+	// signSF is a single-flight gate keyed on cacheKey: two concurrent
+	// rebroadcasts of the same (TxId, RawTxHashHex, InstructionHashHex,
+	// Epoch) tuple share ONE Sign() call instead of both paying the BLS
+	// cost. Audit R19-OPS-handle-request-not-single-flight-concurrent-
+	// rebroadcast-double-signs caught the previous get/Sign/put sequence
+	// admitting two flights on a race; this closes the gap.
+	signSF singleflightMap
 
 	// WIRING NEEDED: assigned in NewService once the libp2p.PubSubService is built.
 	svc libp2p.PubSubService[p2pMessage]
@@ -298,27 +305,45 @@ func (s *Service) handleRequest(
 		return
 	}
 
-	sigHex, err := s.signer.Sign(req)
-	if err != nil {
+	// Audit R19-OPS-handle-request-not-single-flight-concurrent-
+	// rebroadcast-double-signs: between get() above and put() below
+	// there's a window in which two concurrent rebroadcasts of the
+	// SAME cacheKey can both miss the cache + both call Sign(). The
+	// race is rare in practice (BLS-sign is tens of ms, rebroadcast
+	// interval is 6s) but the cache godoc says "exactly ONCE per
+	// unique tuple", which only holds with a single-flight gate.
+	// signSF.do() coordinates: one goroutine signs; others wait + get
+	// the same response. Cache + send happen on the leader's path so
+	// followers replay the cached entry on their own send().
+	resp, ok := s.signSF.do(cacheKey, func() *IsLockAttestationResponse {
+		// Re-check cache inside the gate in case another goroutine
+		// raced ahead of us between get() and the gate.
+		if cached, ok := s.signCache.get(cacheKey); ok {
+			return cached
+		}
+		sigHex, err := s.signer.Sign(req)
+		if err != nil {
+			return nil
+		}
+		built := &IsLockAttestationResponse{
+			TxId:         req.TxId,
+			ValidatorDID: s.signer.ValidatorDID(),
+			PubkeyHex:    s.signer.PubkeyHex(),
+			Epoch:        req.Epoch,
+			BlsSigHex:    sigHex,
+		}
+		s.signCache.put(cacheKey, built)
+		return built
+	})
+	if !ok || resp == nil {
 		// Signing failed — silently drop. The requester will time out
 		// or collect quorum from other validators.
 		return
 	}
-	resp := IsLockAttestationResponse{
-		TxId:         req.TxId,
-		ValidatorDID: s.signer.ValidatorDID(),
-		// Round-2 audit R2-001: PubkeyHex MUST be populated. The
-		// IS-service-side broadcaster + the contract both reject
-		// responses with empty/wrong-length PubkeyHex; without this
-		// the entire fast-path is silently dead.
-		PubkeyHex: s.signer.PubkeyHex(),
-		Epoch:     req.Epoch,
-		BlsSigHex: sigHex,
-	}
-	s.signCache.put(cacheKey, &resp)
 	if send != nil {
-		send(p2pMessage{Type: "response", Response: &resp})
+		send(p2pMessage{Type: "response", Response: resp})
 	}
+	return
 }
 
 // ===== rate limiter (validator-side) =====

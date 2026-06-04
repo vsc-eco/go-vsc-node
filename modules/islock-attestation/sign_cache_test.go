@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"sync"
 	"testing"
 	"time"
 
@@ -219,22 +220,22 @@ func TestSignCache_ExpireReputDoesNotEvictFreshEntry(t *testing.T) {
 			"(audit R18 — the pre-fix dup-fifo bug let later evictions "+
 			"destroy the live entry)")
 
-	// 4. Fill the cache to capacity with junk so target sits at fifo[0].
-	//    Then add one more entry to trigger eviction. Without the R18
-	//    fix, eviction would pop the STALE target slot and delete the
-	//    FRESH target entry. With the fix, eviction pops the (single)
-	//    target slot legitimately — that's fine, target is now the
-	//    oldest. To exercise the "fresh entry survives" property we
-	//    instead put a DIFFERENT key after target so target is NOT
-	//    the oldest.
-	cache.put("other", &IsLockAttestationResponse{TxId: "other"})
-
-	// Now target should still be cached (within TTL of the re-put).
+	// Step 4 (audit R19-CONS-sign-cache-test-step4-comment-
+	// misdescribes-code-and-no-eviction-triggered): the original
+	// follow-up assertion tried to verify "fresh entry survives a
+	// sibling eviction" by adding one sibling. With capacity=1000 +
+	// only 2 entries total that branch never triggered eviction —
+	// the test was a TTL check masquerading as an eviction-survival
+	// check. The meaningful R18 assertion is already complete at
+	// step 3: exactly ONE fifo slot for target. The eviction-
+	// survival angle is hard to construct as a test that
+	// distinguishes pre-R18 from post-R18 (in the natural ordering
+	// both versions evict target as fifo[0]); the more meaningful
+	// regression is the unbounded fifo growth covered separately by
+	// TestSignCache_ExpireReputDoesNotGrowUnbounded below.
 	gotResp, gotOK := cache.get(targetKey)
-	require.True(t, gotOK,
-		"freshly-reput entry must still be in cache after a sibling put — "+
-			"the R18 pre-fix bug would have evicted it via the dangling "+
-			"stale fifo slot")
+	require.True(t, gotOK, "freshly-reput entry must still be in cache "+
+		"(within TTL of step 3's put)")
 	assert.Equal(t, targetKey, gotResp.TxId)
 }
 
@@ -263,11 +264,70 @@ func TestSignCache_ExpireReputDoesNotGrowUnbounded(t *testing.T) {
 		}
 	}
 
-	assert.LessOrEqual(t, len(cache.fifo), numKeys+10,
-		"fifo must stay bounded by the live entry count (+small slack), "+
-			"not grow unbounded across expire/reput cycles")
+	// fifo size MUST equal numKeys (= 50) — post-fix the splice on
+	// expire removes exactly one slot per re-put, so the
+	// "expire + reput" cycle is fifo-neutral. The prior "numKeys+10"
+	// slack was a loose bound from when this test was first written
+	// against an in-progress fix; the +10 leeway was never needed.
+	// Audit R19-OPS-sign-cache-fifo-slack-magic-number.
+	assert.Equal(t, numKeys, len(cache.fifo),
+		"fifo must stay exactly at numKeys (= live entry count); "+
+			"splice on expire is fifo-neutral so cycling cannot accumulate slack")
 	assert.Equal(t, numKeys, len(cache.entries),
 		"entries map should stabilise at the unique-key count")
+}
+
+// TestHandleRequest_SingleFlightAcrossConcurrentRebroadcasts covers
+// audit R19-OPS-handle-request-not-single-flight-concurrent-rebroadcast-
+// double-signs. Two concurrent rebroadcasts of the same request must
+// share ONE Sign() call — the leader signs + caches; the follower
+// waits + replays the cached response. Pre-fix both threads missed
+// the cache between get() and put() and both called Sign(), defeating
+// the cache godoc's "exactly ONCE" claim.
+func TestHandleRequest_SingleFlightAcrossConcurrentRebroadcasts(t *testing.T) {
+	signer := newCountingSigner(t, "did:key:validator-1")
+	const hex32 = "0011223344556677889900112233445566778899001122334455667788990011"
+	svc := NewService("vsc-testnet", signer, fakeMemoryFor(t, hex32), nil)
+
+	req := IsLockAttestationRequest{
+		TxId:               hex32,
+		RawTxHashHex:       hex32,
+		InstructionHashHex: hex32,
+		Epoch:              1,
+		ChainId:            "vsc-testnet",
+	}
+
+	const concurrency = 8
+	var (
+		mu   sync.Mutex
+		sent []*p2pMessage
+		wg   sync.WaitGroup
+	)
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			svc.handleRequest(context.Background(), req, func(m p2pMessage) error {
+				mu.Lock()
+				mc := m
+				sent = append(sent, &mc)
+				mu.Unlock()
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, concurrency, len(sent),
+		"all %d concurrent rebroadcasts must produce a response (leader + followers replay)", concurrency)
+	assert.Equal(t, 1, signer.signCalls,
+		"single-flight: only ONE Sign() across %d concurrent identical "+
+			"rebroadcasts (audit R19) — the rest must wait + replay", concurrency)
+	for i, m := range sent {
+		require.NotNil(t, m.Response, "response %d nil", i)
+		assert.Equal(t, sent[0].Response.BlsSigHex, m.Response.BlsSigHex,
+			"every follower must replay the leader's signature")
+	}
 }
 
 // dualMemory returns rawTxHash=a for txA and =b for txB. Used by the

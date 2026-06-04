@@ -49,12 +49,16 @@ type AddressSignerVaultTransit struct {
 	token   string
 	// tokenFile is the optional path the token was sourced from at
 	// startup. When set, currentToken() re-reads it on every
-	// invocation so vault-agent-style short-lived tokens (15min
-	// cadence) refresh without an IS-service restart. Sign() calls
+	// invocation so vault-agent-style short-lived tokens — operator-
+	// chosen renewal cadence; RUNBOOK §1.3 step 6 suggests every ~3h
+	// — refresh without an IS-service restart. Sign() calls
 	// currentToken() per request; fetchLatestPublicKey() also calls
 	// it but only runs at startup, so the practical effect of the
 	// re-read is on the Sign() hot path. Audit OPS-R15-01 (R15) +
-	// R16-CONS-vault-token-docstring-fetch-claim-misleading.
+	// R16-CONS-vault-token-docstring-fetch-claim-misleading +
+	// R19-CONS-currenttoken-docstring-15min-cadence-claim-not-grounded
+	// (the prior "15min cadence" was an out-of-context Vault default;
+	// the RUNBOOK actually recommends 3h).
 	tokenFile string
 	// tokenSrc is the non-secret label identifying which input
 	// supplied the startup token. Surfaced in 401/403 Vault error
@@ -213,12 +217,12 @@ func (s *AddressSignerVaultTransit) currentToken() string {
 		// Token file lapsed (permissions, disk full, agent crashed).
 		// Use the cached startup token as a fallback; Sign()'s caller
 		// sees the Vault-level failure if both are invalid.
-		s.warnTokenFallbackOnce("read failed", err)
+		s.warnTokenFallback("read failed", err)
 		return s.token
 	}
 	t := strings.TrimSpace(string(raw))
 	if t == "" {
-		s.warnTokenFallbackOnce("file empty after trim", nil)
+		s.warnTokenFallback("file empty after trim", nil)
 		return s.token
 	}
 	return t
@@ -262,7 +266,7 @@ func (s *AddressSignerVaultTransit) tokenSource() string {
 	return "unknown (TokenSource unset)"
 }
 
-// warnTokenFallbackOnce logs at WARN that we fell back to the cached
+// warnTokenFallback logs at WARN that we fell back to the cached
 // startup token because the configured TokenFile was unusable. The
 // reason + (optional) error give the operator enough hint to triage.
 //
@@ -276,7 +280,7 @@ func (s *AddressSignerVaultTransit) tokenSource() string {
 //
 // Throttle = 1 hour means a sustained outage emits at most ~24 warns/day,
 // bounding log noise while keeping fresh incidents visible.
-func (s *AddressSignerVaultTransit) warnTokenFallbackOnce(reason string, err error) {
+func (s *AddressSignerVaultTransit) warnTokenFallback(reason string, err error) {
 	const throttleSec = int64(3600) // 1 hour
 	now := time.Now().Unix()
 	last := s.tokenFallbackLastWarnUnix.Load()
