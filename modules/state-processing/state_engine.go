@@ -909,6 +909,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		for opIndex, op := range tx.Operations {
 
+			// review7 C7-a: a transfer_to_savings to the gateway is not a
+			// supported deposit path (it credits the gateway's illiquid L1
+			// savings). Flag it loudly for manual refund instead of silently
+			// stranding it — the prior handler was dead code (see
+			// isUnsupportedGatewaySavingsDeposit).
+			if toStr, _ := op.Value["to"].(string); isUnsupportedGatewaySavingsDeposit(op.Type, toStr) {
+				fromStr, _ := op.Value["from"].(string)
+				log.Warn("review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
+					"tx", tx.TransactionID,
+					"op", opIndex,
+					"from", fromStr,
+					"amount", op.Value["amount"],
+					"blockHeight", blockInfo.BlockHeight,
+				)
+				continue
+			}
+
 			//# Start parsing gateway transfer operations
 			if op.Type == "transfer" {
 
@@ -971,18 +988,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					continue
 				}
 
-				if op.Type == "transfer_to_savings" && token == "hbd" {
-					if token == "hbd" {
-						//Labeled as savings as there can be hbd savings, hive savings, and hive staked, but not hbd staked (within hive)
-						//Only HBD savings generates APR
-						token = "hbd_savings"
-					} else {
-						//Potentially add failover logic
-						//However, balance is considered "untracked" if it is Hive token deposited directly to savings
-
-						continue
-					}
-				}
+				// review7 C7-a: removed a dead transfer_to_savings branch here —
+				// it was nested inside `op.Type == "transfer"`, so the inner
+				// `op.Type == "transfer_to_savings"` check was always false. The
+				// transfer_to_savings case is now handled at the top of the op
+				// loop (isUnsupportedGatewaySavingsDeposit), not silently here.
 				amtStr, ok := amountMap["amount"].(string)
 				if !ok {
 					continue // review2 #86
@@ -1556,6 +1566,20 @@ func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) e
 func witnessAnnounceHasRogueBlsKey(meta witnesses.PostingJsonMetadata, account string) bool {
 	err := verifyAnnouncedBlsPoP(meta, account)
 	return err != nil && !errors.Is(err, errNoConsensusBlsKey)
+}
+
+// isUnsupportedGatewaySavingsDeposit reports whether an L1 op is a
+// transfer_to_savings directed at the gateway.
+//
+// review7 C7-a: such an op lands in the gateway's L1 SAVINGS balance (3-day
+// Hive unstake delay), not its liquid balance, so it is NOT a supported deposit
+// path — crediting it on L2 would back the liability with illiquid funds. The
+// previous handler was dead code (nested inside the `op.Type == "transfer"`
+// branch, so unreachable for a transfer_to_savings op), which silently stranded
+// the funds with no L2 credit and no audit trail. The caller flags these for
+// manual refund instead of dropping them silently.
+func isUnsupportedGatewaySavingsDeposit(opType, to string) bool {
+	return opType == "transfer_to_savings" && to == params.GATEWAY_WALLET
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
