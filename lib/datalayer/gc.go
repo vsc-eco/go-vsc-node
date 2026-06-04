@@ -2,9 +2,9 @@ package datalayer
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
+	"vsc-node/lib/vsclog"
 
 	dshelp "github.com/ipfs/boxo/datastore/dshelp"
 	"github.com/ipfs/go-cid"
@@ -15,6 +15,8 @@ import (
 
 	goJson "encoding/json"
 )
+
+var log = vsclog.Module("datalayer")
 
 // If you're reading this, it probably means you want to know what this is.
 // This is a reverse mapping from child -> parent CIDs to speed up garbage collection
@@ -72,11 +74,12 @@ func (GC *GarbageCollector) AddRef(parentCid cid.Cid, refs []cid.Cid) error {
 				return err
 			}
 			err = batch.Put(ctx, key, editedBytes)
-
-			fmt.Println("put err", err)
+			if err != nil {
+				log.Trace("AddRef: batch.Put error", "err", err)
+			}
 		}
 	}
-	fmt.Println("Commiting batch")
+	log.Trace("AddRef: committing batch")
 	err = batch.Commit(ctx)
 
 	if err != nil {
@@ -103,7 +106,7 @@ func (GC *GarbageCollector) RmRef(parentCid cid.Cid, child cid.Cid, batch datast
 	}
 
 	if decodedData[parentCid.Hash().B58String()] == 1 {
-		fmt.Println("Deleting entire key")
+		log.Trace("RmRef: deleting parent key")
 		delete(decodedData, parentCid.Hash().B58String())
 	}
 
@@ -146,10 +149,10 @@ func (GC *GarbageCollector) GetRefs(cid cid.Cid) ([]string, error) {
 
 func (GC *GarbageCollector) AddPin(blockCid cid.Cid, recursive bool) error {
 	ctx := context.Background()
-	fmt.Println("Fetching: ", blockCid.String())
+	log.Trace("AddPin: fetching", "cid", blockCid.String())
 	node, err := GC.fetcher.Get(ctx, blockCid)
 	size, _ := node.Size()
-	fmt.Println("Fetched", blockCid.String(), "at", size)
+	log.Trace("AddPin: fetched", "cid", blockCid.String(), "size", size)
 
 	if err != nil {
 		return err
@@ -161,9 +164,9 @@ func (GC *GarbageCollector) AddPin(blockCid cid.Cid, recursive bool) error {
 			links = append(links, v.Cid)
 			GC.AddPin(v.Cid, true)
 		}
-		err := GC.AddRef(blockCid, links)
-
-		fmt.Println("AddRef err", err)
+		if err := GC.AddRef(blockCid, links); err != nil {
+			log.Trace("AddPin: AddRef error", "err", err)
+		}
 	}
 
 	return nil
@@ -172,7 +175,7 @@ func (GC *GarbageCollector) AddPin(blockCid cid.Cid, recursive bool) error {
 func (GC *GarbageCollector) RmPin(blockCid cid.Cid) error {
 
 	ctx := context.Background()
-	fmt.Println("Fetching (rm): ", blockCid.String())
+	log.Trace("RmPin: fetching", "cid", blockCid.String())
 	node, err := GC.fetcher.Get(ctx, blockCid)
 
 	if err != nil {
@@ -221,8 +224,7 @@ func (GC *GarbageCollector) GC(pinList []cid.Cid) error {
 	for {
 		result, more := results.NextSync()
 
-		//Need to do more test work here to confirm its working ok
-		fmt.Println(result.Key, result.Key)
+		log.Trace("GC: scan key", "key", result.Key)
 
 		if result.Key == "" {
 			break
@@ -231,18 +233,13 @@ func (GC *GarbageCollector) GC(pinList []cid.Cid) error {
 		splitted := strings.Split(result.Key, "/")
 		mhd, _ := dshelp.DsKeyToMultihash(datastore.NewKey(splitted[2]))
 
-		fmt.Println(mhd.B58String())
+		log.Trace("GC: multihash", "b58", mhd.B58String())
 
 		links, _ := GC.GetRefs(cid.NewCidV0(mhd))
 
 		if len(links) == 0 && pinMap[cid.NewCidV0(mhd)] != 1 {
-			// fmt.Println("Looks, like you're a orphan. Delete! ")
-			// fmt.Println(mhd.B58String())
-			fmt.Println("Deleting: ", result.Key)
+			log.Trace("GC: deleting orphan", "key", result.Key)
 			batch.Delete(ctx, datastore.NewKey(result.Key))
-		} else {
-			// fmt.Println("You're popular!")
-			// fmt.Println(mhd.B58String())
 		}
 
 		if !more {
@@ -252,7 +249,7 @@ func (GC *GarbageCollector) GC(pinList []cid.Cid) error {
 	batch.Commit(ctx)
 	size, _ := GC.ds.DiskUsage(ctx)
 
-	fmt.Println("Disk usage after", size)
+	log.Verbose("GC: disk usage after", "size", size)
 	return nil
 }
 

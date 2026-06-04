@@ -3,10 +3,10 @@ package data_availability_client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -20,6 +20,8 @@ import (
 	"github.com/chebyrash/promise"
 	"github.com/hasura/go-graphql-client"
 )
+
+var log = vsclog.Module("da-client")
 
 type DataAvailability struct {
 	p2p         *libp2p.P2PServer
@@ -51,27 +53,24 @@ func (d *DataAvailability) Init() error {
 // Start implements aggregate.Plugin.
 func (d *DataAvailability) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
-		fmt.Println("Starting data availability client")
+		log.Info("starting data availability client")
 		err := d.startP2P()
 		if err != nil {
 			reject(err)
 			return
 		}
-		fmt.Println("Started p2p")
+		log.Verbose("p2p started")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		_, err = d.service.Started().Await(ctx)
-		fmt.Println("Started Service")
+		log.Verbose("service started")
 		if err != nil {
 			d.startStatus.TriggerStartFailure(err)
 			reject(err)
 			return
 		}
 		d.startStatus.TriggerStart()
-		fmt.Println("Done TriggerStart")
-		// <-d.service.Context().Done()
-
-		fmt.Println("Finished starting data availability client")
+		log.Info("data availability client ready")
 		resolve(nil)
 	})
 }
@@ -129,7 +128,7 @@ loop:
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("signer count:", circuit.SignerCount())
+			log.Warn("data availability proof timed out", "signers", circuit.SignerCount())
 			return stateEngine.StorageProof{}, ctx.Err()
 		case <-t.C:
 			if circuit.SignerCount() >= d.sconf.ConsensusParams().MinSpSigners {

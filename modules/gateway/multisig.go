@@ -85,12 +85,11 @@ func (ms *MultiSig) Init() error {
 	// "processing" action never settled and cannot be double-paid. Idempotent —
 	// nothing writes "processing" anymore, so this is a no-op after rollout.
 	if reverted, err := ms.ledgerActions.RevertProcessingToPending(); err != nil {
-		fmt.Println("Multisig: failed to revert stranded 'processing' actions:", err)
+		log.Error("Multisig: failed to revert stranded 'processing' actions", "err", err)
 	} else if len(reverted) > 0 {
-		fmt.Printf("Multisig: rollout heal — re-queued %d stranded 'processing' action(s) to 'pending'\n", len(reverted))
+		log.Info("Multisig: rollout heal — re-queued stranded 'processing' actions", "count", len(reverted))
 		for _, a := range reverted {
-			fmt.Printf("  requeued action id=%s to=%s amount=%d %s type=%s block=%d\n",
-				a.Id, a.To, a.Amount, a.Asset, a.Type, a.BlockHeight)
+			log.Info("requeued action", "id", a.Id, "to", a.To, "amount", a.Amount, "asset", a.Asset, "type", a.Type, "block", a.BlockHeight)
 		}
 	}
 	return nil
@@ -202,11 +201,11 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 		}
 
 		if bh%ROTATION_INTERVAL == 0 {
-			fmt.Println("Multisig: Running key rotation")
+			log.Debug("running key rotation", "bh", bh)
 			go ms.TickKeyRotation(bh)
 		}
 		if bh%ACTION_INTERVAL == 0 {
-			fmt.Println("Multisig: Running Actions")
+			log.Debug("running actions", "bh", bh)
 			go ms.TickActions(bh)
 		}
 		if bh%SYNC_INTERVAL == 0 {
@@ -241,7 +240,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		// review2 HIGH #80: never proceed with threshold==0 — it makes the
 		// later `weight == threshold` gate trivially true and broadcasts an
 		// under-signed transaction.
-		fmt.Println("keyRotation getThreshold failed, aborting", thErr, threshold)
+		log.Error("keyRotation getThreshold failed, aborting", "err", thErr, "threshold", threshold)
 		return
 	}
 
@@ -262,17 +261,18 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("Rotation txId", rotationId, err)
+		log.Verbose("rotation broadcast", "txId", rotationId, "err", err)
 	}
 }
 
 func (ms *MultiSig) TickActions(bh uint64) {
 	signPkg, err := ms.executeActions(bh)
 
-	fmt.Println("TickActions", err, signPkg)
 	if err != nil {
+		log.Verbose("TickActions: executeActions error", "err", err)
 		return
 	}
+	log.Verbose("TickActions: collected actions", "txId", signPkg.TxId)
 
 	ms.setMsgChan(signPkg.TxId)
 	signReq := signRequest{
@@ -291,12 +291,11 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		})
 	}()
 
-	fmt.Println("TickActions getThreshold()")
 	threshold, _, _, thErr := ms.getThreshold()
 	if thErr != nil || threshold <= 0 {
 		// review2 HIGH #80: see keyRotation — abort instead of broadcasting
 		// an under-signed actions transaction.
-		fmt.Println("TickActions getThreshold failed, aborting", thErr, threshold)
+		log.Error("TickActions getThreshold failed, aborting", "err", thErr, "threshold", threshold)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -304,7 +303,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
 	ms.deleteMsgChan(signPkg.TxId)
 
-	fmt.Println("TickActions signatures", signatures, weight, err)
+	log.Verbose("TickActions: collected signatures", "count", len(signatures), "weight", weight, "err", err)
 	if err != nil {
 		return
 	}
@@ -317,7 +316,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("Actions txId", rotationId, err)
+		log.Debug("actions broadcast", "txId", rotationId, "err", err)
 	}
 }
 
@@ -325,8 +324,8 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 
 	signPkg, err := ms.syncBalance(bh)
 
-	fmt.Println("signPkg, err", signPkg, err)
 	if err != nil {
+		log.Verbose("TickSyncFr: syncBalance error", "err", err)
 		return
 	}
 
@@ -351,7 +350,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	if thErr != nil || threshold <= 0 {
 		// review2 HIGH #80: see keyRotation — abort instead of broadcasting
 		// an under-signed fr_sync transaction.
-		fmt.Println("TickSyncFr getThreshold failed, aborting", thErr, threshold)
+		log.Error("TickSyncFr getThreshold failed, aborting", "err", thErr, "threshold", threshold)
 		return
 	}
 
@@ -372,7 +371,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
-		fmt.Println("SyncFr txId", rotationId, err)
+		log.Debug("sync_fr broadcast", "txId", rotationId, "err", err)
 	}
 }
 
@@ -398,7 +397,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	for idx, member := range electionResult.Members {
 		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
 		if witnessData == nil {
-			fmt.Println("No witness data for", member.Account, "at", bh)
+			log.Verbose("no witness data", "account", member.Account, "bh", bh)
 			continue
 		}
 		if witnessData.GatewayKey == "" {
@@ -499,7 +498,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	err = ms.hiveCreator.PopulateSigningProps(&tx, []int{int(bh)})
 
 	if err != nil {
-		fmt.Println("Error populating signing props", err)
+		log.Warn("Error populating signing props", "err", err)
 		return signingPackage{}, err
 	}
 
@@ -661,7 +660,7 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 		ClearedOps: b64Bytes,
 	}
 
-	fmt.Println("Prefix: e2e-1]: ChainAction.ClearedOps="+b64Bytes, bsBytes)
+	log.Verbose("ChainAction.ClearedOps", "b64", b64Bytes)
 
 	headerBytes, _ := json.Marshal(actionHeader)
 	headerStr := string(headerBytes)
@@ -940,10 +939,10 @@ func (ms *MultiSig) waitForSigs(
 	select {
 	case <-ctx.Done():
 		res := <-resCh
-		fmt.Println("[ms] collect sigs timeout")
+		log.Verbose("waitForSigs: collect timeout", "weight", res.weight)
 		return res.sigs, res.weight, nil
 	case res := <-resCh:
-		fmt.Println("[ms] collected needed sigs")
+		log.Verbose("waitForSigs: collected needed sigs", "weight", res.weight)
 		return res.sigs, res.weight, nil
 	}
 }
@@ -983,7 +982,7 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 func (ms *MultiSig) getSigningKp() *hivego.KeyPair {
 	kp, err := GatewayKeyFromBlsSeed(ms.identity.Get().BlsPrivKeySeed)
 	if err != nil {
-		fmt.Println("Failed to decode bls priv seed", err)
+		log.Error("failed to decode bls priv seed", "err", err)
 		return nil
 	}
 	return kp
