@@ -295,7 +295,39 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
+	// Sidecar goroutine that re-broadcasts the attestation request every
+	// 4s within the collect window. Defends against the race where a
+	// validator's dashd-RPC poller hadn't yet observed the tx when the
+	// first publish landed — without a retry the validator silently
+	// drops + the request is lost for the whole window. Production
+	// gossipsub mesh also has propagation jitter under churn; a second
+	// publish lets the IHAVE/IWANT lazy-push fill any missed peers.
+	// Stops as soon as collectCtx is cancelled (quorum reached OR the
+	// collect timeout fires).
+	rebroadcastDone := make(chan struct{})
+	go func() {
+		defer close(rebroadcastDone)
+		t := time.NewTicker(4 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-collectCtx.Done():
+				return
+			case <-t.C:
+				if err := o.broadcaster.BroadcastRequest(collectCtx, req); err != nil {
+					// Don't fail the session for a rebroadcast error —
+					// the original publish + future ticks may still get
+					// quorum. Log + continue.
+					slog.Warn("attestation request rebroadcast failed",
+						"sid", sid, "err", err)
+				}
+			}
+		}
+	}()
+
 	responses := o.collector.Collect(collectCtx, txid, o.quorumThreshold, o.collectTimeout)
+	cancel() // explicitly trigger the rebroadcast goroutine to exit
+	<-rebroadcastDone
 
 	// Per-sig BLS verify BEFORE aggregation (round-2 audit R2-N5).
 	// Without this gate, one junk-sig response from a misbehaving peer
