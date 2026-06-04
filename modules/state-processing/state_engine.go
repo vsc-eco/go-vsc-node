@@ -555,32 +555,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				json.Unmarshal(bbytes, &rawJson)
 
 				if slices.Contains(rawJson.Services, "vsc.network") {
-					// Strict proof-of-possession enforcement. A valid PoP proves
-					// the announcer holds the secret behind the announced BLS
-					// pubkey, defeating rogue-key aggregate-signature forgery: the
-					// consensus BLS scheme aggregates over a common message with a
-					// plain pubkey sum (lib/dids/bls.go BlsCircuit.Verify), so an
-					// unverified announced key is a forgery primitive once it lands
-					// in the election keyset (built from witness records via
-					// witness.ConsensusKey()).
+					// review7 C9: reject a witness announce whose consensus BLS key
+					// fails proof-of-possession — a rogue-key aggregate-forgery vector
+					// (the consensus BLS scheme aggregates over a common message with a
+					// plain pubkey sum, lib/dids/bls.go BlsCircuit.Verify, so an
+					// unverified key is a forgery primitive once it lands in the election
+					// keyset built from witness records via witness.ConsensusKey()). An
+					// announce with NO consensus BLS key is still accepted — it carries
+					// no forgeable key, the witness simply cannot sign.
 					//
-					// The verify+warn rollout has completed — all witnesses now
-					// re-announce carrying a valid PoP — so a failing check now
-					// REJECTS the announce: the witness record is not stored or
-					// updated, keeping a rogue key out of the election keyset.
-					//
-					// Consensus-safe: verifyAnnouncedBlsPoP is a pure,
-					// deterministic function of the announce payload (every node
-					// reaches the identical verdict), and election RESULT ingestion
-					// (system_txs.go TxElectionResult.ExecuteTx) verifies against
-					// the prior on-chain election's keys and the on-chain DA
-					// payload — never the witness DB — so a divergent witness
-					// record cannot split state ingestion. The only residual
-					// effect is on what a node would propose/sign, a liveness
-					// concern that the completed rollout removes.
-					if err := verifyAnnouncedBlsPoP(rawJson, acct); err != nil {
-						se.warnSync(blockInfo.BlockHeight, "witness announce: BLS proof-of-possession verification failed — rejecting announce",
-							"account", acct, "txId", tx.TransactionID, "err", err)
+					// Consensus-safe: the check is a pure, deterministic function of the
+					// announce payload (every node reaches the identical verdict), and
+					// election RESULT ingestion (system_txs.go TxElectionResult.ExecuteTx)
+					// verifies against the prior on-chain election's keys and the on-chain
+					// DA payload — never the witness DB — so a divergent witness record
+					// cannot split state ingestion; the only residual effect is on what a
+					// node would propose/sign.
+					if witnessAnnounceHasRogueBlsKey(rawJson, acct) {
+						se.warnSync(blockInfo.BlockHeight, "witness announce REJECTED: consensus BLS key failed proof-of-possession (rogue-key guard)",
+							"account", acct, "txId", tx.TransactionID)
 						continue
 					}
 					inputData := witnesses.SetWitnessUpdateType{
@@ -1531,13 +1524,38 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 // account. Returns an error if the consensus key is missing/malformed or the
 // PoP is absent or invalid. Pure function of the announce payload, so every
 // node reaches the same verdict.
+// errNoConsensusBlsKey distinguishes "announce carries no consensus BLS key"
+// (harmless — the witness simply cannot sign) from "announce carries a
+// consensus BLS key whose proof-of-possession does not verify" (a rogue-key
+// aggregate-forgery vector that must be rejected). See witnessAnnounceHasRogueBlsKey.
+var errNoConsensusBlsKey = errors.New("no consensus BLS key in announce")
+
 func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) error {
 	for _, k := range meta.DidKeys {
 		if k.CryptoType == "DID-BLS" && k.Type == "consensus" {
 			return dids.VerifyBlsPoP(dids.BlsDID(k.Key), account, k.PoP)
 		}
 	}
-	return fmt.Errorf("no consensus BLS key in announce")
+	return errNoConsensusBlsKey
+}
+
+// witnessAnnounceHasRogueBlsKey reports whether a witness announce carries a
+// consensus BLS key whose proof-of-possession fails verification.
+//
+// review7 C9: such a key must NOT be stored. A BLS key accepted without a valid
+// PoP enables rogue-key aggregate-signature forgery — at consensus time only
+// the aggregate signature is available, so possession must be proven once, here,
+// at registration. The check is a pure function of the announce + account, so
+// every node reaches the same verdict and rejecting is consensus-safe. An
+// announce with no consensus BLS key at all carries no forgeable key and is
+// allowed (the witness just cannot sign).
+//
+// Operational note: this enforces the PoP cutover the earlier verify+warn
+// rollout anticipated — every witness must (re-)announce a consensus BLS key
+// with a valid PoP, or it is dropped from the witness set on its next announce.
+func witnessAnnounceHasRogueBlsKey(meta witnesses.PostingJsonMetadata, account string) bool {
+	err := verifyAnnouncedBlsPoP(meta, account)
+	return err != nil && !errors.Is(err, errNoConsensusBlsKey)
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
