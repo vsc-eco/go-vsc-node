@@ -76,14 +76,14 @@ func main() {
 	var signer AddressSigner
 	switch {
 	case args.signerVaultAddr != "":
-		token, err := ResolveVaultToken(args.signerVaultToken, args.signerVaultTokenFile)
+		token, tokenSrc, err := ResolveVaultToken(args.signerVaultToken, args.signerVaultTokenFile)
 		if err != nil {
 			slog.Error("resolving Vault token", "err", err)
 			os.Exit(1)
 		}
 		s, pubHex, err := NewAddressSignerVaultTransit(VaultTransitConfig{
-			Addr:    args.signerVaultAddr,
-			Token:   token,
+			Addr:  args.signerVaultAddr,
+			Token: token,
 			// TokenFile threading: when the operator supplied
 			// -signerVaultTokenFile, the signer re-reads the file on
 			// every Sign() so vault-agent rotation works without
@@ -92,8 +92,13 @@ func main() {
 			// the cached startup token is used for the process life.
 			// Audit OPS-R15-01 (R15).
 			TokenFile: args.signerVaultTokenFile,
-			Mount:     args.signerVaultMount,
-			KeyName:   args.signerVaultKeyName,
+			// TokenSource is the non-secret label of which input
+			// supplied the token; surfaced in Vault 401/403 errors so
+			// on-call knows where to look. Audit R17-CONS-tokensource-
+			// label-claim-overstates-risk.
+			TokenSource: tokenSrc,
+			Mount:       args.signerVaultMount,
+			KeyName:     args.signerVaultKeyName,
 		})
 		if err != nil {
 			slog.Error("building Vault transit signer", "err", err)

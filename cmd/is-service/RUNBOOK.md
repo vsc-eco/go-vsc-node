@@ -192,6 +192,25 @@ A clean witness-fleet bring-up runs as:
 
 ---
 
+### 3.1 Rate limits (built-in per-IP buckets)
+
+Audit-driven caps applied at the HTTP layer; clients exceeding them
+get `429 Too Many Requests`. Buckets are per-source-IP, where the IP
+comes from `X-Forwarded-For` (rightmost) when the peer is in
+`-trustedProxies` and from `RemoteAddr` otherwise.
+
+| Endpoint | Cap | Audit | Rationale |
+|---|---|---|---|
+| `POST /session/start` | 10 / min | TC2-06 / SEC-4 (R15) | Each call creates a watched address + session-store entry — relatively expensive. |
+| `GET /session/{sid}/status` | 60 / min | R16-SEC-status-cancel-no-rate-limit | Altera polls at ~2s = 30/min per tab; 60/min covers 2 tabs with headroom. Bucket is independent of `/cancel`. |
+| `POST /session/{sid}/cancel` | 10 / min | R16-SEC-status-cancel-no-rate-limit + R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails | Cancel is one-shot per session in normal flows. Separate from `/status` so a hot polling flow can't lock the user out of cancelling. |
+| `POST /test/observed/{sid}`, `POST /test/attestation/{sid}` | bodies capped at 64 KiB (SEC-11) | R15-SEC-11 | Test endpoints; only registered when `-testBypassDashdISLock=true` (devnet-only). |
+
+Operators behind a CDN / WAF can stack their own rate limits on top
+— these are defense-in-depth against direct-to-pod traffic.
+
+---
+
 ## 4. Monitoring + log patterns
 
 Operationally useful greps (search the structured log stream for these

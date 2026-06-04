@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -80,7 +81,10 @@ func NewAddressSignerEd25519FromFile(path string) (*AddressSignerEd25519, string
 // field semantics are stable across signer kinds. Returns
 // base64-StdEncoding (matching HMAC's wire shape) so Altera can
 // decode through the same code path.
-func (s *AddressSignerEd25519) Sign(depositAddress, instruction string) (string, error) {
+// Sign is CPU-bound (Ed25519 sign over <100 bytes); ctx is unused but
+// accepted to satisfy the AddressSigner interface. Audit R17-CORR-
+// vault-sign-ctx-from-background-not-request-ctx.
+func (s *AddressSignerEd25519) Sign(_ context.Context, depositAddress, instruction string) (string, error) {
 	if s.priv == nil {
 		return "", errors.New("address signer not initialised")
 	}

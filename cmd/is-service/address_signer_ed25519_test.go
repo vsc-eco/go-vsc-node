@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,7 +27,7 @@ func TestAddressSignerEd25519_RoundTrip(t *testing.T) {
 
 	depositAddr := "8jU46MxM2TpUsFFpm7V4fjJ4F9uroyTir1"
 	instruction := "op=auth;sid=abc123"
-	sigB64, err := signer.Sign(depositAddr, instruction)
+	sigB64, err := signer.Sign(context.Background(), depositAddr, instruction)
 	require.NoError(t, err)
 	require.NotEmpty(t, sigB64)
 
@@ -78,7 +79,7 @@ func TestAddressSignerEd25519_SameMessageProducesSameSignature(t *testing.T) {
 
 	signer, _, err := NewAddressSignerEd25519FromFile(keyPath)
 	require.NoError(t, err)
-	a, _ := signer.Sign("addr1", "instr1")
-	b, _ := signer.Sign("addr1", "instr1")
+	a, _ := signer.Sign(context.Background(), "addr1", "instr1")
+	b, _ := signer.Sign(context.Background(), "addr1", "instr1")
 	assert.Equal(t, a, b, "Ed25519 sig MUST be deterministic")
 }

@@ -32,7 +32,14 @@ import (
 // public key. This closes the address-substitution vector that would
 // otherwise allow a compromised IS-service host to swap addresses.
 type AddressSigner interface {
-	Sign(depositAddress, instruction string) (string, error)
+	// Sign returns a base64-encoded signature over
+	// `depositAddress || \0 || instruction`. ctx is honoured for
+	// cancellation by remote-call signers (Vault Transit) so a
+	// client HTTP disconnect frees the upstream signing slot;
+	// in-process signers (HMAC, Ed25519 file) ignore ctx since
+	// they're CPU-bound and complete in microseconds. Audit
+	// R17-CORR-vault-sign-ctx-from-background-not-request-ctx.
+	Sign(ctx context.Context, depositAddress, instruction string) (string, error)
 }
 
 // AddressSignerHMAC is a v1-development stub. It signs with HMAC-SHA256
@@ -51,7 +58,10 @@ func NewAddressSignerHMAC(secret []byte) *AddressSignerHMAC {
 	return &AddressSignerHMAC{secret: append([]byte(nil), secret...)}
 }
 
-func (h *AddressSignerHMAC) Sign(depositAddress, instruction string) (string, error) {
+// Sign is CPU-bound (sha256-HMAC); ctx is unused but accepted to
+// satisfy the AddressSigner interface. Audit R17-CORR-vault-sign-
+// ctx-from-background-not-request-ctx.
+func (h *AddressSignerHMAC) Sign(_ context.Context, depositAddress, instruction string) (string, error) {
 	if len(h.secret) == 0 {
 		return "", fmt.Errorf("address signer secret empty — refusing to sign")
 	}
@@ -71,8 +81,9 @@ type Server struct {
 	sessions      *SessionStore
 	sessionTTL    time.Duration
 	signer        AddressSigner
-	rateLimitsIP             *rateLimiter
-	rateLimitsStatusCancelIP *rateLimiter // R16-SEC-status-cancel-no-rate-limit
+	rateLimitsIP       *rateLimiter // /session/start — 10/min
+	rateLimitsStatusIP *rateLimiter // /status — 60/min (polling-friendly)
+	rateLimitsCancelIP *rateLimiter // /cancel — 10/min (one-shot per session)
 	// dashd is optional — when nil, the IS-observed transition is
 	// driven externally (e.g. for tests). When non-nil, Server.Run
 	// starts the watcher goroutine.
@@ -216,14 +227,20 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		sessions:          sessions,
 		sessionTTL:        cfg.SessionTTL,
 		signer:            cfg.Signer,
-		rateLimitsIP:      newRateLimiter(10, time.Minute),
-		// Audit R16-SEC-status-cancel-no-rate-limit (LOW): /status +
-		// /cancel are higher-volume than /start (Altera polls /status
-		// every ~2s during waiting). Use a separate 60/min bucket so
-		// the legitimate polling cadence isn't gated by the tighter
-		// 10/min /start bucket, while still bounding the unauthenticated
-		// DoS surface against the session-store mutex.
-		rateLimitsStatusCancelIP: newRateLimiter(60, time.Minute),
+		rateLimitsIP: newRateLimiter(10, time.Minute),
+		// Audit R16-SEC-status-cancel-no-rate-limit (LOW) +
+		// R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails
+		// (LOW): /status + /cancel were originally rate-limited from a
+		// SHARED 60/min bucket. A user opening two tabs of Altera (both
+		// polling /status at 2s = 30/min each) would exhaust the shared
+		// bucket and the subsequent /cancel click would hit 429 — the
+		// orchestrator never gets the cancel signal + the session runs
+		// to ATTESTATION_TIMEOUT consuming RC. Split into two buckets:
+		// /status keeps 60/min (loose for polling); /cancel uses 10/min
+		// (one-shot per session in normal flows, so 10/min is generous
+		// even with retries + multi-tab).
+		rateLimitsStatusIP: newRateLimiter(60, time.Minute),
+		rateLimitsCancelIP: newRateLimiter(10, time.Minute),
 		dashd:             cfg.Dashd,
 		orch:              cfg.Orch,
 		broadcasterHealth: cfg.BroadcasterHealth,
@@ -691,7 +708,10 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sig, err := s.signer.Sign(depositAddr, instruction)
+	// R17-CORR-vault-sign-ctx-from-background-not-request-ctx: thread
+	// the inbound HTTP request context so a client disconnect during
+	// the Vault round-trip releases the upstream signing slot.
+	sig, err := s.signer.Sign(r.Context(), depositAddr, instruction)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "address signing failed: "+err.Error())
 		return
@@ -738,13 +758,14 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
-	// Audit R16-SEC-status-cancel-no-rate-limit (LOW): per-IP cap on
-	// /status so a flood-attacker can't DoS the session-store mutex
-	// via unbounded polling. 60/min is the SAME cap shared by /status
-	// + /cancel; legitimate Altera clients poll ~2s = 30/min during
-	// waiting, so the cap accommodates a single user with headroom.
+	// Audit R16-SEC-status-cancel-no-rate-limit (LOW) +
+	// R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails:
+	// /status has its own 60/min per-IP bucket separate from /cancel.
+	// Legitimate Altera polling is ~30/min per tab (2s cadence); the
+	// 60/min cap accommodates a couple of tabs with headroom while
+	// still bounding attacker spam against the session-store mutex.
 	ip := s.clientIP(r)
-	if !s.rateLimitsStatusCancelIP.allow(ip) {
+	if !s.rateLimitsStatusIP.allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}
@@ -775,12 +796,14 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {
-	// Audit R16-SEC-status-cancel-no-rate-limit (LOW): per-IP cap on
-	// /cancel mirrors /status. Cancel is one-shot per session in
-	// normal flows, so the 60/min bucket is loose for legitimate
-	// usage but bounds attacker spam against MutateState.
+	// Audit R16-SEC-status-cancel-no-rate-limit (LOW) +
+	// R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails:
+	// /cancel uses a SEPARATE 10/min per-IP bucket. Cancel is
+	// one-shot per session in normal flows; 10/min covers normal
+	// usage + a few retries without being exhaustable by a parallel
+	// /status polling flow.
 	ip := s.clientIP(r)
-	if !s.rateLimitsStatusCancelIP.allow(ip) {
+	if !s.rateLimitsCancelIP.allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
 	}

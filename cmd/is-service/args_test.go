@@ -99,12 +99,19 @@ func withArgs(t *testing.T, args []string, fn func()) {
 	fn()
 }
 
-// TestParseArgs_RejectsLiteralVaultTokenOnMainnet covers audit SEC-6
-// (R15, MEDIUM, security). A literal -signerVaultToken on mainnet
-// leaks via /proc/<pid>/cmdline, ps, systemd journal, and container-
-// orchestrator inspect surfaces. Testnet + devnet keep the literal
-// path for ergonomic local testing.
-func TestParseArgs_RejectsLiteralVaultTokenOnMainnet(t *testing.T) {
+// TestParseArgs_RejectsLiteralVaultToken covers audit SEC-6 (R15,
+// MEDIUM, security) + R16-SEC-sec6-testnet-not-gated (R16, widened
+// the gate). A literal -signerVaultToken leaks via
+// /proc/<pid>/cmdline, ps, systemd journal, and container-
+// orchestrator inspect surfaces. Devnet is the ONLY mode that keeps
+// the literal path (local-dev ergonomics; no production infra to
+// leak to). Mainnet + real testnet both refuse.
+//
+// Audit R17-CONS-test-fn-name-mainnet-only-after-r16-widened: the
+// function used to be named TestParseArgs_RejectsLiteralVaultToken-
+// OnMainnet but R16 widened the gate beyond mainnet — renamed to
+// drop the "OnMainnet" suffix.
+func TestParseArgs_RejectsLiteralVaultToken(t *testing.T) {
 	baseArgs := []string{
 		"is-service",
 		"-primaryPubkey=02" + strings.Repeat("aa", 32),

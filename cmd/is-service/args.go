@@ -279,10 +279,30 @@ func parseArgs() (args, error) {
 			"-signerVaultToken=<literal> is forbidden when -network=%s — "+
 				"the token would leak via /proc/<pid>/cmdline, ps, "+
 				"systemd journal, and container-orchestrator inspect surfaces. "+
-				"Use -signerVaultTokenFile=<path> (preferred — supports vault-agent rotation) "+
-				"or the VAULT_TOKEN env var. Note: env vars also leak via kubectl describe "+
-				"and docker inspect — TokenFile is the safest production option.",
+				"Use -signerVaultTokenFile=<path> (the only production-safe option; "+
+				"supports vault-agent rotation).",
 			a.network)
+	}
+	// Audit R17-SEC-sec6-testnet-gate-env-var-leak-surface-acknowledged-
+	// but-not-mitigated (INFO → enforced): the R16 widened gate refused
+	// the literal flag on non-devnet but left VAULT_TOKEN env as the
+	// "safer" alternative. Env vars also leak via kubectl describe and
+	// docker inspect, so on production-shape orchestrators (k8s, ECS,
+	// systemd-managed VMs) the env path is no better than the argv path.
+	// Refuse VAULT_TOKEN env outside devnet UNLESS -signerVaultTokenFile
+	// is also configured (then env is unused by ResolveVaultToken's
+	// precedence rules + the check is moot).
+	if a.signerVaultAddr != "" &&
+		a.signerVaultTokenFile == "" &&
+		a.network != "devnet" &&
+		os.Getenv("VAULT_TOKEN") != "" {
+		return a, fmt.Errorf(
+			"VAULT_TOKEN env var present without -signerVaultTokenFile when "+
+				"-network=%s — env vars leak via kubectl describe, docker "+
+				"inspect, and /proc/<pid>/environ. Set -signerVaultTokenFile="+
+				"<path> instead (vault-agent sink-file pattern is the "+
+				"recommended ops shape). Devnet is the only network that "+
+				"accepts the env path.", a.network)
 	}
 	if a.port < 1 || a.port > 65535 {
 		return a, fmt.Errorf("-port must be between 1 and 65535")

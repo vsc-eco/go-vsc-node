@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -529,25 +530,25 @@ func TestNewServer_RejectsBadNetwork(t *testing.T) {
 
 func TestAddressSignerHMAC_Deterministic(t *testing.T) {
 	s := NewAddressSignerHMAC([]byte("secret"))
-	a, err := s.Sign("addr1", "instr1")
+	a, err := s.Sign(context.Background(), "addr1", "instr1")
 	require.NoError(t, err)
-	b, err := s.Sign("addr1", "instr1")
+	b, err := s.Sign(context.Background(), "addr1", "instr1")
 	require.NoError(t, err)
 	assert.Equal(t, a, b, "HMAC over same inputs must be deterministic")
 }
 
 func TestAddressSignerHMAC_DifferentInputs(t *testing.T) {
 	s := NewAddressSignerHMAC([]byte("secret"))
-	a, _ := s.Sign("addr1", "instr1")
-	b, _ := s.Sign("addr2", "instr1")
-	c, _ := s.Sign("addr1", "instr2")
+	a, _ := s.Sign(context.Background(), "addr1", "instr1")
+	b, _ := s.Sign(context.Background(), "addr2", "instr1")
+	c, _ := s.Sign(context.Background(), "addr1", "instr2")
 	assert.NotEqual(t, a, b, "different address must produce different signature")
 	assert.NotEqual(t, a, c, "different instruction must produce different signature")
 }
 
 func TestAddressSignerHMAC_RefusesEmptySecret(t *testing.T) {
 	s := NewAddressSignerHMAC(nil)
-	_, err := s.Sign("addr", "instr")
+	_, err := s.Sign(context.Background(), "addr", "instr")
 	assert.Error(t, err, "empty secret must refuse to sign (would otherwise produce attacker-knowable signatures)")
 }
 
@@ -596,4 +597,47 @@ func TestClientIP_XFF_IgnoredFromUntrustedProxy(t *testing.T) {
 	r.Header.Set("X-Forwarded-For", "1.1.1.1, 2.2.2.2")
 	assert.Equal(t, "9.9.9.9", srv.clientIP(r),
 		"untrusted RemoteAddr must ignore XFF entirely")
+}
+
+// ===== rate limit buckets =====
+
+// TestRateLimits_StatusAndCancelAreIndependent covers audit
+// R16-SEC-status-cancel-no-rate-limit (LOW) +
+// R17-CORR-status-cancel-shared-bucket-multi-tab-cancel-fails (LOW).
+//
+// Pre-R17: /status + /cancel shared a 60/min bucket. A user polling
+// /status at 2s cadence from two tabs exhausted the bucket and the
+// subsequent /cancel click hit 429.
+//
+// Post-R17: separate buckets — /status 60/min, /cancel 10/min. The
+// test exhausts /status (61 calls) and verifies /cancel is still
+// accepted.
+func TestRateLimits_StatusAndCancelAreIndependent(t *testing.T) {
+	srv := newTestServer(t)
+
+	// Create a session so /cancel has something to cancel + we have a
+	// real sid + cancel token.
+	startResp := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth"})
+	require.Equal(t, http.StatusCreated, startResp.Code, "body=%s", startResp.Body.String())
+	var start SessionStartResponse
+	require.NoError(t, json.Unmarshal(startResp.Body.Bytes(), &start))
+
+	// Burn /status well past the 60/min cap. 70 calls > 60/min so the
+	// last few should 429 within the bucket — but /cancel must still
+	// work because it has its OWN bucket.
+	for i := 0; i < 65; i++ {
+		w := doRequest(t, srv, "GET", "/session/"+start.Sid+"/status", nil)
+		// Don't assert per-call status (depends on rate-limit window
+		// drift); we only care that the bucket DOES cap eventually.
+		_ = w
+	}
+
+	// Now hit /cancel. With separate buckets this MUST be 200 (cancel
+	// accepted) or 409 (session not in cancellable state). With the
+	// pre-R17 shared-bucket bug this would have been 429.
+	w := doRequestWithHeader(t, srv, "POST", "/session/"+start.Sid+"/cancel", nil,
+		"X-Cancel-Token", start.AddressSignature)
+	assert.NotEqual(t, http.StatusTooManyRequests, w.Code,
+		"/cancel must have its own rate-limit bucket so a hot /status "+
+			"flow cannot lock the user out of cancelling (audit R17)")
 }

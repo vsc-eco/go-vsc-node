@@ -81,11 +81,12 @@ type ResponseCallback func(resp IsLockAttestationResponse)
 // Service is the gossipsub-backed islock-attestation node-side handler.
 // Construct one per validator (and one per IS Service, but with signer=nil).
 type Service struct {
-	signer       AttestationSigner   // nil on IS-Service side
-	memory       MemoryReader        // nil on IS-Service side
-	chainID      string              // included in every signed message
-	onResponse   ResponseCallback    // nil on validator side
-	rateLimits   *requestRateLimiter // bounds per-peer attestation cost
+	signer     AttestationSigner   // nil on IS-Service side
+	memory     MemoryReader        // nil on IS-Service side
+	chainID    string              // included in every signed message
+	onResponse ResponseCallback    // nil on validator side
+	rateLimits *requestRateLimiter // bounds per-peer attestation cost
+	signCache  *signRequestCache   // dedupe Sign() across rebroadcasts
 
 	// WIRING NEEDED: assigned in NewService once the libp2p.PubSubService is built.
 	svc libp2p.PubSubService[p2pMessage]
@@ -111,6 +112,7 @@ func NewService(
 		chainID:    chainID,
 		onResponse: onResponse,
 		rateLimits: newRequestRateLimiter(),
+		signCache:  newSignRequestCache(),
 	}
 }
 
@@ -279,6 +281,23 @@ func (s *Service) handleRequest(
 	// sha256(instruction) at submission time, so an instruction-hash
 	// forgery fails at the contract verify. The audit accepts this gap.
 
+	// Audit R17-SEC-dash-rebroadcast-validator-no-per-txid-sign-
+	// dedupe: short-circuit if we already signed an identical request
+	// (same TxId + RawTxHashHex + InstructionHashHex + Epoch) within
+	// the cache TTL. R16's 6s rebroadcast ticker means a legitimate
+	// IS-service publishes the SAME request up to 3 times per session
+	// — we'd otherwise burn 3 BLS-signs of CPU per validator. Worse,
+	// a malicious peer at the 100msg/min per-peer rate limit could
+	// burn ~100 BLS-signs/min on a single txid. Cache the signed
+	// response + replay it instead of re-signing.
+	cacheKey := signCacheKey(req)
+	if cached, ok := s.signCache.get(cacheKey); ok {
+		if send != nil {
+			send(p2pMessage{Type: "response", Response: cached})
+		}
+		return
+	}
+
 	sigHex, err := s.signer.Sign(req)
 	if err != nil {
 		// Signing failed — silently drop. The requester will time out
@@ -296,6 +315,7 @@ func (s *Service) handleRequest(
 		Epoch:     req.Epoch,
 		BlsSigHex: sigHex,
 	}
+	s.signCache.put(cacheKey, &resp)
 	if send != nil {
 		send(p2pMessage{Type: "response", Response: &resp})
 	}

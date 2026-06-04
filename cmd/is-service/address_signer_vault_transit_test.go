@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/hex"
@@ -107,7 +108,7 @@ func TestAddressSignerVaultTransit_RoundTrip(t *testing.T) {
 
 	depositAddr := "8jU46MxM2TpUsFFpm7V4fjJ4F9uroyTir1"
 	instruction := "op=auth;sid=vault-roundtrip"
-	sigB64, err := signer.Sign(depositAddr, instruction)
+	sigB64, err := signer.Sign(context.Background(), depositAddr, instruction)
 	require.NoError(t, err)
 	require.NotEmpty(t, sigB64)
 	assert.False(t, strings.HasPrefix(sigB64, "vault:v1:"),
@@ -186,7 +187,7 @@ func TestAddressSignerVaultTransit_SurfaceSignFailures(t *testing.T) {
 	fv.signRespOverride = func() (int, string) {
 		return http.StatusInternalServerError, `{"errors":["vault-down"]}`
 	}
-	_, err = signer.Sign("addr", "instr")
+	_, err = signer.Sign(context.Background(), "addr", "instr")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500",
 		"sign-time vault errors must propagate, not silently use a stale signature")
@@ -207,7 +208,7 @@ func TestAddressSignerVaultTransit_MissingVaultPrefix(t *testing.T) {
 		Addr: srv.URL, Token: "tok", KeyName: "is-signer",
 	})
 	require.NoError(t, err)
-	_, err = signer.Sign("addr", "instr")
+	_, err = signer.Sign(context.Background(), "addr", "instr")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected vault signature format")
 }
@@ -216,32 +217,38 @@ func TestResolveVaultToken_PrecedenceAndErrors(t *testing.T) {
 	t.Setenv("VAULT_TOKEN", "")
 
 	// All three empty → error.
-	_, err := ResolveVaultToken("", "")
+	_, _, err := ResolveVaultToken("", "")
 	require.Error(t, err)
 
 	// Env-only.
 	t.Setenv("VAULT_TOKEN", "env-token")
-	got, err := ResolveVaultToken("", "")
+	got, src, err := ResolveVaultToken("", "")
 	require.NoError(t, err)
 	assert.Equal(t, "env-token", got)
+	assert.Equal(t, VaultTokenSourceEnv, src,
+		"env-fed token must return source=env (audit R17)")
 
 	// Token-file wins over env.
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "vt")
 	require.NoError(t, os.WriteFile(tokenPath, []byte("file-token\n"), 0o600))
-	got, err = ResolveVaultToken("", tokenPath)
+	got, src, err = ResolveVaultToken("", tokenPath)
 	require.NoError(t, err)
 	assert.Equal(t, "file-token", got, "trailing whitespace must be trimmed")
+	assert.Equal(t, VaultTokenSourceFile, src,
+		"file-fed token must return source=file (audit R17)")
 
 	// Literal wins over both.
-	got, err = ResolveVaultToken("literal", tokenPath)
+	got, src, err = ResolveVaultToken("literal", tokenPath)
 	require.NoError(t, err)
 	assert.Equal(t, "literal", got)
+	assert.Equal(t, VaultTokenSourceLiteral, src,
+		"literal token must return source=literal (audit R17)")
 
 	// Empty file → error.
 	emptyPath := filepath.Join(dir, "empty")
 	require.NoError(t, os.WriteFile(emptyPath, []byte("\n  \n"), 0o600))
-	_, err = ResolveVaultToken("", emptyPath)
+	_, _, err = ResolveVaultToken("", emptyPath)
 	require.Error(t, err)
 }
 
@@ -267,7 +274,7 @@ func TestAddressSignerVaultTransit_KeyVersionPinned(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = signer.Sign("addr", "instr")
+	_, err = signer.Sign(context.Background(), "addr", "instr")
 	require.Error(t, err,
 		"a vault:v2: response when startup pinned v1 must surface, "+
 			"not silently slip through as a misverified signature")
@@ -315,7 +322,7 @@ func TestAddressSignerVaultTransit_KeyVersionInRequestBody(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = signer.Sign("addr", "instr")
+	_, err = signer.Sign(context.Background(), "addr", "instr")
 	require.NoError(t, err)
 	assert.Equal(t, 1, sawKeyVersion,
 		"Sign() body must pin key_version=<startup latest_version>; "+
@@ -344,7 +351,7 @@ func TestAddressSignerVaultTransit_TokenFileReread(t *testing.T) {
 	require.NoError(t, err)
 
 	// Initial Sign with the original token works.
-	_, err = signer.Sign("addr", "instr-1")
+	_, err = signer.Sign(context.Background(), "addr", "instr-1")
 	require.NoError(t, err, "initial Sign with valid token must succeed")
 
 	// Rotate: write a NEW token to the file + update what the fake
@@ -354,7 +361,7 @@ func TestAddressSignerVaultTransit_TokenFileReread(t *testing.T) {
 	fv.token = "rotated-token"
 	require.NoError(t, os.WriteFile(tokenPath, []byte("rotated-token\n"), 0o600))
 
-	_, err = signer.Sign("addr", "instr-2")
+	_, err = signer.Sign(context.Background(), "addr", "instr-2")
 	require.NoError(t, err,
 		"after writing a rotated token to TokenFile, Sign() must re-read "+
 			"the file and use the new token; otherwise vault-agent rotation "+
@@ -384,7 +391,7 @@ func TestAddressSignerVaultTransit_TokenFileFallback(t *testing.T) {
 		"missing TokenFile at startup is tolerated; startup probe uses "+
 			"the literal Token instead")
 
-	_, err = signer.Sign("addr", "instr")
+	_, err = signer.Sign(context.Background(), "addr", "instr")
 	require.NoError(t, err,
 		"with TokenFile unreadable, Sign() must fall back to the cached "+
 			"startup token rather than panic")

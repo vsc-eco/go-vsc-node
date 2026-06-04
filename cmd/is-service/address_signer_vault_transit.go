@@ -13,7 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,8 +56,12 @@ type AddressSignerVaultTransit struct {
 	// re-read is on the Sign() hot path. Audit OPS-R15-01 (R15) +
 	// R16-CONS-vault-token-docstring-fetch-claim-misleading.
 	tokenFile string
-	mount     string // default "transit"
-	keyName   string
+	// tokenSrc is the non-secret label identifying which input
+	// supplied the startup token. Surfaced in 401/403 Vault error
+	// messages. Audit R17-CONS-tokensource-label-claim-overstates-risk.
+	tokenSrc VaultTokenSource
+	mount    string // default "transit"
+	keyName  string
 	// keyVersion is the Vault transit key version chosen at startup
 	// (from fetchLatestPublicKey's latest_version response). Sign()
 	// pins this value in the request body so a Vault key rotation
@@ -74,11 +78,16 @@ type AddressSignerVaultTransit struct {
 	http      *http.Client
 	pubKeyB64 string // cached at startup; Ed25519 pubkey, base64 std
 	pubKeyHex string // 64-char hex for Altera pinning
-	// tokenFallbackOnce gates the slog.Warn emitted when currentToken
-	// falls back to the cached startup token because TokenFile became
-	// unreadable. Bounded to one log line per process lifetime. Audit
-	// R16-SEC-vault-currenttoken-silent-fallback.
-	tokenFallbackOnce sync.Once
+	// tokenFallbackLastWarnUnix throttles the slog.Warn emitted when
+	// currentToken falls back to the cached startup token because
+	// TokenFile became unreadable. Stores the Unix timestamp (seconds)
+	// of the most recent warn. Audit R16-SEC-vault-currenttoken-silent-
+	// fallback established the warn; R17-CORR-token-fallback-once-no-
+	// recurrence-window replaced the original sync.Once with a 1-hour
+	// throttle so a vault-agent that crashes → recovers → crashes again
+	// emits a SECOND warn for the second incident (sync.Once would have
+	// stayed silent past the first one for the whole process lifetime).
+	tokenFallbackLastWarnUnix atomic.Int64
 }
 
 // NewAddressSignerVaultTransit constructs a signer + verifies it
@@ -100,6 +109,12 @@ type VaultTransitConfig struct {
 	// token is then used for the process lifetime.
 	// Audit OPS-R15-01 (R15).
 	TokenFile string
+	// TokenSource is the non-secret label identifying which input
+	// supplied the token at startup ("literal" | "file" | "env").
+	// Surfaced in Vault 401/403 error messages so on-call knows which
+	// input to investigate without cross-referencing startup logs.
+	// Audit R17-CONS-tokensource-label-claim-overstates-risk.
+	TokenSource VaultTokenSource
 	// HTTPClient is optional; nil falls back to a client with NO
 	// client-level Timeout — per-call context.WithTimeout drives the
 	// deadline: startup probe = 5s (fail-fast), Sign() = 30s (audit
@@ -140,12 +155,13 @@ func NewAddressSignerVaultTransit(cfg VaultTransitConfig) (*AddressSignerVaultTr
 		httpClient = &http.Client{Timeout: 0}
 	}
 	s := &AddressSignerVaultTransit{
-		addr:      strings.TrimRight(cfg.Addr, "/"),
-		token:     cfg.Token,
-		tokenFile: cfg.TokenFile,
-		mount:     mount,
-		keyName:   cfg.KeyName,
-		http:      httpClient,
+		addr:        strings.TrimRight(cfg.Addr, "/"),
+		token:       cfg.Token,
+		tokenFile:   cfg.TokenFile,
+		tokenSrc:    cfg.TokenSource,
+		mount:       mount,
+		keyName:     cfg.KeyName,
+		http:        httpClient,
 	}
 	// Fetch the pubkey at startup — fail-fast if Vault is
 	// unreachable, the token is invalid, or the key doesn't exist.
@@ -206,46 +222,79 @@ func (s *AddressSignerVaultTransit) currentToken() string {
 }
 
 // tokenSource returns a human-readable label naming where the Vault
-// token came from at startup ("tokenFile=<path>", "literal", or
-// "env VAULT_TOKEN"). Used in auth-failure error messages so the
-// operator knows which input to investigate first.
-// Audit R16-OPS-vault-sign-401-no-token-source-identity.
+// token came from at startup. Used in auth-failure error messages so
+// the operator knows which input to investigate first.
+//
+// Audit R16-OPS-vault-sign-401-no-token-source-identity (initial
+// version) + R17-CONS-tokensource-label-claim-overstates-risk (this
+// version): the label is a NON-SECRET identifier — threading the
+// source through VaultTransitConfig.TokenSource lets us distinguish
+// "literal" vs "file" vs "env" precisely without leaking the secret
+// itself.
 func (s *AddressSignerVaultTransit) tokenSource() string {
 	if s.tokenFile != "" {
-		return "tokenFile=" + s.tokenFile
+		return "file=" + s.tokenFile
 	}
-	// Both the literal-flag and VAULT_TOKEN-env paths land here with
-	// tokenFile == ""; we can't tell them apart at this layer without
-	// threading a richer source label through VaultTransitConfig.
-	// Operators reading the log line will know from their own
-	// systemd/k8s config which one applies — distinguishing here would
-	// require persisting a field that may itself leak the secret.
-	return "literal or env (no TokenFile configured)"
+	switch s.tokenSrc {
+	case VaultTokenSourceLiteral:
+		return "literal (-signerVaultToken)"
+	case VaultTokenSourceEnv:
+		return "env VAULT_TOKEN"
+	case VaultTokenSourceFile:
+		// Caller cleared tokenFile but kept the source label — fall
+		// through to the generic.
+		return "file (path cleared)"
+	}
+	return "unknown (TokenSource unset)"
 }
 
-// warnTokenFallbackOnce logs at WARN exactly once across the process
-// lifetime that we fell back to the cached startup token because the
-// configured TokenFile was unusable. Bounded so a long-running outage
-// doesn't fill log aggregators. The reason + (optional) error give the
-// operator enough hint to triage. Audit R16-SEC-vault-currenttoken-
-// silent-fallback.
+// warnTokenFallbackOnce logs at WARN that we fell back to the cached
+// startup token because the configured TokenFile was unusable. The
+// reason + (optional) error give the operator enough hint to triage.
+//
+// Audit R16-SEC-vault-currenttoken-silent-fallback established the
+// warn; R17-CORR-token-fallback-once-no-recurrence-window replaced
+// the original sync.Once gate with a 1-hour-throttled emission so a
+// recurring vault-agent crash (crashes → recovers → crashes again
+// hours later) emits a SECOND warn for the SECOND incident. sync.Once
+// would have stayed silent past the first one for the whole process
+// lifetime, hiding intermittent flapping on long-running deploys.
+//
+// Throttle = 1 hour means a sustained outage emits at most ~24 warns/day,
+// bounding log noise while keeping fresh incidents visible.
 func (s *AddressSignerVaultTransit) warnTokenFallbackOnce(reason string, err error) {
-	s.tokenFallbackOnce.Do(func() {
-		args := []any{"reason", reason, "tokenFile", s.tokenFile}
-		if err != nil {
-			args = append(args, "err", err)
-		}
-		args = append(args,
-			"behaviour", "using cached startup token; rotation is currently disabled until TokenFile is readable",
-			"action", "check vault-agent / sink file permissions / disk")
-		slog.Warn("vault TokenFile unreadable — falling back to cached startup token", args...)
-	})
+	const throttleSec = int64(3600) // 1 hour
+	now := time.Now().Unix()
+	last := s.tokenFallbackLastWarnUnix.Load()
+	if last > 0 && now-last < throttleSec {
+		return
+	}
+	// Compare-and-swap so two concurrent fallback calls don't both
+	// emit. Only one wins the CAS; the other returns silently.
+	if !s.tokenFallbackLastWarnUnix.CompareAndSwap(last, now) {
+		return
+	}
+	args := []any{"reason", reason, "tokenFile", s.tokenFile}
+	if err != nil {
+		args = append(args, "err", err)
+	}
+	args = append(args,
+		"behaviour", "using cached startup token; rotation is currently disabled until TokenFile is readable",
+		"action", "check vault-agent / sink file permissions / disk")
+	slog.Warn("vault TokenFile unreadable — falling back to cached startup token", args...)
 }
 
 // Sign produces an Ed25519 signature via Vault transit/sign.
 // Returns base64-StdEncoded sig (matches AddressSignerEd25519's
 // wire shape).
-func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (string, error) {
+//
+// Audit R17-CORR-vault-sign-ctx-from-background-not-request-ctx:
+// the inbound ctx is honoured for cancellation — if the client
+// disconnects mid-sign, the Vault round-trip is cancelled and
+// Vault's signing slot is freed. The per-call WithTimeout(30s)
+// derives from this caller ctx so it ALSO short-circuits on caller
+// cancellation, not just on the 30s deadline.
+func (s *AddressSignerVaultTransit) Sign(callerCtx context.Context, depositAddress, instruction string) (string, error) {
 	buf := make([]byte, 0, len(depositAddress)+1+len(instruction))
 	buf = append(buf, []byte(depositAddress)...)
 	buf = append(buf, 0)
@@ -277,7 +326,7 @@ func (s *AddressSignerVaultTransit) Sign(depositAddress, instruction string) (st
 	// that previously silently overrode this context. Per-call layers
 	// in effect today: startup probe = 5s (fail-fast), Sign() = 30s
 	// (under-load tolerance).
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(callerCtx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -411,31 +460,46 @@ type versionEntry struct {
 	PublicKey string `json:"public_key"`
 }
 
+// VaultTokenSource is a non-secret label identifying WHICH input
+// supplied the Vault token. Used in Vault 401/403 error messages so
+// the operator immediately knows whether to inspect the
+// -signerVaultTokenFile path, the VAULT_TOKEN env, or the
+// -signerVaultToken CLI flag. Audit R17-CONS-tokensource-label-claim-
+// overstates-risk: the label itself carries zero secret material.
+type VaultTokenSource string
+
+const (
+	VaultTokenSourceLiteral VaultTokenSource = "literal"
+	VaultTokenSourceFile    VaultTokenSource = "file"
+	VaultTokenSourceEnv     VaultTokenSource = "env"
+)
+
 // ResolveVaultToken reads the Vault token from one of:
 //   - `tokenLiteral` (highest priority, typically -signerVaultToken=...
-//     — discouraged because tokens land in process tables / logs)
+//     — refused outside devnet per SEC-6)
 //   - `tokenFile` (path; trimmed of trailing whitespace) — preferred
-//     for production
+//     for production (supports vault-agent rotation)
 //   - VAULT_TOKEN env var (fallback for ergonomics)
 //
-// Returns an error if all three are empty.
-func ResolveVaultToken(tokenLiteral, tokenFile string) (string, error) {
+// Returns the token + a non-secret label identifying its source +
+// an error if all three are empty.
+func ResolveVaultToken(tokenLiteral, tokenFile string) (string, VaultTokenSource, error) {
 	if tokenLiteral != "" {
-		return tokenLiteral, nil
+		return tokenLiteral, VaultTokenSourceLiteral, nil
 	}
 	if tokenFile != "" {
 		raw, err := os.ReadFile(tokenFile)
 		if err != nil {
-			return "", fmt.Errorf("reading -signerVaultTokenFile: %w", err)
+			return "", "", fmt.Errorf("reading -signerVaultTokenFile: %w", err)
 		}
 		t := strings.TrimSpace(string(raw))
 		if t == "" {
-			return "", fmt.Errorf("token file %s is empty", tokenFile)
+			return "", "", fmt.Errorf("token file %s is empty", tokenFile)
 		}
-		return t, nil
+		return t, VaultTokenSourceFile, nil
 	}
 	if t := os.Getenv("VAULT_TOKEN"); t != "" {
-		return t, nil
+		return t, VaultTokenSourceEnv, nil
 	}
-	return "", fmt.Errorf("no vault token configured (set -signerVaultToken, -signerVaultTokenFile, or VAULT_TOKEN env)")
+	return "", "", fmt.Errorf("no vault token configured (set -signerVaultToken, -signerVaultTokenFile, or VAULT_TOKEN env)")
 }
