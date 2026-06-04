@@ -250,8 +250,28 @@ func (b *bitcoinRelayer) getLatestValidBlockHeight(
 		return 0, fmt.Errorf("failed to get block count: %w", err)
 	}
 
-	latestValidBlockHeight := uint64(blockCount) - b.validityThreshold
-	return latestValidBlockHeight, nil
+	return validBlockHeight(blockCount, b.validityThreshold)
+}
+
+// validBlockHeight computes the latest valid block height as
+// blockCount - validityThreshold, guarding against uint64 underflow.
+//
+// When the chain has not yet accumulated validityThreshold blocks (a fresh or
+// syncing bitcoind), the naive subtraction uint64(blockCount) - validityThreshold
+// wraps to a value near MaxUint64 and would propagate as a bogus latest-valid
+// height into ChainData range checks. Returning an error instead causes the
+// oracle tick to treat it as "no valid block yet" rather than relaying a
+// wrapped height. Extracted as a pure function so the underflow guard is
+// directly testable without a live btcd RPC client.
+func validBlockHeight(blockCount int64, validityThreshold uint64) (uint64, error) {
+	if blockCount < 0 || uint64(blockCount) < validityThreshold {
+		return 0, fmt.Errorf(
+			"bitcoin chain not yet at minimum height: blockCount=%d, validityThreshold=%d",
+			blockCount, validityThreshold,
+		)
+	}
+
+	return uint64(blockCount) - validityThreshold, nil
 }
 
 // getPeers returns the IDs of connected peers that advertise NODE_NETWORK
