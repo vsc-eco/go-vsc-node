@@ -50,7 +50,7 @@ func (dbr *DbReindex) Init() error {
 		for _, name := range cols {
 			if !slices.Contains(IMMUTABLE_COLLECTIONS, name) {
 				col := dbr.Collection(name)
-				col.DeleteMany(ctx, bson.M{})
+				col.Drop(ctx)
 			}
 		}
 
