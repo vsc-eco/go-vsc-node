@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
@@ -135,6 +136,36 @@ func (r *contractResolver) CreationHeight(ctx context.Context, obj *contracts.Co
 // Runtime is the resolver for the runtime field.
 func (r *contractResolver) Runtime(ctx context.Context, obj *contracts.Contract) (string, error) {
 	return obj.Runtime.String(), nil
+}
+
+// ActivationHeight is the resolver for the activation_height field.
+func (r *contractResolver) ActivationHeight(ctx context.Context, obj *contracts.Contract) (model.Uint64, error) {
+	return model.Uint64(obj.ActivationHeight), nil
+}
+
+// ActivationTs is the resolver for the activation_ts field. It estimates when a
+// queued version goes live: the creation timestamp plus the remaining timelock at
+// ~3s/block. Exact for immediate versions; an estimate for pending ones (the
+// activation block does not exist yet, so its real timestamp is unknown).
+func (r *contractResolver) ActivationTs(ctx context.Context, obj *contracts.Contract) (*string, error) {
+	if obj.CreationTs == nil {
+		return nil, nil
+	}
+	if obj.ActivationHeight <= obj.CreationHeight {
+		return obj.CreationTs, nil
+	}
+	layouts := []string{"2006-01-02T15:04:05Z", "2006-01-02T15:04:05", time.RFC3339}
+	for _, layout := range layouts {
+		base, err := time.Parse(layout, *obj.CreationTs)
+		if err != nil {
+			continue
+		}
+		est := base.Add(time.Duration(obj.ActivationHeight-obj.CreationHeight) * 3 * time.Second)
+		out := est.Format(layout)
+		return &out, nil
+	}
+	// Unparseable creation timestamp — activation_height is the exact source.
+	return nil, nil
 }
 
 // BlockHeight is the resolver for the block_height field.
@@ -431,7 +462,33 @@ func (r *queryResolver) FindContract(ctx context.Context, filterOptions *FindCon
 	if paginateErr != nil {
 		return nil, paginateErr
 	}
-	return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
+	// Historical: return every stored version (unchanged behavior).
+	if filterOptions.Historical != nil && *filterOptions.Historical {
+		return r.Contracts.FindContracts(filterOptions.ByID, filterOptions.ByCode, filterOptions.Historical, offset, limit)
+	}
+	// Default: the version ACTIVE at the chain head, excluding queued (timelocked)
+	// updates — so a pending update never masquerades as the live contract.
+	head, err := r.HiveBlocks.GetHighestBlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get highest block: %w", err)
+	}
+	return r.Contracts.FindActiveContracts(filterOptions.ByID, filterOptions.ByCode, head, offset, limit)
+}
+
+// FindPendingContractUpdates is the resolver for the findPendingContractUpdates field.
+func (r *queryResolver) FindPendingContractUpdates(ctx context.Context, filterOptions *FindContractFilter) ([]contracts.Contract, error) {
+	if filterOptions == nil {
+		filterOptions = &FindContractFilter{}
+	}
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	head, err := r.HiveBlocks.GetHighestBlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get highest block: %w", err)
+	}
+	return r.Contracts.FindPendingUpdates(filterOptions.ByID, head, offset, limit)
 }
 
 // SubmitTransactionV1 is the resolver for the submitTransactionV1 field.
