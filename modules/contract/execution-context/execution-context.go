@@ -702,7 +702,19 @@ func (ctx *contractExecutionContext) ContractCall(
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
 				WithPendulumApplier(ctx.pendulumApplier),
-				WithTryCatch(ctx.tryCatchActive))
+				WithTryCatch(ctx.tryCatchActive),
+				// Propagate the trusted-forwarders allow-list into the nested
+				// context. IsTrustedForwarder() checks whether the EXECUTING
+				// contract id is in this list — and a forwarder reached
+				// transitively (e.g. mapping.mapInstantSendV2 → forwarder.execute)
+				// must still see itself in the list to be allowed to invoke
+				// contracts.call_as. Without this propagation, only top-level
+				// contracts can ever call_as; any forwarder dispatched from
+				// another contract aborts with "caller contract:<id> is not in
+				// system-config.TrustedForwarders". The list is tx-scoped /
+				// system-config-derived, not per-frame, so propagating it
+				// down the call chain matches the protocol intent.
+				WithTrustedForwarders(ctx.trustedForwarders))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
