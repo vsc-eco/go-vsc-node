@@ -224,6 +224,16 @@ func (se *StateEngine) tssLogSync(bh uint64, msg string, args ...any) {
 	}
 }
 
+// warnSync logs at Warn level during live sync and Debug level during catchup
+// to reduce noise when indexing historical blocks.
+func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
+	if se.IsLiveSynced(int(bh)) {
+		tssLog.Warn(msg, args...)
+	} else {
+		tssLog.Debug(msg, args...)
+	}
+}
+
 //Transaction
 // InputArgs string -->
 // // - Entrypoint
@@ -569,7 +579,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// effect is on what a node would propose/sign, a liveness
 					// concern that the completed rollout removes.
 					if err := verifyAnnouncedBlsPoP(rawJson, acct); err != nil {
-						log.Warn("witness announce: BLS proof-of-possession verification failed — rejecting announce",
+						se.warnSync(blockInfo.BlockHeight, "witness announce: BLS proof-of-possession verification failed — rejecting announce",
 							"account", acct, "txId", tx.TransactionID, "err", err)
 						continue
 					}
