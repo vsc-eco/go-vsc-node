@@ -85,6 +85,37 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
+// ───── Contract update timelock ─────
+//
+// A vsc.update_contract is queued and only takes effect after this many Hive L1
+// blocks (3s/block) have passed since it was submitted. During the window the
+// previously-active code keeps running; the active version at any height H is
+// the newest one whose activation_height <= H (see contracts.ContractById).
+//
+// This is a CONSENSUS RULE enforced on the deterministic state-processing replay
+// path, so it MUST be identical on every node. The value is therefore network-
+// baked in system-config and intentionally NOT exposed via -sysconfig overrides:
+// no single operator can shorten it (a custom binary just forks that node off
+// consensus, since the honest supermajority won't sign its divergent state).
+
+// CONTRACT_UPDATE_TIMELOCK_BLOCKS is the mainnet timelock: 57,600 blocks ≈ 48h.
+var CONTRACT_UPDATE_TIMELOCK_BLOCKS uint64 = 57_600
+
+// CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET is the shorter delay used on test
+// networks (testnet/devnet) so the timelock is exercisable: 30 blocks ≈ 90s.
+// Mocknet uses 0 (disabled) so the in-process e2e harness keeps its immediate-
+// update mechanics.
+var CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET uint64 = 30
+
+// CONTRACT_UPDATE_TIMELOCK_HEIGHT is the MAINNET rollout gate. Updates submitted
+// at/after this Hive height are timelocked; earlier ones stay immediate so a
+// full reindex reproduces historical state byte-for-byte. 0 == disabled until
+// pinned. MUST be set to a height STRICTLY ABOVE the current chain head before
+// rollout — a value at/below an already-processed block is a consensus footgun
+// (live nodes activated those updates immediately, a reindex would delay them).
+// Non-mainnet networks ignore this gate (always timelocked at their block count).
+var CONTRACT_UPDATE_TIMELOCK_HEIGHT uint64 = 0
+
 // review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
 // with no explicit length cap — the node implicitly relied on Hive's
 // ~8KB custom_json limit. Cap explicitly so the bound is enforced

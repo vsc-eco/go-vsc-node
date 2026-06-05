@@ -800,6 +800,27 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 					continue
+				} else if cj.Id == "vsc.cancel_contract_update" {
+					// Cancel a contract update still inside its timelock window.
+					// Gated like the timelock itself: a no-op before rollout (no
+					// pending updates exist), and historical replay sees no such
+					// op, so reindex stays byte-identical. No fee.
+					if !se.sconf.OnMainnet() || (params.CONTRACT_UPDATE_TIMELOCK_HEIGHT != 0 && txSelf.BlockHeight >= params.CONTRACT_UPDATE_TIMELOCK_HEIGHT) {
+						for idx, auth := range txSelf.RequiredAuths {
+							txSelf.RequiredAuths[idx] = "hive:" + auth
+						}
+
+						for idx, auth := range txSelf.RequiredPostingAuths {
+							txSelf.RequiredPostingAuths[idx] = "hive:" + auth
+						}
+
+						parsedTx := TxCancelContractUpdate{
+							Self: txSelf,
+						}
+						json.Unmarshal(cj.Json, &parsedTx)
+						parsedTx.ExecuteTx(se)
+					}
+					continue
 				} else if cj.Id == "vsc.election_result" {
 					parsedTx := &TxElectionResult{
 						Self: txSelf,
@@ -2520,7 +2541,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
 
-		consensusState: consensusStateDb,
+		consensusState:   consensusStateDb,
 		consensusRuntime: NewConsensusRuntime(),
 
 		wasm: wasm,
