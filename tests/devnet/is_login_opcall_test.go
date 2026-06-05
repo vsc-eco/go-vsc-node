@@ -193,6 +193,20 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	}
 
 	// setValidatorSet + setMinAttestations.
+	//
+	// IDEAL: register all 5 magi nodes so EVERY attestation response
+	// (mesh-propagated to magi-1..5 over the gossipsub topic) is
+	// acceptable. Pragmatic: only magi-1's identityConfig.json is
+	// reliably readable from the test side at this point — magi-2..5's
+	// BLS PoPs computed off their identityConfig.json fail to verify
+	// at setValidatorSet (PoP validation aborts the whole call → vs-0
+	// never indexed → test t.Fatal at vs-poll). Investigation needed:
+	// is data-N/config/identityConfig.json populated for N=2..5 at
+	// devnet-start, or only on first block-produce? Cross-ref devnet-
+	// setup logic. Until then we register magi-1 only and document the
+	// known flake: occasionally magi-2..5 win the gossipsub response
+	// race and the IS service drops their attestations as "unknown
+	// validator DID" → ATTESTATION_TIMEOUT.
 	validatorPayload, err := d.BuildValidatorSetPayload(0, []int{1})
 	if err != nil {
 		t.Fatalf("BuildValidatorSetPayload: %v", err)
@@ -222,7 +236,8 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	// indexing deterministic so the IS service caches a correct
 	// view.
 	const vsKey = "vs-0"
-	vsDeadline := time.Now().Add(30 * time.Second)
+	const vsPollTimeout = 30 * time.Second
+	vsDeadline := time.Now().Add(vsPollTimeout)
 	vsIndexed := false
 	for time.Now().Before(vsDeadline) {
 		st, qerr := d.GetStateByKeys(ctx, 1, mappingId, []string{vsKey})
@@ -240,7 +255,7 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		}
 	}
 	if !vsIndexed {
-		t.Fatalf("setValidatorSet not indexed via L2 GQL within 30s — IS service would cache empty validator set and reject all attestations")
+		t.Fatalf("setValidatorSet not indexed via L2 GQL within %s — IS service would cache empty validator set and reject all attestations", vsPollTimeout)
 	}
 
 	// === Start IS service ===
