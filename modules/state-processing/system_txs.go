@@ -1264,7 +1264,7 @@ func sumWeights(weights []uint64, memberCount int) uint64 {
 func (se *StateEngine) logMagiBlock(t *TxProposeBlock, blk *vscBlocks.VscBlock, slot uint64, start time.Time) {
 	liveSynced := se.IsLiveSynced(int(t.Self.BlockHeight))
 
-	if !liveSynced && t.Self.BlockHeight-se.lastMagiLogHeight < 1000 {
+	if !liveSynced && t.Self.BlockHeight-se.lastMagiLogHeight < 10000 {
 		return
 	}
 	se.lastMagiLogHeight = t.Self.BlockHeight

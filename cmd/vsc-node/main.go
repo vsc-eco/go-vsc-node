@@ -203,6 +203,7 @@ func main() {
 	blockConsumer := blockconsumer.New(se)
 
 	blockStatus = blockConsumer.BlockStatus()
+	se.SetBlockStatus(blockStatus)
 	ep := election_proposer.New(
 		p2p,
 		witnessesDb,
