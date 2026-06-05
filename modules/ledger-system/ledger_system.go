@@ -162,6 +162,33 @@ const (
 	safetySlashFinalizeCursorRowID = "safety_slash_burn_finalize_cursor"
 )
 
+// IsProtocolMetaLedgerType reports whether a ledger record type is a
+// protocol-internal meta row that must NOT count toward any spendable balance.
+// These are the burn / pending-burn / finalize-cursor / restitution-claim queue
+// rows: they live on protocol-owned accounts and represent bookkeeping state,
+// never spendable funds on a user's own account.
+//
+// This is the SINGLE source of truth for that exclusion set. Both
+// LedgerState.GetBalance's incremental delta and state_engine.UpdateBalances'
+// snapshot fold must use it, so the two can never drift apart — the drift
+// between an exclude-list fold and an allow-list delta was the CRIT-1
+// double-spend.
+func IsProtocolMetaLedgerType(t string) bool {
+	switch t {
+	case LedgerTypeSafetySlashHiveBurn,
+		LedgerTypeSafetySlashHiveBurnPending,
+		LedgerTypeSafetySlashHiveBurnPendingRelease,
+		LedgerTypeSafetySlashHiveBurnPendingFinalized,
+		LedgerTypeSafetySlashHiveBurnPendingCancelled,
+		LedgerTypeSafetySlashBurnFinalizeCursor,
+		LedgerTypeSafetyRestitutionClaim,
+		LedgerTypeSafetyRestitutionClaimConsumed:
+		return true
+	default:
+		return false
+	}
+}
+
 func normalizeHiveConsensusAccount(a string) string {
 	a = strings.TrimSpace(a)
 	if a == "" {
