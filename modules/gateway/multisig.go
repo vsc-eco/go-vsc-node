@@ -449,10 +449,6 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	// gateway signers move funds.
 	weightThreshold := gatewayWeightThreshold(totalWeight)
 
-	var o [2]interface{}
-	o[0] = "vsc.dao"
-	o[1] = weightThreshold
-
 	jsonMetadata := map[string]interface{}{
 		"msg":                 "Gateway wallet for the VSC Network",
 		"website":             "https://vsc.network",
@@ -465,10 +461,8 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	rotationTx := ms.hiveCreator.UpdateAccount(ms.sconf.GatewayWallet(), &hivego.Auths{
 		WeightThreshold: weightThreshold,
 		// AccountAuths:    weightMap,
-		KeyAuths: gatewayKeys,
-		AccountAuths: [][2]any{
-			o,
-		},
+		KeyAuths:     gatewayKeys,
+		AccountAuths: [][2]any{},
 	}, &hivego.Auths{
 		WeightThreshold: weightThreshold,
 		KeyAuths:        gatewayKeys,
