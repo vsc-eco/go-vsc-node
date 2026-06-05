@@ -160,8 +160,10 @@ func deployNewContract(
 	}
 	fmt.Println(string(j))
 
+	// Mainnet uses HBD; every test network (testnet/devnet) runs on a Hive
+	// testnet chain whose HBD-equivalent symbol is TBD.
 	currency := "HBD"
-	if sysConfig.OnTestnet() {
+	if !sysConfig.OnMainnet() {
 		currency = "TBD"
 	}
 
@@ -216,8 +218,10 @@ func updateContract(
 	}
 	fmt.Println(string(j))
 
+	// Mainnet uses HBD; every test network (testnet/devnet) runs on a Hive
+	// testnet chain whose HBD-equivalent symbol is TBD.
 	currency := "HBD"
-	if sysConfig.OnTestnet() {
+	if !sysConfig.OnMainnet() {
 		currency = "TBD"
 	}
 
