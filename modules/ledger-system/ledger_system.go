@@ -1035,6 +1035,18 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		}
 	} else if strings.HasPrefix(decodedParams.To, "did:") {
 		//No nothing. It's parsed correctly
+	} else if strings.HasPrefix(decodedParams.To, "contract:") {
+		// Pass through. Contract accounts (e.g. "contract:vsc1B...") are
+		// valid ledger owners — the same string the contract execution
+		// context's SendBalance / HiveTransfer uses as From/To. Letting
+		// `to=contract:<id>` deposits land directly avoids the previous
+		// fallback-to-sender behaviour, which silently rerouted the
+		// HBD back to the depositor and made it impossible to fund a
+		// contract's L2 native ledger via the standard L1 → vsc.gateway
+		// memo path. Used by the IS-login op=call devnet test scaffold
+		// to pre-fund the mapping contract for mapInstantSendV2's
+		// rcReimbursementHBD HiveTransfer; also a legitimate operator
+		// path for one-shot operational top-ups.
 	} else {
 		//Default to the original sender to prevent fund loss
 		// addr, _ := NormalizeAddress(deposit.From, "hive")
