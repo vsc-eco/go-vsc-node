@@ -6,9 +6,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	systemconfig "vsc-node/modules/common/system-config"
 )
 
 // reverseHexBytes flips the byte order of a hex-encoded buffer. Dash/
@@ -110,6 +113,15 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		cfg.KeepRunning = true
 	}
 
+	// Initialise an empty SysConfigOverrides so the magi nodes are
+	// started with the `-sysconfig /data/devnet/sysconfig.json` flag
+	// (see tests/devnet/compose.go:107). The forwarder id is appended
+	// to TrustedForwarders AFTER deploy and the nodes are restarted to
+	// pick up the change. Without this initial setup the magi nodes
+	// would be started without -sysconfig + any later SetTrustedForwarders
+	// would write the JSON file but the running nodes wouldn't read it.
+	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{}
+
 	d, err := New(cfg)
 	if err != nil {
 		t.Fatalf("creating devnet: %v", err)
@@ -166,6 +178,43 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		t.Fatalf("deploying call-tss: %v", err)
 	}
 	t.Logf("call-tss deployed: %s", targetId)
+
+	// === Register forwarder as a trusted call_as caller + restart nodes ===
+	//
+	// The dash-forwarder-contract calls sdk.ContractCallAs(target, method,
+	// args, sender, opts) to dispatch op=call payments into the target
+	// contract with the Dash payer's DashDID as effectiveCaller (ERC-2771
+	// pattern). The WASM host's call_as is gated by
+	// system-config.TrustedForwarders — the calling contract's id MUST be
+	// in that list, otherwise the call aborts with:
+	//   err="sdk_error" errMsg="call_as: caller contract:<id> is not in
+	//                          system-config.TrustedForwarders"
+	//
+	// Magi nodes only read sysconfig at startup, so we register the
+	// just-deployed forwarder id + restart all magi nodes (~8-10s) before
+	// initialising the forwarder or starting the IS service.
+	// The IsTrustedForwarder check (execution-context.go:704-715)
+	// compares list entries against `"contract:" + ContractId`. So the
+	// JSON entries MUST be the prefixed form, NOT the bare vsc1... id.
+	// Pre-fix (just `forwarderId`) the comparison always missed, even
+	// after the magi-node restart picked up the new sysconfig.
+	if err := d.SetTrustedForwarders([]string{"contract:" + forwarderId}); err != nil {
+		t.Fatalf("SetTrustedForwarders: %v", err)
+	}
+	// Sanity-check: read back the sysconfig.json that the magi nodes
+	// will see on restart. Confirms the SetTrustedForwarders write
+	// landed on the correct path with the expected JSON.
+	sysconfigPath := filepath.Join(d.DataDir(), "devnet-data", "sysconfig.json")
+	if sysconfigBytes, rerr := os.ReadFile(sysconfigPath); rerr == nil {
+		t.Logf("sysconfig.json (path=%s) post-Set contents:\n%s",
+			sysconfigPath, string(sysconfigBytes))
+	} else {
+		t.Logf("sysconfig.json readback failed at %s: %v", sysconfigPath, rerr)
+	}
+	t.Logf("set TrustedForwarders=[%s]; restarting magi nodes...", forwarderId)
+	if err := d.RestartAllMagiNodes(ctx); err != nil {
+		t.Fatalf("RestartAllMagiNodes: %v", err)
+	}
 
 	// === Init forwarder + wire mapping admin actions ===
 	if _, err := d.CallContract(ctx, 1, forwarderId, "init", mappingId); err != nil {
@@ -401,7 +450,10 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	// committed before the IS-service-submitted mapInstantSendV2 runs.
 	// The balance is stored as packed-uint64 bytes (non-UTF8), so we
 	// must use GetStateByKeysHex to round-trip through JSON cleanly.
-	seedBalanceKey := "a-hbd/" + senderDID
+	// Flat "-" delimiter — the contract switched from "a-hbd/<did>" to
+	// "a-hbd-<did>" to dodge the datalayer's nested-path resolver bug
+	// where DataBin loaded from a CID can't find paths with "/".
+	seedBalanceKey := "a-hbd-" + senderDID
 	const seedBalancePollTimeout = 90 * time.Second
 	seedBalanceDeadline := time.Now().Add(seedBalancePollTimeout)
 	seedBalanceIndexed := false
@@ -513,8 +565,11 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		// (DirPathDelimiter is "-", NOT "/"):
 		//   forwardQueue:    "fq-<internalTxid>"  (ForwardQueueKeyPrefix; see below)
 		//   allowedTargets:  "at-<contract-id>"   (AllowedTargetsKeyPrefix)
-		//   internalBalance: "a-<asset>/<did>"    (BalancePrefix+asset+"/"+dashDID; see
-		//                                          mapping/forwarder_integration.go:484)
+		//   internalBalance: "a-<asset>-<did>"    (BalancePrefix+asset+DirPathDelimiter+dashDID;
+		//                                          flat "-" form after the datalayer
+		//                                          nested-path bug fix — see
+		//                                          mapping/forwarder_integration.go's
+		//                                          getInternalBalance comment)
 		//   forwarderId:     "forwarder"          (ForwarderContractIdStateKey)
 		//   primary pubkey:  "pubkey"             (PrimaryPublicKeyStateKey)
 		//   backup pubkey:   "backupkey"          (BackupPublicKeyStateKey)
@@ -528,7 +583,7 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		internalTxid := reverseHexBytes(dashTxId)
 		fqKey := "fq-" + internalTxid
 		atKey := "at-" + targetId
-		ibKey := "a-hbd/" + senderDID
+		ibKey := "a-hbd-" + senderDID
 		fwdKey := "forwarder"
 		pkKey := "pubkey"
 		bkKey := "backupkey"
