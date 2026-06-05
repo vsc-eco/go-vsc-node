@@ -209,6 +209,40 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		t.Fatalf("FundL2Account: %v", err)
 	}
 
+	// Poll L2 GQL until setValidatorSet has been INDEXED (key "vs-0"
+	// reachable via getStateByKeys). The IS service caches its
+	// validator-set view for 30s on first lookup (main.go:300:
+	// cacheTTL=30*time.Second). If the IS service queries L2 GQL
+	// BEFORE the contract's vs-0 state is indexed, it caches an
+	// empty validator set — every subsequent attestation from
+	// magi-1 is then rejected with "attestation from unknown
+	// validator DID; dropping" for the next 30s. That's the flake
+	// (~60% rate on 8 prior runs) that masked the actual op=call
+	// pipeline behaviour. Polling here makes the validator-set
+	// indexing deterministic so the IS service caches a correct
+	// view.
+	const vsKey = "vs-0"
+	vsDeadline := time.Now().Add(30 * time.Second)
+	vsIndexed := false
+	for time.Now().Before(vsDeadline) {
+		st, qerr := d.GetStateByKeys(ctx, 1, mappingId, []string{vsKey})
+		if qerr == nil && st != nil {
+			if v, ok := st[vsKey].(string); ok && v != "" {
+				t.Logf("validator-set indexed at L2 GQL: vs-0=%q…", v[:min(80, len(v))])
+				vsIndexed = true
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("ctx cancelled while waiting for validator-set indexing")
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if !vsIndexed {
+		t.Fatalf("setValidatorSet not indexed via L2 GQL within 30s — IS service would cache empty validator set and reject all attestations")
+	}
+
 	// === Start IS service ===
 	magi1Addr, err := d.MagiPeerMultiaddr(1)
 	if err != nil {
@@ -239,14 +273,19 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 
 	// Let the gossipsub mesh form between IS service + magi-1 +
 	// any onward connections. GossipSub heartbeat is 1s default;
-	// mesh formation takes ~3 heartbeats. Without this wait, the
-	// orchestrator's request can publish into an empty mesh and
-	// silently lose all responses → ATTESTATION_TIMEOUT. (The
-	// auth-only smoke test happens to squeak past this race by
-	// virtue of fewer setup steps before SendDashTo.)
-	t.Log("waiting 10s for gossipsub mesh to form...")
+	// mesh formation takes ~3 heartbeats. The op=call test has
+	// more L2-setup contract calls than the auth-only smoke test
+	// (deploy forwarder + call-tss + setForwarderContractId +
+	// setAllowedTargetImmediate, plus the post-payment seedInternalHbd
+	// call), so the L2 block producer is under more load right when
+	// the IS service comes up. 10s was flaky for op=call (~50% hit
+	// rate vs 95%+ for auth-only); bumped to 20s. Without enough
+	// wait, the orchestrator's first publish lands in a half-formed
+	// mesh — followers don't see the message → verified=0 collected=0
+	// → ATTESTATION_TIMEOUT.
+	t.Log("waiting 20s for gossipsub mesh to form...")
 	select {
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 	case <-ctx.Done():
 		t.Fatal("ctx cancelled waiting for mesh")
 	}
@@ -283,6 +322,44 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		t.Fatalf("SendDashTo: %v", err)
 	}
 	t.Logf("dashd tx: %s", dashTxId)
+
+	// === Pre-seed the sender DashDID's contract-internal HBD ===
+	//
+	// mapping.dispatchForward (spec §5.2.6) debits ~500 milli-HBD of
+	// RC-reimbursement from the SENDER's internal HBD balance BEFORE
+	// invoking the forwarder. A fresh DashDID — every first-time
+	// user — has zero internal HBD on the mapping contract, so the
+	// pre-check fails with StatusForwardFailedInsufficientRC and the
+	// forwarder dispatch never runs. In production the sender funds
+	// their internal HBD via a prior DASH→HBD swap; for this devnet
+	// test we use the regtest-only seedInternalHbd admin enabler
+	// (mapping main.go:seedInternalHbd, gated by IsRegtest(NetworkMode))
+	// to credit the DashDID directly. Both the dispatch HBD pre-check
+	// AND this seed enabler are absent on mainnet.
+	//
+	// We resolve the sender by walking back one hop through the
+	// dashd verbose RPC — dashd's wallet picks UTXO inputs from
+	// whichever wallet address has spendable coins. The DashDID is
+	// `did:pkh:bip122:<regtest genesis>:<first-input-address>`,
+	// matching the mapping contract's ResolveSenderDashDID derivation.
+	senderAddr, err := d.ResolveDashTxSenderAddress(ctx, dashTxId)
+	if err != nil {
+		t.Fatalf("resolving sender of dash tx %s: %v", dashTxId, err)
+	}
+	senderDID := DashTestnetDIDFromAddress(senderAddr)
+	t.Logf("sender DashDID: %s", senderDID)
+
+	// 2000 milli-HBD = 2 HBD — comfortably above the 500-milli
+	// dispatchForward pre-check budget so a future RC-cost bump
+	// doesn't make the test flaky.
+	const seedAmountMilliHbd = 2000
+	seedHbdPayload := fmt.Sprintf("%s,%d", senderDID, seedAmountMilliHbd)
+	seedTxId, err := d.CallContract(ctx, 1, mappingId, "seedInternalHbd", seedHbdPayload)
+	if err != nil {
+		t.Fatalf("seedInternalHbd(%s, %d): %v", senderDID, seedAmountMilliHbd, err)
+	}
+	t.Logf("seeded %d milli-HBD for sender DashDID (dispatchForward pre-check budget), L1 tx=%s",
+		seedAmountMilliHbd, seedTxId)
 
 	// === Drive through the state machine ===
 	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
@@ -324,32 +401,13 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	// We poll the L2 GQL getStateByKeys on the target until it sees
 	// the write OR the deadline fires.
 	//
-	// SOFT SIGNAL (TODO): mapping.dispatchForward's spec §5.2.6 HBD
-	// pre-check debits ~500 milli-HBD of RC-reimbursement from the
-	// SENDER's contract-internal HBD balance BEFORE invoking the
-	// forwarder. A fresh DashDID (i.e. a user's first interaction)
-	// has zero internal HBD on the mapping contract, so the pre-
-	// check fails with StatusForwardFailedInsufficientRC and the
-	// forwarder is never invoked. To exercise the dispatch path
-	// end-to-end the test would need to pre-fund the user's DashDID
-	// with HBD on the mapping contract (e.g. via a prior DASH→HBD
-	// swap, or a test-only credit helper analogous to the
-	// `setAllowedTargetImmediate` enabler at main.go:396).
-	//
-	// Until that pre-funding scaffolding lands, the state-poll
-	// returns nil but the test does NOT t.Fatal — the L2_SUBMITTED
-	// transition already confirmed mapping.HandleMapInstantSendV2
-	// landed on L2 (the bulk of the op=call pipeline). The forwarder
-	// dispatch + target write half is verified by the forwarder
-	// unit tests in dash-forwarder-contract/tests/current/parser_
-	// test.go (TestDecodeArgs_* + the ParseInstruction suite).
-	//
-	// Audit: this is the "HBD pre-fund test-infra gap" surfaced
-	// 2026-06-04 when the prior soft-log-scrape was upgraded to a
-	// real state-poll. See memory note [[dash_is_login_audit_loop]]
-	// "op=call HBD pre-fund gap".
+	// The sender's internal HBD was pre-seeded above so the
+	// dispatchForward HBD pre-check passes and the forwarder
+	// dispatch actually runs. Pre-seeding plus the forwarder's
+	// b64-decode fix (utxo-mapping commit 4d8253a) close the
+	// op=call full-pipeline E2E gap.
 	const expectedTargetVal = targetVal
-	statePollDeadline := time.Now().Add(30 * time.Second)
+	statePollDeadline := time.Now().Add(90 * time.Second)
 	stateOk := false
 	var lastObserved any
 	for time.Now().Before(statePollDeadline) {
@@ -367,22 +425,90 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		case <-time.After(3 * time.Second):
 		}
 	}
-	if stateOk {
-		t.Logf("target contract state[%q]=%q — full op=call pipeline verified end-to-end",
-			targetKey, expectedTargetVal)
-	} else {
-		// Dump magi-1 tail so an operator triaging a CI run can see
-		// whether the forwarder was reached at all.
-		if magi1Logs, lerr := d.Logs(ctx, "magi-1"); lerr == nil {
-			sawDispatch := strings.Contains(magi1Logs, "forwarder.execute")
-			t.Logf("forwarder.execute in magi-1 logs: %v", sawDispatch)
+	if !stateOk {
+		// Diagnostics on failure: dump (a) the forwardQueue status
+		// entry for this dash txid — this tells us WHERE in the
+		// dispatch chain the call stopped (PENDING_FORWARD =
+		// dispatch never invoked forwarder; FORWARD_FAILED =
+		// allow-list check or HBD pre-check rejected; FORWARD_
+		// FAILED_INSUFFICIENT_RC = HBD pre-fund didn't take effect;
+		// FORWARDED = forwarder ran but target write missed); (b)
+		// the allowedTargets entry for the target contract — if
+		// missing, setAllowedTargetImmediate aborted silently (the
+		// regtest/testnet build-mode gate; dev.wasm should accept,
+		// testnet.wasm rejects); (c) the sender's contract-internal
+		// HBD balance — confirms the seedInternalHbd call landed.
+		// State key shapes mirror the mapping contract's constants
+		// (DirPathDelimiter is "-", NOT "/"):
+		//   forwardQueue:    "fq-<txid>"          (ForwardQueueKeyPrefix)
+		//   allowedTargets:  "at-<contract-id>"   (AllowedTargetsKeyPrefix)
+		//   internalBalance: "a-<asset>/<did>"    (BalancePrefix+asset+"/"+dashDID; see
+		//                                          mapping/forwarder_integration.go:484)
+		//   forwarderId:     "forwarder"          (ForwarderContractIdStateKey)
+		fqKey := "fq-" + dashTxId
+		atKey := "at-" + targetId
+		ibKey := "a-hbd/" + senderDID
+		fwdKey := "forwarder"
+		if diag, derr := d.GetStateByKeys(ctx, 1, mappingId,
+			[]string{fqKey, atKey, ibKey, fwdKey}); derr == nil {
+			t.Logf("dispatch diagnostics — forwardQueue[%s]=%v allowedTargets[%s]=%v internalBalance[%s]=%v forwarderId[%s]=%v",
+				fqKey, diag[fqKey], atKey, diag[atKey], ibKey, diag[ibKey], fwdKey, diag[fwdKey])
+		} else {
+			t.Logf("dispatch diagnostics: GetStateByKeys failed: %v", derr)
 		}
-		t.Logf("target contract state[%q] did not become %q within 30s "+
-			"(last observed: %v). This is EXPECTED until the HBD pre-fund "+
-			"test-infra gap is closed — see the SOFT SIGNAL comment above. "+
-			"L2_SUBMITTED reached above proves the bulk of the op=call "+
-			"pipeline landed; the forwarder b64-decode half is covered by "+
-			"the dash-forwarder-contract unit tests.",
+		// Re-query internal balance as hex so the binary packed-uint64
+		// value (which GetStateByKeys returns as nil due to JSON
+		// encoding) shows its real bytes. A non-nil hex string here
+		// confirms the seedInternalHbd state-write actually landed.
+		if hexDiag, hderr := d.GetStateByKeysHex(ctx, 1, mappingId, []string{ibKey}); hderr == nil {
+			t.Logf("dispatch diagnostics (hex) — internalBalance[%s]=%v", ibKey, hexDiag[ibKey])
+		} else {
+			t.Logf("dispatch diagnostics (hex) failed: %v", hderr)
+		}
+
+		// Query the L2 contract-output(s) for the seedInternalHbd L1 tx
+		// and the IS-service's mapInstantSendV2 L2 tx. ContractOutputs
+		// batch ALL contract calls in an L2 block — so the inputs[] /
+		// results[] arrays let us identify exactly WHICH call in the
+		// batch succeeded vs aborted. Cross-reference inputs[i] (txid)
+		// with results[i] (ok + ret) to attribute outcomes.
+		dumpOutput := func(label, txid string, outs []ContractOutputRecord) {
+			if len(outs) == 0 {
+				t.Logf("%s (tx=%s): no contract-outputs found", label, txid)
+				return
+			}
+			for i, o := range outs {
+				t.Logf("%s (tx=%s) output[%d] id=%s block=%d contract=%s",
+					label, txid, i, o.Id, o.BlockHeight, o.ContractId)
+				for j, r := range o.Results {
+					inputAttribution := "<no input>"
+					if j < len(o.Inputs) {
+						inputAttribution = o.Inputs[j]
+					}
+					t.Logf("  call[%d] input=%s ok=%v ret=%q", j, inputAttribution, r.Ok, r.Ret)
+				}
+			}
+		}
+		if seedOuts, serr := d.FindContractOutputByInput(ctx, 1, seedTxId); serr == nil {
+			dumpOutput("seedInternalHbd batch", seedTxId, seedOuts)
+		} else {
+			t.Logf("seedInternalHbd contract-output query failed: %v", serr)
+		}
+		if final.L2TxId != "" {
+			if misvOuts, merr := d.FindContractOutputByInput(ctx, 1, final.L2TxId); merr == nil {
+				dumpOutput("mapInstantSendV2 batch", final.L2TxId, misvOuts)
+			} else {
+				t.Logf("mapInstantSendV2 contract-output query failed: %v", merr)
+			}
+		}
+		if magi1Logs, lerr := d.Logs(ctx, "magi-1"); lerr == nil {
+			_ = strings.Contains(magi1Logs, "forwarder.execute")
+		}
+		t.Fatalf("target contract state[%q] did not become %q within 90s "+
+			"(last observed: %v). Full op=call pipeline did NOT reach the "+
+			"target contract; see dispatch diagnostics above.",
 			targetKey, expectedTargetVal, lastObserved)
 	}
+	t.Logf("target contract state[%q]=%q — full op=call pipeline verified end-to-end",
+		targetKey, expectedTargetVal)
 }

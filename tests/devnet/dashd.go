@@ -2,6 +2,7 @@ package devnet
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -123,6 +124,96 @@ func (d *Devnet) GetDashRawTransaction(ctx context.Context, txid string) (string
 		return "", fmt.Errorf("getrawtransaction %s: %w", txid, err)
 	}
 	return out, nil
+}
+
+// ResolveDashTxSenderAddress returns the first input's spent-address for
+// `txid`. Walks one hop back through the dashd verbose RPC:
+//
+//	1. getrawtransaction <txid> 1 → vin[0].txid + vin[0].vout
+//	2. getrawtransaction <vin0.txid> 1 → vout[vin0.vout].scriptPubKey.address(es)
+//
+// Mirrors the mapping contract's resolveDashDIDFromTxInputs walk
+// (forwarder_integration.go:254) but without requiring the test to link
+// btcd's wire / chaincfg / txscript packages — dashd does the address
+// decoding for us. Used to compute the DashDID the mapping contract
+// will see for an op=call payment so test scaffolding can pre-fund
+// that DID's contract-internal HBD via the regtest-only seedInternalHbd
+// admin enabler.
+//
+// Single-input simplification: this returns the FIRST input's address.
+// Spec §5.2.5 requires strict same-address for all inputs; the regtest
+// wallet's sendtoaddress only ever uses single-address inputs for small
+// amounts, so this matches the mapping contract's behaviour for the
+// test fixture. If the dashd wallet ever picks multi-address inputs
+// the mapping contract will reject the tx with a "multi-address inputs"
+// ErrInput — the test will see ATTESTATION_TIMEOUT instead of advancing,
+// which is the same shape as any other ATTESTATION failure.
+func (d *Devnet) ResolveDashTxSenderAddress(ctx context.Context, txid string) (string, error) {
+	out, err := d.dashCli(ctx, "getrawtransaction", txid, "1")
+	if err != nil {
+		return "", fmt.Errorf("getrawtransaction %s 1: %w", txid, err)
+	}
+	var spending struct {
+		Vin []struct {
+			Txid string `json:"txid"`
+			Vout uint32 `json:"vout"`
+		} `json:"vin"`
+	}
+	if err := json.Unmarshal([]byte(out), &spending); err != nil {
+		return "", fmt.Errorf("decode verbose tx %s: %w", txid, err)
+	}
+	if len(spending.Vin) == 0 {
+		return "", fmt.Errorf("tx %s has no inputs", txid)
+	}
+	// Skip coinbase (no prev-tx; coinbase tx has empty Txid).
+	if spending.Vin[0].Txid == "" {
+		return "", fmt.Errorf("tx %s vin[0] is coinbase, no sender to resolve", txid)
+	}
+	prevOut, err := d.dashCli(ctx, "getrawtransaction", spending.Vin[0].Txid, "1")
+	if err != nil {
+		return "", fmt.Errorf("getrawtransaction (prev) %s: %w", spending.Vin[0].Txid, err)
+	}
+	var prev struct {
+		Vout []struct {
+			N            uint32 `json:"n"`
+			ScriptPubKey struct {
+				Address   string   `json:"address"`
+				Addresses []string `json:"addresses"`
+			} `json:"scriptPubKey"`
+		} `json:"vout"`
+	}
+	if err := json.Unmarshal([]byte(prevOut), &prev); err != nil {
+		return "", fmt.Errorf("decode prev tx %s: %w", spending.Vin[0].Txid, err)
+	}
+	for _, vout := range prev.Vout {
+		if vout.N == spending.Vin[0].Vout {
+			// dashd's newer RPC uses singular "address"; older paths
+			// return "addresses". Try both.
+			if vout.ScriptPubKey.Address != "" {
+				return vout.ScriptPubKey.Address, nil
+			}
+			if len(vout.ScriptPubKey.Addresses) > 0 {
+				return vout.ScriptPubKey.Addresses[0], nil
+			}
+			return "", fmt.Errorf("prev tx %s vout %d has no decoded address",
+				spending.Vin[0].Txid, spending.Vin[0].Vout)
+		}
+	}
+	return "", fmt.Errorf("prev tx %s missing vout %d", spending.Vin[0].Txid, spending.Vin[0].Vout)
+}
+
+// dashRegtestGenesisCAIP2Hex is the bip122 chain-genesis hex slug used
+// for regtest/testnet DashDIDs. Mirrors lib/dids/dash.go's
+// DashTestnetDIDPrefix and dash-mapping-contract's
+// dashGenesisCAIP2Hex (regtest/testnet branch).
+const dashRegtestGenesisCAIP2Hex = "00000bafbc94add76cb75e2ec9289483"
+
+// DashTestnetDIDFromAddress builds the testnet/regtest DashDID for
+// the given Dash address. Format mirrors the mapping contract's
+// ResolveSenderDashDID return shape so the seedInternalHbd payload
+// can be addressed directly. Exposed for op=call test scaffolding.
+func DashTestnetDIDFromAddress(addr string) string {
+	return "did:pkh:bip122:" + dashRegtestGenesisCAIP2Hex + ":" + addr
 }
 
 // WaitForDashHeight blocks until the dashd regtest tip is at least `target`
