@@ -86,7 +86,12 @@ func NewSubmitterL2(cfg SubmitterL2Config) (*SubmitterL2, error) {
 		return nil, fmt.Errorf("PrivateKeyHex required")
 	}
 	if cfg.RcLimit <= 0 {
-		cfg.RcLimit = 1000 // ~1 HBD per the params.go:11 1000-RC-per-HBD ratio
+		// 10000 RC = ~10 HBD. The op=call full pipeline (mapInstantSendV2
+		// → dispatchForward → forwarder.execute → target ContractCallAs)
+		// burns through the previous 1000-default cap and aborts with
+		// err=gas_limit_hit errMsg="cost limit exceeded". Keep this in
+		// sync with cmd/is-service/args.go:l2RcLimit default.
+		cfg.RcLimit = 10000
 	}
 	priv, err := ethCrypto.HexToECDSA(cfg.PrivateKeyHex)
 	if err != nil {

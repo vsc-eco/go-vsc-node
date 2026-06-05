@@ -167,6 +167,16 @@ type ContractOutputResult {
   ret: String!
   """Whether the contract call succeeded."""
   ok: Boolean!
+  """Error message when ok=false. WASM-level panics (nil deref, OOM,
+  fuel exhaustion, unreachable opcode) populate this even when ret
+  is empty. Contract-level aborts via ce.CustomAbort/sdk.Abort
+  produce a human-readable message here. Operator diagnostic only —
+  do NOT pipe to end users."""
+  errMsg: String
+  """Structured error code when ok=false (e.g. ErrInput, ErrNoPermission,
+  ErrInitialization). Mirrors the ContractError.Symbol field set by
+  ce.NewContractError; nil for non-ContractError aborts (WASM panics)."""
+  err: String
 }
 
 """

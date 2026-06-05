@@ -108,8 +108,10 @@ func (d *Devnet) FindTransactionStatus(ctx context.Context, node int, txId strin
 
 // ContractCallResult is the per-call outcome row inside a ContractOutput.
 type ContractCallResult struct {
-	Ret string `json:"ret"`
-	Ok  bool   `json:"ok"`
+	Ret    string `json:"ret"`
+	Ok     bool   `json:"ok"`
+	ErrMsg string `json:"errMsg,omitempty"`
+	Err    string `json:"err,omitempty"`
 }
 
 // ContractOutputRecord is the full shape of a ContractOutput row from the
@@ -134,7 +136,7 @@ type ContractOutputRecord struct {
 // inputs[i] with results[i] to identify which call in a batched output
 // succeeded vs aborted.
 func (d *Devnet) FindContractOutputByInput(ctx context.Context, node int, txId string) ([]ContractOutputRecord, error) {
-	const q = `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){id block_height contract_id inputs results{ret ok}}}`
+	const q = `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){id block_height contract_id inputs results{ret ok errMsg err}}}`
 	var out struct {
 		FindContractOutput []ContractOutputRecord `json:"findContractOutput"`
 	}

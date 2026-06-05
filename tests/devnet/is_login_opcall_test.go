@@ -3,12 +3,28 @@ package devnet
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+// reverseHexBytes flips the byte order of a hex-encoded buffer. Dash/
+// Bitcoin txids display as the little-endian (reversed) form of the
+// raw sha256d hash bytes; contract-internal state keys use the raw
+// (non-reversed) hex. Use this to translate between the two views.
+func reverseHexBytes(hexStr string) string {
+	b, err := hex.DecodeString(hexStr)
+	if err != nil {
+		return hexStr
+	}
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
+	return hex.EncodeToString(b)
+}
 
 // TestIsLoginOpCallSmoke exercises the op=call IS-login path
 // end-to-end against a real devnet. Closes the only state-machine
@@ -236,7 +252,11 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	// indexing deterministic so the IS service caches a correct
 	// view.
 	const vsKey = "vs-0"
-	const vsPollTimeout = 30 * time.Second
+	// 60s — observed runs where L2 indexing of setValidatorSet takes
+	// 30-45s under op=call's heavier setup load (more L2 contract
+	// deploys + calls before the IS service starts). 30s was tight
+	// enough to flake on ~30% of runs.
+	const vsPollTimeout = 60 * time.Second
 	vsDeadline := time.Now().Add(vsPollTimeout)
 	vsIndexed := false
 	for time.Now().Before(vsDeadline) {
@@ -376,6 +396,42 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	t.Logf("seeded %d milli-HBD for sender DashDID (dispatchForward pre-check budget), L1 tx=%s",
 		seedAmountMilliHbd, seedTxId)
 
+	// Poll the contract-internal HBD balance until the seed call has
+	// been indexed via L2 GQL. Confirms the L1→L2 broadcast actually
+	// committed before the IS-service-submitted mapInstantSendV2 runs.
+	// The balance is stored as packed-uint64 bytes (non-UTF8), so we
+	// must use GetStateByKeysHex to round-trip through JSON cleanly.
+	seedBalanceKey := "a-hbd/" + senderDID
+	const seedBalancePollTimeout = 90 * time.Second
+	seedBalanceDeadline := time.Now().Add(seedBalancePollTimeout)
+	seedBalanceIndexed := false
+	for time.Now().Before(seedBalanceDeadline) {
+		bal, qerr := d.GetStateByKeysHex(ctx, 1, mappingId, []string{seedBalanceKey})
+		if qerr == nil && bal != nil {
+			if v, ok := bal[seedBalanceKey].(string); ok && v != "" {
+				t.Logf("seed balance indexed at L2 GQL: %s=%s (hex)", seedBalanceKey, v)
+				seedBalanceIndexed = true
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("ctx cancelled while waiting for seed-balance indexing")
+		case <-time.After(3 * time.Second):
+		}
+	}
+	if !seedBalanceIndexed {
+		// Diagnostic: query the L1 → L2 tx status. If the L1 tx was
+		// indexed by the L2 streamer it'd have a transactions row.
+		if status, terr := d.FindTransactionStatus(ctx, 1, seedTxId); terr == nil {
+			t.Logf("seed L1 tx status: %s", status)
+		}
+		if outs, oerr := d.FindContractOutputByInput(ctx, 1, seedTxId); oerr == nil {
+			t.Logf("seed contract-output records on miss: %+v", outs)
+		}
+		t.Fatalf("seedInternalHbd did not produce a queryable balance at %s within %s — the L1 broadcast may have been rejected OR the contract aborted silently OR the L2 streamer hasn't processed it yet. Cannot continue safely; mapInstantSendV2 would hit InsufficientRC.", seedBalanceKey, seedBalancePollTimeout)
+	}
+
 	// === Drive through the state machine ===
 	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
 		[]string{"IS_OBSERVED", "ATTESTING", "L2_SUBMITTED", "ON_CHAIN"},
@@ -455,14 +511,22 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		// HBD balance — confirms the seedInternalHbd call landed.
 		// State key shapes mirror the mapping contract's constants
 		// (DirPathDelimiter is "-", NOT "/"):
-		//   forwardQueue:    "fq-<txid>"          (ForwardQueueKeyPrefix)
+		//   forwardQueue:    "fq-<internalTxid>"  (ForwardQueueKeyPrefix; see below)
 		//   allowedTargets:  "at-<contract-id>"   (AllowedTargetsKeyPrefix)
 		//   internalBalance: "a-<asset>/<did>"    (BalancePrefix+asset+"/"+dashDID; see
 		//                                          mapping/forwarder_integration.go:484)
 		//   forwarderId:     "forwarder"          (ForwarderContractIdStateKey)
 		//   primary pubkey:  "pubkey"             (PrimaryPublicKeyStateKey)
 		//   backup pubkey:   "backupkey"          (BackupPublicKeyStateKey)
-		fqKey := "fq-" + dashTxId
+		//
+		// internalTxid: the contract's `rawTxId` (mapinstantsend_v2.go:350)
+		// returns `hex(sha256d(rawTxBytes))` — i.e. the raw double-SHA256
+		// hash, NO byte reversal. dashd's displayed txid is the
+		// reverse-byte version of the same hash (Bitcoin/Dash little-
+		// endian display convention). To match the contract's key we
+		// must byte-reverse dashTxId.
+		internalTxid := reverseHexBytes(dashTxId)
+		fqKey := "fq-" + internalTxid
 		atKey := "at-" + targetId
 		ibKey := "a-hbd/" + senderDID
 		fwdKey := "forwarder"
@@ -517,7 +581,8 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 					if j < len(o.Inputs) {
 						inputAttribution = o.Inputs[j]
 					}
-					t.Logf("  call[%d] input=%s ok=%v ret=%q", j, inputAttribution, r.Ok, r.Ret)
+					t.Logf("  call[%d] input=%s ok=%v ret=%q err=%q errMsg=%q",
+						j, inputAttribution, r.Ok, r.Ret, r.Err, r.ErrMsg)
 				}
 			}
 		}

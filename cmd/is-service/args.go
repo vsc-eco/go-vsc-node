@@ -176,9 +176,16 @@ func parseArgs() (args, error) {
 	fs.StringVar(&a.l2DashMappingContract, "l2DashMappingContract", "",
 		"dash-mapping-contract id (vsc1...) for the chain we're submitting to. "+
 			"Required when l2GqlURL+l2PrivKey are set.")
-	fs.Int64Var(&a.l2RcLimit, "l2RcLimit", 1000,
-		"Per-tx RC budget (1000 RC = 1 HBD). 1000 is a safe upper bound for "+
-			"mapInstantSendV2; lower to save RC, raise if txs abort on RC.")
+	fs.Int64Var(&a.l2RcLimit, "l2RcLimit", 10000,
+		"Per-tx RC budget (1000 RC = 1 HBD). Default 10000 (10 HBD). The "+
+			"op=call path (mapInstantSendV2 → dispatchForward → forwarder. "+
+			"execute → target ContractCallAs) burns through 1000 quickly — "+
+			"devnet observations of `err=gas_limit_hit / errMsg=cost limit "+
+			"exceeded` on the mapInstantSendV2 contract output were caused "+
+			"by the prior 1000-default cap. op=auth still fits comfortably "+
+			"under the new ceiling. Operators can lower this for op=auth-"+
+			"only deployments; raise further if downstream targets are "+
+			"unusually expensive.")
 
 	fs.StringVar(&a.p2pBootstrapPeers, "p2pBootstrapPeers", "",
 		"Comma-separated list of libp2p multiaddrs (e.g. /ip4/x.x.x.x/tcp/p/p2p/<id>) "+
