@@ -515,6 +515,15 @@ func (d *Devnet) composeWithEnv(ctx context.Context, extraEnv []string, args ...
 	return cmd.Run()
 }
 
+// ExecInMagi runs `<cmd...>` inside the magi-N container via
+// `docker compose exec` and returns combined stdout/stderr. Used by
+// devnet tests to inspect the in-container view of bind-mounted files
+// (e.g. sysconfig.json) to confirm host writes actually propagated.
+func (d *Devnet) ExecInMagi(ctx context.Context, node int, cmd ...string) (string, error) {
+	args := append([]string{"exec", "-T", fmt.Sprintf("magi-%d", node)}, cmd...)
+	return d.composeOutput(ctx, args...)
+}
+
 // composeOutput runs a docker compose command and captures its output.
 func (d *Devnet) composeOutput(ctx context.Context, args ...string) (string, error) {
 	fullArgs := append(

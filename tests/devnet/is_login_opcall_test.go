@@ -215,6 +215,44 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	if err := d.RestartAllMagiNodes(ctx); err != nil {
 		t.Fatalf("RestartAllMagiNodes: %v", err)
 	}
+	// Confirm the bind-mounted sysconfig.json is visible from INSIDE the
+	// magi-1 container after the force-recreate. If the inside-container
+	// content shows the trustedForwarders entry, the host write
+	// propagated correctly and any further "not in TrustedForwarders"
+	// failure is a magid-internal reload bug. If the inside-container
+	// content is stale, the bind mount has a write-propagation issue.
+	if inContainer, eerr := d.ExecInMagi(ctx, 1, "cat", "/data/devnet/sysconfig.json"); eerr == nil {
+		t.Logf("sysconfig.json (in-container at magi-1):\n%s", inContainer)
+	} else {
+		t.Logf("in-container sysconfig.json read failed: %v", eerr)
+	}
+	// Also confirm magid's actual command line via /proc/<pid>/cmdline.
+	// If the recreated container's magid was actually started with
+	// `-sysconfig /data/devnet/sysconfig.json`, the flag will appear here.
+	// /proc/1 is the container's PID 1, which is magid itself.
+	if cmdline, cerr := d.ExecInMagi(ctx, 1, "cat", "/proc/1/cmdline"); cerr == nil {
+		// /proc/<pid>/cmdline uses NUL separators between args; tr to spaces
+		// for readability.
+		if pretty, perr := d.ExecInMagi(ctx, 1, "sh", "-c", "tr '\\0' ' ' < /proc/1/cmdline"); perr == nil {
+			t.Logf("magi-1 PID 1 cmdline: %s", pretty)
+		} else {
+			t.Logf("magi-1 PID 1 cmdline raw: %q (pretty failed: %v)", cmdline, perr)
+		}
+	} else {
+		t.Logf("magi-1 PID 1 cmdline read failed: %v", cerr)
+	}
+	// Surface any "Error loading sysconfig overrides" log from magi-1 —
+	// magid os.Exit(1)s on parse failure but the test infra wraps that
+	// as a generic startup error; pulling the actual log line tells us
+	// whether the sysconfig.json that the bind-mount delivered into the
+	// container is malformed.
+	if logs, lerr := d.Logs(ctx, "magi-1"); lerr == nil {
+		for _, line := range strings.Split(logs, "\n") {
+			if strings.Contains(line, "Error loading sysconfig") {
+				t.Logf("magi-1 sysconfig-load error: %s", line)
+			}
+		}
+	}
 
 	// === Init forwarder + wire mapping admin actions ===
 	if _, err := d.CallContract(ctx, 1, forwarderId, "init", mappingId); err != nil {
@@ -286,6 +324,20 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	// Pre-fund the IS service L2 account.
 	if err := d.FundL2Account(ctx, l2DID, "100.000", 12*time.Second); err != nil {
 		t.Fatalf("FundL2Account: %v", err)
+	}
+	// Pre-fund the mapping contract's L2 HBD ledger. mapInstantSendV2's
+	// success-path tail (mapinstantsend_v2.go:334) does
+	//   sdk.HiveTransfer(submitter, rcReimbursementHBD, AssetHbd)
+	// to repay the IS submitter for the L2 RC it spent broadcasting the
+	// tx. In production this works because the contract's native HBD is
+	// credited by the operator-driven deposit-credit flow whenever a
+	// real Dash IS-locked deposit lands; on devnet there's no such flow,
+	// so the contract's L2 account is empty by default and the transfer
+	// aborts with err="ledger_error" errMsg="insufficient balance".
+	// Funding the contract once at boot covers all rcReimbursementHBD
+	// settlements over the test lifetime.
+	if err := d.FundL2Account(ctx, "contract:"+mappingId, "100.000", 12*time.Second); err != nil {
+		t.Fatalf("FundL2Account(contract:%s): %v", mappingId, err)
 	}
 
 	// Poll L2 GQL until setValidatorSet has been INDEXED (key "vs-0"
