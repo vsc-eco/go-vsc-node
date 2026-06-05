@@ -19,6 +19,11 @@ type SystemConfig interface {
 	GatewayWallet() string
 	StartHeight() uint64
 	ConsensusParams() params.ConsensusParams
+	// ContractUpdateTimelockBlocks is the network's contract-update timelock in
+	// Hive L1 blocks (3s/block). 0 means updates activate immediately. Network-
+	// baked and NOT overridable via -sysconfig: a consensus rule every node must
+	// share so no single operator can shorten it.
+	ContractUpdateTimelockBlocks() uint64
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
@@ -26,16 +31,19 @@ type SystemConfig interface {
 }
 
 type config struct {
-	network               string
-	bootstrapPeers        []string
-	netId                 string
-	hiveChainId           string
-	gatewayWallet         string
-	startHeight           uint64
-	consensusParams       params.ConsensusParams
-	oracleParams          params.OracleParams
-	tssParams             params.TssParams
-	pendulumPoolWhitelist []string
+	network         string
+	bootstrapPeers  []string
+	netId           string
+	hiveChainId     string
+	gatewayWallet   string
+	startHeight     uint64
+	consensusParams params.ConsensusParams
+	// Network-baked contract-update timelock length (Hive L1 blocks). Deliberately
+	// absent from SysConfigOverrides so it cannot be changed per-operator.
+	contractUpdateTimelockBlocks uint64
+	oracleParams                 params.OracleParams
+	tssParams                    params.TssParams
+	pendulumPoolWhitelist        []string
 }
 
 func (c *config) OnMainnet() bool {
@@ -75,6 +83,10 @@ func (c *config) GatewayWallet() string {
 }
 func (c *config) ConsensusParams() params.ConsensusParams {
 	return c.consensusParams
+}
+
+func (c *config) ContractUpdateTimelockBlocks() uint64 {
+	return c.contractUpdateTimelockBlocks
 }
 
 func (c *config) OracleParams() params.OracleParams {
@@ -182,6 +194,8 @@ func MainnetConfig() SystemConfig {
 		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    94601000,
+		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
+		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     7,
@@ -221,6 +235,8 @@ func TestnetConfig() SystemConfig {
 		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet:  "vsc.gateway",
 		startHeight:    2,
+		// Short (~90s) timelock so the mechanism is testable on testnet.
+		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     3,
@@ -270,6 +286,8 @@ func DevnetConfig() SystemConfig {
 		hiveChainId:   "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet: "vsc.gateway",
 		startHeight:   2,
+		// Short (~90s) timelock so the mechanism is testable on devnet.
+		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1000,
 			MinMembers:                    3,
@@ -295,6 +313,9 @@ func MocknetConfig() SystemConfig {
 		hiveChainId:   "123456789abcdef000000000000000000000000000000000000000000000000",
 		gatewayWallet: "vsc.mocknet",
 		startHeight:   0,
+		// Disabled (0): the in-process e2e harness updates then immediately
+		// executes a contract and relies on updates taking effect at once.
+		contractUpdateTimelockBlocks: 0,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1,
 			MinMembers:                    3,

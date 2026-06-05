@@ -29,6 +29,22 @@ func (m *MockContractDb) FindContracts(contractId *string, code *string, histori
 	return []contracts.Contract{}, nil
 }
 
+// GraphQL use only, not implemented in mocks
+func (m *MockContractDb) FindActiveContracts(contractId *string, code *string, head uint64, offset int, limit int) ([]contracts.Contract, error) {
+	return []contracts.Contract{}, nil
+}
+
+// GraphQL use only, not implemented in mocks
+func (m *MockContractDb) FindPendingUpdates(contractId *string, head uint64, offset int, limit int) ([]contracts.Contract, error) {
+	return []contracts.Contract{}, nil
+}
+
+// CancelPendingUpdate is a no-op in the single-version mock (the timelock /
+// pending-version semantics are covered by the real mongo-backed contracts tests).
+func (m *MockContractDb) CancelPendingUpdate(contractId string, head uint64, cancelledHeight uint64, cancelledTx string, targetTx *string) (int, error) {
+	return 0, nil
+}
+
 type MockContractStateDb struct {
 	aggregate.Plugin
 	Outputs map[string]contracts.ContractOutput

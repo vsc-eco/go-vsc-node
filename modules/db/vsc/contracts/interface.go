@@ -10,6 +10,14 @@ type Contracts interface {
 	RegisterContract(contractId string, args Contract)
 	ContractById(contractId string, height uint64) (Contract, error)
 	FindContracts(contractId *string, code *string, historical *bool, offset int, limit int) ([]Contract, error)
+	// FindActiveContracts returns the version active at head for each matching id
+	// (excludes pending/timelocked and cancelled versions).
+	FindActiveContracts(contractId *string, code *string, head uint64, offset int, limit int) ([]Contract, error)
+	// FindPendingUpdates returns queued updates not yet active at head.
+	FindPendingUpdates(contractId *string, head uint64, offset int, limit int) ([]Contract, error)
+	// CancelPendingUpdate tombstones still-pending versions of a contract; returns
+	// how many were cancelled.
+	CancelPendingUpdate(contractId string, head uint64, cancelledHeight uint64, cancelledTx string, targetTx *string) (int, error)
 }
 
 type ContractState interface {
