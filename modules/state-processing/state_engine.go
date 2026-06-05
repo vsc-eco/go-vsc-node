@@ -509,19 +509,33 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				json.Unmarshal(bbytes, &rawJson)
 
 				if slices.Contains(rawJson.Services, "vsc.network") {
-					// Fix 5 (verify+warn rollout): check the consensus BLS key's
-					// proof-of-possession. A valid PoP proves the announcer holds
-					// the secret behind the announced BLS pubkey, defeating
-					// rogue-key aggregate-signature forgery. For now we only log
-					// failures and still store the key, so witnesses that
-					// announced before PoP support are not dropped before they
-					// re-announce. A later change flips this to rejection (and
-					// election exclusion) once all witnesses carry a valid PoP.
-					// The check is deterministic, so that future strict mode is
-					// consensus-safe.
+					// Strict proof-of-possession enforcement. A valid PoP proves
+					// the announcer holds the secret behind the announced BLS
+					// pubkey, defeating rogue-key aggregate-signature forgery: the
+					// consensus BLS scheme aggregates over a common message with a
+					// plain pubkey sum (lib/dids/bls.go BlsCircuit.Verify), so an
+					// unverified announced key is a forgery primitive once it lands
+					// in the election keyset (built from witness records via
+					// witness.ConsensusKey()).
+					//
+					// The verify+warn rollout has completed — all witnesses now
+					// re-announce carrying a valid PoP — so a failing check now
+					// REJECTS the announce: the witness record is not stored or
+					// updated, keeping a rogue key out of the election keyset.
+					//
+					// Consensus-safe: verifyAnnouncedBlsPoP is a pure,
+					// deterministic function of the announce payload (every node
+					// reaches the identical verdict), and election RESULT ingestion
+					// (system_txs.go TxElectionResult.ExecuteTx) verifies against
+					// the prior on-chain election's keys and the on-chain DA
+					// payload — never the witness DB — so a divergent witness
+					// record cannot split state ingestion. The only residual
+					// effect is on what a node would propose/sign, a liveness
+					// concern that the completed rollout removes.
 					if err := verifyAnnouncedBlsPoP(rawJson, acct); err != nil {
-						log.Warn("witness announce: BLS proof-of-possession check failed (accepting during rollout)",
+						log.Warn("witness announce: BLS proof-of-possession verification failed — rejecting announce",
 							"account", acct, "txId", tx.TransactionID, "err", err)
+						continue
 					}
 					inputData := witnesses.SetWitnessUpdateType{
 						Account:  acct,
