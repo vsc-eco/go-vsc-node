@@ -24,7 +24,7 @@ func TestCollector_CollectsToThreshold(t *testing.T) {
 		c.Deliver(islock.IsLockAttestationResponse{TxId: "abc", ValidatorDID: "v3", BlsSigHex: "02"})
 	}()
 
-	got := c.Collect(ctx, "abc", 2, time.Second)
+	got := c.Collect(ctx, "abc", 2, time.Second, nil)
 	assert.Len(t, got, 2, "Collect returns once threshold is met")
 }
 
@@ -40,7 +40,7 @@ func TestCollector_DedupesByValidatorDID(t *testing.T) {
 		c.Deliver(islock.IsLockAttestationResponse{TxId: "abc", ValidatorDID: "v2"})
 	}()
 
-	got := c.Collect(ctx, "abc", 2, time.Second)
+	got := c.Collect(ctx, "abc", 2, time.Second, nil)
 	assert.Len(t, got, 2)
 	dids := []string{got[0].ValidatorDID, got[1].ValidatorDID}
 	assert.ElementsMatch(t, []string{"v1", "v2"}, dids)
@@ -56,7 +56,7 @@ func TestCollector_TimeoutReturnsWhatWasCollected(t *testing.T) {
 	}()
 
 	// Threshold 3, only 1 response delivered; timeout returns partial.
-	got := c.Collect(ctx, "abc", 3, 100*time.Millisecond)
+	got := c.Collect(ctx, "abc", 3, 100*time.Millisecond, nil)
 	assert.Len(t, got, 1)
 }
 
@@ -76,7 +76,7 @@ func TestCollector_CtxCancelReturnsEarly(t *testing.T) {
 	}()
 
 	start := time.Now()
-	got := c.Collect(ctx, "abc", 5, 10*time.Second)
+	got := c.Collect(ctx, "abc", 5, 10*time.Second, nil)
 	dur := time.Since(start)
 	assert.Less(t, dur, 200*time.Millisecond, "Collect must honour ctx cancel")
 	assert.Empty(t, got)
@@ -138,8 +138,76 @@ func TestCollector_ConcurrentDeliveriesSafe(t *testing.T) {
 		}(i)
 	}
 
-	got := c.Collect(ctx, "abc", 5, 200*time.Millisecond)
+	got := c.Collect(ctx, "abc", 5, 200*time.Millisecond, nil)
 	wg.Wait()
 	assert.GreaterOrEqual(t, len(got), 0,
 		"concurrent deliveries must not panic; ordering not asserted")
+}
+
+// TestCollector_VerifierGatesThresholdCount covers the op=call devnet
+// E2E regression (2026-06-05): with quorumThreshold=1 and a verifier
+// predicate, the FIRST raw response that fails the verifier must NOT
+// terminate Collect — it should keep collecting until a verified
+// response arrives or timeout fires. Pre-fix, the collector returned
+// at the first response regardless of verifier outcome, the
+// orchestrator's post-Collect filter dropped it as unknown DID, and
+// the session ATTESTATION_TIMEOUT'd with verified=0 collected=1.
+// Post-fix, the verifier inline lets junk responses through into the
+// returned slice (for diagnostic visibility) but only counts verified
+// responses toward threshold.
+func TestCollector_VerifierGatesThresholdCount(t *testing.T) {
+	c := newAttestationCollector()
+	ctx := context.Background()
+
+	go func() {
+		// Deliver one unknown-DID response (verifier rejects), then
+		// a known-DID response (verifier accepts). With threshold=1
+		// the collector must NOT return at v_unknown; it must wait
+		// for v_known.
+		time.Sleep(10 * time.Millisecond)
+		c.Deliver(islock.IsLockAttestationResponse{
+			TxId: "abc", ValidatorDID: "v_unknown", BlsSigHex: "ff",
+		})
+		time.Sleep(20 * time.Millisecond)
+		c.Deliver(islock.IsLockAttestationResponse{
+			TxId: "abc", ValidatorDID: "v_known", BlsSigHex: "aa",
+		})
+	}()
+
+	verifier := func(r islock.IsLockAttestationResponse) bool {
+		return r.ValidatorDID == "v_known"
+	}
+	got := c.Collect(ctx, "abc", 1, 2*time.Second, verifier)
+
+	// Both responses returned for diagnostics (the orchestrator's
+	// "roster divergence" warning needs to see ALL responders).
+	require.Len(t, got, 2, "Collect must return both raw responses (verified + rejected) for diagnostics")
+	dids := []string{got[0].ValidatorDID, got[1].ValidatorDID}
+	assert.ElementsMatch(t, []string{"v_unknown", "v_known"}, dids,
+		"raw response slice must include the rejected response (for matchedAny diagnostic)")
+}
+
+// TestCollector_VerifierTimeoutWithoutVerifiedResponse covers the
+// negative path: if NO verified response arrives within the timeout,
+// Collect returns at deadline with whatever raw responses came in
+// (for diagnostic surfacing of "we got responses but none matched").
+func TestCollector_VerifierTimeoutWithoutVerifiedResponse(t *testing.T) {
+	c := newAttestationCollector()
+	ctx := context.Background()
+
+	go func() {
+		// Three unknown-DID responses, none verifier-acceptable.
+		time.Sleep(10 * time.Millisecond)
+		c.Deliver(islock.IsLockAttestationResponse{TxId: "abc", ValidatorDID: "v1"})
+		c.Deliver(islock.IsLockAttestationResponse{TxId: "abc", ValidatorDID: "v2"})
+		c.Deliver(islock.IsLockAttestationResponse{TxId: "abc", ValidatorDID: "v3"})
+	}()
+
+	rejectAll := func(islock.IsLockAttestationResponse) bool { return false }
+	got := c.Collect(ctx, "abc", 1, 200*time.Millisecond, rejectAll)
+
+	// Threshold never met → Collect ran the full timeout.
+	// All 3 raw responses returned for diagnostics (so the
+	// orchestrator can emit the "roster divergence" warning).
+	assert.Len(t, got, 3, "all raw responses must be returned even when none satisfy verifier")
 }

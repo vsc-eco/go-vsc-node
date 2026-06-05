@@ -99,19 +99,59 @@ func (c *attestationCollector) Deliver(resp islock.IsLockAttestationResponse) {
 	}
 }
 
-// Collect blocks until either threshold responses arrive or ctx is done.
-// Returns the collected set. If ctx expires before threshold, returns
-// whatever was collected (caller decides whether that's enough).
+// Collect blocks until either threshold VERIFIED responses arrive or
+// ctx/timeout fires. Returns the FULL collected set (verified +
+// unverified) for caller-side diagnostics.
+//
+// `verifier`, when non-nil, gates which responses count toward
+// threshold. Use this to keep collecting past attacker / mesh-race
+// noise: with quorumThreshold=1 and the legacy threshold-on-raw-count
+// behaviour, a single response from a non-registered validator (or
+// a peer that signed with the wrong DID) would fill the threshold,
+// the collector returned immediately, and the orchestrator's per-sig
+// verify dropped it — ATTESTATION_TIMEOUT with verified=0 collected=1.
+//
+// Audit `attestation-collector-counts-unverified-toward-threshold`
+// (op=call devnet test E2E, 2026-06-05): the IS service's gossipsub
+// mesh propagates the attestation request to every connected magi
+// witness, but only a subset is registered in setValidatorSet (often
+// just magi-1 in test setups, or the active committee in production).
+// Witnesses not in the registered set sign with their own BLS keys
+// and respond first ~50% of the time (race condition on mesh
+// propagation order). Pre-fix: the FIRST response — regardless of
+// validator-set membership — terminated Collect, then was rejected
+// post-collect. Post-fix: the verifier closure runs per-response;
+// responses that fail validator-set + per-sig verify don't count
+// toward threshold, so Collect keeps waiting until enough VERIFIED
+// responses arrive (or timeout). Unverified responses are still
+// appended to the return so the orchestrator's "no responder matched
+// expected set" diagnostic still surfaces.
+//
+// When verifier is nil, falls back to legacy threshold-on-raw-count
+// (used by unit tests + future callers that handle verify themselves).
 //
 // Dedupes by ValidatorDID — a single validator signing twice (network
-// glitch causing resend) counts once.
+// glitch causing resend) counts once. Buffer is sized at threshold*2
+// to tolerate over-quorum; with the verifier-aware variant a larger
+// flood is possible (one unverified response per non-registered peer
+// in the mesh) so callers may want a wider buffer in the future.
 func (c *attestationCollector) Collect(
 	ctx context.Context,
 	txid string,
 	threshold int,
 	timeout time.Duration,
+	verifier func(islock.IsLockAttestationResponse) bool,
 ) []islock.IsLockAttestationResponse {
-	ch := c.Await(txid, threshold*2) // double buffer for over-quorum tolerance
+	// Buffer sizing: with verifier-aware collection there may be more
+	// raw responses than verified ones (one per non-registered mesh
+	// peer that also signs). Allow up to 8× threshold so a typical
+	// 5-witness mesh can flood without dropping at Deliver. The
+	// orchestrator caller passes threshold=1..few; even 8× is small.
+	buffer := threshold * 2
+	if verifier != nil {
+		buffer = threshold * 8
+	}
+	ch := c.Await(txid, buffer)
 	defer c.Cancel(txid)
 
 	deadline := time.NewTimer(timeout)
@@ -119,6 +159,7 @@ func (c *attestationCollector) Collect(
 
 	seen := make(map[string]struct{}, threshold)
 	out := make([]islock.IsLockAttestationResponse, 0, threshold)
+	verifiedCount := 0
 
 	for {
 		select {
@@ -131,8 +172,15 @@ func (c *attestationCollector) Collect(
 			}
 			seen[resp.ValidatorDID] = struct{}{}
 			out = append(out, resp)
-			if len(out) >= threshold {
-				return out
+			countsTowardThreshold := true
+			if verifier != nil {
+				countsTowardThreshold = verifier(resp)
+			}
+			if countsTowardThreshold {
+				verifiedCount++
+				if verifiedCount >= threshold {
+					return out
+				}
 			}
 		case <-deadline.C:
 			return out

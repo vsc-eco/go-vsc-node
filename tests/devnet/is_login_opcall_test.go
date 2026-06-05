@@ -288,19 +288,19 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 
 	// Let the gossipsub mesh form between IS service + magi-1 +
 	// any onward connections. GossipSub heartbeat is 1s default;
-	// mesh formation takes ~3 heartbeats. The op=call test has
-	// more L2-setup contract calls than the auth-only smoke test
-	// (deploy forwarder + call-tss + setForwarderContractId +
-	// setAllowedTargetImmediate, plus the post-payment seedInternalHbd
-	// call), so the L2 block producer is under more load right when
-	// the IS service comes up. 10s was flaky for op=call (~50% hit
-	// rate vs 95%+ for auth-only); bumped to 20s. Without enough
-	// wait, the orchestrator's first publish lands in a half-formed
-	// mesh — followers don't see the message → verified=0 collected=0
-	// → ATTESTATION_TIMEOUT.
-	t.Log("waiting 20s for gossipsub mesh to form...")
+	// mesh formation takes ~3 heartbeats nominally, but in the op=
+	// call test the IS service must also have its per-topic
+	// subscription propagated to magi-1's PubSub layer before the
+	// first BroadcastRequest can be heard. Under L2 churn from all
+	// the setup calls preceding StartIsService, this can take
+	// 20s+ — measured flakes (collected=0 collected=0) at 10s
+	// (~50%) + 20s (~30%). Bumped to 30s as the empirical sweet
+	// spot. If this still flakes, the next step is a deterministic
+	// poll on the IS service's /healthz endpoint until
+	// connectedPeers ≥ 1 + topic subscription confirmed.
+	t.Log("waiting 30s for gossipsub mesh to form...")
 	select {
-	case <-time.After(20 * time.Second):
+	case <-time.After(30 * time.Second):
 	case <-ctx.Done():
 		t.Fatal("ctx cancelled waiting for mesh")
 	}
@@ -460,16 +460,33 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		//   internalBalance: "a-<asset>/<did>"    (BalancePrefix+asset+"/"+dashDID; see
 		//                                          mapping/forwarder_integration.go:484)
 		//   forwarderId:     "forwarder"          (ForwarderContractIdStateKey)
+		//   primary pubkey:  "pubkey"             (PrimaryPublicKeyStateKey)
+		//   backup pubkey:   "backupkey"          (BackupPublicKeyStateKey)
 		fqKey := "fq-" + dashTxId
 		atKey := "at-" + targetId
 		ibKey := "a-hbd/" + senderDID
 		fwdKey := "forwarder"
+		pkKey := "pubkey"
+		bkKey := "backupkey"
 		if diag, derr := d.GetStateByKeys(ctx, 1, mappingId,
 			[]string{fqKey, atKey, ibKey, fwdKey}); derr == nil {
 			t.Logf("dispatch diagnostics — forwardQueue[%s]=%v allowedTargets[%s]=%v internalBalance[%s]=%v forwarderId[%s]=%v",
 				fqKey, diag[fqKey], atKey, diag[atKey], ibKey, diag[ibKey], fwdKey, diag[fwdKey])
 		} else {
 			t.Logf("dispatch diagnostics: GetStateByKeys failed: %v", derr)
+		}
+		// Also query the BLS-bridge public-key state. mapInstantSendV2's
+		// loadPublicKeys (main.go:933) calls `*sdk.StateGetObject(...)`
+		// UNCONDITIONALLY — if the registerPublicKey call didn't land,
+		// the contract panics on nil deref with empty Ret (which is
+		// exactly what the L2 contract-output diagnostic shows when
+		// mapInstantSendV2 aborts). Bytes are raw 33-byte compressed
+		// pubkeys (not UTF-8), so use hex.
+		if pkDiag, perr := d.GetStateByKeysHex(ctx, 1, mappingId, []string{pkKey, bkKey}); perr == nil {
+			t.Logf("dispatch diagnostics (hex) — primaryPubkey[%s]=%v backupPubkey[%s]=%v",
+				pkKey, pkDiag[pkKey], bkKey, pkDiag[bkKey])
+		} else {
+			t.Logf("dispatch diagnostics (hex pubkeys) failed: %v", perr)
 		}
 		// Re-query internal balance as hex so the binary packed-uint64
 		// value (which GetStateByKeys returns as nil due to JSON

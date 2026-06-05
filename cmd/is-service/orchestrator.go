@@ -362,50 +362,53 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		}
 	}()
 
-	responses := o.collector.Collect(collectCtx, txid, o.quorumThreshold, o.collectTimeout)
-	cancel() // explicitly trigger the rebroadcast goroutine to exit
-	<-rebroadcastDone
-
-	// Per-sig BLS verify BEFORE aggregation (round-2 audit R2-N5).
-	// Without this gate, one junk-sig response from a misbehaving peer
-	// is enough to satisfy QuorumThreshold=1, the orchestrator aggregates
-	// junk, submits the L2 tx, and the contract rejects after RC is
-	// already spent. Verifying each sig against its claimed PubkeyHex
-	// is one pairing per response; cheap compared to the L2 round-trip.
+	// Per-sig BLS verify + validator-set membership gate BEFORE
+	// aggregation (round-2 audit R2-N5 + round-3 R3-07). The collector
+	// is given a verifier closure so responses that fail these gates
+	// don't count toward quorumThreshold — Collect keeps waiting for
+	// MORE responses until enough VERIFIED ones arrive (or timeout).
 	//
-	// Round-3 audit R3-07: ALSO consult the expected-DID→PubkeyHex map
-	// so a peer that produces a real sig under its own BLS key but
-	// claims another validator's DID is dropped here, not at the
-	// contract (which would still cost RC). The expected-set is best-
-	// effort — when nil (e.g. tests, devnet bring-up), we fall back to
-	// raw sig verify.
+	// Audit `attestation-collector-counts-unverified-toward-threshold`
+	// (op=call devnet E2E, 2026-06-05): pre-fix the collector returned
+	// at the first quorumThreshold raw responses, so a single response
+	// from a non-registered mesh peer (e.g. magi-2..5 not in the
+	// active validator set) terminated Collect; the post-Collect
+	// verify loop then dropped it as unknown DID and the session
+	// ATTESTATION_TIMEOUT'd. With the verifier inline, junk responses
+	// are still seen + counted into the diagnostic `responses` slice
+	// (for the matchedAny "roster divergence" warning) but don't
+	// satisfy threshold — Collect waits for magi-1 (or another
+	// registered witness) to respond, then returns successfully.
+	//
+	// The expected-set is best-effort — when nil (e.g. tests, devnet
+	// bring-up before setValidatorSet has been indexed), the closure
+	// falls through to raw per-sig verify.
 	var expected map[string]string
 	if o.validatorSetForEpoch != nil {
 		expected = o.validatorSetForEpoch(ctx, req.Epoch)
 	}
-	verifiedResponses := make([]islock.IsLockAttestationResponse, 0, len(responses))
+	verifiedResponses := make([]islock.IsLockAttestationResponse, 0, o.quorumThreshold)
 	// Round-5 audit R5-ADV-01: track whether the expected set knew
 	// ANY of the responders. If we have an expected set + got
 	// responses but every single one was dropped as unknown, the
 	// likely cause is a malicious/wrong GraphQL endpoint returning a
 	// fabricated validator set. Surface that case structurally rather
 	// than letting it look like a normal quorum miss.
-	hadExpected := expected != nil && len(responses) > 0
 	matchedAny := false
-	for _, r := range responses {
+	verifier := func(r islock.IsLockAttestationResponse) bool {
 		if expected != nil {
 			expectedPk, known := expected[r.ValidatorDID]
 			if !known {
 				o.counters.AttestationVerifyDrops.Add(1)
 				slog.Warn("attestation from unknown validator DID; dropping",
 					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
-				continue
+				return false
 			}
 			if expectedPk != r.PubkeyHex {
 				o.counters.AttestationVerifyDrops.Add(1)
 				slog.Warn("attestation PubkeyHex doesn't match registered set; dropping",
 					"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID)
-				continue
+				return false
 			}
 			matchedAny = true
 		}
@@ -415,11 +418,17 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 			slog.Warn("attestation per-sig verify failed; dropping",
 				"sid", sid, "txid", txid, "validatorDID", r.ValidatorDID,
 				"err", err)
-			continue
+			return false
 		}
 		verifiedResponses = append(verifiedResponses, r)
+		return true
 	}
 
+	responses := o.collector.Collect(collectCtx, txid, o.quorumThreshold, o.collectTimeout, verifier)
+	cancel() // explicitly trigger the rebroadcast goroutine to exit
+	<-rebroadcastDone
+
+	hadExpected := expected != nil && len(responses) > 0
 	if hadExpected && !matchedAny {
 		// All responders are unknown to the expected set. The L2
 		// GraphQL endpoint is either out of date or actively
