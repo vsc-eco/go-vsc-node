@@ -20,6 +20,10 @@ type args struct {
 	// update contract args
 	contractId string
 
+	// cancel a pending (timelocked) contract update
+	cancelUpdate bool
+	cancelTxId   string
+
 	// offline-signing args (Ledger / hardware-wallet flow)
 	noBroadcast     bool
 	out             string
@@ -56,6 +60,16 @@ func ParseArgs() (args, error) {
 		"Existing contract ID to update contract. Omit to deploy a new contract.",
 	)
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
+	cancelUpdate := flag.Bool(
+		"cancel-update",
+		false,
+		"Cancel a pending (timelocked) contract update for -contractId instead of deploying/updating. Owner-only.",
+	)
+	cancelTxId := flag.String(
+		"cancel-tx",
+		"",
+		"With -cancel-update: tx id of the specific queued update to cancel. Omit to cancel all pending updates for the contract.",
+	)
 	noBroadcast := flag.Bool(
 		"no-broadcast",
 		false,
@@ -100,6 +114,8 @@ func ParseArgs() (args, error) {
 		dataDir:         *dataDir,
 		sysconfigPath:   *sysconfigPath,
 		contractId:      *contractId,
+		cancelUpdate:    *cancelUpdate,
+		cancelTxId:      *cancelTxId,
 		noBroadcast:     *noBroadcast,
 		out:             *out,
 		expiration:      *expiration,

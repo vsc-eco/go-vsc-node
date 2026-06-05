@@ -80,12 +80,25 @@ func main() {
 		fmt.Println("generated config files successfully")
 		os.Exit(0)
 	}
+	if args.cancelUpdate && args.contractId == "" {
+		fmt.Println("contractId must be specified to cancel a pending contract update")
+		os.Exit(1)
+	}
 	if args.contractId == "" && args.wasmPath == "" {
 		fmt.Println("Path to compiled WASM bytecode must be specified when deploying new contract")
 		os.Exit(1)
 	}
 
 	a.Start()
+
+	if args.cancelUpdate {
+		cancelContractUpdate(sysConfig, identityConfig, hiveConfig, args)
+		if err = a.Stop(); err != nil {
+			fmt.Println("failed to stop plugins", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if args.wasmPath != "" {
 		code, err := os.ReadFile(args.wasmPath)
@@ -226,6 +239,45 @@ func updateContract(
 	}
 
 	submitOrPrepare(sysConfig, identityConfig, hiveConfig, ops, user, args)
+}
+
+// cancelContractUpdate posts a vsc.cancel_contract_update op that tombstones a
+// queued contract update still inside its timelock window. Owner-gated and free
+// (no deployment fee). With args.cancelTxId set, only that queued update is
+// cancelled; otherwise every pending update for the contract is.
+func cancelContractUpdate(
+	sysConfig systemconfig.SystemConfig,
+	identityConfig common.IdentityConfig,
+	hiveConfig streamer.HiveConfig,
+	args args,
+) {
+	user := identityConfig.Get().HiveUsername
+	if len(user) == 0 {
+		fmt.Println("could not cancel update as username is not specified in identityConfig.json")
+		return
+	}
+
+	tx := stateEngine.TxCancelContractUpdate{
+		NetId: sysConfig.NetId(),
+		Id:    args.contractId,
+		TxId:  args.cancelTxId,
+	}
+
+	j, err := json.Marshal(tx)
+	if err != nil {
+		fmt.Println("failed to marshal tx json data", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(j))
+
+	cancelOp := hivego.CustomJsonOperation{
+		RequiredAuths:        []string{user},
+		RequiredPostingAuths: []string{},
+		Id:                   "vsc.cancel_contract_update",
+		Json:                 string(j),
+	}
+
+	submitOrPrepare(sysConfig, identityConfig, hiveConfig, []hivego.HiveOperation{cancelOp}, user, args)
 }
 
 // submitOrPrepare either broadcasts the operations with the local active key

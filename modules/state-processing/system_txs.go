@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -238,9 +239,13 @@ func (tx *TxCreateContract) ExecuteTx(se *StateEngine) TxResult {
 		Description:    tx.Description,
 		Creator:        tx.Self.RequiredAuths[0],
 		Owner:          owner,
+		Proposer:       tx.Self.RequiredAuths[0],
 		TxId:           tx.Self.TxId,
 		CreationHeight: tx.Self.BlockHeight,
-		Runtime:        tx.Runtime,
+		// Deploys are not timelocked; RegisterContract defaults activation to
+		// creation height when left zero.
+		ActivationHeight: tx.Self.BlockHeight,
+		Runtime:          tx.Runtime,
 	})
 
 	return TxResult{
@@ -361,6 +366,11 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		// contract update history
 		TxId:           tx.Self.TxId,
 		CreationHeight: tx.Self.BlockHeight,
+		Proposer:       tx.Self.RequiredAuths[0],
+		// Queue the whole update behind the network timelock. Until this height
+		// the previously-active version (existing) keeps running; ContractById
+		// ignores this row while activation_height > the query height.
+		ActivationHeight: se.contractUpdateActivationHeight(tx.Self.BlockHeight),
 	}
 	if tx.Owner != "" {
 		// update owner
@@ -411,6 +421,97 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 	return UpdateContractResult{
 		Success:     true,
 		CodeUpdated: updatedContract.Code != existing.Code,
+	}
+}
+
+// contractUpdateActivationHeight returns the height at which an update submitted
+// at submitHeight becomes the active code. It is submitHeight (immediate) when
+// the network has no timelock, or — on mainnet — while the rollout gate is unset
+// or unreached, so a full reindex reproduces historical state byte-for-byte.
+// Otherwise it is submitHeight + the network's (non-overridable) timelock.
+func (se *StateEngine) contractUpdateActivationHeight(submitHeight uint64) uint64 {
+	blocks := se.sconf.ContractUpdateTimelockBlocks()
+	if blocks == 0 {
+		return submitHeight
+	}
+	if se.sconf.OnMainnet() {
+		if params.CONTRACT_UPDATE_TIMELOCK_HEIGHT == 0 || submitHeight < params.CONTRACT_UPDATE_TIMELOCK_HEIGHT {
+			return submitHeight
+		}
+	}
+	return submitHeight + blocks
+}
+
+// TxCancelContractUpdate cancels a contract update that is still in its timelock
+// window (queued but not yet active). Owner-gated and free.
+type TxCancelContractUpdate struct {
+	Self  TxSelf `json:"-"`
+	NetId string `json:"net_id"`
+	Id    string `json:"id"`
+	// TxId optionally targets a single queued update (the tx that queued it). When
+	// empty, every pending update for the contract is cancelled.
+	TxId string `json:"tx_id,omitempty"`
+}
+
+type CancelContractUpdateResult struct {
+	Success   bool
+	Cancelled int
+	Err       string
+}
+
+func (tx TxCancelContractUpdate) Type() string {
+	return "cancel_contract_update"
+}
+
+func (tx TxCancelContractUpdate) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxCancelContractUpdate) ToData() map[string]interface{} {
+	return map[string]interface{}{
+		"net_id": tx.NetId,
+		"id":     tx.Id,
+		"tx_id":  tx.TxId,
+	}
+}
+
+func (tx *TxCancelContractUpdate) ExecuteTx(se *StateEngine) CancelContractUpdateResult {
+	if len(tx.Self.RequiredAuths) == 0 {
+		return CancelContractUpdateResult{
+			Success: false,
+			Err:     "cannot cancel contract update with posting auths",
+		}
+	}
+	// Authorize against the CURRENTLY ACTIVE owner. A queued owner transfer has
+	// not taken effect yet, so the existing owner stays in control and can cancel
+	// it (e.g. revert a stolen-key hand-off within the window).
+	existing, err := se.contractDb.ContractById(tx.Id, tx.Self.BlockHeight)
+	if err != nil {
+		return CancelContractUpdateResult{
+			Success: false,
+			Err:     "failed to retrieve contract to cancel update",
+		}
+	}
+	if tx.Self.RequiredAuths[0] != existing.Owner {
+		return CancelContractUpdateResult{
+			Success: false,
+			Err:     "not owner",
+		}
+	}
+	var targetTx *string
+	if tx.TxId != "" {
+		targetTx = &tx.TxId
+	}
+	cancelled, err := se.contractDb.CancelPendingUpdate(tx.Id, tx.Self.BlockHeight, tx.Self.BlockHeight, tx.Self.TxId, targetTx)
+	if err != nil {
+		return CancelContractUpdateResult{
+			Success: false,
+			Err:     "failed to cancel pending update",
+		}
+	}
+	return CancelContractUpdateResult{
+		Success:   true,
+		Cancelled: cancelled,
 	}
 }
 
@@ -709,7 +810,7 @@ type TxRecoveryRequireVersion struct {
 	Self          TxSelf
 	Major         uint64 `json:"major"`
 	Consensus     uint64 `json:"consensus"`
-	NonConsensus uint64 `json:"non_consensus"`
+	NonConsensus  uint64 `json:"non_consensus"`
 	Reason        string `json:"reason,omitempty"`
 	CheckpointRef string `json:"checkpoint_ref,omitempty"`
 }
