@@ -2069,26 +2069,18 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 
 		for _, v := range *ledgerUpdates {
-			switch v.Type {
-			case ledgerSystem.LedgerTypeSafetySlashHiveBurn,
-				ledgerSystem.LedgerTypeSafetySlashHiveBurnPending,
-				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease,
-				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingFinalized,
-				ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled,
-				ledgerSystem.LedgerTypeSafetySlashBurnFinalizeCursor,
-				ledgerSystem.LedgerTypeSafetyRestitutionClaim,
-				ledgerSystem.LedgerTypeSafetyRestitutionClaimConsumed:
-				// Protocol meta rows. Burn / pending-burn / finalize-cursor
-				// rows live on protocol-owned accounts; restitution claim
-				// rows live on ProtocolSlashRestitutionClaimsAccount and
-				// represent queue state, never spendable HIVE on the
-				// victim's own account (the victim is credited via a
-				// separate LedgerTypeSafetySlashRestitution row written by
-				// SafetySlashConsensusBond when the queue is allocated).
+			// Protocol meta rows (burn / pending-burn / finalize-cursor rows on
+			// protocol-owned accounts, and restitution-claim queue rows on
+			// ProtocolSlashRestitutionClaimsAccount) represent bookkeeping state,
+			// never spendable funds on the victim's own account (the victim is
+			// credited via a separate LedgerTypeSafetySlashRestitution row).
+			// Shared with LedgerState.GetBalance via IsProtocolMetaLedgerType so
+			// the snapshot fold and the incremental delta exclude the identical
+			// set — drift between the two was the CRIT-1 double-spend.
+			if ledgerSystem.IsProtocolMetaLedgerType(v.Type) {
 				continue
-			default:
-				ledgerBalances[v.Asset] += v.Amount
 			}
+			ledgerBalances[v.Asset] += v.Amount
 		}
 
 		if needsClaimUpdate {

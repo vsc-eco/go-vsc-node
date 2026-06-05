@@ -100,9 +100,13 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 	return bal
 }
 
-// Mirror state_engine.UpdateBalances (state_engine.go:1295-1380): start from the
-// BalanceDb snapshot field for the asset, then add every LedgerDb record past
-// the snapshot height.
+// GetBalance returns the spendable balance of asset for account as of blockHeight:
+// the BalanceDb snapshot field for the asset plus the net of every LedgerDb
+// record past the snapshot height.
+//
+// The snapshot itself is always written correctly by state_engine.UpdateBalances
+// (it sums every record of the asset minus the protocol meta rows); only the
+// incremental delta below the snapshot height is computed here.
 func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	if !slices.Contains(assetTypes, asset) {
 		return 0
@@ -118,87 +122,47 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		balRecord = *balRecordPtr
 		recordHeight = balRecord.BlockHeight + 1
 	}
+
+	var base int64
 	switch asset {
 	case "hbd":
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
-			account,
-			recordHeight,
-			blockHeight,
-			asset,
-			ledger_db.LedgerOptions{
-				OpType: []string{"unstake", "deposit"},
-			},
-		)
-
-		balAdjust := int64(0)
-
-		for _, v := range *ledgerResults {
-			balAdjust += v.Amount
-		}
-
-		return balRecord.HBD + balAdjust
+		base = balRecord.HBD
 	case "hive":
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
-			account,
-			recordHeight,
-			blockHeight,
-			asset,
-			ledger_db.LedgerOptions{
-				OpType: []string{"deposit", LedgerTypeSafetySlashRestitution},
-			},
-		)
-
-		balAdjust := int64(0)
-
-		for _, v := range *ledgerResults {
-			balAdjust += v.Amount
-		}
-
-		return balRecord.Hive + balAdjust
+		base = balRecord.Hive
 	case "hbd_savings":
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
-			account,
-			recordHeight,
-			blockHeight,
-			asset,
-			ledger_db.LedgerOptions{
-				OpType: []string{"stake"},
-			},
-		)
-
-		stakeBal := int64(0)
-
-		for _, v := range *ledgerResults {
-			stakeBal += v.Amount
-		}
-
-		return balRecord.HBD_SAVINGS + stakeBal
+		base = balRecord.HBD_SAVINGS
 	case "hive_consensus":
-		// Include consensus_stake (positive), consensus_unstake (negative),
-		// safety_slash_consensus (negative — debits a slashed bond), AND
-		// safety_slash_consensus_reverse (positive — re-credits a previously
-		// slashed bond, e.g. governance reversal of an erroneous slash) so
-		// the spendable bond reflects the net of all four ledger paths.
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
-			account,
-			recordHeight,
-			blockHeight,
-			asset,
-			ledger_db.LedgerOptions{
-				OpType: []string{
-					"consensus_stake",
-					"consensus_unstake",
-					LedgerTypeSafetySlashConsensus,
-					LedgerTypeSafetySlashConsensusReverse,
-				},
-			},
-		)
-		balAdjust := int64(0)
-		for _, v := range *ledgerResults {
-			balAdjust += v.Amount
-		}
-		return balRecord.HIVE_CONSENSUS + balAdjust
+		base = balRecord.HIVE_CONSENSUS
 	default:
 		return 0
 	}
+
+	// CRIT-1 fix: sum EVERY ledger record of the asset past the snapshot height
+	// (natural signs), excluding only the protocol meta rows
+	// (IsProtocolMetaLedgerType — the shared source of truth, identical to the
+	// snapshot fold in state_engine.UpdateBalances). The previous per-asset
+	// OpType ALLOW-list silently dropped OUTFLOWS — transfer, withdraw, stake
+	// (hbd) and transfer, withdraw, consensus_stake (hive) all carry the asset's
+	// own `tk` but were never subtracted — so between a debit landing and the
+	// next slot snapshot fold the spend check read a stale, overstated balance
+	// and admitted a second debit of the same funds (double-spend). Summing all
+	// records minus the meta rows makes GetBalance == snapshot + remaining-delta
+	// by construction, so the delta and the fold can never drift again.
+	//
+	// Not consensus-version-gated: this is not a forkable change. GetBalance
+	// only feeds block PRODUCTION and the cosigner's re-derivation; finalized
+	// ledger state is the producer's oplog applied verbatim by IngestOplog (no
+	// balance check), and a block finalizes only on a 2/3 matching-CID quorum
+	// (one leader per slot). A divergent balance can therefore stall a slot but
+	// can neither fork the chain nor change the replay of an already-finalized
+	// block.
+	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset)
+	balAdjust := int64(0)
+	for _, v := range *ledgerResults {
+		if IsProtocolMetaLedgerType(v.Type) {
+			continue
+		}
+		balAdjust += v.Amount
+	}
+	return base + balAdjust
 }
