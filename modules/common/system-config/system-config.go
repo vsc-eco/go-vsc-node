@@ -209,6 +209,11 @@ func MainnetConfig() SystemConfig {
 			ConsensusVersionFloorConsensus: 1,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
+			// Mainnet contract-update timelock rollout gate (see
+			// ConsensusParams.ContractUpdateTimelockHeight). Updates at/after this
+			// height are timelocked 48h; earlier ones stay immediate. MUST be bumped
+			// above the chain head at deploy time if the rollout slips past it.
+			ContractUpdateTimelockHeight: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
