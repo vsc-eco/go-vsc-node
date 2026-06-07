@@ -198,7 +198,7 @@ func MainnetConfig() SystemConfig {
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
-			MinMembers:                     7,
+			MinMembers:                     8, // H-5: must be >= the gateway floor (8, gateway/multisig.go) — a valid 7-member election otherwise silently wedges keyRotation forever
 			MinSpSigners:                   6,
 			MinRcLimit:                     params.MINIMUM_RC_LIMIT,
 			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
@@ -214,6 +214,26 @@ func MainnetConfig() SystemConfig {
 			// shipping in v0.2.0. 0 == unpinned/inert. PIN to a future mainnet height
 			// (strictly above the chain head at deploy) before the v0.2.0 rollout.
 			Version0_2_0Height: 0,
+			// Bond inclusion window (CP-2): 86,400 Hive blocks = 3 days @ 3s.
+			// Activation height 0 = INERT (no behavior change) until an operator
+			// pins a future epoch-boundary height (>=3d lead) for rollout.
+			BondInclusionWindowBlocks:     86_400,
+			BondInclusionActivationHeight: 0,
+			BondInclusionSampleCount:      8,
+			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
+			// together with the bond activation height to bound atomic cohort
+			// entry once the gate is live.
+			MaxNewMembersPerElection: 0,
+			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
+			// PoP, no key dedup). Pin a future height once all witnesses carry a
+			// valid PoP (network-wide, reindex-stable rollout).
+			WitnessKeyStrictHeight: 0,
+			// Established-member exception (operator requirement): the stake an
+			// account was already ratified for stays exempt from the window
+			// through the per-network absence grace set on the next line, even if
+			// it drops out. Only meaningful when the bond gate is active. (mainnet
+			// 403,200 ≈ 2 weeks @ 3s.)
+			BondInclusionEstablishedGraceBlocks: 403_200,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -267,6 +287,25 @@ func TestnetConfig() SystemConfig {
 			// PIN a future testnet height (above chain head) before rollout — not 1.
 			// 0 = inert until then.
 			Version0_2_0Height: 0,
+			// Bond inclusion window (CP-2): 7,200 blocks (~6h) for faster testnet
+			// iteration. Activation 0 = inert until pinned.
+			BondInclusionWindowBlocks:     7_200,
+			BondInclusionActivationHeight: 0,
+			BondInclusionSampleCount:      8,
+			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
+			// together with the bond activation height to bound atomic cohort
+			// entry once the gate is live.
+			MaxNewMembersPerElection: 0,
+			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
+			// PoP, no key dedup). Pin a future height once all witnesses carry a
+			// valid PoP (network-wide, reindex-stable rollout).
+			WitnessKeyStrictHeight: 0,
+			// Established-member exception (operator requirement): the stake an
+			// account was already ratified for stays exempt from the window
+			// through the per-network absence grace set on the next line, even if
+			// it drops out. Only meaningful when the bond gate is active. (mainnet
+			// 403,200 ≈ 2 weeks @ 3s.)
+			BondInclusionEstablishedGraceBlocks: 33_600,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -312,6 +351,26 @@ func DevnetConfig() SystemConfig {
 			// Ephemeral network (fresh per run): pin at 1 so v0.2.0 behavior is
 			// active from genesis and exercised by devnet/regression tests.
 			Version0_2_0Height: 1,
+			// Bond inclusion window (CP-2): tiny 80-block window for fast devnet
+			// tests. Activation 0 = inert; devnet test harness pins a low height
+			// to exercise the gate.
+			BondInclusionWindowBlocks:     80,
+			BondInclusionActivationHeight: 0,
+			BondInclusionSampleCount:      8,
+			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
+			// together with the bond activation height to bound atomic cohort
+			// entry once the gate is live.
+			MaxNewMembersPerElection: 0,
+			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
+			// PoP, no key dedup). Pin a future height once all witnesses carry a
+			// valid PoP (network-wide, reindex-stable rollout).
+			WitnessKeyStrictHeight: 0,
+			// Established-member exception (operator requirement): the stake an
+			// account was already ratified for stays exempt from the window
+			// through the per-network absence grace set on the next line, even if
+			// it drops out. Only meaningful when the bond gate is active. (mainnet
+			// 403,200 ≈ 2 weeks @ 3s.)
+			BondInclusionEstablishedGraceBlocks: 400,
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -343,6 +402,23 @@ func MocknetConfig() SystemConfig {
 			// Ephemeral network: pin at 1 so the in-process e2e harness runs with
 			// v0.2.0 behavior active from genesis.
 			Version0_2_0Height: 1,
+			BondInclusionWindowBlocks:     80,
+			BondInclusionActivationHeight: 0,
+			BondInclusionSampleCount:      8,
+			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
+			// together with the bond activation height to bound atomic cohort
+			// entry once the gate is live.
+			MaxNewMembersPerElection: 0,
+			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
+			// PoP, no key dedup). Pin a future height once all witnesses carry a
+			// valid PoP (network-wide, reindex-stable rollout).
+			WitnessKeyStrictHeight: 0,
+			// Established-member exception (operator requirement): the stake an
+			// account was already ratified for stays exempt from the window
+			// through the per-network absence grace set on the next line, even if
+			// it drops out. Only meaningful when the bond gate is active. (mainnet
+			// 403,200 ≈ 2 weeks @ 3s.)
+			BondInclusionEstablishedGraceBlocks: 400,
 		},
 		tssParams: params.MocknetTssParams,
 	}

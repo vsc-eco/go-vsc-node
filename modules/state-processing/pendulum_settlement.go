@@ -316,7 +316,14 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		members = append(members, acct)
 	}
 
-	bonds := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeFrom, rec.SnapshotRangeTo)
+	bonds, bondsErr := pendulumsettlement.ReadCommitteeBonds(se.balanceDb, members, rec.SnapshotRangeFrom, rec.SnapshotRangeTo)
+	if bondsErr != nil {
+		// Fail-stop (audit GAP-1): a non-deterministic bond-read error must make
+		// this node abstain from re-deriving the settlement (return no expected
+		// record) rather than compute a divergent one — same contract as the
+		// election read failure above.
+		return nil, false
+	}
 	bucket := se.LedgerSystem.PendulumBucketBalance(ledgerSystem.PendulumNodesHBDBucket, rec.SnapshotRangeTo)
 	// bucket==0 is a real (empty-activity) state ComposeRecord must
 	// re-derive against; bonds==0 only matters when bucket>0 and the

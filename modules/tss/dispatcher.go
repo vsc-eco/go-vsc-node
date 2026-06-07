@@ -1035,7 +1035,15 @@ func (dispatcher *SignDispatcher) Start() error {
 
 			return err
 		}
-		json.Unmarshal(rawKey, &keydata)
+		// H-14: a corrupt/garbage keydata unmarshal must NOT proceed into btss
+		// signing — NewLocalParty with zero-value keydata feeds an invalid share
+		// into the MPC (bad/failed signature, or a panic on a nil field). Surface
+		// it like the EdDSA sign path below (~dispatcher.go:1110) instead of
+		// silently signing with junk.
+		if err := json.Unmarshal(rawKey, &keydata); err != nil {
+			log.Trace("sign key unmarshal error", "err", err)
+			return err
+		}
 		// Use original committee size for threshold — not the readiness-filtered subset.
 		// The polynomial degree must match keygen/reshare or Lagrange interpolation is wrong.
 		threshold, err := tss_helpers.GetThreshold(dispatcher.origCommitteeSize)
@@ -1270,7 +1278,7 @@ type BaseDispatcher struct {
 	// partyType string
 
 	done       chan struct{}
-	msgCtx     context.Context    // cancelled by signalDone to unblock message-loop goroutines
+	msgCtx     context.Context // cancelled by signalDone to unblock message-loop goroutines
 	cancelMsgs context.CancelFunc
 
 	keystore datastore.Datastore

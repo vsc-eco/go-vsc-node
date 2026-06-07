@@ -100,7 +100,7 @@ func TestAuditFix_122_FlashStakeFilteredByTWAB(t *testing.T) {
 	// Production path: TWAB-style min across (epochStartBh, slotHeight]
 	// samples the pre-flash row at most window blocks and the flash row
 	// only at slotHeight. min = 0 → account omitted from the bonds map.
-	bonds := settlement.ReadCommitteeBonds(reader, []string{flashAccount}, epochStartBh, slotHeight)
+	bonds, _ := settlement.ReadCommitteeBonds(reader, []string{flashAccount}, epochStartBh, slotHeight)
 	if got, present := bonds[flashAccount]; present {
 		t.Fatalf("audit #122: flash-staker must be omitted (min=0), got bond=%d", got)
 	}
@@ -120,7 +120,7 @@ func TestAuditFix_122_FlashStakeFilteredByTWAB(t *testing.T) {
 	); err != nil {
 		t.Fatalf("update pre-flash row: %v", err)
 	}
-	bonds = settlement.ReadCommitteeBonds(reader, []string{flashAccount}, epochStartBh, slotHeight)
+	bonds, _ = settlement.ReadCommitteeBonds(reader, []string{flashAccount}, epochStartBh, slotHeight)
 	if got, present := bonds[flashAccount]; !present || got != flashAmt {
 		t.Fatalf("audit #122: bonded-since-start should credit full amount, got bond=%d present=%v", got, present)
 	}

@@ -2,6 +2,7 @@ package ledger_db
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
@@ -82,8 +83,26 @@ func (ledger *ledger) GetLedgerAfterHeight(
 	results := make([]LedgerRecord, 0)
 	for findResult.Next(context.Background()) {
 		ledRes := LedgerRecord{}
-		findResult.Decode(&ledRes)
+		if decErr := findResult.Decode(&ledRes); decErr != nil {
+			// M-10: a row that fails to decode was previously appended as a
+			// zero-value record, silently polluting the result set (and
+			// under-counting a hive_consensus sum by the lost row). Skip it.
+			// Deterministic: the same stored document decodes identically on
+			// every node, so all nodes skip the same row — no cross-node
+			// divergence (and for a sum, a skipped row and a zero row are
+			// equivalent anyway).
+			continue
+		}
 		results = append(results, ledRes)
+	}
+	if err := findResult.Err(); err != nil {
+		// M-10 (completeness): surface a mid-stream cursor error instead of
+		// silently returning a truncated result set (a per-node
+		// non-deterministic truncation would diverge any sum consumer). Return
+		// the PARTIAL slice (not nil) so legacy `res, _ :=` deref callers don't
+		// panic; error-aware callers fail-stop. See GetLedgerRange for the full
+		// rationale.
+		return &results, err
 	}
 
 	return &results, nil
@@ -126,8 +145,32 @@ func (ledger *ledger) GetLedgerRange(
 	results := make([]LedgerRecord, 0)
 	for findResult.Next(context.Background()) {
 		ledRes := LedgerRecord{}
-		findResult.Decode(&ledRes)
+		if decErr := findResult.Decode(&ledRes); decErr != nil {
+			// M-10: a row that fails to decode was previously appended as a
+			// zero-value record, silently polluting the result set (and
+			// under-counting a hive_consensus sum by the lost row). Skip it.
+			// Deterministic: the same stored document decodes identically on
+			// every node, so all nodes skip the same row — no cross-node
+			// divergence (and for a sum, a skipped row and a zero row are
+			// equivalent anyway).
+			continue
+		}
 		results = append(results, ledRes)
+	}
+	if err := findResult.Err(); err != nil {
+		// M-10 (completeness): a cursor error mid-stream (transient getMore /
+		// network) makes Next() return false WITHOUT exhausting the result set,
+		// silently truncating it. Unlike a per-row Decode error (deterministic
+		// corrupt BSON), a cursor error is per-node and NON-deterministic — a
+		// truncated read on one node would diverge its hive_consensus sum and
+		// thus the election committee/CID. Surface it so error-aware callers
+		// (GetConsensusBalanceAt → the bond gate) fail-stop on a partial read.
+		// Return the PARTIAL slice (not nil) alongside the error: the legacy
+		// GetBalance callers do `res, _ := GetLedgerRange(...)` then deref
+		// `*res` with no nil-check, so a nil return would panic them — they keep
+		// their pre-existing silent-partial behaviour, while the error-aware
+		// gate path fail-stops on the error.
+		return &results, err
 	}
 
 	return &results, nil
@@ -295,7 +338,16 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 		return nil, singleResult.Err()
 	}
 	balRecord := BalanceRecord{}
-	singleResult.Decode(&balRecord)
+	if decErr := singleResult.Decode(&balRecord); decErr != nil {
+		// M-10: surface a corrupt/undecodable balance row instead of returning
+		// a zero-value record (which silently reads as a 0 balance — a wrong
+		// bond in the inclusion gate). (nil, err) matches the existing
+		// no-document nil contract every caller already handles; the
+		// error-aware consumer (GetConsensusBalanceAt / the bond gate)
+		// fail-stops. Deterministic: the same stored document decodes
+		// identically on all nodes.
+		return nil, fmt.Errorf("balance record decode failed for %s at %d: %w", account, blockHeight, decErr)
+	}
 
 	return &balRecord, nil
 }
