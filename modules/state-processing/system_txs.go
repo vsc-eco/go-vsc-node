@@ -8,7 +8,6 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
-	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -435,7 +434,8 @@ func (se *StateEngine) contractUpdateActivationHeight(submitHeight uint64) uint6
 		return submitHeight
 	}
 	if se.sconf.OnMainnet() {
-		if params.CONTRACT_UPDATE_TIMELOCK_HEIGHT == 0 || submitHeight < params.CONTRACT_UPDATE_TIMELOCK_HEIGHT {
+		gate := se.sconf.ConsensusParams().ContractUpdateTimelockHeight
+		if gate == 0 || submitHeight < gate {
 			return submitHeight
 		}
 	}

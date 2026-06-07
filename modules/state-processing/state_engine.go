@@ -805,7 +805,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// Gated like the timelock itself: a no-op before rollout (no
 					// pending updates exist), and historical replay sees no such
 					// op, so reindex stays byte-identical. No fee.
-					if !se.sconf.OnMainnet() || (params.CONTRACT_UPDATE_TIMELOCK_HEIGHT != 0 && txSelf.BlockHeight >= params.CONTRACT_UPDATE_TIMELOCK_HEIGHT) {
+					timelockGate := se.sconf.ConsensusParams().ContractUpdateTimelockHeight
+					if !se.sconf.OnMainnet() || (timelockGate != 0 && txSelf.BlockHeight >= timelockGate) {
 						for idx, auth := range txSelf.RequiredAuths {
 							txSelf.RequiredAuths[idx] = "hive:" + auth
 						}
