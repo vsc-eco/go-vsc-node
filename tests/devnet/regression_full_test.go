@@ -55,6 +55,16 @@ func regressionConfig() *Config {
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
 		ConsensusParams: &params.ConsensusParams{
 			ElectionInterval: regElectionInt,
+			// Bond inclusion window ACTIVE for this run: activation at a height
+			// reached after the genesis committee is established (F11 grandfather
+			// then exempts it), so the full scenario (contracts, TSS keygen/
+			// reshare/sign, witness churn, chaos) runs with the gate live and we
+			// can observe its effect on the gateway multisig + TSS party.
+			BondInclusionActivationHeight:       150,
+			BondInclusionWindowBlocks:           30,
+			BondInclusionSampleCount:            8,
+			MaxNewMembersPerElection:            1,
+			BondInclusionEstablishedGraceBlocks: 600,
 		},
 		TssParams: &params.TssParams{
 			RotateInterval:     regRotateInt,

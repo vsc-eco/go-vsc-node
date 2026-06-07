@@ -247,6 +247,11 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	signPkg, err := ms.keyRotation(bh)
 
 	if err != nil {
+		// H-5: surface rotation failures (e.g. "not enough keys" when the
+		// committee is below the gateway floor of 8) instead of the previous
+		// silent bare return that hid an indefinitely-wedged gateway rotation
+		// with no log, metric, or chain event.
+		log.Warn("gateway key rotation skipped", "bh", bh, "err", err)
 		return
 	}
 
@@ -460,6 +465,25 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 			cmp.Compare(a.account, b.account),
 		)
 	})
+	// Dedup by gateway pubkey before the cap + weight assignment (ported from the
+	// bond-window commit). If two elected witnesses announced the SAME gateway_key
+	// (no uniqueness gate at the announce path — sibling of audit H-6's BLS-key
+	// collision), an account_update carrying a duplicate key_auths entry is
+	// rejected by Hive (wedging the rotation) and the duplicate would double-count
+	// in the stake weighting below. Keep the first occurrence in the deterministic
+	// descending-stake order so every cosigner drops the identical duplicate.
+	if len(eligible) > 1 {
+		seen := make(map[string]struct{}, len(eligible))
+		deduped := eligible[:0]
+		for _, m := range eligible {
+			if _, dup := seen[m.key]; dup {
+				continue
+			}
+			seen[m.key] = struct{}{}
+			deduped = append(deduped, m)
+		}
+		eligible = deduped
+	}
 	if len(eligible) > MAX_GATEWAY_KEYS {
 		eligible = eligible[:MAX_GATEWAY_KEYS]
 	}
@@ -483,9 +507,24 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		totalWeight += assignedWeights[i]
 	}
 
-	var e [2]interface{}
-	e[0] = "vsc.dao"
-	e[1] = 1
+	// CP-4 (audit A3-2): removal of the vsc.dao OWNER backstop is gated on the
+	// v0.2.0 activation (Version0_2_0Active) — gateway decentralization ships as
+	// part of the coordinated v0.2.0 batch rather than a standalone CP-4 height.
+	// At/after activation the OWNER auth is the committee keys ONLY and posting
+	// carries only vsc.network — only the elected committee (2/3-of-stake
+	// supermajority) can re-key or move custody, with no single-account backstop.
+	// BELOW activation (and on any network where v0.2.0 is unpinned) the vsc.dao
+	// backstop is RETAINED exactly as base 937ae771: owner carries vsc.dao at
+	// weight == threshold and posting carries vsc.dao + vsc.network.
+	//
+	// *** HIGHEST-RISK once active ***: with no vsc.dao backstop, a committee that
+	// wedges below threshold has no on-chain recovery. Do NOT pin Version0_2_0Height
+	// on mainnet until CP-1 (floor-advance readiness, gateway/TSS handover ordering,
+	// the floor guard) is devnet-proven under heavy churn.
+	//
+	// Determinism (Constraint 3): decentralizeOwner is a pure function of bh + the
+	// compile-time param, so every cosigner builds the identical account_update.
+	decentralizeOwner := ms.sconf.ConsensusParams().Version0_2_0Active(bh)
 
 	var eb [2]interface{}
 	eb[0] = "vsc.network"
@@ -495,6 +534,27 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	// gateway signers move funds. totalWeight is the SUM of the assigned
 	// stake-proportional weights, not the key count.
 	weightThreshold := gatewayWeightThreshold(totalWeight)
+
+	// Build owner + posting AccountAuths per the v0.2.0 decentralization gate
+	// (audit A3-2). Active → committee keys only (vsc.dao dropped from owner;
+	// posting carries only vsc.network). Inactive (default / v0.2.0 unpinned) →
+	// retain the vsc.dao backstop exactly as base 937ae771: owner vsc.dao@threshold
+	// (can meet the owner threshold alone) + posting vsc.dao@1 + vsc.network@1.
+	var ownerAccountAuths [][2]any
+	var postingAccountAuths [][2]any
+	if decentralizeOwner {
+		ownerAccountAuths = [][2]any{}
+		postingAccountAuths = [][2]any{eb}
+	} else {
+		var o [2]interface{}
+		o[0] = "vsc.dao"
+		o[1] = weightThreshold // backstop: vsc.dao can meet the owner threshold alone
+		var e [2]interface{}
+		e[0] = "vsc.dao"
+		e[1] = 1
+		ownerAccountAuths = [][2]any{o}
+		postingAccountAuths = [][2]any{e, eb}
+	}
 
 	jsonMetadata := map[string]interface{}{
 		"msg":                 "Gateway wallet for the VSC Network",
@@ -507,20 +567,16 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 
 	rotationTx := ms.hiveCreator.UpdateAccount(ms.sconf.GatewayWallet(), &hivego.Auths{
 		WeightThreshold: weightThreshold,
-		// AccountAuths:    weightMap,
-		KeyAuths:     gatewayKeys,
-		AccountAuths: [][2]any{},
+		KeyAuths:        gatewayKeys,
+		AccountAuths:    ownerAccountAuths,
 	}, &hivego.Auths{
 		WeightThreshold: weightThreshold,
 		KeyAuths:        gatewayKeys,
 		AccountAuths:    [][2]any{},
 	}, &hivego.Auths{
 		WeightThreshold: 1,
-		AccountAuths: [][2]any{
-			e,
-			eb,
-		},
-		KeyAuths: [][2]any{},
+		AccountAuths:    postingAccountAuths,
+		KeyAuths:        [][2]any{},
 	}, string(jsonBytes), "STM8buQNWovTcX7H8yLdYNx82xDddQE9R5MzQDNg4mocScnXTGSkE")
 
 	tx := ms.hiveCreator.MakeTransaction([]hivego.HiveOperation{rotationTx})

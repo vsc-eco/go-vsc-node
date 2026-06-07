@@ -4,7 +4,6 @@ import (
 	"crypto/elliptic"
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 
 	"github.com/bnb-chain/tss-lib/v3/tss"
@@ -65,7 +64,15 @@ func GetThreshold(value int) (int, error) {
 	if value < 0 {
 		return 0, errors.New("negative input")
 	}
-	threshold := int(math.Ceil(float64(value)*2.0/3.0)) - 1
+	// Integer-only ceil (audit M-9): the threshold is ceil(2*value/3) - 1, the
+	// btss Lagrange/Shamir polynomial degree that EVERY node must agree on
+	// (it feeds NewReSharingParameters + the pre-flight quorum gates). float64
+	// ceil in a consensus path violates the determinism rule, so compute it in
+	// pure integers: ceil(a/b) = (a + b - 1) / b, here a=2*value, b=3 ⇒
+	// (2*value + 2) / 3. Identical to the old float form for all value >= 0
+	// (IEEE 3k/3 is exact; non-integer cases sit well away from a ceil
+	// boundary), with zero float dependence. Verified: 19→12, 15→9, 13→8.
+	threshold := (2*value+2)/3 - 1
 	return threshold, nil
 }
 

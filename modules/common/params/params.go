@@ -209,6 +209,74 @@ type ConsensusParams struct {
 	ConsensusVersionFloorEpoch     uint64 `json:"consensusVersionFloorEpoch,omitempty"`
 	ConsensusVersionFloorMajor     uint64 `json:"consensusVersionFloorMajor,omitempty"`
 	ConsensusVersionFloorConsensus uint64 `json:"consensusVersionFloorConsensus,omitempty"`
+
+	// BondInclusionWindowBlocks (W) is the bond inclusion window: a witness's
+	// HIVE_CONSENSUS counts toward the election only once held continuously for
+	// W blocks (mainnet 86,400 ≈ 3 days). See modules/election-proposer/
+	// bond_maturity.go. W==0 means the maturity gate is disabled (point-in-time,
+	// legacy behavior) even if the activation height below is reached.
+	BondInclusionWindowBlocks uint64 `json:"bondInclusionWindowBlocks,omitempty"`
+	// BondInclusionActivationHeight gates the window: elections at
+	// blockHeight >= this value apply the maturity gate; below it — and when 0 —
+	// the legacy raw HIVE_CONSENSUS read is used (so 0 = inert / no behavior
+	// change, the safe default until an operator pins a deploy height). MUST be a
+	// fixed network-wide constant set STRICTLY ABOVE the current head, on an
+	// epoch boundary, with >=3d lead, identical on every node (reindex or not):
+	// a height at/below an already-processed block diverges live vs reindex —
+	// same consensus footgun as EvmAddressChecksumHeight.
+	BondInclusionActivationHeight uint64 `json:"bondInclusionActivationHeight,omitempty"`
+	// BondInclusionSampleCount is the number of min-over-window samples used to
+	// compute matured stake. Values < 2 are floored to 2 by the gate so a
+	// mis-set/zero value can never silently collapse the window to a
+	// point-in-time read.
+	BondInclusionSampleCount int `json:"bondInclusionSampleCount,omitempty"`
+
+	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
+	// caps how many NEW members (accounts not in the previous ratified election)
+	// the bond inclusion gate admits in a single election. The maturity window
+	// staggers INDIVIDUAL stakers, but a coordinated cohort that all matures on
+	// the same boundary would otherwise enter atomically in ONE election — a
+	// majority flip with no per-epoch reaction window. The cap admits only the
+	// highest-effective-stake subset of new entrants per election; the rest
+	// wait for subsequent elections, so a hostile cohort enters GRADUATED (a
+	// few seats per epoch) instead of all at once. 0 == disabled (no cap — the
+	// safe inert default; only meaningful when the bond gate is active, and
+	// only consulted then). It does NOT cap incumbents or floor-guard
+	// backfills (those are not "new"), so it can never fight the floor guard.
+	MaxNewMembersPerElection int `json:"maxNewMembersPerElection,omitempty"`
+
+	// WitnessKeyStrictHeight gates strict consensus-key admission (audit H-6).
+	// At/after this election height the election build (a) EXCLUDES any witness
+	// whose announced consensus BLS key fails its proof-of-possession check
+	// (today that check is warn-only at announce — a rogue key the announcer
+	// does not hold the secret for is stored and can join the committee, then
+	// forge the BLS aggregate) and (b) DEDUPES the committee by consensus key,
+	// keeping the account-lexicographically-first witness when two accounts
+	// announce the SAME key (which otherwise double-counts in the weighted
+	// aggregate). 0 == disabled (legacy warn-only behaviour — the inert default
+	// until an operator pins a future height once all honest witnesses carry a
+	// valid PoP). The PoP verify + dedup are pure functions of the on-chain
+	// witness records, so every node/signer reaches the identical committee →
+	// identical CID. MUST be a pinned, network-wide, reindex-stable height (same
+	// rollout rule as EvmAddressChecksumHeight / BondInclusionActivationHeight):
+	// a height at/below an already-processed block diverges live vs reindex.
+	WitnessKeyStrictHeight uint64 `json:"witnessKeyStrictHeight,omitempty"`
+
+	// BondInclusionEstablishedGraceBlocks is the established-member exception to
+	// the inclusion window (operator requirement). A witness that has served as
+	// a RATIFIED committee member in at least one past election ("established")
+	// does NOT have to re-pass the 3-day window for the stake it was already
+	// ratified for — even if it drops out — for up to this many blocks of
+	// absence (2 weeks @ 3s = 403,200). The exempt amount is capped at
+	// min(current balance, last-ratified weight), so it can ONLY restore
+	// already-earned, already-ratified power — NEW stake (top-ups, or anyone's
+	// fresh deposits) still goes through the window, and an account-sale cannot
+	// fast-track new stake. The exception is purely ADDITIVE (effective stake =
+	// max(matured, grandfather, established)); it can never lower a member's
+	// stake or evict an established member who still holds their bond. Gone for
+	// LONGER than this grace ⇒ the exception expires and the member must
+	// re-mature. 0 == disabled. Only consulted when the bond gate is active.
+	BondInclusionEstablishedGraceBlocks uint64 `json:"bondInclusionEstablishedGraceBlocks,omitempty"`
 }
 
 // ───── Named activation predicates (Ethereum ChainConfig style) ─────
@@ -232,6 +300,24 @@ func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
 // gate per change. Zero height means the batch is not yet scheduled (inert).
 func (cp ConsensusParams) Version0_2_0Active(blockHeight uint64) bool {
 	return cp.Version0_2_0Height != 0 && blockHeight >= cp.Version0_2_0Height
+}
+
+// BondInclusionActive reports whether the bond inclusion-window maturity gate
+// applies to an election generated at blockHeight. activationHeight==0 disables
+// it entirely (legacy raw HIVE_CONSENSUS read); otherwise it applies at
+// blockHeight >= activationHeight. NOTE: the window length W
+// (BondInclusionWindowBlocks) being 0 also disables the maturity requirement
+// even when active — handled inside maturedConsensusStake — so callers gate on
+// this predicate AND pass W through.
+func (cp ConsensusParams) BondInclusionActive(blockHeight uint64) bool {
+	return cp.BondInclusionActivationHeight != 0 && blockHeight >= cp.BondInclusionActivationHeight
+}
+
+// WitnessKeyStrictActive reports whether the election build should strictly
+// enforce consensus-key proof-of-possession + key uniqueness at blockHeight
+// (audit H-6). Height 0 disables it (legacy warn-only behaviour).
+func (cp ConsensusParams) WitnessKeyStrictActive(blockHeight uint64) bool {
+	return cp.WitnessKeyStrictHeight != 0 && blockHeight >= cp.WitnessKeyStrictHeight
 }
 
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this

@@ -169,6 +169,16 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	}
 
 	electionData, err := tp.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+	// M-11: fail-closed on a real election-committee read error instead of
+	// silently overwriting err below and verifying against an empty committee.
+	// Defense-in-depth + explicit intent: makeDIDs already rejects an empty
+	// committee ("no election member provided"), so this is not a live bypass
+	// today, but the explicit check is robust if makeDIDs is ever relaxed.
+	// ErrNoDocuments (genesis / no election yet) is tolerated — makeDIDs gives
+	// the accurate rejection and the RC path stays enforced for non-VSC txs.
+	if err != nil && err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("election committee read failed for tx verification: %w", err)
+	}
 
 	// make DIDs + verify signatures
 	didBuf, hasVscDID, err := makeDIDs(
@@ -336,6 +346,12 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 	json.Unmarshal(sigJson, &sigPack)
 
 	electionData, err := tp.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+	// M-11: fail-closed on a real election-committee read error (see IngestTx).
+	// ReceiveTx is a fire-and-forget p2p handler — match its existing
+	// silent-return-on-error convention. ErrNoDocuments (genesis) tolerated.
+	if err != nil && err != mongo.ErrNoDocuments {
+		return
+	}
 
 	didBuf, hasVscDID, err := makeDIDs(
 		electionData.Members,
@@ -458,14 +474,14 @@ func (tp *TransactionPool) Stop() error {
 
 func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem, gate TxProcessingGate) *TransactionPool {
 	return &TransactionPool{
-		TxDb:       txDb,
-		nonceDb:    nonceDb,
-		p2p:        p2p,
-		datalayer:  da,
-		conf:       conf,
-		hiveBlocks: hiveBlocks,
-		rcs:        rcSystem,
-		electionDb: electionDb,
+		TxDb:           txDb,
+		nonceDb:        nonceDb,
+		p2p:            p2p,
+		datalayer:      da,
+		conf:           conf,
+		hiveBlocks:     hiveBlocks,
+		rcs:            rcSystem,
+		electionDb:     electionDb,
 		processingGate: gate,
 	}
 }

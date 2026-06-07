@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -62,8 +63,12 @@ type electionProposer struct {
 
 	hiveConsumer *blockconsumer.HiveConsumer
 	se           *stateEngine.StateEngine
-	bh           uint64
-	headHeight   *uint64
+	// bh is the latest processed block height. Written by blockTick (under
+	// electionMu) and read lock-free from the pubsub handler goroutine
+	// (p2p.go + GenerateElectionAtBlock via the signer path), so it is atomic
+	// to avoid a data race / word-tear (audit H-15).
+	bh         atomic.Uint64
+	headHeight *uint64
 
 	sigChannels map[uint64]chan *signResponse
 	signingInfo *struct {
@@ -75,7 +80,14 @@ type electionProposer struct {
 
 	electionMu sync.Mutex
 	sigMu      sync.Mutex
-	sigRunning bool
+	// sigChannelsMu guards the sigChannels MAP structure only (not the channel
+	// sends). Without it the map is read/written concurrently by the election
+	// sig-collection path and the pubsub handler goroutine → a fatal
+	// "concurrent map read and map write" node crash (audit H-15/m69a-3).
+	// Look the channel up under this lock, then send OUTSIDE it (sending under
+	// a lock the receiver path also needs would deadlock waitForSigs).
+	sigChannelsMu sync.Mutex
+	sigRunning    bool
 
 	// scoreMapMinSamples and banThresholdPercent are the two knobs of the
 	// per-witness ban rule (see computeBanScores): a witness is banned when,
@@ -89,14 +101,9 @@ type electionProposer struct {
 	scoreMapMinSamples  uint64
 	banThresholdPercent uint64
 
-	// lastAttemptedElectionBh maps epoch → the block height used by the first
-	// proposer for that epoch. All subsequent proposers for the same epoch
-	// reuse this height so their settlement records (SnapshotRangeTo = blk)
-	// are byte-identical, making BLS signatures pool across consecutive attempts.
-	// Written under lastAttemptedElectionMu; read by both blockTick (via
-	// HoldElection, under electionMu) and HandleMessage (pubsub goroutine).
-	lastAttemptedElectionBh map[uint64]uint64
-	lastAttemptedElectionMu sync.RWMutex
+	// Election anchors are derived deterministically (canonicalElectionAnchor)
+	// from the on-chain previous-election height — no in-memory anchor map is
+	// kept, so anchors survive restarts and cannot be poisoned (audit F5/CP-0b).
 
 	// sigCollectionWindow is the BLS signature collection timeout for
 	// waitForSigs. Resolved once in New() from VSC_ELECTION_SIG_COLLECTION_WINDOW
@@ -124,22 +131,21 @@ func New(
 	hiveConsumer *blockconsumer.HiveConsumer,
 ) ElectionProposer {
 	return &electionProposer{
-		conf:                    conf,
-		p2p:                     p2p,
-		witnesses:               witnesses,
-		elections:               elections,
-		vscBlocks:               vscBlocks,
-		balanceDb:               balanceDb,
-		da:                      da,
-		txCreator:               txCreator,
-		sconf:                   sconf,
-		se:                      se,
-		hiveConsumer:            hiveConsumer,
-		sigChannels:             make(map[uint64]chan *signResponse),
-		scoreMapMinSamples:      resolveScoreMapMinSamples(sconf),
-		banThresholdPercent:     resolveBanThresholdPercent(sconf),
-		lastAttemptedElectionBh: make(map[uint64]uint64),
-		sigCollectionWindow:     resolveSigCollectionWindow(sconf),
+		conf:                conf,
+		p2p:                 p2p,
+		witnesses:           witnesses,
+		elections:           elections,
+		vscBlocks:           vscBlocks,
+		balanceDb:           balanceDb,
+		da:                  da,
+		txCreator:           txCreator,
+		sconf:               sconf,
+		se:                  se,
+		hiveConsumer:        hiveConsumer,
+		sigChannels:         make(map[uint64]chan *signResponse),
+		scoreMapMinSamples:  resolveScoreMapMinSamples(sconf),
+		banThresholdPercent: resolveBanThresholdPercent(sconf),
+		sigCollectionWindow: resolveSigCollectionWindow(sconf),
 	}
 }
 
@@ -233,7 +239,7 @@ func (e *electionProposer) blockTick(bh uint64, headHeight *uint64) {
 	e.electionMu.Lock()
 	defer e.electionMu.Unlock()
 
-	e.bh = bh
+	e.bh.Store(bh)
 	e.headHeight = headHeight
 
 	if e.canHold() {
@@ -263,18 +269,19 @@ func (e *electionProposer) canHold() bool {
 	if e.headHeight == nil {
 		return false
 	}
-	if *e.headHeight > 50 && e.bh < *e.headHeight-50 {
+	bh := e.bh.Load()
+	if *e.headHeight > 50 && bh < *e.headHeight-50 {
 		return false
 	}
 
 	electionInterval := e.sconf.ConsensusParams().ElectionInterval
-	if e.bh < electionInterval {
+	if bh < electionInterval {
 		return false // Too early in chain for elections
 	}
 
-	result, _ := e.elections.GetElectionByHeight(e.bh)
+	result, _ := e.elections.GetElectionByHeight(bh)
 
-	if result.BlockHeight >= e.bh-electionInterval {
+	if result.BlockHeight >= bh-electionInterval {
 		return false
 	}
 
@@ -300,13 +307,58 @@ func (e *electionProposer) canHold() bool {
 func (e *electionProposer) GenerateElection() (elections.ElectionHeader, elections.ElectionData, error) {
 	// TODO: get latest block
 
-	return e.GenerateElectionAtBlock(e.bh)
+	return e.GenerateElectionAtBlock(e.bh.Load())
 }
 
 // Generates a raw election graph from local data
+// electionStateWaitTimeout bounds how long GenerateElectionAtBlock waits for
+// the state engine to flush the election anchor block before reading state.
+// Matches the block-producer barrier (composeStateWaitTimeout).
+const electionStateWaitTimeout = 2 * time.Second
+
+// electionAnchorMaxAhead bounds how far above the local processed height an
+// election anchor may be before we refuse to act on it, mirroring the
+// block-producer guard (blockProducer.go). Without it, an unauthenticated peer
+// could supply a far-future anchor via the signer path (ValidateMessage is
+// allow-all pending the CP-0b/F5 auth fix), making the determinism barrier
+// below block for the full timeout and tying up a pubsub handler slot per
+// poisoned message.
+const electionAnchorMaxAhead = 20
+
 func (e *electionProposer) GenerateElectionAtBlock(
 	blk uint64,
 ) (elections.ElectionHeader, elections.ElectionData, error) {
+	// Reject a far-future anchor before blocking on it (defense-in-depth for the
+	// barrier below). The proposer passes blk <= e.bh, and with the deterministic
+	// canonical anchor (CP-0b) the signer's anchor is on-chain-derived; this
+	// guard catches a signer that is simply far behind the canonical anchor
+	// (abstain rather than block the handler for the full timeout). The
+	// subtraction is underflow-safe because of the blk > e.bh guard.
+	localBh := e.bh.Load()
+	if blk > localBh && blk-localBh > electionAnchorMaxAhead {
+		return elections.ElectionHeader{}, elections.ElectionData{}, fmt.Errorf("election block %d too far ahead of local processed height %d", blk, localBh)
+	}
+
+	// Determinism barrier (audit F1 / CP-0a). The election tick is registered
+	// async=true (block-consumer), so it fires as a goroutine BEFORE
+	// StateEngine.ProcessBlock flushes block `blk`. Without this wait, the
+	// witness read below and the per-witness HIVE_CONSENSUS read in
+	// GenerateFullElection can observe pre-flush state and produce an election
+	// CID that diverges from peers whose state engines have caught up, so the
+	// BLS aggregate never reaches quorum. Mirrors the block-producer barrier
+	// (blockProducer.go). On timeout we return an error: a not-caught-up node
+	// abstains from this election rather than signing/proposing a divergent CID
+	// (same graceful degradation as any transient signer outage). NOTE: only
+	// sufficient when `blk` is itself deterministic across nodes — pair with the
+	// deterministic-anchor fix (CP-0b / F5); the in-memory anchor remains a
+	// separate divergence source until then.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), electionStateWaitTimeout)
+	if waitErr := e.se.WaitForProcessedHeight(waitCtx, blk); waitErr != nil {
+		waitCancel()
+		return elections.ElectionHeader{}, elections.ElectionData{}, fmt.Errorf("election state engine not caught up to block %d (lastProcessed=%d): %w", blk, e.se.LastProcessedHeight(), waitErr)
+	}
+	waitCancel()
+
 	witnesses, werr := e.witnesses.GetWitnessesAtBlockHeight(blk, witnesses.EnabledOnly())
 	if werr != nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, werr
@@ -388,6 +440,46 @@ func (e *electionProposer) GenerateFullElection(
 		},
 	)
 
+	// Strict consensus-key admission (audit H-6), height-gated. Below the
+	// activation height (and on every network whose WitnessKeyStrictHeight is 0)
+	// this is skipped entirely — the legacy warn-only-PoP, no-dedup behaviour is
+	// unchanged. At/after it:
+	//   (a) EXCLUDE any witness whose consensus BLS key fails proof-of-possession
+	//       — a rogue key the announcer does not hold the secret for (admitted
+	//       today because the announce check is warn-only) can never reach the
+	//       committee, closing the aggregate-signature forgery vector.
+	//   (b) DEDUPE by consensus key — two accounts announcing the SAME key would
+	//       double-count in the weighted BLS aggregate; keep the
+	//       account-lexicographically-first (witnessList is already account
+	//       sorted, so DeleteFunc's in-order pass keeps the first deterministically).
+	// Pure functions of the on-chain witness records ⇒ identical committee/CID on
+	// every node and signer (Constraint 3). The members loop below still skips an
+	// unparseable consensus key as a final safety net.
+	if e.sconf.ConsensusParams().WitnessKeyStrictActive(blockHeight) {
+		seenConsensusKeys := make(map[string]string, len(witnessList))
+		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+			if popErr := w.VerifyConsensusPoP(); popErr != nil {
+				log.Warn("H-6: excluding witness with invalid consensus-key PoP",
+					"account", w.Account, "err", popErr)
+				return true
+			}
+			key, keyErr := w.ConsensusKey()
+			if keyErr != nil {
+				log.Warn("H-6: excluding witness with unparseable consensus key",
+					"account", w.Account, "err", keyErr)
+				return true
+			}
+			ks := key.String()
+			if first, dup := seenConsensusKeys[ks]; dup {
+				log.Warn("H-6: excluding witness with duplicate consensus key",
+					"account", w.Account, "kept", first)
+				return true
+			}
+			seenConsensusKeys[ks] = w.Account
+			return false
+		})
+	}
+
 	previousElection := e.elections.GetElection(previousEpoch)
 
 	var etype string
@@ -451,23 +543,132 @@ func (e *electionProposer) GenerateFullElection(
 		newEpoch = previousEpoch + 1
 	}
 
+	// Bond inclusion gate (audit CP-2b-ii / F10, plan v2 §13.1 Stage 2).
+	// At/after the pinned activation height every witness's stake is read
+	// through the maturity gate (min replayed hive_consensus over the trailing
+	// window — bond_maturity.go) instead of the raw point-in-time snapshot, so
+	// newly-acquired stake takes the full window before it can influence the
+	// committee. Below the activation height — and on every network whose
+	// activation param is 0 — the legacy raw read runs UNCHANGED, byte-for-byte
+	// (replay-inertness: historical/ungated elections are untouched).
+	//
+	// Determinism (Constraint 3): the gate is a pure function of blockHeight,
+	// on-chain reads barriered by GenerateElectionAtBlock (CP-0a), and
+	// compile-time params — both the proposer (HoldElection) and every signer
+	// (makeElection) re-derive the identical members/weights/CID. Any read
+	// error fail-stops the whole attempt (F4/H-10): an error-as-zero would
+	// evict an honest member on one node only and fork the CID.
+	bondParams := e.sconf.ConsensusParams()
+	bondActive := bondParams.BondInclusionActive(blockHeight)
+	var bondReader balanceReplayReader
+	var bondEffective map[string]int64
+	// bondMatured holds the WINDOW-MATURED stake ONLY (before the established
+	// additive floor), keyed by account. Used exclusively to rank NEW entrants
+	// under the F6 churn cap (audit A6-1): ranking churn entrants by the
+	// established-inflated bondEffective would let a recently-returned member's
+	// already-ratified weight out-rank honestly-matured fresh stakers for the
+	// limited new-member seats. Churn PRIORITY must reflect genuine maturation,
+	// not the membership-eligibility floor. Membership/weight still use
+	// bondEffective; only the churn ranking uses this.
+	var bondMatured map[string]int64
+	var bondEstablished map[string]bondEstablishedInfo
+	if bondActive {
+		if e.se == nil || e.se.LedgerState == nil {
+			// A wiring/test-harness gap must never silently disable an active
+			// gate (the dead-safety-param class) — fail the attempt instead.
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("bond inclusion gate active at %d but ledger state unavailable", blockHeight)
+		}
+		bondReader = e.se.LedgerState
+		bondEffective = make(map[string]int64, len(witnessList))
+		bondMatured = make(map[string]int64, len(witnessList))
+
+		// Established-member exception (operator requirement): a witness that has
+		// served as a ratified committee member keeps the stake it was already
+		// ratified for exempt from the inclusion window, through up to the
+		// absence grace, even if it drops out. Build the account→most-recent
+		// membership map from the previous elections. CANNOT-RESET safety: if a
+		// previous election exists but the history read comes back empty (a
+		// transient DB read failure), proceeding would gate established members'
+		// already-earned stake (a reset). Fail-stop instead — the next slot
+		// retries with a healthy read. Skipped at genesis (no history) and when
+		// the grace param is 0 (disabled).
+		if bondParams.BondInclusionEstablishedGraceBlocks > 0 && !firstElection {
+			lookback := bondEstablishedLookback(bondParams.BondInclusionEstablishedGraceBlocks, bondParams.ElectionInterval)
+			prevs := e.elections.GetPreviousElections(newEpoch, lookback)
+			if len(prevs) == 0 && previousElection != nil {
+				return elections.ElectionHeader{}, elections.ElectionData{},
+					fmt.Errorf("bond established: previous-election history read returned empty despite an existing previous election (epoch %d)", previousEpoch)
+			}
+			bondEstablished = buildBondEstablishedMap(prevs)
+		}
+	}
+
 	stakedMap := map[string]uint64{}
 	defaultWeightMap := map[string]uint64{}
 	nodesWithStake := uint64(0)
 	for _, w := range witnessList {
-		// electionResult.
-		// if etype == "initial" {
-		// 	weightMap[w.Account] = 10
-		// } else {
-		// 	balRecord, _ := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
-		// 	weightMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
-		// }
+		if bondActive {
+			// F10 single canonical matured-set pass: this effective value is the
+			// ONLY stake read for this witness — membership, nodesWithStake (the
+			// staked/initial type decision) and the version-readiness denominator
+			// below all derive from the same stakedMap/weightMap it fills. No
+			// second raw read anywhere in the gated path.
+			matured, mErr := maturedConsensusStake(
+				bondReader,
+				"hive:"+w.Account,
+				blockHeight,
+				bondParams.BondInclusionWindowBlocks,
+				bondParams.BondInclusionSampleCount,
+			)
+			if mErr != nil {
+				return elections.ElectionHeader{}, elections.ElectionData{},
+					fmt.Errorf("bond inclusion gate: maturity read failed for %s: %w", w.Account, mErr)
+			}
+			eff := matured
+			// Record the matured-only value for the churn-cap ranking (A6-1)
+			// BEFORE the additive established floor raises eff.
+			bondMatured[w.Account] = matured
+			// The established-member exception is a min(current, cap) floor that
+			// can only RAISE eff (never reset a member): a witness that recently
+			// served keeps its already-ratified stake exempt from the window.
+			estInfo, hasEst := bondEstablished[w.Account]
+			if bondWithinEstablishedGrace(estInfo, hasEst, blockHeight, bondParams.BondInclusionEstablishedGraceBlocks) {
+				cur, cErr := maturedConsensusStake(bondReader, "hive:"+w.Account, blockHeight, 0, 0)
+				if cErr != nil {
+					return elections.ElectionHeader{}, elections.ElectionData{},
+						fmt.Errorf("bond inclusion gate: point-in-time read failed for %s: %w", w.Account, cErr)
+				}
+				// Stake the member was already ratified for stays exempt from the
+				// window (capped at min(current, last-ratified)) through the
+				// absence grace. Purely additive — never lowers eff.
+				if est := bondEstablishedExemption(estInfo, hasEst, blockHeight, bondParams.BondInclusionEstablishedGraceBlocks, cur); est > eff {
+					eff = est
+				}
+			}
+			bondEffective[w.Account] = eff
+			// Same H-8 shape as the raw branch: strictly positive before the
+			// uint64 cast (maturedConsensusStake already floors negatives to 0,
+			// this keeps the cast locally provable-safe).
+			if eff > 0 && eff >= bondParams.MinStake {
+				nodesWithStake++
+				stakedMap[w.Account] = uint64(eff)
+			}
+			defaultWeightMap[w.Account] = DEFAULT_NEW_NODE_WEIGHT
+			continue
+		}
 		balRecord, err := e.balanceDb.GetBalanceRecord("hive:"+w.Account, blockHeight)
 		if err != nil {
 			return elections.ElectionHeader{}, elections.ElectionData{}, err
 		}
 		if balRecord != nil {
-			if balRecord.HIVE_CONSENSUS >= e.sconf.ConsensusParams().MinStake {
+			// H-8 defense-in-depth: HIVE_CONSENSUS is int64 and is cast to uint64
+			// below. Require strictly positive so a negative balance can never
+			// wrap to a ~1.8e19 governance weight even if MinStake were ever
+			// mis-set to <= 0 (there is no ConsensusParams.Validate() — audit
+			// m18). At current params (MinStake=2,000,000) the >= MinStake check
+			// already excludes negatives; this makes the cast safe regardless.
+			if balRecord.HIVE_CONSENSUS > 0 && balRecord.HIVE_CONSENSUS >= e.sconf.ConsensusParams().MinStake {
 				nodesWithStake++
 				stakedMap[w.Account] = uint64(balRecord.HIVE_CONSENSUS)
 			}
@@ -483,6 +684,15 @@ func (e *electionProposer) GenerateFullElection(
 	} else {
 		pType = "initial"
 		weightMap = defaultWeightMap
+	}
+
+	// Snapshot the pre-delete (enabled + version-eligible + unbanned) witness
+	// set for the bond floor guard below: only witnesses evicted BY THE GATE —
+	// not by any other filter — are backfill candidates. Cloned because
+	// DeleteFunc mutates the backing array.
+	var bondPreGate []witnesses.Witness
+	if bondActive && pType == "staked" {
+		bondPreGate = slices.Clone(witnessList)
 	}
 
 	witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
@@ -530,12 +740,206 @@ func (e *electionProposer) GenerateFullElection(
 		if num <= 0 || den <= 0 {
 			num, den = 4, 5 // default 80%
 		}
+
+		// H-3/C-2 (TSS vault-freeze prevention): the 80% guard above only proves
+		// the NEW committee is ready for the target. But the OUTGOING committee
+		// holds the outstanding TSS key shares, and BOTH signing AND resharing
+		// those keys are gated by this same version floor (tss.go:1104/1310) — so
+		// advancing the floor past the outgoing committee's readiness can filter
+		// its share-holders below threshold, freezing the BTC/ETH/DASH vault
+		// (can't sign, can't reshare to hand off). Additionally require the
+		// previous committee to retain threshold+1 (= ceil(2N/3), the
+		// GetThreshold+1 quorum) members that meet the target. Conservative +
+		// deterministic: a previous member who is no longer a current candidate,
+		// or isn't on the target version, counts as not-ready — which can only
+		// BLOCK the advance (the floor simply waits another epoch; a delayed
+		// version upgrade is never a custody freeze). Skipped at genesis (no
+		// previous committee) and when Forced (recovery override accepts the
+		// risk explicitly). Pure function of previousElection (on-chain) + the
+		// deterministic candidate set + compile-time target ⇒ identical on every
+		// signer (Constraint 3).
+		prevCommitteeReady := true
+		if !schedule.Forced && previousElection != nil && len(previousElection.Members) > 0 {
+			candidateVer := make(map[string]consensusversion.Version, len(witnessList))
+			for _, w := range witnessList {
+				candidateVer[w.Account] = w.ConsensusVersionTriple()
+			}
+			prevReady := 0
+			for _, m := range previousElection.Members {
+				acct := strings.TrimPrefix(m.Account, "hive:")
+				if v, ok := candidateVer[acct]; ok && v.MeetsConsensusMin(target) {
+					prevReady++
+				}
+			}
+			// threshold+1 = ceil(2N/3) = (2N+2)/3 (matches tss_helpers.GetThreshold(N)+1).
+			prevQuorum := (2*len(previousElection.Members) + 2) / 3
+			if prevReady < prevQuorum {
+				prevCommitteeReady = false
+				log.Warn("H-3/C-2: deferring version-floor advance — outgoing committee below TSS-reshare quorum at target",
+					"block_height", blockHeight, "prev_ready", prevReady, "prev_quorum", prevQuorum, "target", target.Format())
+			}
+		}
+
 		// Integer-only comparison: readyWeight/totalWeight >= num/den.
-		if schedule.Forced || (totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num) {
+		if schedule.Forced || (prevCommitteeReady && totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num) {
 			floor = target
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
 			})
+		}
+	}
+
+	// Bond churn cap (audit F6 / THORChain NumberOfNewNodesPerChurn): the
+	// maturity window staggers INDIVIDUAL stakers, but a coordinated cohort that
+	// all matures on the same boundary would enter atomically in ONE election —
+	// a majority flip with no per-epoch reaction window. Cap the number of NEW
+	// members (accounts not in the previous ratified election) admitted per
+	// election to MaxNewMembersPerElection, keeping the highest-effective subset
+	// and deferring the rest to later elections (they re-compete next epoch — the
+	// backlog drains deterministically). Runs BEFORE the floor guard so capping
+	// is a rate limit on NEW entry while the floor guard still restores
+	// viability from INCUMBENTS (which the cap never touches — incumbents are
+	// not "new", so the two cannot fight). Deterministic: new-member set is the
+	// on-chain previous election; ranking is the already-computed effective
+	// values; cap is compile-time. Inert unless bondActive, staked, cap>0, and
+	// there is a previous election (genesis/bootstrap has no "new" concept).
+	if bondActive && pType == "staked" && previousElection != nil &&
+		e.sconf.ConsensusParams().MaxNewMembersPerElection > 0 {
+		prevMembers := make(map[string]struct{}, len(previousElection.Members))
+		for _, m := range previousElection.Members {
+			prevMembers[strings.TrimPrefix(m.Account, "hive:")] = struct{}{}
+		}
+		newEntrants := make([]bondChurnEntrant, 0, len(witnessList))
+		for _, w := range witnessList {
+			if _, wasMember := prevMembers[w.Account]; wasMember {
+				continue
+			}
+			// Established-member exception: a returning established member (within
+			// the absence grace) is NOT a "new" entrant — they already earned
+			// their place — so the churn cap must not defer them ("once they're
+			// in, they aren't touched"). They re-enter immediately, like an
+			// incumbent. Safe: their stake is capped at last-ratified, no new
+			// power.
+			if estInfo, ok := bondEstablished[w.Account]; bondWithinEstablishedGrace(estInfo, ok, blockHeight, e.sconf.ConsensusParams().BondInclusionEstablishedGraceBlocks) {
+				continue
+			}
+			newEntrants = append(newEntrants, bondChurnEntrant{
+				account: w.Account,
+				// A6-1: rank by MATURED-only stake, not the grandfather/established
+				// -inflated bondEffective, so fresh unmatured capital (even wearing
+				// an old activation-era grandfather weight) cannot jump the churn
+				// queue ahead of honestly-matured stakers.
+				effective: bondMatured[w.Account],
+			})
+		}
+		churnedOut := selectChurnedOut(newEntrants, e.sconf.ConsensusParams().MaxNewMembersPerElection)
+		if len(churnedOut) > 0 {
+			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+				_, drop := churnedOut[w.Account]
+				return drop
+			})
+			deferred := make([]string, 0, len(churnedOut))
+			for acct := range churnedOut {
+				deferred = append(deferred, acct)
+			}
+			slices.Sort(deferred)
+			log.Info("bond churn cap deferred new members",
+				"block_height", blockHeight,
+				"cap", e.sconf.ConsensusParams().MaxNewMembersPerElection,
+				"new_entrants", len(newEntrants),
+				"deferred", strings.Join(deferred, ","))
+		}
+	}
+
+	// Bond floor guard (audit C-2/C-3, plan v2 §13.1 Stage 1 item 5): the gate
+	// must never shrink the committee below what gateway rotation (≥8 keys),
+	// TSS signability (prior-committee engagement) and a valid election
+	// (MinMembers — HoldElection aborts below it, stalling the epoch) need.
+	// When the matured set is short, re-seat prior-election incumbents — and
+	// ONLY incumbents (R3/H8: a guard that admits arbitrary unmatured stake is
+	// itself an attack lever: thin the committee, force your fresh nodes in) —
+	// each capped at min(current balance, previously-ratified weight), best
+	// effort (an incumbent who genuinely unstaked below MinStake is never
+	// re-seated; if candidates run out the committee stays short and the
+	// existing MinMembers abort handles it).
+	//
+	// Placement (scrutiny fix #1): this guard runs AFTER both version-floor
+	// deletes above — i.e. it is the LAST membership-shrinking step — so the
+	// floor it asserts actually holds in the emitted election. Candidates must
+	// therefore meet the FINAL resolved version floor (a backfill that the
+	// version filter would have deleted is not a seat) and must carry a
+	// parseable consensus key (the members loop below deterministically skips
+	// unparseable keys, so such a witness cannot fill a seat either). The
+	// version-readiness denominator above intentionally uses the MATURED set
+	// only — backfilled seats are a liveness patch, not readiness evidence.
+	// Deterministic: candidates, caps and ordering are pure functions of the
+	// ratified previous election + barriered replay reads (Constraint 3).
+	if bondActive && pType == "staked" && previousElection != nil && len(previousElection.Members) > 0 {
+		bondFloor := bondCommitteeFloor(e.sconf.ConsensusParams().MinMembers, len(previousElection.Members))
+		if len(witnessList) < bondFloor {
+			seated := make(map[string]struct{}, len(witnessList))
+			for _, w := range witnessList {
+				seated[w.Account] = struct{}{}
+			}
+			prevWeights := make(map[string]uint64, len(previousElection.Members))
+			for i, m := range previousElection.Members {
+				if i >= len(previousElection.Weights) {
+					break
+				}
+				prevWeights[strings.TrimPrefix(m.Account, "hive:")] = previousElection.Weights[i]
+			}
+			cands := make([]bondBackfillCandidate, 0, len(bondPreGate))
+			for _, w := range bondPreGate {
+				if _, in := seated[w.Account]; in {
+					continue
+				}
+				if !w.ConsensusVersionTriple().MeetsConsensusMin(floor) {
+					continue
+				}
+				if _, keyErr := w.ConsensusKey(); keyErr != nil {
+					continue
+				}
+				prevW, incumbent := prevWeights[w.Account]
+				if !incumbent || prevW == 0 {
+					continue
+				}
+				cur, cErr := maturedConsensusStake(bondReader, "hive:"+w.Account, blockHeight, 0, 0)
+				if cErr != nil {
+					return elections.ElectionHeader{}, elections.ElectionData{},
+						fmt.Errorf("bond floor guard: balance read failed for %s: %w", w.Account, cErr)
+				}
+				wgt := min(cur, uint64ToInt64Clamped(prevW))
+				if wgt <= 0 || wgt < e.sconf.ConsensusParams().MinStake {
+					continue
+				}
+				cands = append(cands, bondBackfillCandidate{
+					witness:    w,
+					weight:     uint64(wgt),
+					effective:  bondEffective[w.Account],
+					prevWeight: prevW,
+				})
+			}
+			selected := selectBondBackfill(cands, bondFloor-len(witnessList))
+			for _, c := range selected {
+				witnessList = append(witnessList, c.witness)
+				weightMap[c.witness.Account] = c.weight
+			}
+			if len(selected) > 0 {
+				// Restore the deterministic account ordering the members array
+				// (and therefore the election CID) depends on.
+				slices.SortFunc(witnessList, func(a witnesses.Witness, b witnesses.Witness) int {
+					return strings.Compare(a.Account, b.Account)
+				})
+				backfilled := make([]string, 0, len(selected))
+				for _, c := range selected {
+					backfilled = append(backfilled, c.witness.Account)
+				}
+				log.Info("bond floor guard re-seated prior-election incumbents",
+					"block_height", blockHeight,
+					"floor", bondFloor,
+					"matured_committee", len(witnessList)-len(selected),
+					"backfilled", strings.Join(backfilled, ","))
+			}
 		}
 	}
 
@@ -621,12 +1025,19 @@ func (e *electionProposer) GenerateFullElection(
 			return elections.ElectionHeader{}, elections.ElectionData{},
 				fmt.Errorf("pendulum settlement: balance reader unavailable")
 		}
-		bonds := pendulumsettlement.ReadCommitteeBonds(
+		bonds, bondsErr := pendulumsettlement.ReadCommitteeBonds(
 			balanceReader,
 			settlementMembers,
 			previousElection.BlockHeight,
 			blockHeight,
 		)
+		if bondsErr != nil {
+			// Fail-stop (audit GAP-1): a non-deterministic bond-read error must
+			// abort this election attempt (the next slot's leader retries)
+			// rather than embed a divergent settlement → CID fork.
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: committee bond read failed: %w", bondsErr)
+		}
 		bucket := e.se.PendulumNodesBucketBalance(blockHeight)
 		prevSettled := e.se.GetLatestSettledEpoch()
 		tickInterval := e.se.PendulumOracleTickInterval()
@@ -681,6 +1092,33 @@ func (e *electionProposer) GenerateFullElection(
 	return electionHeader, electionData, nil
 }
 
+// canonicalElectionAnchor returns the deterministic block height at which the
+// election following prevBlockHeight must be generated: the first
+// election-trigger block (a multiple of 5*SlotLength, matching the blockTick
+// trigger and the canHold interval gate) at or after prevBlockHeight +
+// electionInterval. It is a pure function of the on-chain prevBlockHeight and
+// compile-time consensus params, so every proposer and every signer computes
+// the identical anchor — making the embedded settlement record (SnapshotRangeTo
+// = anchor) and the election CID byte-identical across nodes and across
+// consecutive slot retries, with no in-memory anchor to lose on restart or to
+// poison via an unauthenticated sign_request (audit F5 / CP-0b). For the first
+// proposer of an epoch the result equals its trigger block; a later retry
+// proposer recomputes the same value instead of remembering it.
+func canonicalElectionAnchor(prevBlockHeight uint64, electionInterval uint64) uint64 {
+	cadence := 5 * common.CONSENSUS_SPECS.SlotLength
+	if cadence == 0 {
+		cadence = 1
+	}
+	// canHold fires the proposer at the first trigger block STRICTLY greater
+	// than prevBlockHeight + electionInterval (canHold returns false while
+	// prevBh >= e.bh-interval, i.e. it proceeds only once e.bh > prevBh+interval,
+	// election-proposer.go canHold). Use +1 so the canonical anchor equals that
+	// first trigger block in ALL cases — including when prevBh+interval is itself
+	// a multiple of the cadence — rather than landing one cadence early.
+	target := prevBlockHeight + electionInterval + 1
+	return ((target + cadence - 1) / cadence) * cadence
+}
+
 type ElectionOptions struct {
 	OverrideMinimumMemberCount int
 }
@@ -700,30 +1138,23 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		return err
 	}
 
-	// Canonical anchor: all proposers for the same epoch must generate the
-	// election at the same block height so the embedded settlement record
-	// (SnapshotRangeTo = anchorBh) is byte-identical across nodes and BLS
-	// signatures pool across consecutive slot attempts.
-	//
-	// The first proposer for an epoch records its own blk. Every subsequent
-	// proposer — and every signer that receives a sign_request — defers to
-	// that recorded height. This is conveyed via the BlockHeight field already
-	// present in sign_request, so signers always use the proposer's anchorBh.
+	// Canonical anchor (audit F5 / CP-0b): derive the election anchor
+	// deterministically from the on-chain previous-election height rather than
+	// from an in-memory first-writer-wins map. The first proposer for this epoch
+	// triggers exactly at canonicalElectionAnchor (canHold gates on the same
+	// ElectionInterval and the blockTick trigger fires on the same 5*SlotLength
+	// cadence), and any retry proposer recomputes the identical value — so the
+	// settlement record (SnapshotRangeTo = anchorBh) and the election CID are
+	// byte-identical across nodes and across retries, restart-safe, and not
+	// poisonable via an unauthenticated sign_request.
 	anchorBh := blk
 	if !firstElection {
-		nextEpoch := electionResult.Epoch + 1
-		ep.lastAttemptedElectionMu.Lock()
-		if remembered, ok := ep.lastAttemptedElectionBh[nextEpoch]; ok {
-			anchorBh = remembered
-		} else {
-			ep.lastAttemptedElectionBh[nextEpoch] = blk
-		}
-		ep.lastAttemptedElectionMu.Unlock()
+		anchorBh = canonicalElectionAnchor(electionResult.BlockHeight, ep.sconf.ConsensusParams().ElectionInterval)
 		if anchorBh != blk {
-			log.Info("reusing anchor height from prior attempt",
+			log.Info("using canonical election anchor",
 				"proposer_bh", blk,
 				"anchor_bh", anchorBh,
-				"epoch", nextEpoch)
+				"epoch", electionResult.Epoch+1)
 		}
 	}
 
@@ -878,7 +1309,15 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			})
 		}()
 
-		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse, 32)
+		ep.sigChannelsMu.Lock()
+		// Buffered by member count (H-15 follow-up): an unbuffered channel makes
+		// a pubsub sender block forever if the collector already returned (quorum
+		// reached or timeout), leaking a goroutine + a pubsub semaphore slot per
+		// late sign_response — 256 such leaks wedge the topic. One slot per
+		// possible signer means no send ever blocks. memberKeys (one BLS DID per
+		// member) is the signer count in scope here.
+		ep.sigChannels[ep.signingInfo.epoch] = make(chan *signResponse, len(memberKeys))
+		ep.sigChannelsMu.Unlock()
 
 		log.Info("waiting for signatures",
 			"block_height", anchorBh,
@@ -887,13 +1326,19 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 		ctx, cancel := context.WithTimeout(context.Background(), ep.sigCollectionWindow)
 		defer cancel()
 		signedWeight, err := ep.waitForSigs(ctx, &electionResult)
+		ep.sigChannelsMu.Lock()
 		delete(ep.sigChannels, ep.signingInfo.epoch)
+		ep.sigChannelsMu.Unlock()
 
 		if err != nil {
 			return err
 		}
 
-		log.Info("signature collection complete",
+		// "Collection window closed" — NOT "success". waitForSigs returns
+		// (signedWeight, nil) on timeout too (a sub-quorum result is still
+		// returned so the decayed voteMajority can be re-checked below), so this
+		// log must not imply quorum was reached (audit F7/M-1).
+		log.Info("signature collection window closed",
 			"block_height", blk,
 			"epoch", electionHeader.Epoch,
 			"signed_weight", signedWeight)
@@ -957,6 +1402,32 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			if err != nil {
 				return fmt.Errorf("failed to update account: %w", err)
 			}
+
+			log.Info("election ratified and broadcast",
+				"block_height", blk,
+				"epoch", electionHeader.Epoch,
+				"voted_weight", votedWeight,
+				"vote_majority", voteMajority,
+				"total_weight", totalWeight,
+				"member_count", len(electionData.Members))
+		} else {
+			// F7/M-1: a sub-quorum election was previously a SILENT fall-through
+			// (waitForSigs's timeout returns (signedWeight, nil) and this branch
+			// just `return nil`ed with no signal) — a governance halt looked
+			// identical to success in the logs. Surface it loudly so operators
+			// and alerting can see it. OBSERVABILITY ONLY: this does NOT emit a
+			// chain event / on-chain op (that would be a consensus change on the
+			// election path) and does NOT alter control flow — the election is
+			// simply not broadcast (unchanged), the prior committee persists, and
+			// the next slot's leader retries. No state/CID/TSS effect.
+			log.Error("ELECTION FAILED: sub-quorum, not broadcasting",
+				"block_height", blk,
+				"epoch", electionHeader.Epoch,
+				"voted_weight", votedWeight,
+				"vote_majority", voteMajority,
+				"total_weight", totalWeight,
+				"member_count", len(electionData.Members),
+				"signed_weight", signedWeight)
 		}
 		return nil
 	}
@@ -1108,19 +1579,24 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 	return computeBanScores(window, ep.scoreMapMinSamples, ep.banThresholdPercent), nil
 }
 
-func (ep *electionProposer) makeElection(blk uint64) (elections.ElectionHeader, elections.ElectionData, error) {
-	electionResult, err := ep.elections.GetElectionByHeight(blk - 1)
-
-	if err != nil {
-		return elections.ElectionHeader{}, elections.ElectionData{}, err
+// makeElection re-derives the election for a requested epoch on the SIGNER
+// path. The anchor is computed deterministically from the on-chain previous
+// election (epoch-1), NOT from any peer-supplied block height, so a malicious
+// or restarted proposer cannot shift the sample window / settlement record and
+// thereby fork the election CID (audit F5 / CP-0b). The ElectionInterval gate
+// is subsumed by canonicalElectionAnchor (anchor is always >= prevBh +
+// interval); GenerateElectionAtBlock's barrier + far-ahead guard make a signer
+// that is behind the anchor abstain rather than sign a divergent CID.
+func (ep *electionProposer) makeElection(epoch uint64) (elections.ElectionHeader, elections.ElectionData, error) {
+	if epoch == 0 {
+		return elections.ElectionHeader{}, elections.ElectionData{}, errors.New("cannot re-derive genesis election by epoch")
 	}
-
-	if blk-electionResult.BlockHeight < ep.sconf.ConsensusParams().ElectionInterval {
-		return elections.ElectionHeader{}, elections.ElectionData{}, errors.New("next election not ready")
+	prevElection := ep.elections.GetElection(epoch - 1)
+	if prevElection == nil {
+		return elections.ElectionHeader{}, elections.ElectionData{}, fmt.Errorf("no previous election for epoch %d", epoch-1)
 	}
-	electionHeader, electionData, err := ep.GenerateElectionAtBlock(blk)
-
-	return electionHeader, electionData, err
+	anchorBh := canonicalElectionAnchor(prevElection.BlockHeight, ep.sconf.ConsensusParams().ElectionInterval)
+	return ep.GenerateElectionAtBlock(anchorBh)
 }
 
 func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
@@ -1150,7 +1626,9 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	// Capture references before goroutine starts so the goroutine
 	// does not need to access ep.signingInfo (which may become nil on timeout).
+	ep.sigChannelsMu.Lock()
 	sigChan := ep.sigChannels[ep.signingInfo.epoch]
+	ep.sigChannelsMu.Unlock()
 	circuit := ep.signingInfo.circuit
 	block := ep.signingInfo.block
 	epoch := ep.signingInfo.epoch

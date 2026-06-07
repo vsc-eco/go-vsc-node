@@ -914,7 +914,8 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// compute it in arbitrary precision (GV-L2): totalAvgBig is the cross-account
 	// SUM of every endingAvg and can exceed int64, so a big.Float divide never
 	// wraps where the old int64 `totalAvg > 0` compare could fail open on a
-	// wrapped-negative accumulator.
+	// wrapped-negative accumulator. lastClaim==0 (no prior claim) leaves
+	// observedApr at 0 — the first claim has no prior period to annualize over.
 	var observedApr float64
 	if totalAvgBig.Sign() > 0 && lastClaim > 0 && blockHeight > lastClaim {
 		blocksInPeriod := blockHeight - lastClaim
