@@ -13,8 +13,8 @@ import (
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	ledgerSystem "vsc-node/modules/ledger-system"
 	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
+	ledgerSystem "vsc-node/modules/ledger-system"
 )
 
 // testChecksumSconf wraps a mocknet config so individual tests can override
@@ -1021,55 +1021,15 @@ func TestSafetySlashConsensusBond_DebitsBondAndBurnsWithoutDAO(t *testing.T) {
 			if r.Type == "safety_slash_consensus" {
 				debitAmt = r.Amount
 			}
-			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashReserve {
 				burnAmt += r.Amount
-				assert.Equal(t, params.ProtocolSlashBurnAccount, r.Owner)
+				assert.Equal(t, params.ProtocolSlashReserveAccount, r.Owner)
 			}
 			assert.NotEqual(t, "safety_slash_hive_credit", r.Type)
 		}
 	}
 	require.Equal(t, int64(-100_000), debitAmt)
 	require.Equal(t, int64(100_000), burnAmt)
-}
-
-func TestSafetySlashConsensusBond_RestitutionThenBurn(t *testing.T) {
-	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
-		"hive:alice": {{
-			Account:        "hive:alice",
-			BlockHeight:    100,
-			HIVE_CONSENSUS: 1_000_000,
-		}},
-	})
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), nil)
-	q := safetyslash.NewMemoryRestitutionQueue()
-	q.Enqueue(ledgerSystem.SlashRestitutionClaim{ClaimID: "c1", VictimAccount: "bob", LossHive: 30_000})
-
-	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
-		Account:         "alice",
-		SlashBps:        1000,
-		TxID:            "evidence-tx-2",
-		BlockHeight:     200,
-		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
-		Restitution:     q,
-		BurnDelayBlocks: 0,
-	})
-	require.True(t, res.Ok, res.Msg)
-
-	var restitutionAmt, burnAmt int64
-	for _, recs := range lDb.LedgerRecords {
-		for _, r := range recs {
-			switch r.Type {
-			case ledgerSystem.LedgerTypeSafetySlashRestitution:
-				restitutionAmt += r.Amount
-				assert.Equal(t, "hive:bob", r.Owner)
-			case ledgerSystem.LedgerTypeSafetySlashHiveBurn:
-				burnAmt += r.Amount
-			}
-		}
-	}
-	require.Equal(t, int64(30_000), restitutionAmt)
-	require.Equal(t, int64(70_000), burnAmt)
 }
 
 func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
@@ -1102,7 +1062,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 				pendingAmt += r.Amount
 				assert.Equal(t, params.ProtocolSlashPendingBurnAccount, r.Owner)
 				assert.Equal(t, "250", r.From)
-			case ledgerSystem.LedgerTypeSafetySlashHiveBurn:
+			case ledgerSystem.LedgerTypeSafetySlashReserve:
 				finalBurn += r.Amount
 			}
 		}
@@ -1114,7 +1074,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 	finalBurn = 0
 	for _, recs := range lDb.LedgerRecords {
 		for _, r := range recs {
-			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashReserve {
 				finalBurn += r.Amount
 			}
 		}
@@ -1125,7 +1085,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 	finalBurn = 0
 	for _, recs := range lDb.LedgerRecords {
 		for _, r := range recs {
-			if r.Type == ledgerSystem.LedgerTypeSafetySlashHiveBurn {
+			if r.Type == ledgerSystem.LedgerTypeSafetySlashReserve {
 				finalBurn += r.Amount
 			}
 		}
@@ -1163,138 +1123,6 @@ func TestSafetySlashConsensusBond_ClampsBurnDelayBlocks(t *testing.T) {
 	}
 }
 
-type badRestitutionSum struct{}
-
-func (badRestitutionSum) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
-	return []ledgerSystem.SlashRestitutionPayment{
-		{ClaimID: "a", VictimAccount: "bob", Amount: slashAmt},
-	}, 1
-}
-
-func TestSafetySlashConsensusBond_RejectsRestitutionReconcileMismatch(t *testing.T) {
-	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
-		"hive:alice": {{
-			Account:        "hive:alice",
-			BlockHeight:    100,
-			HIVE_CONSENSUS: 1_000_000,
-		}},
-	})
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), nil)
-	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
-		Account:         "alice",
-		SlashBps:        1000,
-		TxID:            "tx-bad-reconcile",
-		BlockHeight:     200,
-		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
-		Restitution:     badRestitutionSum{},
-		BurnDelayBlocks: 0,
-	})
-	require.False(t, res.Ok)
-}
-
-type emptyVictimRestitution struct{}
-
-func (emptyVictimRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
-	return []ledgerSystem.SlashRestitutionPayment{
-		{ClaimID: "x", VictimAccount: "   ", Amount: slashAmt},
-	}, 0
-}
-
-func TestSafetySlashConsensusBond_RejectsEmptyRestitutionVictim(t *testing.T) {
-	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
-		"hive:alice": {{
-			Account:        "hive:alice",
-			BlockHeight:    100,
-			HIVE_CONSENSUS: 1_000_000,
-		}},
-	})
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), nil)
-	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
-		Account:         "alice",
-		SlashBps:        1000,
-		TxID:            "tx-empty-victim",
-		BlockHeight:     200,
-		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
-		Restitution:     emptyVictimRestitution{},
-		BurnDelayBlocks: 0,
-	})
-	require.False(t, res.Ok)
-}
-
-type overflowRestitution struct{}
-
-func (overflowRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
-	return []ledgerSystem.SlashRestitutionPayment{
-		{ClaimID: "a", VictimAccount: "bob", Amount: math.MaxInt64},
-		{ClaimID: "b", VictimAccount: "carol", Amount: 1},
-	}, 0
-}
-
-func TestSafetySlashConsensusBond_RejectsRestitutionSumOverflow(t *testing.T) {
-	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
-		"hive:alice": {{
-			Account:        "hive:alice",
-			BlockHeight:    100,
-			HIVE_CONSENSUS: 1_000_000,
-		}},
-	})
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), nil)
-	res := ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
-		Account:         "alice",
-		SlashBps:        1000,
-		TxID:            "tx-overflow",
-		BlockHeight:     200,
-		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
-		Restitution:     overflowRestitution{},
-		BurnDelayBlocks: 0,
-	})
-	require.False(t, res.Ok)
-}
-
-type dupClaimIDRestitution struct{}
-
-func (dupClaimIDRestitution) AllocateHive(slashAmt int64, _ uint64, _, _, _ string) ([]ledgerSystem.SlashRestitutionPayment, int64) {
-	half := slashAmt / 2
-	return []ledgerSystem.SlashRestitutionPayment{
-		{ClaimID: "dup", VictimAccount: "bob", Amount: half},
-		{ClaimID: "dup", VictimAccount: "bob", Amount: slashAmt - half},
-	}, 0
-}
-
-func TestSafetySlashConsensusBond_DistinctRestitutionIdsForDuplicateClaimID(t *testing.T) {
-	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
-		"hive:alice": {{
-			Account:        "hive:alice",
-			BlockHeight:    100,
-			HIVE_CONSENSUS: 1_000_000,
-		}},
-	})
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(balDb, lDb, nil, newMockActionsDb(), nil)
-	require.True(t, ls.SafetySlashConsensusBond(ledgerSystem.SafetySlashConsensusParams{
-		Account:         "alice",
-		SlashBps:        1000,
-		TxID:            "tx-dup-claim",
-		BlockHeight:     200,
-		EvidenceKind:    safetyslash.EvidenceVSCDoubleBlockSign,
-		Restitution:     dupClaimIDRestitution{},
-		BurnDelayBlocks: 0,
-	}).Ok)
-	ids := make(map[string]struct{})
-	for _, recs := range lDb.LedgerRecords {
-		for _, r := range recs {
-			if r.Type == ledgerSystem.LedgerTypeSafetySlashRestitution {
-				require.NotContains(t, ids, r.Id, "duplicate restitution ledger id")
-				ids[r.Id] = struct{}{}
-			}
-		}
-	}
-	require.Len(t, ids, 2)
-}
-
 func TestSafetySlashConsensusBond_FinalizeMaturedBurnIdempotent(t *testing.T) {
 	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
 		"hive:alice": {{
@@ -1314,10 +1142,10 @@ func TestSafetySlashConsensusBond_FinalizeMaturedBurnIdempotent(t *testing.T) {
 		BurnDelayBlocks: 50,
 	}).Ok)
 	ls.FinalizeMaturedSafetySlashBurns(250)
-	n1 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	n1 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve)
 	ls.FinalizeMaturedSafetySlashBurns(250)
 	ls.FinalizeMaturedSafetySlashBurns(300)
-	n2 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	n2 := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve)
 	require.Equal(t, n1, n2)
 }
 
@@ -1390,9 +1218,9 @@ func TestCancelPendingSafetySlashBurn_PreMaturity(t *testing.T) {
 
 	// FinalizeMaturedSafetySlashBurns at maturity must NOT promote a
 	// cancelled row.
-	finalBurnsBefore := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	finalBurnsBefore := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve)
 	ls.FinalizeMaturedSafetySlashBurns(400)
-	finalBurnsAfter := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	finalBurnsAfter := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve)
 	require.Equal(t, finalBurnsBefore, finalBurnsAfter, "cancelled pending row must not promote to burn")
 }
 
@@ -1589,12 +1417,12 @@ func TestFinalizeCursor_AdvancesPastFullyMatured(t *testing.T) {
 	ls.FinalizeMaturedSafetySlashBurns(250)
 	cursor := readCursorRow(t, lDb)
 	require.Equal(t, uint64(251), cursor, "cursor should advance past blockHeight when nothing remains pending")
-	finalized := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn)
+	finalized := countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve)
 	require.Equal(t, 1, finalized)
 
 	// A subsequent finalize call should be a no-op (no new burn rows).
 	ls.FinalizeMaturedSafetySlashBurns(300)
-	require.Equal(t, finalized, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	require.Equal(t, finalized, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve))
 	// Cursor advances further once nothing is pending in the new range.
 	require.Equal(t, uint64(301), readCursorRow(t, lDb))
 }
@@ -1635,12 +1463,12 @@ func TestFinalizeCursor_AnchorsToOldestUnfinalized(t *testing.T) {
 	// height 220, the oldest still-unfinalized row.
 	ls.FinalizeMaturedSafetySlashBurns(250)
 	require.Equal(t, uint64(220), readCursorRow(t, lDb))
-	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve))
 
 	// Finalize at 320: bob now matures, cursor advances to 321.
 	ls.FinalizeMaturedSafetySlashBurns(320)
 	require.Equal(t, uint64(321), readCursorRow(t, lDb))
-	require.Equal(t, 2, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	require.Equal(t, 2, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve))
 }
 
 // TestFinalizeCursor_NeverGoesBackward proves the cursor is monotonic
@@ -1719,195 +1547,8 @@ func TestFinalizeCursor_BackfillsFromZeroOnFirstRun(t *testing.T) {
 	// First post-upgrade finalize after maturity (200+100=300): must
 	// scan from 0 and pick up the legacy row, then plant the first cursor.
 	ls.FinalizeMaturedSafetySlashBurns(300)
-	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn))
+	require.Equal(t, 1, countLedgerType(lDb, ledgerSystem.LedgerTypeSafetySlashReserve))
 	require.Equal(t, uint64(301), readCursorRow(t, lDb))
-}
-
-// --- EnqueueRestitutionClaim + OnLedgerRestitutionAllocator -----------------
-
-// TestEnqueueRestitutionClaim_HappyPath asserts a single claim lands as
-// one ledger row on ProtocolSlashRestitutionClaimsAccount with the
-// expected fields and op type.
-func TestEnqueueRestitutionClaim_HappyPath(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-
-	res := ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID:       "claim-1",
-		VictimAccount: "alice",
-		SlashTxID:     "slash-tx-1",
-		LossHive:      50_000,
-		BlockHeight:   100,
-		TxID:          "carrying-tx-1",
-	})
-	require.True(t, res.Ok, res.Msg)
-
-	rows := lDb.LedgerRecords[params.ProtocolSlashRestitutionClaimsAccount]
-	require.Len(t, rows, 1)
-	r := rows[0]
-	require.Equal(t, "safety_restitution_claim#claim-1", r.Id)
-	require.Equal(t, ledgerSystem.LedgerTypeSafetyRestitutionClaim, r.Type)
-	require.Equal(t, int64(50_000), r.Amount)
-	require.Equal(t, "hive", r.Asset)
-	require.Equal(t, "hive:alice", r.From)
-	require.Equal(t, "carrying-tx-1", r.TxId)
-}
-
-// TestEnqueueRestitutionClaim_RejectsBadInput proves missing/invalid
-// inputs are rejected without writing a row.
-func TestEnqueueRestitutionClaim_RejectsBadInput(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-
-	cases := []struct {
-		name string
-		p    ledgerSystem.EnqueueRestitutionClaimParams
-	}{
-		{"empty claim id", ledgerSystem.EnqueueRestitutionClaimParams{ClaimID: "", VictimAccount: "alice", LossHive: 10}},
-		{"empty victim", ledgerSystem.EnqueueRestitutionClaimParams{ClaimID: "c", VictimAccount: "", LossHive: 10}},
-		{"non-positive loss", ledgerSystem.EnqueueRestitutionClaimParams{ClaimID: "c", VictimAccount: "alice", LossHive: 0}},
-		{"negative loss", ledgerSystem.EnqueueRestitutionClaimParams{ClaimID: "c", VictimAccount: "alice", LossHive: -5}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			res := ls.EnqueueRestitutionClaim(c.p)
-			require.False(t, res.Ok, "case %q expected rejection: msg=%s", c.name, res.Msg)
-		})
-	}
-	require.Empty(t, lDb.LedgerRecords[params.ProtocolSlashRestitutionClaimsAccount])
-}
-
-// TestEnqueueRestitutionClaim_Idempotent_PerClaimID proves that
-// re-enqueueing the same ClaimID upserts the same row (Mongo upsert
-// semantics) so chain replay converges on the same queue state.
-func TestEnqueueRestitutionClaim_Idempotent_PerClaimID(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-
-	p := ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "dup-claim", VictimAccount: "alice", SlashTxID: "tx-x",
-		LossHive: 10_000, BlockHeight: 50, TxID: "ctx",
-	}
-	require.True(t, ls.EnqueueRestitutionClaim(p).Ok)
-	require.True(t, ls.EnqueueRestitutionClaim(p).Ok)
-	require.True(t, ls.EnqueueRestitutionClaim(p).Ok)
-	require.Len(t, lDb.LedgerRecords[params.ProtocolSlashRestitutionClaimsAccount], 1,
-		"duplicate enqueues with the same ClaimID must upsert a single row")
-}
-
-// TestOnLedgerAllocator_FIFO_Order proves AllocateHive consumes claims
-// in (BlockHeight asc, Id asc) order and writes consume markers that
-// preserve the per-claim residual balance.
-func TestOnLedgerAllocator_FIFO_Order(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-
-	// Enqueue 3 claims at increasing block heights so FIFO order is
-	// unambiguous (height-based, no Id tie-break needed).
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "c1", VictimAccount: "alice", LossHive: 30_000, BlockHeight: 10, TxID: "tx10"}).Ok)
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "c2", VictimAccount: "bob", LossHive: 20_000, BlockHeight: 20, TxID: "tx20"}).Ok)
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "c3", VictimAccount: "carol", LossHive: 50_000, BlockHeight: 30, TxID: "tx30"}).Ok)
-
-	a := safetyslash.NewOnLedgerRestitutionAllocator(lDb)
-	pays, residual := a.AllocateHive(40_000, 100, "slash-tx-A", "vsc_double_block_sign", "hive:dave")
-
-	require.Equal(t, int64(0), residual, "40k slash should fully exhaust against 100k of claims")
-	require.Len(t, pays, 2, "FIFO: full payout of c1 (30k) + partial of c2 (10k)")
-	require.Equal(t, "hive:alice", pays[0].VictimAccount)
-	require.Equal(t, int64(30_000), pays[0].Amount)
-	require.Equal(t, "hive:bob", pays[1].VictimAccount)
-	require.Equal(t, int64(10_000), pays[1].Amount)
-
-	consumeRows := 0
-	totalConsumed := int64(0)
-	for _, r := range lDb.LedgerRecords[params.ProtocolSlashRestitutionClaimsAccount] {
-		if r.Type == ledgerSystem.LedgerTypeSafetyRestitutionClaimConsumed {
-			consumeRows++
-			totalConsumed += -r.Amount
-			require.True(t, strings.HasSuffix(r.Id, "#consumed#slash-tx-A#vsc_double_block_sign"),
-				"consume marker id must include slashTxID and kind: got %s", r.Id)
-		}
-	}
-	require.Equal(t, 2, consumeRows)
-	require.Equal(t, int64(40_000), totalConsumed)
-}
-
-// TestOnLedgerAllocator_TieBreakByID asserts that two claims at the
-// same block height are FIFO'd by Id (lex) so allocation is
-// deterministic regardless of map insertion order.
-func TestOnLedgerAllocator_TieBreakByID(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-
-	// Both at height 10 — Ids are "safety_restitution_claim#aa" and
-	// "safety_restitution_claim#bb", so aa wins lex order.
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "bb", VictimAccount: "bob", LossHive: 25_000, BlockHeight: 10, TxID: "tx10"}).Ok)
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "aa", VictimAccount: "alice", LossHive: 25_000, BlockHeight: 10, TxID: "tx10"}).Ok)
-
-	a := safetyslash.NewOnLedgerRestitutionAllocator(lDb)
-	pays, residual := a.AllocateHive(15_000, 100, "slash-x", "vsc_double_block_sign", "hive:dave")
-	require.Equal(t, int64(0), residual)
-	require.Len(t, pays, 1)
-	require.Equal(t, "hive:alice", pays[0].VictimAccount, "lex-lowest claim id should win the tie-break")
-}
-
-// TestOnLedgerAllocator_RespectsConsumedTotals proves that a second
-// allocation against partially-consumed claims continues from the
-// remaining balance rather than restarting the queue.
-func TestOnLedgerAllocator_RespectsConsumedTotals(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "c1", VictimAccount: "alice", LossHive: 50_000, BlockHeight: 10, TxID: "tx10"}).Ok)
-
-	a := safetyslash.NewOnLedgerRestitutionAllocator(lDb)
-	// First slash: consumes 30k from claim c1.
-	pays1, _ := a.AllocateHive(30_000, 100, "slash-1", "vsc_double_block_sign", "hive:dave")
-	require.Len(t, pays1, 1)
-	require.Equal(t, int64(30_000), pays1[0].Amount)
-
-	// Second slash: only 20k left in c1, so a 100k slash sees 20k pay
-	// and 80k residual.
-	pays2, residual2 := a.AllocateHive(100_000, 200, "slash-2", "vsc_double_block_sign", "hive:dave")
-	require.Len(t, pays2, 1)
-	require.Equal(t, "hive:alice", pays2[0].VictimAccount)
-	require.Equal(t, int64(20_000), pays2[0].Amount)
-	require.Equal(t, int64(80_000), residual2)
-}
-
-// TestOnLedgerAllocator_RefusesBlankSlashIdentity proves the allocator
-// refuses to allocate when txID or evidenceKind is empty (so it cannot
-// write deterministic consume markers). This protects the queue from
-// accidental misuse.
-func TestOnLedgerAllocator_RefusesBlankSlashIdentity(t *testing.T) {
-	lDb := newMockLedgerDb()
-	ls := ledgerSystem.New(newMockBalanceDb(nil), lDb, nil, newMockActionsDb(), nil)
-	require.True(t, ls.EnqueueRestitutionClaim(ledgerSystem.EnqueueRestitutionClaimParams{
-		ClaimID: "c1", VictimAccount: "alice", LossHive: 50_000, BlockHeight: 10, TxID: "tx10"}).Ok)
-
-	a := safetyslash.NewOnLedgerRestitutionAllocator(lDb)
-	pays, residual := a.AllocateHive(30_000, 100, "", "vsc_double_block_sign", "hive:dave")
-	require.Empty(t, pays)
-	require.Equal(t, int64(30_000), residual, "refuse-to-allocate must return slashAmt as residual")
-
-	pays, residual = a.AllocateHive(30_000, 100, "tx", "", "hive:dave")
-	require.Empty(t, pays)
-	require.Equal(t, int64(30_000), residual)
-}
-
-// TestOnLedgerAllocator_NoClaimsBurnsEverything shows that with an
-// empty queue, AllocateHive returns the full slashAmt as residual.
-func TestOnLedgerAllocator_NoClaimsBurnsEverything(t *testing.T) {
-	lDb := newMockLedgerDb()
-	a := safetyslash.NewOnLedgerRestitutionAllocator(lDb)
-	pays, residual := a.AllocateHive(75_000, 50, "slash-x", "vsc_double_block_sign", "hive:dave")
-	require.Empty(t, pays)
-	require.Equal(t, int64(75_000), residual)
 }
 
 // _ = math.MaxInt64 keeps math imported in case future tests need it.

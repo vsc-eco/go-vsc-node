@@ -925,8 +925,6 @@ func (tx *TransactionContainer) Type() string {
 		return "rc_update"
 	} else if tx.TypeInt == int(common.BlockTypePendulumSettlement) {
 		return "pendulum_settlement"
-	} else if tx.TypeInt == int(common.BlockTypeRestitutionClaim) {
-		return "restitution_claim"
 	} else if tx.TypeInt == int(common.BlockTypeSafetySlashReverse) {
 		return "safety_slash_reverse"
 	} else {
@@ -1047,33 +1045,6 @@ func (tx *TransactionContainer) AsPendulumSettlement() (pendulumsettlement.Settl
 		return pendulumsettlement.SettlementRecord{}, false
 	}
 	return rec, true
-}
-
-// AsRestitutionClaim decodes a RestitutionClaimRecord pointed at by this
-// container's CID. Returns (record, true) on success; (zero, false) only on a
-// deterministic decode failure (unparseable CID or malformed payload) that
-// every honest node sees identically and skips alike. A DAG *fetch* error is a
-// transient local I/O fault, not missing payload (the carrying block's 2/3 BLS
-// aggregate already validated the CID bytes); getDagOrBlock blocks on it rather
-// than skipping, so a momentary fault can't fork this node's ledger.
-func (tx *TransactionContainer) AsRestitutionClaim() (safetyslash.RestitutionClaimRecord, bool) {
-	if tx == nil || tx.da == nil {
-		return safetyslash.RestitutionClaimRecord{}, false
-	}
-	txCid, err := cid.Parse(tx.Id)
-	if err != nil {
-		return safetyslash.RestitutionClaimRecord{}, false
-	}
-	node := getDagOrBlock(tx.da, txCid, fmt.Sprintf("GetDag(restitution %s)", tx.Id))
-	jsonBytes, err := node.MarshalJSON()
-	if err != nil {
-		return safetyslash.RestitutionClaimRecord{}, false
-	}
-	var rec safetyslash.RestitutionClaimRecord
-	if err := json.Unmarshal(jsonBytes, &rec); err != nil {
-		return safetyslash.RestitutionClaimRecord{}, false
-	}
-	return rec.Normalize(), true
 }
 
 // AsSafetySlashReverse decodes a SafetySlashReverseRecord pointed at by
