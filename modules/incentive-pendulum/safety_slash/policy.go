@@ -18,15 +18,19 @@
 //	"settlement_payload_fraud"  — fraudulent settlement body (now caught at
 //	                              block-validation time before this layer)
 //
-// Reversal / governance undo of pending burn + consensus credit is not yet
-// wired; the delayed burn merely creates a window so protocol bugs can be
-// corrected before maturity.
+// Wrongful slashes are corrected (Polkadot-style) by the vsc.safety_slash_reverse
+// block-content chain op, gated by the carrying block's 2/3 BLS aggregate:
+// during the challenge window it cancels the pending residual and re-credits the
+// bond. Once the residual matures it lands in the keyless insurance reserve
+// (ProtocolSlashReserveAccount) — a no-owner INSURANCE backstop (not V/E
+// collateral; the bond is collateral) with no extraction path; only
+// state-engine rules ever wrote it and nothing moves it out.
 package safetyslash
 
 // SafetySlashEnabled gates the principal (HIVE_CONSENSUS bond) slashing path.
 // When false, slashForEvidenceIfPolicyAllows returns a no-op result, so no
-// detector ever debits a bond and the downstream restitution/burn/reversal
-// machinery stays dormant. Detection logging and normal block validation are
+// detector ever debits a bond and the downstream reserve/reversal machinery
+// stays dormant. Detection logging and normal block validation are
 // unaffected. This is a COMPILE-TIME, consensus-critical gate: it is
 // deterministic only because every node runs the same build. Do NOT convert it
 // to a per-node runtime config — nodes disagreeing on this value would diverge
@@ -55,12 +59,19 @@ const (
 	InvalidBlockSlashBps    = 1000 // 10%
 )
 
-// DefaultSafetySlashBurnDelayBlocks holds the burn (post-restitution) portion on
-// params.ProtocolSlashPendingBurnAccount for this many Hive block heights before
-// it is promoted to the final burn sink. ~3 days at ~3s/block. Governance can
-// later reverse a slash (consensus credit + cancel pending) before maturity.
-// Tests should pass BurnDelayBlocks: 0 for immediate burn.
-// Values above params.MaxSafetySlashBurnDelayBlocks are clamped when slashing.
+// DefaultSafetySlashBurnDelayBlocks holds the slash residual on
+// params.ProtocolSlashPendingBurnAccount for this many Hive block heights
+// before it is promoted to the keyless reserve (destination change — no
+// longer burned). This IS the Polkadot-style challenge window: while the
+// residual is pending, governance can cancel/reverse a wrongful slash (cancel
+// pending + re-credit bond) by posting a vsc.safety_slash_reverse L1 op; once
+// it matures into the reserve it is permanent insurance and no longer
+// reversible. ~3 days at ~3s/block. Governance reviewing window length: this is
+// mirrored in the Lean spec (magi-lean SafetySlashLiquidSplit.lean), so any
+// change must update both sides in lockstep — 3 days may be tight for a DAO
+// multisig to detect+decide+post; consider lengthening (cap is
+// params.MaxSafetySlashBurnDelayBlocks ~115 days) when the slash path is
+// enabled. Tests pass BurnDelayBlocks: 0 for immediate reserve commitment.
 const DefaultSafetySlashBurnDelayBlocks uint64 = 3 * 28800
 
 // EffectiveCorrelatedBps sums positive raw contributions and caps at capBps.

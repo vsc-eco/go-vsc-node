@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -47,6 +48,11 @@ import (
 )
 
 var CONSENSUS_SPECS = common.CONSENSUS_SPECS
+
+// dsOnceFired is TEST-ONLY (devnet): when VSC_DOUBLE_SIGN_ONCE=1 the malicious
+// node double-signs exactly ONE slot, then behaves — exercises the bounded
+// single-incident slash. Package-level so it persists across ProduceBlock calls.
+var dsOnceFired atomic.Bool
 
 var vlog = vsclog.Module("bp")
 
@@ -86,10 +92,10 @@ type BlockProducer struct {
 	// needed.
 	startupHead uint64
 
-	// PendingGovOps is the witness-local pool that DAO operators / RPC
-	// handlers populate with vsc.restitution_claim and
-	// vsc.safety_slash_reverse payloads. Drained during GenerateBlock
-	// for slots this node leads. Defaults to an empty
+	// PendingGovOps is the witness-local pool that governance (the gateway
+	// multisig via an L1 vsc.safety_slash_reverse op) / RPC
+	// handlers populate with vsc.safety_slash_reverse payloads. Drained
+	// during GenerateBlock for slots this node leads. Defaults to an empty
 	// MemoryPendingGovernanceOps in New(); deployments may swap in a
 	// persistent implementation later without changing the caller
 	// surface. Safe for concurrent submission and drain.
@@ -216,18 +222,15 @@ func (bp *BlockProducer) GenerateBlock(
 	// and modules/state-processing/system_txs.go: TxElectionResult.ExecuteTx.
 
 	// Governance chain-ops: drain the witness-local pool of pending
-	// vsc.restitution_claim and vsc.safety_slash_reverse payloads.
-	// Unlike pendulum settlement these are NOT deterministically
-	// re-derivable from on-chain state — DAO operators submit them
-	// out-of-band. Different leaders see different pools, so each
-	// proposal carries the leader's local view; the apply path
-	// re-validates each payload against canonical ledger state at
-	// apply time, so stale or malformed entries are silently dropped.
-	// The 2/3 BLS aggregate over the carrying block is the consensus
-	// auth gate.
-	if claims := bp.MakeRestitutionClaims(daSession); len(claims) > 0 {
-		offchainTxs = append(offchainTxs, claims...)
-	}
+	// vsc.safety_slash_reverse payloads. Unlike pendulum settlement
+	// these are NOT deterministically re-derivable from on-chain state —
+	// governance submits them out-of-band (the gateway-multisig L1 op).
+	// Different leaders see
+	// different pools, so each proposal carries the leader's local view;
+	// the apply path re-validates each payload against canonical ledger
+	// state at apply time, so stale or malformed entries are silently
+	// dropped. The 2/3 BLS aggregate over the carrying block is the
+	// consensus auth gate.
 	if reverses := bp.MakeSafetySlashReverses(daSession); len(reverses) > 0 {
 		offchainTxs = append(offchainTxs, reverses...)
 	}
@@ -467,6 +470,41 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
 	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh)
+
+	// TEST-ONLY (devnet) malicious DOUBLE-BLOCK-SIGN injection. When this node ==
+	// VSC_DOUBLE_SIGN_ACCOUNT (harness-set; never mainnet), broadcast TWO
+	// vsc.produce_block ops for THIS slot with different block refs → the on-chain
+	// detector (safetyslash.EvidenceVSCDoubleBlockSign) fires → 10% bond slash →
+	// residual to the keyless insurance reserve. Returns early. Hard-gated off mainnet.
+	if !bp.sconf.OnMainnet() && os.Getenv("VSC_DOUBLE_SIGN_ACCOUNT") != "" &&
+		bp.config.Config.Get().HiveUsername == os.Getenv("VSC_DOUBLE_SIGN_ACCOUNT") &&
+		!(os.Getenv("VSC_DOUBLE_SIGN_ONCE") == "1" && !dsOnceFired.CompareAndSwap(false, true)) {
+		altCid, _ := bp.Datalayer.HashObject(map[string]interface{}{"__ds_alt": bh})
+		for i, ref := range []string{genBlock.Block.String(), altCid.String()} {
+			signedBlock := map[string]interface{}{
+				"__t":         genBlock.Type,
+				"__v":         genBlock.Version,
+				"headers":     genBlock.Headers,
+				"merkle_root": genBlock.MerkleRoot,
+				"block":       ref,
+			}
+			hdr := map[string]interface{}{"net_id": bp.sconf.NetId(), "signed_block": signedBlock}
+			bb, _ := json.Marshal(hdr)
+			op := bp.HiveCreator.CustomJson(
+				[]string{bp.config.Config.Get().HiveUsername},
+				[]string{},
+				"vsc.produce_block",
+				string(bb),
+			)
+			tx := bp.HiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+			bp.HiveCreator.PopulateSigningProps(&tx, nil)
+			sig, _ := bp.HiveCreator.Sign(tx)
+			tx.AddSig(sig)
+			did, derr := bp.HiveCreator.Broadcast(tx)
+			fmt.Println("MALICIOUS DOUBLE-SIGN: competing block", i, "ref", ref, "slot", bh, "id", did, "err", derr)
+		}
+		return
+	}
 
 	electionResult, err := bp.electionsDb.GetElectionByHeight(bh)
 
@@ -1143,7 +1181,7 @@ func New(
 	rcSystem *rcSystem.RcSystem,
 	nonceDb nonces.Nonces,
 ) *BlockProducer {
-	return &BlockProducer{
+	bp := &BlockProducer{
 		sigChannels:  make(map[uint64]chan sigMsg),
 		StateEngine:  se,
 		hiveConsumer: hiveConsumer,
@@ -1163,4 +1201,13 @@ func New(
 		// New() signature.
 		PendingGovOps: safetyslash.NewMemoryPendingGovernanceOps(),
 	}
+	// Wire the governance pool as the state engine's slash-reverse sink, so an
+	// L1-observed vsc.safety_slash_reverse (the Polkadot-style wrongful-slash
+	// cancellation, posted by the gateway governance multisig) is queued here for inclusion in a
+	// block this node leads. The state engine sees L1 ops; the producer owns the
+	// pool — this is the only place both are in hand.
+	if se != nil {
+		se.SetSlashReverseSink(bp.PendingGovOps)
+	}
+	return bp
 }

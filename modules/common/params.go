@@ -22,13 +22,12 @@ const (
 	BlockTypeOplog
 	BlockTypeRcUpdate
 	BlockTypePendulumSettlement
-	// BlockTypeRestitutionClaim carries a RestitutionClaimRecord into a VSC
-	// block. The 2/3 BLS aggregate over the carrying block authorises the
-	// claim (witnesses gate inclusion); the state engine independently
-	// validates that the referenced safety_slash_consensus row exists and,
-	// when VictimTxID is supplied, that the harmed transaction was anchored
-	// at the slashed slot. Calls LedgerSystem.EnqueueRestitutionClaim.
-	BlockTypeRestitutionClaim
+	// Tombstone: was BlockTypeRestitutionClaim (victim restitution, removed —
+	// VSC safety slashing only fires on block-production/signing faults, which
+	// have no fund victim: the offending block's txs never execute, so there is
+	// never a loss to restitute). The slot is retained so the value of
+	// BlockTypeSafetySlashReverse below stays stable; do not reuse it.
+	_
 	// BlockTypeSafetySlashReverse carries a SafetySlashReverseRecord into a
 	// VSC block. The 2/3 BLS aggregate over the carrying block authorises
 	// the cancel/reverse decision (witness supermajority is the timelock,

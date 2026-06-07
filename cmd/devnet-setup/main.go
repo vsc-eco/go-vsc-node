@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -114,6 +116,23 @@ func main() {
 		})
 		idConf.SetUsername(witnessName)
 		idConf.SetActiveKey(args.wif)
+
+		// Devnet integration-test hook (gated): when DEVNET_DETERMINISTIC_BLS=1,
+		// override the randomly-generated BLS seed with a DETERMINISTIC per-witness
+		// seed = sha256("devnet-bls-"+witnessName). The gateway multisig key is
+		// derived from this seed (GatewayKeyFromBlsSeed below), so a deterministic
+		// seed lets the test re-derive each witness's gateway keypair WITHOUT ever
+		// reading identityConfig.json — required to multisig-sign a
+		// vsc.safety_slash_reverse op. Off by default: production devnet-setup keeps
+		// the random seed. The magi node must run with the same flag so it signs
+		// with the matching gateway key.
+		if os.Getenv("DEVNET_DETERMINISTIC_BLS") == "1" {
+			seed := sha256.Sum256([]byte("devnet-bls-" + witnessName))
+			if err := idConf.SetBlsPrivKeySeed(hex.EncodeToString(seed[:])); err != nil {
+				fmt.Printf("Error setting deterministic BLS seed for %s: %v\n", witnessName, err)
+				os.Exit(1)
+			}
+		}
 
 		gwKey, _ := gateway.GatewayKeyFromBlsSeed(idConf.Get().BlsPrivKeySeed)
 

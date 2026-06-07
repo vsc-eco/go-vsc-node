@@ -36,11 +36,50 @@ var DAO_WALLET = "hive:vsc.dao"
 // ProtocolSlashBurnAccount is the ledger owner for safety-slash amounts that are
 // not paid as restitution. Rows are audit-only: they must not increase spendable
 // HIVE (see state engine balance aggregation and GetBalance op-type rules).
+//
+// HISTORICAL: matured slash residual USED to land here (destroyed). It now lands
+// on ProtocolSlashReserveAccount instead (the slash-reserve workstream). This
+// account is retained only so any pre-existing burn rows keep resolving; no new
+// rows are written to it (SafetySlashEnabled has never fired on any network, so
+// there are none in practice).
 var ProtocolSlashBurnAccount = "system:protocol_slash_burn"
 
-// ProtocolSlashPendingBurnAccount holds the liquid HIVE slice of a safety slash
-// until BurnDelayBlocks passes, then FinalizeMaturedSafetySlashBurns moves it
-// to ProtocolSlashBurnAccount. Not spendable (excluded from balance aggregation).
+// ProtocolSlashReserveAccount is the keyless insurance reserve. This is a
+// DESTINATION CHANGE ONLY: the safety-slash residual (the part not paid as
+// restitution at slash time) lands here INSTEAD of being burned. No key, no
+// multisig, no owner — only state-engine rules ever write it, and there is NO
+// extraction path: value never leaves this account. It is a permanent retained
+// INSURANCE backstop, recoverable in principle only by a future,
+// separately-designed make-whole mechanism (none exists or ships here). It is
+// NOT part of the V/E collateral computation (modules/incentive-pendulum
+// collateral_int.go): collateral is the HIVE_CONSENSUS bond, and nothing reads
+// this reserve into E, V, or s. Like THORChain's Reserve (which is a retained
+// treasury, not collateral — the bond is collateral there too), this is a held
+// insurance pool, not over-collateralization.
+//
+// Rows MUST NOT increase spendable HIVE: the op-type LedgerTypeSafetySlashReserve
+// is excluded from BOTH balance-aggregation sites (the GetBalance allow-list AND
+// the UpdateBalances snapshot deny-list switch), exactly like the burn account it
+// replaces. The ONLY observable difference from burning is that the value is
+// retained (recoverable later) rather than destroyed.
+//
+// WHY no make-whole here: the only live slash triggers are equivocation
+// (double-block-sign) and invalid-block-proposal — consensus-integrity faults
+// with NO fund victim (orphaned txs re-execute; rejected-block txs never
+// executed). Both THORChain and Polkadot route non-theft slashes to a
+// Reserve/treasury with no victim payout; only THEFT (a real vault outflow) has
+// a victim+amount to make whole, and VSC has no theft detector. An earlier draft
+// added a victim-payout extraction here; a full audit proved its harm-proof was
+// structurally dead (AnchoredId can never equal the slash tx id for a slashed
+// block) and that the faults have no victims, so it was removed. Reserve =
+// backstop only, until a real theft detector is built as a separate workstream.
+var ProtocolSlashReserveAccount = "system:protocol_slash_reserve"
+
+// ProtocolSlashPendingBurnAccount holds the liquid HIVE residual of a safety
+// slash during the challenge window (until BurnDelayBlocks passes), then
+// FinalizeMaturedSafetySlashBurns promotes it to ProtocolSlashReserveAccount
+// (destination change — no longer burned). Not spendable (excluded from balance
+// aggregation). Name kept ("...BurnPending") for compatibility.
 var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
 
 // ProtocolSlashFinalizeCursorAccount stores the single-row scan cursor used by
@@ -51,16 +90,6 @@ var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
 // the active pending-row window rather than chain length. Account is balance-
 // neutral (every row has Amount=0); it exists purely as a meta marker.
 var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
-
-// ProtocolSlashRestitutionClaimsAccount stores the FIFO queue of victim
-// restitution claims as ledger rows. New claims are written via the
-// vsc.restitution_claim block-content tx (see modules/state-processing).
-// SafetySlashConsensusBond calls OnLedgerRestitutionAllocator, which reads
-// the unconsumed claim rows here, allocates HIVE FIFO, and writes consume
-// markers. The account is balance-neutral (allocate writes credit the
-// victim on their own account, not this meta account); it only acts as
-// the queue's storage.
-var ProtocolSlashRestitutionClaimsAccount = "system:protocol_slash_restitution_claims"
 
 // MaxSafetySlashBurnDelayBlocks caps BurnDelayBlocks to avoid uint64 maturity
 // overflow and unbounded pending queues. ~115 days at 3s/block.

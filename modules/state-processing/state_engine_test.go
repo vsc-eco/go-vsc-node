@@ -998,7 +998,7 @@ func TestUpdateBalances_PromotesPendingSlashBurn(t *testing.T) {
 		BurnDelayBlocks: 10,
 	}).Ok)
 
-	finalBurnsBefore := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn, params.ProtocolSlashBurnAccount)
+	finalBurnsBefore := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashReserve, params.ProtocolSlashReserveAccount)
 	require.Equal(t, 0, finalBurnsBefore)
 
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
@@ -1012,7 +1012,7 @@ func TestUpdateBalances_PromotesPendingSlashBurn(t *testing.T) {
 
 	te.SE.UpdateBalances(200, 211)
 
-	finalBurnsAfter := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashHiveBurn, params.ProtocolSlashBurnAccount)
+	finalBurnsAfter := countLedgerByTypeOwner(te.LedgerDb, ledgerSystem.LedgerTypeSafetySlashReserve, params.ProtocolSlashReserveAccount)
 	require.GreaterOrEqual(t, finalBurnsAfter, 1)
 }
 

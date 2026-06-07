@@ -59,43 +59,25 @@ type ConsensusParams struct {
 	ElectionEpoch uint64
 }
 
-// SlashRestitutionPayment credits liquid HIVE to a victim from a safety slash.
-type SlashRestitutionPayment struct {
-	ClaimID       string
-	VictimAccount string
-	Amount        int64
-}
-
-// SlashRestitutionClaim is a FIFO queue entry: remaining LossHive still owed to VictimAccount.
-type SlashRestitutionClaim struct {
-	ClaimID       string
-	VictimAccount string
-	LossHive      int64
-}
-
-// SlashRestitutionAllocator splits slashed liquid HIVE between victims and protocol burn.
-// Implementations must return payments and burnAmt with Sum(payments.Amount)+burnAmt == slashAmt.
-type SlashRestitutionAllocator interface {
-	AllocateHive(
-		slashAmt int64,
-		blockHeight uint64,
-		txID, evidenceKind, slashedAccount string,
-	) (payments []SlashRestitutionPayment, burnAmt int64)
-}
-
 // SafetySlashConsensusParams debits HIVE_CONSENSUS principal for provable safety faults.
-// Liquid HIVE is credited via Restitution (FIFO victims) and/or protocol burn (see params.ProtocolSlashBurnAccount).
-// When Restitution is nil, the full slash is recorded as burn (nothing held for the DAO).
+// The full slash residual lands in the keyless reserve
+// (params.ProtocolSlashReserveAccount) — destination change, no longer burned.
+// There is NO victim payout: the only slashable faults (double-block-sign,
+// invalid-block-proposal) are consensus-integrity faults with no fund victim,
+// so the reserve is a retained backstop only.
 type SafetySlashConsensusParams struct {
 	Account      string
 	SlashBps     int
 	TxID         string
 	BlockHeight  uint64
 	EvidenceKind string
-	Restitution  SlashRestitutionAllocator
-	// BurnDelayBlocks: if 0, the burn slice is written immediately to ProtocolSlashBurnAccount.
-	// If > 0, it sits on ProtocolSlashPendingBurnAccount until block height reaches
-	// BlockHeight+BurnDelayBlocks (see FinalizeMaturedSafetySlashBurns). Restitution is always immediate.
+	// BurnDelayBlocks: if 0, the residual is written immediately to the keyless
+	// reserve (ProtocolSlashReserveAccount) — and is then NOT reversible, since it
+	// is committed with no challenge window. If > 0, it sits on
+	// ProtocolSlashPendingBurnAccount until block height reaches
+	// BlockHeight+BurnDelayBlocks, then FinalizeMaturedSafetySlashBurns promotes it
+	// to the reserve (destination change — no longer burned). Name kept
+	// ("BurnDelay") for compatibility.
 	BurnDelayBlocks uint64
 }
 
@@ -118,9 +100,13 @@ type CancelPendingSafetySlashBurnParams struct {
 }
 
 // ReverseSafetySlashConsensusDebitParams re-credits a previously debited
-// HIVE_CONSENSUS bond. Use after CancelPendingSafetySlashBurnParams to fully
-// undo a slash, or alone when a finalized burn has already been processed but
-// governance still wants to make the validator whole from another source.
+// HIVE_CONSENSUS bond. The intended use is via the reverse-handler's "both"
+// action (cancel the pending residual, then re-credit the bond) to undo a slash
+// DURING the challenge window. Once the residual has been committed to the
+// keyless reserve (matured, or written immediately when BurnDelayBlocks==0), the
+// reverse cap yields 0 headroom — it cannot re-credit committed value, because
+// the reserve RETAINS it and re-crediting would mint. The apply path enforces
+// this cap; this primitive does not look up the original debit itself.
 type ReverseSafetySlashConsensusDebitParams struct {
 	// TxID of the original slash.
 	TxID string
@@ -145,41 +131,6 @@ type ReverseSafetySlashConsensusDebitParams struct {
 	// row (the legacy single-shot behaviour) — which is still correct
 	// when there is exactly one reverse ever issued.
 	OpInstanceID string
-}
-
-// EnqueueRestitutionClaimParams persists a restitution claim as a ledger row
-// on params.ProtocolSlashRestitutionClaimsAccount so future
-// SafetySlashConsensusBond calls allocate liquid HIVE FIFO from the queue
-// rather than burning the entire slash. The on-ledger queue is the
-// consensus-safe replacement for the in-memory MemoryRestitutionQueue:
-// every node sees the same claims after replay because the rows are part
-// of the deterministic ledger.
-//
-// All claims are submitted via the vsc.restitution_claim block-content tx,
-// which the witness committee signs with a 2/3 BLS aggregate. Per-claim
-// validation (slash row exists, amount within slash residual, optional
-// victim_tx_id verification) happens in the chain-op handler before this
-// primitive is called.
-type EnqueueRestitutionClaimParams struct {
-	// ClaimID is the deterministic identifier; replays upsert by this ID.
-	// The chain-op handler builds it from the carrying block + tx index so
-	// retries within the same block are stable.
-	ClaimID string
-	// VictimAccount is the recipient credited when the queue allocates.
-	// Stored normalized ("hive:<name>").
-	VictimAccount string
-	// SlashTxID is the original safety_slash_consensus row this claim is
-	// scoped to. Mainly explanatory; the allocator does not enforce
-	// per-slash quotas in this version.
-	SlashTxID string
-	// LossHive is the amount in satoshi-HIVE the claim is asking to be
-	// restituted from future slashes. Must be > 0.
-	LossHive int64
-	// BlockHeight at which the claim was enqueued (the carrying block).
-	BlockHeight uint64
-	// TxID of the carrying block-content tx (for traceability + idempotency
-	// id derivation).
-	TxID string
 }
 
 type LedgerResult struct {
@@ -270,12 +221,6 @@ type LedgerSystem interface {
 	// by a previous SafetySlashConsensusBond call. Idempotent per
 	// (TxID, EvidenceKind, Account) tuple.
 	ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult
-	// EnqueueRestitutionClaim persists a victim's restitution claim as a
-	// ledger row on params.ProtocolSlashRestitutionClaimsAccount. The row
-	// becomes part of the consensus-safe FIFO queue read by
-	// OnLedgerRestitutionAllocator the next time a slash fires. Idempotent
-	// per ClaimID — replays upsert the same row.
-	EnqueueRestitutionClaim(p EnqueueRestitutionClaimParams) LedgerResult
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState
