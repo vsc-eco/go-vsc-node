@@ -13,7 +13,10 @@ USER app
 # Set the working directory inside the container
 WORKDIR /home/app/app
 
-# Install Wasmedge: pin to immutable release tag + SHA-256 verify (matches main Dockerfile)
+# Install Wasmedge — pin the installer to the 0.13.4 release tag (NOT mutable
+# master) and verify its SHA256 before executing, so a compromise of
+# WasmEdge/master cannot inject an RCE into the build. Mirrors the main
+# Dockerfile fix (commit 27ea7091); audit H-16.
 RUN curl -sSfL https://raw.githubusercontent.com/WasmEdge/WasmEdge/0.13.4/utils/install.sh -o /tmp/wasmedge-install.sh && \
     echo "89460d9ea15f097e2831c099ee8adb6975b9ffff8a919b33874a655cd54420c0  /tmp/wasmedge-install.sh" | sha256sum -c - && \
     bash /tmp/wasmedge-install.sh -v 0.13.4 && \

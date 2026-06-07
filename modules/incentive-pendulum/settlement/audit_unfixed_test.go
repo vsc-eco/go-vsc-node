@@ -74,15 +74,15 @@ func TestAuditFix_52_ChainAdvancesOnFullReduction(t *testing.T) {
 // Precondition: on an empty-activity epoch (BucketBalanceHBD == 0),
 // ComposeRecord takes the marker-only fast path at compose.go:62-76:
 //
-//     if in.BucketBalanceHBD == 0 {
-//         rec := BuildSettlementRecord(
-//             in.Epoch, in.PrevEpoch, in.EpochStartBh, in.SlotHeight,
-//             0, 0, 0,
-//             nil, // reductions discarded
-//             nil, // distributions discarded
-//         )
-//         return &rec, nil
-//     }
+//	if in.BucketBalanceHBD == 0 {
+//	    rec := BuildSettlementRecord(
+//	        in.Epoch, in.PrevEpoch, in.EpochStartBh, in.SlotHeight,
+//	        0, 0, 0,
+//	        nil, // reductions discarded
+//	        nil, // distributions discarded
+//	    )
+//	    return &rec, nil
+//	}
 //
 // Any non-zero reductions in ReductionsByAccount are silently dropped — the
 // per-epoch penalty evidence (block_production / attestation / tss_* tick
@@ -162,7 +162,7 @@ func TestAuditFix_122_BondReaderMinAcrossWindow(t *testing.T) {
 	const epochStartBh uint64 = 1000
 	const slotHeight uint64 = 2000
 
-	bonds := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
+	bonds, _ := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
 
 	if got, present := bonds["hive:alice"]; present {
 		t.Fatalf("audit #122: expected flash-staker to be omitted (min-bond = 0), got %d", got)
@@ -192,7 +192,7 @@ func TestAuditFix_122_BondReaderHonestStakerKeepsBond(t *testing.T) {
 	}
 	const epochStartBh uint64 = 1000
 	const slotHeight uint64 = 2000
-	bonds := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
+	bonds, _ := ReadCommitteeBonds(reader, []string{"hive:alice"}, epochStartBh, slotHeight)
 	if got := bonds["hive:alice"]; got != 1_000_000 {
 		t.Fatalf("audit #122: honest staker must keep full bond, got %d", got)
 	}

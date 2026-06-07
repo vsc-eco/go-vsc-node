@@ -1133,8 +1133,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 			participants = filtered
 
-			// Pre-flight gate: need threshold+1 participants after all
-			// deterministic exclusions (blame, ban, gossip readiness).
+			// Pre-flight gate (audit R1 — LOAD-BEARING, do NOT weaken): need
+			// threshold+1 participants after all deterministic exclusions (blame,
+			// ban, gossip readiness). This floor + the dispatcher recover() — NOT
+			// any "the library realigns Ks by construction" assumption — are what
+			// keep the btss signing party count valid and bar the
+			// PrepareForSigning `len(ks) != pax` crash (see .claude/CLAUDE.md
+			// Example C). origThreshold uses origSignCommitteeSize (the FULL
+			// pre-filter committee) so the floor matches the key's polynomial
+			// degree. Weakening this gate re-introduces the panic.
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
@@ -1680,7 +1687,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						deployOp,
 					})
 					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
-					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
+					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+					if signErr != nil {
+						// M-8: do NOT AddSig+Broadcast an unsigned tx — Hive
+						// rejects it and the tss_sign silently never lands,
+						// stalling the request. Surface and skip.
+						log.Error("tss_sign: hive tx signing failed; not broadcasting", "err", signErr)
+						return
+					}
 					hiveTx.AddSig(sig)
 					txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
 					if err != nil {
@@ -1814,13 +1828,20 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						deployOp,
 					})
 					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
-					sig, _ := tssMgr.hiveClient.Sign(hiveTx)
-					hiveTx.AddSig(sig)
-					_, err = tssMgr.hiveClient.Broadcast(hiveTx)
-					if err != nil {
-						log.Error("Hive broadcast failed", "blockHeight", bh, "err", err)
+					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+					if signErr != nil {
+						// M-8: skip the broadcast on a signing failure rather than
+						// AddSig+Broadcast an unsigned tx — Hive rejects it and the
+						// tss_commitment silently never lands, stalling the epoch.
+						log.Error("tss_commitment: hive tx signing failed; not broadcasting", "blockHeight", bh, "err", signErr)
 					} else {
-						log.Info("Hive broadcast OK", "blockHeight", bh)
+						hiveTx.AddSig(sig)
+						_, err = tssMgr.hiveClient.Broadcast(hiveTx)
+						if err != nil {
+							log.Error("Hive broadcast failed", "blockHeight", bh, "err", err)
+						} else {
+							log.Info("Hive broadcast OK", "blockHeight", bh)
+						}
 					}
 				}
 			}

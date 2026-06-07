@@ -1538,8 +1538,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 var errNoConsensusBlsKey = errors.New("no consensus BLS key in announce")
 
 func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) error {
+	// Select the SAME key the election will elect + PoP-verify: the first
+	// Type=="consensus" DidKey, ct-agnostic (matches Witness.ConsensusKey /
+	// VerifyConsensusPoP, audit H-6 NIT). Inspecting a different key here than
+	// the election elects could warn-OK a witness whose elected key actually
+	// fails PoP. VerifyBlsPoP rejects any non-BLS key string, so a non-BLS
+	// consensus key fails here exactly as it would at election time.
 	for _, k := range meta.DidKeys {
-		if k.CryptoType == "DID-BLS" && k.Type == "consensus" {
+		if k.Type == "consensus" {
 			return dids.VerifyBlsPoP(dids.BlsDID(k.Key), account, k.PoP)
 		}
 	}

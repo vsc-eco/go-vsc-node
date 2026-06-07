@@ -243,7 +243,12 @@ func TestFixGVL2_TotalAvgOverflowStillDistributes(t *testing.T) {
 	}
 
 	ls, ledgerDbMock, claimDbMock := buildLedgerSystem(balances)
-	ls.ClaimHBDInterest(0, bh, amount, "tx-gvl2")
+	// lastClaim=1 (a prior claim exists): observedApr is only computed when
+	// lastClaim>0 (the first claim has no prior period to annualize over — see
+	// ClaimHBDInterest and TestClaimHBDInterest_ObservedApr_NoPriorClaimIsZero),
+	// so a positive lastClaim is required to exercise the GV-L2 big.Float path
+	// asserted below.
+	ls.ClaimHBDInterest(1, bh, amount, "tx-gvl2")
 
 	credited := sumInterestCredited(ledgerDbMock)
 	if credited <= 0 {
