@@ -121,10 +121,17 @@ func (ls *ledgerSystem) PendulumDistribute(
 const (
 	// LedgerTypeSafetySlashConsensus debits HIVE_CONSENSUS bond for safety faults.
 	LedgerTypeSafetySlashConsensus = "safety_slash_consensus"
-	// LedgerTypeSafetySlashRestitution credits liquid HIVE to a harmed party.
-	LedgerTypeSafetySlashRestitution = "safety_slash_restitution"
 	// LedgerTypeSafetySlashHiveBurn is audit-only; must not count as spendable HIVE.
 	LedgerTypeSafetySlashHiveBurn = "safety_slash_hive_burn"
+	// LedgerTypeSafetySlashReserve credits the safety-slash residual to the
+	// keyless insurance reserve (ProtocolSlashReserveAccount) INSTEAD of burning
+	// it (destination change). The reserve is a keyless, no-owner INSURANCE
+	// backstop with no extraction path — value never leaves it; it is NOT part
+	// of the V/E collateral computation (the bond is collateral). Audit-only:
+	// MUST be excluded from both spendable-HIVE aggregation sites (GetBalance
+	// allow-list AND UpdateBalances deny-list switch), exactly like the burn
+	// op-type, or the reserve would mint spendable HIVE.
+	LedgerTypeSafetySlashReserve = "safety_slash_reserve"
 	// LedgerTypeSafetySlashHiveBurnPending holds delayed burn on ProtocolSlashPendingBurnAccount.
 	LedgerTypeSafetySlashHiveBurnPending = "safety_slash_hive_burn_pending"
 	// LedgerTypeSafetySlashHiveBurnPendingRelease nets out pending when promoting to final burn.
@@ -146,19 +153,6 @@ const (
 	// as a decimal string) used by FinalizeMaturedSafetySlashBurns to bound
 	// its scan window. Replaced (upserted by Id) every tick the cursor moves.
 	LedgerTypeSafetySlashBurnFinalizeCursor = "safety_slash_burn_finalize_cursor"
-
-	// LedgerTypeSafetyRestitutionClaim is the on-ledger FIFO queue entry for
-	// victim restitution claims. Owner=ProtocolSlashRestitutionClaimsAccount,
-	// asset=hive, Amount=remaining claim balance (positive = unconsumed),
-	// From=normalized victim account. Idempotent per ClaimID via deterministic
-	// row Id.
-	LedgerTypeSafetyRestitutionClaim = "safety_restitution_claim"
-
-	// LedgerTypeSafetyRestitutionClaimConsumed marks how much of a claim was
-	// drawn down by a particular slash. Owner=ProtocolSlashRestitutionClaimsAccount,
-	// Amount=signed-debit of remaining claim balance. Replays converge via
-	// deterministic id (claim row id + "#consumed#" + slashTxID + "#" + kind).
-	LedgerTypeSafetyRestitutionClaimConsumed = "safety_restitution_claim_consumed"
 
 	// safetySlashFinalizeCursorRowID is the deterministic Id used for the
 	// single cursor row. Repeating writes upsert the same row.
@@ -204,8 +198,11 @@ func normalizeHiveConsensusAccount(a string) string {
 }
 
 // SafetySlashConsensusBond removes up to SlashBps/10000 of the account's current
-// HIVE_CONSENSUS bond. The same amount is split between optional FIFO restitution
-// (liquid HIVE to victims) and protocol burn on params.ProtocolSlashBurnAccount.
+// HIVE_CONSENSUS bond. The full slashed amount is the residual, which lands in
+// the keyless reserve on params.ProtocolSlashReserveAccount (destination change
+// — no longer burned; the reserve is a retained backstop with no extraction
+// path). There is no victim payout: the only slashable faults are
+// consensus-integrity faults with no fund victim.
 // Deterministic ledger ids make replay idempotent.
 func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult {
 	acct := normalizeHiveConsensusAccount(p.Account)
@@ -234,7 +231,14 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	}
 	bond := rec.HIVE_CONSENSUS
 
-	slashAmt := (bond * int64(p.SlashBps)) / 10000
+	// slashAmt = bond·SlashBps/10000, computed overflow-safe. The naive
+	// `bond*SlashBps` overflows int64 once bond > MaxInt64/10000 (~9.2e14 sats,
+	// far above HIVE supply, so unreachable today) and would wrap negative,
+	// silently turning a real slash into a "rounds to zero" no-op (a guilty
+	// validator goes unslashed). Splitting the division avoids the large
+	// intermediate product — exact integer floor, identical result, no overflow,
+	// deterministic. (bond = 10000·q + r ⇒ bond·bps/10000 = q·bps + r·bps/10000.)
+	slashAmt := (bond/10000)*int64(p.SlashBps) + ((bond%10000)*int64(p.SlashBps))/10000
 	if slashAmt <= 0 {
 		return LedgerResult{Ok: false, Msg: "slash rounds to zero"}
 	}
@@ -242,30 +246,9 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 		slashAmt = bond
 	}
 
-	payments, burnAmt := ([]SlashRestitutionPayment)(nil), slashAmt
-	if p.Restitution != nil {
-		payments, burnAmt = p.Restitution.AllocateHive(slashAmt, p.BlockHeight, p.TxID, p.EvidenceKind, acct)
-	}
-	var paid int64
-	for _, pay := range payments {
-		if pay.Amount <= 0 {
-			return LedgerResult{Ok: false, Msg: "invalid restitution amount"}
-		}
-		victim := normalizeHiveConsensusAccount(pay.VictimAccount)
-		if victim == "" {
-			return LedgerResult{Ok: false, Msg: "invalid restitution victim"}
-		}
-		if pay.Amount > math.MaxInt64-paid {
-			return LedgerResult{Ok: false, Msg: "restitution sum overflow"}
-		}
-		paid += pay.Amount
-	}
-	if burnAmt < 0 {
-		return LedgerResult{Ok: false, Msg: "invalid slash burn amount"}
-	}
-	if paid+burnAmt != slashAmt {
-		return LedgerResult{Ok: false, Msg: "slash allocation does not reconcile"}
-	}
+	// The full slashed amount is the residual; it is committed to the keyless
+	// reserve (immediately, or via the pending challenge window below).
+	burnAmt := slashAmt
 
 	baseID := p.TxID + "#safety_slash#" + p.EvidenceKind
 	records := []ledger_db.LedgerRecord{
@@ -279,33 +262,19 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			Type:        LedgerTypeSafetySlashConsensus,
 		},
 	}
-	for i, pay := range payments {
-		victim := normalizeHiveConsensusAccount(pay.VictimAccount)
-		idSuffix := strings.TrimSpace(pay.ClaimID)
-		if idSuffix == "" {
-			idSuffix = "_"
-		}
-		// Payment index is always included so duplicate ClaimID+victim in one slash cannot collide.
-		records = append(records, ledger_db.LedgerRecord{
-			Id:          baseID + "#restitution#i" + strconv.Itoa(i) + "#" + idSuffix + "#" + victim,
-			TxId:        p.TxID,
-			BlockHeight: p.BlockHeight,
-			Amount:      pay.Amount,
-			Asset:       "hive",
-			Owner:       victim,
-			Type:        LedgerTypeSafetySlashRestitution,
-		})
-	}
 	if burnAmt > 0 {
 		if p.BurnDelayBlocks == 0 {
+			// Destination change: residual lands in the keyless reserve, not the
+			// burn sink. Id keeps the baseID prefix so alreadyFinalizedToReserveAmt
+			// (the reverse cap) sees it.
 			records = append(records, ledger_db.LedgerRecord{
-				Id:          baseID + "#hive_burn#" + acct,
+				Id:          baseID + "#reserve#" + acct,
 				TxId:        p.TxID,
 				BlockHeight: p.BlockHeight,
 				Amount:      burnAmt,
 				Asset:       "hive",
-				Owner:       params.ProtocolSlashBurnAccount,
-				Type:        LedgerTypeSafetySlashHiveBurn,
+				Owner:       params.ProtocolSlashReserveAccount,
+				Type:        LedgerTypeSafetySlashReserve,
 			})
 		} else {
 			delay := p.BurnDelayBlocks
@@ -462,13 +431,17 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				Type:        LedgerTypeSafetySlashHiveBurnPendingRelease,
 			},
 			ledger_db.LedgerRecord{
-				Id:          rec.Id + "#promoted_to_burn",
+				// Destination change: matured residual is promoted to the keyless
+				// reserve instead of the burn sink. rec.Id (the pending row) keeps
+				// the baseID prefix so the reverse cap's alreadyFinalizedToReserveAmt
+				// prefix match still bounds reversals.
+				Id:          rec.Id + "#promoted_to_reserve",
 				TxId:        rec.TxId,
 				BlockHeight: blockHeight,
 				Amount:      rec.Amount,
 				Asset:       "hive",
-				Owner:       params.ProtocolSlashBurnAccount,
-				Type:        LedgerTypeSafetySlashHiveBurn,
+				Owner:       params.ProtocolSlashReserveAccount,
+				Type:        LedgerTypeSafetySlashReserve,
 			},
 			ledger_db.LedgerRecord{
 				Id:          rec.Id + "#finalized_marker",
@@ -666,63 +639,6 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 		Type:        LedgerTypeSafetySlashConsensusReverse,
 	})
 	return LedgerResult{Ok: true, Msg: "reverse credit recorded"}
-}
-
-// restitutionClaimRowID returns the deterministic Id for a claim row. Used
-// by both EnqueueRestitutionClaim (write) and OnLedgerRestitutionAllocator
-// (read + consume marker derivation) so replays converge.
-func restitutionClaimRowID(claimID string) string {
-	return "safety_restitution_claim#" + strings.TrimSpace(claimID)
-}
-
-// EnqueueRestitutionClaim writes a restitution claim row on
-// params.ProtocolSlashRestitutionClaimsAccount. Idempotent per ClaimID:
-// re-enqueueing the same claim upserts the same row, which is critical for
-// chain replay since the carrying block-content tx may be observed multiple
-// times during catch-up.
-func (ls *ledgerSystem) EnqueueRestitutionClaim(p EnqueueRestitutionClaimParams) LedgerResult {
-	if ls.LedgerDb == nil {
-		return LedgerResult{Ok: false, Msg: "ledger not configured"}
-	}
-	cid := strings.TrimSpace(p.ClaimID)
-	victim := normalizeHiveAcct(p.VictimAccount)
-	if cid == "" || victim == "" {
-		return LedgerResult{Ok: false, Msg: "claim id and victim account are required"}
-	}
-	if p.LossHive <= 0 {
-		return LedgerResult{Ok: false, Msg: "claim loss must be positive"}
-	}
-	tx := strings.TrimSpace(p.TxID)
-	if tx == "" {
-		// TxID is forwarded verbatim into the row's TxId field for
-		// explorer attribution; if missing, fall back to the ClaimID.
-		tx = cid
-	}
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-		Id:          restitutionClaimRowID(cid),
-		TxId:        tx,
-		BlockHeight: p.BlockHeight,
-		Amount:      p.LossHive,
-		Asset:       "hive",
-		Owner:       params.ProtocolSlashRestitutionClaimsAccount,
-		From:        victim,
-		Type:        LedgerTypeSafetyRestitutionClaim,
-	})
-	return LedgerResult{Ok: true, Msg: "claim enqueued"}
-}
-
-// normalizeHiveAcct mirrors normalizeHiveAccount in state-processing for
-// the ledger-system package boundary. We intentionally keep the function
-// local rather than depending on state-processing to avoid an import cycle.
-func normalizeHiveAcct(s string) string {
-	v := strings.TrimSpace(s)
-	if v == "" {
-		return ""
-	}
-	if strings.HasPrefix(v, "hive:") {
-		return v
-	}
-	return "hive:" + v
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and

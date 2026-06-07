@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -150,20 +151,22 @@ type StateEngine struct {
 	// divergent CID. See WaitForProcessedHeight for the consumer API.
 	lastProcessedHeight atomic.Uint64
 
-	// slashRestitution pays harmed parties from safety slashes (FIFO);
-	// remainder is burned. Production wiring uses
-	// safetyslash.OnLedgerRestitutionAllocator (consensus-safe, reads
-	// claim rows from ProtocolSlashRestitutionClaimsAccount written by
-	// the vsc.restitution_claim chain op handler). The legacy
-	// MemoryRestitutionQueue is kept as a SlashRestitutionAllocator
-	// implementation only for tests that pre-date the on-ledger queue
-	// — see enqueueSlashRestitutionClaimForTest.
-	slashRestitution ledgerSystem.SlashRestitutionAllocator
 	// safetyEvidenceSeen deduplicates evidence events per account+kind+evidenceID.
 	// Backstop only — the underlying ledger ids in SafetySlashConsensusBond are
 	// deterministic and Mongo upserts on (id), so replay never double-debits even
 	// when this in-memory map is empty (post-restart).
 	safetyEvidenceSeen map[string]uint64
+	// slashReverseSink receives governance-submitted wrongful-slash cancellation
+	// requests (vsc.safety_slash_reverse) that this node observes on L1, queuing
+	// them for inclusion in a future block this node leads. The witness-local
+	// governance pool (block-producer) implements it and is wired in via
+	// SetSlashReverseSink at construction. Nil on non-producer paths (indexers,
+	// tests) — the L1 handler no-ops when nil. This is the production on-ramp for
+	// the Polkadot-style slash cancellation: governance posts an L1 op, every
+	// node that sees it enqueues the same record, whichever node next leads
+	// includes it, and the carrying block's 2/3 BLS aggregate is the authority
+	// (applySafetySlashReverse re-validates against ledger state at apply).
+	slashReverseSink SlashReverseSink
 	// seenProposalBySlotProposer tracks first observed block content per (slot, proposer)
 	// to detect conflicting proposals in the same slot deterministically.
 	//
@@ -500,8 +503,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if !ok {
 						// GV-H9: a malformed/replayed fr_sync carrying a negative
 						// amount is rejected, not applied — see frSyncLedgerAmount.
-						log.Warn("fr_sync: rejecting op with negative amount(s)",
-							"txId", tx.TransactionID, "stake_amt", frSync.StakedAmount, "unstake_amt", frSync.UnstakedAmount)
+						log.Warn(
+							"fr_sync: rejecting op with negative amount(s)",
+							"txId",
+							tx.TransactionID,
+							"stake_amt",
+							frSync.StakedAmount,
+							"unstake_amt",
+							frSync.UnstakedAmount,
+						)
 					} else if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 						Id:          MakeTxId(tx.TransactionID, 0),
 						Amount:      amt,
@@ -515,7 +525,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
-				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() && !se.chainProcessingSuspended() {
+				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() &&
+					!se.chainProcessingSuspended() {
 					actionUpdate := map[string]interface{}{}
 					err := json.Unmarshal(cj.Json, &actionUpdate)
 
@@ -524,6 +535,46 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							BlockHeight: block.BlockNumber,
 							ActionId:    tx.TransactionID,
 						})
+					}
+				}
+
+				// vsc.safety_slash_reverse: the production on-ramp for the
+				// Polkadot-style wrongful-slash cancellation, voted by governance.
+				// Magi has no separate DAO; its protocol-governance authority is the
+				// gateway multisig (se.sconf.GatewayWallet()), the same account that
+				// authorizes vsc.fr_sync / vsc.actions above — so a governance vote
+				// to reverse a wrongful slash is a gateway-multisig-signed custom_json
+				// carrying a SafetySlashReverseRecord (the multisig threshold IS the
+				// vote). This handler only QUEUES it: an L1 op is REQUIRED because
+				// signers re-derive each block from their own pool and reject on CID
+				// mismatch (blockProducer.go HandleBlockMsg), so the reverse must be a
+				// shared signal every witness observes on L1 — they all enqueue the
+				// identical record, whichever node next leads includes it, and that
+				// block's 2/3 BLS aggregate ratifies it. The actual ledger effect
+				// (cancel pending burn + re-credit bond, bounded so it cannot mint;
+				// only a wrongly-slashed bond is RESTORED — funds cannot be moved
+				// elsewhere, the reserve has no extraction) happens later in
+				// applySafetySlashReverse, which independently re-validates against
+				// canonical ledger state. If governance does not reverse within the
+				// challenge window (DefaultSafetySlashBurnDelayBlocks ~3 days), the
+				// residual matures into the keyless insurance reserve and is no longer
+				// reversible. No-op on indexer/test paths where no producer pool is
+				// wired (sink == nil). (RequiredAuths[0] and GatewayWallet() are both
+				// bare L1 account names — no prefix normalization needed, matching the
+				// fr_sync/actions gates above.)
+				if Id == "vsc.safety_slash_reverse" && RequiredAuths[0] == se.sconf.GatewayWallet() &&
+					se.slashReverseSink != nil {
+					var rec safetyslash.SafetySlashReverseRecord
+					if err := json.Unmarshal(cj.Json, &rec); err != nil {
+						log.Warn("vsc.safety_slash_reverse: malformed payload; ignoring",
+							"tx", tx.TransactionID, "err", err)
+					} else if !se.slashReverseSink.EnqueueSlashReverse(rec.Normalize()) {
+						log.Warn("vsc.safety_slash_reverse: rejected by pool (bad shape); ignoring",
+							"tx", tx.TransactionID, "slash_tx_id", rec.SlashTxID, "action", rec.Action)
+					} else {
+						log.Info("vsc.safety_slash_reverse: queued governance cancellation request",
+							"tx", tx.TransactionID, "slash_tx_id", rec.SlashTxID,
+							"action", rec.Action, "slashed", rec.SlashedAccount)
 					}
 				}
 			}
@@ -569,8 +620,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// cannot split state ingestion; the only residual effect is on what a
 					// node would propose/sign.
 					if witnessAnnounceHasRogueBlsKey(rawJson, acct) {
-						se.warnSync(blockInfo.BlockHeight, "witness announce REJECTED: consensus BLS key failed proof-of-possession (rogue-key guard)",
-							"account", acct, "txId", tx.TransactionID)
+						se.warnSync(
+							blockInfo.BlockHeight,
+							"witness announce REJECTED: consensus BLS key failed proof-of-possession (rogue-key guard)",
+							"account",
+							acct,
+							"txId",
+							tx.TransactionID,
+						)
 						continue
 					}
 					inputData := witnesses.SetWitnessUpdateType{
@@ -913,12 +970,18 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			// isUnsupportedGatewaySavingsDeposit).
 			if toStr, _ := op.Value["to"].(string); isUnsupportedGatewaySavingsDeposit(op.Type, toStr) {
 				fromStr, _ := op.Value["from"].(string)
-				log.Warn("review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
-					"tx", tx.TransactionID,
-					"op", opIndex,
-					"from", fromStr,
-					"amount", op.Value["amount"],
-					"blockHeight", blockInfo.BlockHeight,
+				log.Warn(
+					"review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
+					"tx",
+					tx.TransactionID,
+					"op",
+					opIndex,
+					"from",
+					fromStr,
+					"amount",
+					op.Value["amount"],
+					"blockHeight",
+					blockInfo.BlockHeight,
 				)
 				continue
 			}
@@ -2635,7 +2698,6 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		ContractResults:               make(map[string][]ContractResult),
 		TempOutputs:                   make(map[string]*contract_session.TempOutput),
 		TxOutIds:                      make([]string, 0),
-		slashRestitution:              safetyslash.NewOnLedgerRestitutionAllocator(ledgerDb),
 		safetyEvidenceSeen:            make(map[string]uint64),
 		seenProposalBySlotProposer:    make(map[string]string),
 		slashIncidentBpsBySlotAccount: make(map[string]int),
@@ -2710,13 +2772,34 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	return se
 }
 
+// SlashReverseSink receives governance-submitted wrongful-slash cancellation
+// requests observed on L1 and queues them for inclusion in a future block. The
+// witness-local governance pool (block-producer's PendingGovernanceOps)
+// satisfies this. Kept as a narrow interface so the state engine does not
+// import the block-producer (avoids an import cycle) and so non-producer paths
+// can leave it nil.
+type SlashReverseSink interface {
+	EnqueueSlashReverse(rec safetyslash.SafetySlashReverseRecord) bool
+}
+
+// SetSlashReverseSink wires the governance pool that L1-observed
+// vsc.safety_slash_reverse requests are enqueued into. Called once at
+// construction by the block producer (which owns the pool). Idempotent;
+// safe to leave unset on indexer/test paths (the L1 handler no-ops on nil).
+func (se *StateEngine) SetSlashReverseSink(sink SlashReverseSink) {
+	if se == nil {
+		return
+	}
+	se.slashReverseSink = sink
+}
+
 // applyPrincipalSlashForProvableEvidence debits HIVE_CONSENSUS for a single
 // evidence line. Currently invoked only by block-production safety detectors
 // (double-block-sign and invalid-block-proposal); other on-chain signals like
 // TSS blame and oracle quote divergence are routed to the liveness path
 // instead — see modules/incentive-pendulum/safety_slash/policy.go.
-// Uses the shared restitution queue and delayed-burn policy so behaviour
-// stays uniform if additional provable detectors are added later.
+// Uses the shared delayed-burn policy so behaviour stays uniform if
+// additional provable detectors are added later.
 func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 	accountHive string,
 	slashBps int,
@@ -2733,9 +2816,35 @@ func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 		TxID:            txID,
 		BlockHeight:     blockHeight,
 		EvidenceKind:    evidenceKind,
-		Restitution:     se.slashRestitution,
-		BurnDelayBlocks: safetyslash.DefaultSafetySlashBurnDelayBlocks,
+		BurnDelayBlocks: se.safetySlashBurnDelayBlocks(),
 	})
+}
+
+// safetySlashBurnDelayBlocks returns the pending-burn challenge-window length
+// for a new safety slash. It is the production constant
+// (safetyslash.DefaultSafetySlashBurnDelayBlocks) on mainnet, and unconditionally
+// so — there is NO env override on mainnet. Off mainnet ONLY (devnet/testnet),
+// the integration-test harness may shorten or lengthen the window via the
+// VSC_SLASH_BURN_DELAY env var (parsed as a uint64 number of blocks), clamped to
+// params.MaxSafetySlashBurnDelayBlocks. This lets devnet tests either mature the
+// residual fast (reserve-destination proof) or hold it pending long enough to
+// post a wrongful-slash reversal (governance-reverse proof) without waiting the
+// production window. A missing/blank/unparseable value falls back to the
+// production default, so a misconfigured devnet node behaves exactly like
+// production rather than silently disabling the delay.
+func (se *StateEngine) safetySlashBurnDelayBlocks() uint64 {
+	delay := safetyslash.DefaultSafetySlashBurnDelayBlocks
+	if se != nil && se.sconf != nil && !se.sconf.OnMainnet() {
+		if raw := strings.TrimSpace(os.Getenv("VSC_SLASH_BURN_DELAY")); raw != "" {
+			if parsed, err := strconv.ParseUint(raw, 10, 64); err == nil {
+				if parsed > params.MaxSafetySlashBurnDelayBlocks {
+					parsed = params.MaxSafetySlashBurnDelayBlocks
+				}
+				delay = parsed
+			}
+		}
+	}
+	return delay
 }
 
 func (se *StateEngine) evidenceKey(accountHive, kind string) string {
@@ -3068,36 +3177,4 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 		out = append(out, acct)
 	}
 	return out
-}
-
-// enqueueSlashRestitutionClaimForTest registers remaining HIVE loss owed to a
-// victim. Payouts are sourced from future safety-slash proceeds (FIFO) before
-// protocol burn.
-//
-// CONSENSUS WARNING: this method is intentionally unexported. It only takes
-// effect when the underlying allocator is the legacy
-// safetyslash.MemoryRestitutionQueue — tests that pre-date the on-ledger
-// queue swap that allocator in via SetSlashRestitutionForTest. In production
-// the allocator is safetyslash.OnLedgerRestitutionAllocator and claims arrive
-// via the vsc.restitution_claim block-content tx (LedgerSystem.EnqueueRestitutionClaim);
-// this helper is a no-op in that wiring, which is the desired behaviour.
-func (se *StateEngine) enqueueSlashRestitutionClaimForTest(c ledgerSystem.SlashRestitutionClaim) {
-	if se == nil || se.slashRestitution == nil {
-		return
-	}
-	if mq, ok := se.slashRestitution.(*safetyslash.MemoryRestitutionQueue); ok {
-		mq.Enqueue(c)
-	}
-}
-
-// SetSlashRestitutionForTest replaces the slash restitution allocator with
-// a caller-provided implementation. Only intended for unit tests that need
-// to assert behaviour against an in-memory queue rather than the on-ledger
-// allocator. Production paths must stay on
-// safetyslash.OnLedgerRestitutionAllocator (the wiring set in newStateEngine).
-func (se *StateEngine) SetSlashRestitutionForTest(a ledgerSystem.SlashRestitutionAllocator) {
-	if se == nil {
-		return
-	}
-	se.slashRestitution = a
 }
