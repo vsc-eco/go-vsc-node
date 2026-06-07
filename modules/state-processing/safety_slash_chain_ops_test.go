@@ -1,7 +1,6 @@
 package state_engine_test
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -90,199 +89,6 @@ func (f *chainOpFixture) fireSlash(t *testing.T, txID string, blockHeight uint64
 	require.True(t, res.Ok, "fixture slash must succeed: %s", res.Msg)
 }
 
-func (f *chainOpFixture) claimRowsForVictim(victim string) []ledgerDb.LedgerRecord {
-	out := []ledgerDb.LedgerRecord{}
-	for _, r := range f.db.LedgerRecords[params.ProtocolSlashRestitutionClaimsAccount] {
-		if r.Type == ledgerSystem.LedgerTypeSafetyRestitutionClaim && r.From == victim {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// --- vsc.restitution_claim handler tests ------------------------------------
-
-func TestApplyRestitutionClaim_HappyPath_NoHarmProof(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-1", 100, 0)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-1",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-1",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       30_000,
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "carrying-tx-1", 110)
-
-	rows := f.claimRowsForVictim("hive:bob")
-	require.Len(t, rows, 1, "happy path with no harm proof should enqueue a single claim row")
-	require.Equal(t, int64(30_000), rows[0].Amount)
-	require.Equal(t, "safety_restitution_claim#claim-1", rows[0].Id)
-}
-
-func TestApplyRestitutionClaim_DropsOnMissingSlashRow(t *testing.T) {
-	f := newChainOpFixture(t)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-x",
-		VictimAccount:  "bob",
-		SlashTxID:      "no-such-tx",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       1_000,
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 100)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"),
-		"missing safety_slash_consensus row must drop the claim")
-}
-
-func TestApplyRestitutionClaim_RejectsLossExceedingHeadroom(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-2", 100, 0)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-overflow",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-2",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       250_000,
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"),
-		"loss exceeding slash amount must drop the claim")
-}
-
-func TestApplyRestitutionClaim_RejectsNonPositiveLoss(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-3", 100, 0)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-zero",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-3",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       0,
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"))
-}
-
-func TestApplyRestitutionClaim_HarmProof_VerifiedClaimEnqueues(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-harm", 100, 0)
-
-	anchoredID := "slash-tx-harm"
-	pending := dbTransactions.TransactionStatusIncluded
-	f.tx.records["victim-tx"] = &dbTransactions.TransactionRecord{
-		Id:         "victim-tx",
-		Status:     pending,
-		AnchoredId: &anchoredID,
-	}
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-harm-1",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-harm",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       40_000,
-		VictimTxID:     "victim-tx",
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Len(t, f.claimRowsForVictim("hive:bob"), 1,
-		"verified harm proof should enqueue the claim")
-}
-
-func TestApplyRestitutionClaim_HarmProof_DropsOnMismatchedAnchorId(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-harm", 100, 0)
-
-	wrongAnchor := "different-anchor-tx"
-	pending := dbTransactions.TransactionStatusIncluded
-	f.tx.records["victim-tx"] = &dbTransactions.TransactionRecord{
-		Id:         "victim-tx",
-		Status:     pending,
-		AnchoredId: &wrongAnchor,
-	}
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-harm-2",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-harm",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       40_000,
-		VictimTxID:     "victim-tx",
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"),
-		"mismatched anchored id must drop the claim")
-}
-
-func TestApplyRestitutionClaim_HarmProof_DropsOnConfirmedVictim(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-harm", 100, 0)
-
-	anchoredID := "slash-tx-harm"
-	confirmed := dbTransactions.TransactionStatusConfirmed
-	f.tx.records["victim-tx"] = &dbTransactions.TransactionRecord{
-		Id:         "victim-tx",
-		Status:     confirmed,
-		AnchoredId: &anchoredID,
-	}
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-harm-3",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-harm",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       40_000,
-		VictimTxID:     "victim-tx",
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"),
-		"confirmed victim tx is no harm; claim must drop")
-}
-
-func TestApplyRestitutionClaim_HarmProof_DropsOnMissingVictimRecord(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-harm", 100, 0)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-harm-4",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-harm",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       40_000,
-		VictimTxID:     "missing-tx",
-	}
-	f.se.ApplyRestitutionClaimForTest(rec, "ctx", 110)
-	require.Empty(t, f.claimRowsForVictim("hive:bob"),
-		"missing victim tx record (unverifiable proof) must drop")
-}
-
-func TestApplyRestitutionClaim_Idempotent_SameClaimID(t *testing.T) {
-	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-tx-id", 100, 0)
-
-	rec := safetyslash.RestitutionClaimRecord{
-		ClaimID:        "claim-dup",
-		VictimAccount:  "bob",
-		SlashTxID:      "slash-tx-id",
-		SlashedAccount: "alice",
-		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
-		LossHive:       25_000,
-	}
-	for i := 0; i < 3; i++ {
-		f.se.ApplyRestitutionClaimForTest(rec, "ctx-"+strconv.Itoa(i), uint64(110+i))
-	}
-	rows := f.claimRowsForVictim("hive:bob")
-	require.Len(t, rows, 1, "duplicate ClaimID applies must upsert one row")
-}
-
 // --- vsc.safety_slash_reverse handler tests ---------------------------------
 
 func TestApplySafetySlashReverse_Cancel_RemovesPendingBurn(t *testing.T) {
@@ -313,14 +119,18 @@ func TestApplySafetySlashReverse_Cancel_RemovesPendingBurn(t *testing.T) {
 }
 
 func TestApplySafetySlashReverse_Reverse_CapsAtSlashAmount(t *testing.T) {
+	// Destination-change semantics: a legitimate reverse uses the pending
+	// challenge window (burnDelay>0) + ReverseActionBoth (cancel removes the
+	// pending residual from the reserve-path so the bond can be restored). An
+	// over-amount request must cap at the original slash amount.
 	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-rev", 100, 0)
+	f.fireSlash(t, "slash-rev", 100, 100)
 
 	rec := safetyslash.SafetySlashReverseRecord{
 		SlashTxID:      "slash-rev",
 		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
 		SlashedAccount: "alice",
-		Action:         safetyslash.ReverseActionReverse,
+		Action:         safetyslash.ReverseActionBoth,
 		Amount:         250_000,
 	}
 	f.se.ApplySafetySlashReverseForTest(rec, "ctx", 110)
@@ -337,13 +147,13 @@ func TestApplySafetySlashReverse_Reverse_CapsAtSlashAmount(t *testing.T) {
 
 func TestApplySafetySlashReverse_DoubleReverse_RespectsRunningTotal(t *testing.T) {
 	f := newChainOpFixture(t)
-	f.fireSlash(t, "slash-2x", 100, 0)
+	f.fireSlash(t, "slash-2x", 100, 100)
 
 	f.se.ApplySafetySlashReverseForTest(safetyslash.SafetySlashReverseRecord{
 		SlashTxID:      "slash-2x",
 		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
 		SlashedAccount: "alice",
-		Action:         safetyslash.ReverseActionReverse,
+		Action:         safetyslash.ReverseActionBoth,
 		Amount:         60_000,
 	}, "ctx-1", 110)
 
@@ -351,7 +161,7 @@ func TestApplySafetySlashReverse_DoubleReverse_RespectsRunningTotal(t *testing.T
 		SlashTxID:      "slash-2x",
 		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
 		SlashedAccount: "alice",
-		Action:         safetyslash.ReverseActionReverse,
+		Action:         safetyslash.ReverseActionBoth,
 		Amount:         80_000,
 		Reason:         "second-pass",
 	}, "ctx-2", 120)
@@ -364,6 +174,60 @@ func TestApplySafetySlashReverse_DoubleReverse_RespectsRunningTotal(t *testing.T
 	}
 	require.Equal(t, int64(100_000), totalReverse,
 		"running-total cap must hold across multiple reverse ops")
+}
+
+// TestApplySafetySlashReverse_ReverseOnlyDuringWindow_Blocked locks in audit
+// R2-F1: a reverse-only action during the challenge window must NOT re-credit
+// the bond, because the pending residual is still in-flight to the reserve
+// (uncancelledPendingResidualAmt counts it as committed). Otherwise the bond
+// would be restored AND the residual would still mature into the reserve — a
+// mint. To undo during the window, governance must use ReverseActionBoth.
+func TestApplySafetySlashReverse_ReverseOnlyDuringWindow_Blocked(t *testing.T) {
+	f := newChainOpFixture(t)
+	f.fireSlash(t, "slash-window", 100, 100) // residual sits pending, not yet reserve
+
+	f.se.ApplySafetySlashReverseForTest(safetyslash.SafetySlashReverseRecord{
+		SlashTxID:      "slash-window",
+		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
+		SlashedAccount: "alice",
+		Action:         safetyslash.ReverseActionReverse, // reverse-only: does NOT cancel pending
+		Amount:         100_000,
+	}, "ctx", 110)
+
+	totalReverse := int64(0)
+	for _, r := range f.db.LedgerRecords["hive:alice"] {
+		if r.Type == ledgerSystem.LedgerTypeSafetySlashConsensusReverse {
+			totalReverse += r.Amount
+		}
+	}
+	require.Equal(t, int64(0), totalReverse,
+		"reverse-only during the window must be blocked (pending residual is committed-in-flight)")
+}
+
+// TestApplySafetySlashReverse_ImmediateReserve_NotReversible locks in that a
+// burnDelay==0 slash (residual committed directly to the reserve, no challenge
+// window) is NOT reversible — even via Both — because the residual is already a
+// retained backstop in the reserve and re-crediting it would mint.
+func TestApplySafetySlashReverse_ImmediateReserve_NotReversible(t *testing.T) {
+	f := newChainOpFixture(t)
+	f.fireSlash(t, "slash-immediate", 100, 0) // residual lands directly in the reserve
+
+	f.se.ApplySafetySlashReverseForTest(safetyslash.SafetySlashReverseRecord{
+		SlashTxID:      "slash-immediate",
+		EvidenceKind:   safetyslash.EvidenceVSCDoubleBlockSign,
+		SlashedAccount: "alice",
+		Action:         safetyslash.ReverseActionBoth,
+		Amount:         100_000,
+	}, "ctx", 110)
+
+	totalReverse := int64(0)
+	for _, r := range f.db.LedgerRecords["hive:alice"] {
+		if r.Type == ledgerSystem.LedgerTypeSafetySlashConsensusReverse {
+			totalReverse += r.Amount
+		}
+	}
+	require.Equal(t, int64(0), totalReverse,
+		"immediate-reserve slash (burnDelay=0) must not be reversible")
 }
 
 func TestApplySafetySlashReverse_Both_CancelsAndCredits(t *testing.T) {

@@ -184,9 +184,18 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	log.Printf("[devnet] image build complete")
 
-	// Step 6: devnet-setup (writes node configs with drone as Hive API URL)
+	// Step 6: devnet-setup (writes node configs with drone as Hive API URL).
+	// DEVNET_DETERMINISTIC_BLS (if set in MagiEnv) must ALSO reach the
+	// devnet-setup container so it derives the deterministic per-witness BLS
+	// seed that matches the running magi nodes; inject it as a `run -e` env so
+	// the static compose file stays unchanged for normal runs.
+	setupArgs := []string{"run", "--rm"}
+	if v, ok := d.cfg.MagiEnv["DEVNET_DETERMINISTIC_BLS"]; ok && v != "" {
+		setupArgs = append(setupArgs, "-e", "DEVNET_DETERMINISTIC_BLS="+v)
+	}
+	setupArgs = append(setupArgs, "devnet-setup")
 	log.Printf("[devnet] running devnet-setup...")
-	if err := d.compose(ctx, "run", "--rm", "devnet-setup"); err != nil {
+	if err := d.compose(ctx, setupArgs...); err != nil {
 		return fmt.Errorf("devnet-setup: %w", err)
 	}
 

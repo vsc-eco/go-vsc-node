@@ -46,7 +46,12 @@ func blockingLedgerRead(what string, read func() error) {
 // error as "no records" would compute a balance from a partial read and fork
 // this node from peers. Block until the read succeeds and return a non-nil
 // slice.
-func (ls *LedgerState) ledgerRangeOrBlock(account string, start, end uint64, asset string, opTypes []string) []ledger_db.LedgerRecord {
+func (ls *LedgerState) ledgerRangeOrBlock(
+	account string,
+	start, end uint64,
+	asset string,
+	opTypes []string,
+) []ledger_db.LedgerRecord {
 	var out *[]ledger_db.LedgerRecord
 	blockingLedgerRead(fmt.Sprintf("GetLedgerRange(%s @%d %s)", account, end, asset), func() error {
 		r, err := ls.LedgerDb.GetLedgerRange(account, start, end, asset, ledger_db.LedgerOptions{OpType: opTypes})

@@ -49,9 +49,6 @@ func (s *stubLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPen
 func (s *stubLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.ReverseSafetySlashConsensusDebitParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
-func (s *stubLedgerSystem) EnqueueRestitutionClaim(p ledgerSystem.EnqueueRestitutionClaimParams) ledgerSystem.LedgerResult {
-	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
-}
 func (s *stubLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
 func (s *stubLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return nil
@@ -135,6 +132,9 @@ func newTestSlashingEngine() (*StateEngine, *stubLedgerSystem) {
 // TestSlashForEvidence_DoubleBlockSign covers the double-sign detector's
 // policy hand-off: first proof slashes, replay/duplicate evidence does not.
 func TestSlashForEvidence_DoubleBlockSign(t *testing.T) {
+	if !safetyslash.SafetySlashEnabled {
+		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
+	}
 	se, stub := newTestSlashingEngine()
 
 	res := se.slashForEvidenceIfPolicyAllows(
@@ -178,6 +178,9 @@ func TestSlashForEvidence_DoubleBlockSign(t *testing.T) {
 // TestSlashForEvidence_InvalidBlock covers the invalid-block detector's
 // policy hand-off.
 func TestSlashForEvidence_InvalidBlock(t *testing.T) {
+	if !safetyslash.SafetySlashEnabled {
+		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
+	}
 	se, stub := newTestSlashingEngine()
 
 	res := se.slashForEvidenceIfPolicyAllows(
@@ -204,6 +207,9 @@ func TestSlashForEvidence_InvalidBlock(t *testing.T) {
 // capped against CorrelatedSlashCapBps so the producer doesn't take two
 // independent 10% hits beyond the policy ceiling.
 func TestSlashForEvidence_CorrelatedIncident(t *testing.T) {
+	if !safetyslash.SafetySlashEnabled {
+		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
+	}
 	se, stub := newTestSlashingEngine()
 	incidentKey := "slot-500|hive:alice"
 
@@ -550,3 +556,11 @@ func TestSeedProposalsFromStoredBlock_RebuildsCurrentSlot(t *testing.T) {
 		t.Fatalf("rehydrated ref must enable conflict detection: got (%q,%v) want (\"cidA\",true)", prev, existed)
 	}
 }
+
+// The vsc.safety_slash_reverse on-ramp now gates on a bare
+// `RequiredAuths[0] == se.sconf.GatewayWallet()` — the identical pattern the
+// production-proven vsc.fr_sync / vsc.actions handlers use (both bare L1
+// account names, no prefix normalization), so the prefix-mismatch class that
+// affected the earlier DAO_WALLET (prefixed) comparison cannot recur. A full
+// ProcessBlock entry-point test (custom_json from the gateway → sink enqueue;
+// non-gateway → reject) is a devnet integration item.

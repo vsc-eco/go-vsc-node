@@ -1156,16 +1156,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			// block already validated the bytes; applyPendulumSettlement trusts
 			// the payload and pairs the bucket debit with per-account credits.
 			se.applyPendulumSettlement(rec, uint64(t.SignedBlock.Headers.Br[1]))
-		} else if txContainer.Type() == "restitution_claim" {
-			rec, ok := txContainer.AsRestitutionClaim()
-			if !ok {
-				log.Warn("restitution claim: failed to decode block tx", "id", txInfo.Id)
-				continue
-			}
-			// The carrying block's 2/3 BLS aggregate is the auth gate; the
-			// state engine independently validates the harm proof before
-			// enqueueing the claim onto the on-ledger FIFO queue.
-			se.applyRestitutionClaim(rec, txInfo.Id, uint64(t.SignedBlock.Headers.Br[1]))
 		} else if txContainer.Type() == "safety_slash_reverse" {
 			rec, ok := txContainer.AsSafetySlashReverse()
 			if !ok {

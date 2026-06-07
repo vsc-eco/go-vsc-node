@@ -37,6 +37,25 @@ func (ac *identityConfigStruct) SetActiveKey(wif string) error {
 	})
 }
 
+// SetBlsPrivKeySeed overrides the BLS private-key seed (32-byte hex string).
+// This exists ONLY for the devnet integration harness: cmd/devnet-setup uses it,
+// gated behind DEVNET_DETERMINISTIC_BLS=1, to derive a DETERMINISTIC per-witness
+// seed so a test can re-derive the matching gateway multisig keypair WITHOUT ever
+// reading identityConfig.json. Production code paths never call this (random seed
+// from NewIdentityConfig stands). Mirrors SetActiveKey/SetUsername: same Update
+// pattern, same 0600 file write.
+func (ac *identityConfigStruct) SetBlsPrivKeySeed(seedHex string) error {
+	if len(seedHex) != 64 {
+		return fmt.Errorf("bls priv seed hex must be 64 chars (32 bytes), got %d", len(seedHex))
+	}
+	if _, err := hex.DecodeString(seedHex); err != nil {
+		return fmt.Errorf("bls priv seed hex invalid: %w", err)
+	}
+	return ac.Update(func(dc *identityConfig) {
+		dc.BlsPrivKeySeed = seedHex
+	})
+}
+
 func (ac *identityConfigStruct) HiveActiveKeyPair() (*hivego.KeyPair, error) {
 	wif := ac.Get().HiveActiveKey
 	return hivego.KeyPairFromWif(wif)
