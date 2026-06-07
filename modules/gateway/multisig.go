@@ -259,7 +259,7 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		tx.AddSig(sig)
 	}
 
-	if weight >= uint64(threshold) {
+	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
 		fmt.Println("Rotation txId", rotationId, err)
@@ -314,7 +314,7 @@ func (ms *MultiSig) TickActions(bh uint64) {
 		tx.AddSig(sig)
 	}
 
-	if weight >= uint64(threshold) {
+	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
 		fmt.Println("Actions txId", rotationId, err)
@@ -369,7 +369,7 @@ func (ms *MultiSig) TickSyncFr(bh uint64) {
 		tx.AddSig(sig)
 	}
 
-	if weight >= uint64(threshold) {
+	if weightMeetsThreshold(weight, threshold) {
 		rotationId, err := ms.hiveCreator.Broadcast(tx)
 
 		fmt.Println("SyncFr txId", rotationId, err)
@@ -386,8 +386,15 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		return signingPackage{}, err
 	}
 
-	weightMap := make(map[string]uint64)
-	gatewayKeys := make([][2]interface{}, 0)
+	// Collect (account, gatewayKey, stake) for every eligible elected member.
+	// stake is the on-chain election weight; it drives the proportional
+	// multisig share assigned below. All three inputs are on-chain/deterministic.
+	type gwMember struct {
+		account string
+		key     string
+		stake   uint64
+	}
+	eligible := make([]gwMember, 0, len(electionResult.Members))
 	for idx, member := range electionResult.Members {
 		witnessData, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
 		if witnessData == nil {
@@ -406,34 +413,46 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 				"account", member.Account, "bh", bh, "err", err)
 			continue
 		}
-		var key [2]interface{}
-		key[0] = witnessData.GatewayKey
-		key[1] = 1
-		gatewayKeys = append(gatewayKeys, key)
-
-		weightMap[witnessData.GatewayKey] = electionResult.Weights[idx]
+		eligible = append(eligible, gwMember{
+			account: member.Account,
+			key:     witnessData.GatewayKey,
+			stake:   electionResult.Weights[idx],
+		})
 	}
 
-	slices.SortFunc(gatewayKeys, func(a, b [2]interface{}) int {
-		aKey := a[0].(string)
-		bKey := b[0].(string)
-		// review2 MEDIUM #57: int(uint64) truncates for weights >= 2^63
-		// and int(a)-int(b) overflows for large gaps, producing a wrong
-		// (or non-transitive) gateway-key order. Compare the uint64
-		// weights directly.
-		return cmp.Compare(weightMap[aKey], weightMap[bKey])
+	// Keep the highest-stake signers when more than MAX_GATEWAY_KEYS witnesses
+	// are eligible. Sort by stake DESC, tiebreaking on the globally-unique
+	// account name so every node selects the identical set in the identical
+	// order (determinism). review2 MEDIUM #57: compare the uint64 stakes
+	// directly — int(uint64) truncates stakes >= 2^63 and int-subtraction
+	// overflows, which would rank the largest stakers as the smallest.
+	slices.SortFunc(eligible, func(a, b gwMember) int {
+		return cmp.Or(
+			cmp.Compare(b.stake, a.stake),
+			cmp.Compare(a.account, b.account),
+		)
 	})
-
-	cutOff := 0
-	if len(gatewayKeys) > 40 {
-		cutOff = 40
-	} else {
-		cutOff = len(gatewayKeys)
+	if len(eligible) > MAX_GATEWAY_KEYS {
+		eligible = eligible[:MAX_GATEWAY_KEYS]
 	}
-	gatewayKeys = gatewayKeys[:cutOff]
-
-	if len(gatewayKeys) < 8 {
+	if len(eligible) < MIN_GATEWAY_KEYS {
 		return signingPackage{}, errors.New("not enough keys")
+	}
+
+	// Assign each signer a uint16 multisig weight proportional to its stake.
+	stakes := make([]uint64, len(eligible))
+	accounts := make([]string, len(eligible))
+	for i, m := range eligible {
+		stakes[i] = m.stake
+		accounts[i] = m.account
+	}
+	assignedWeights := quantizeStakeWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE)
+
+	gatewayKeys := make([][2]interface{}, len(eligible))
+	totalWeight := 0
+	for i, m := range eligible {
+		gatewayKeys[i] = [2]interface{}{m.key, assignedWeights[i]}
+		totalWeight += assignedWeights[i]
 	}
 
 	var e [2]interface{}
@@ -444,9 +463,9 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	eb[0] = "vsc.network"
 	eb[1] = 1
 
-	totalWeight := len(gatewayKeys)
 	// review2 HIGH #29: ceil(2N/3), not floor — floor let a sub-2/3 set of
-	// gateway signers move funds.
+	// gateway signers move funds. totalWeight is the SUM of the assigned
+	// stake-proportional weights, not the key count.
 	weightThreshold := gatewayWeightThreshold(totalWeight)
 
 	jsonMetadata := map[string]interface{}{

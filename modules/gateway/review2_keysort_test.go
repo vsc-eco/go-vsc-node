@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"crypto/sha256"
+	"strconv"
 	"testing"
 
 	"vsc-node/lib/test_utils"
@@ -21,12 +22,17 @@ func fixtureGatewayKey(seed string) string {
 	return *kp.GetPublicKeyString()
 }
 
-// fakeHiveCreator captures the gateway KeyAuths handed to UpdateAccount so
-// the sorted gateway-key order produced by keyRotation is observable.
-type fakeHiveCreator struct{ keyAuths [][2]interface{} }
+// fakeHiveCreator captures the gateway owner authority handed to UpdateAccount
+// so the gateway-key set, per-key weights, and weight_threshold produced by
+// keyRotation are observable.
+type fakeHiveCreator struct {
+	keyAuths [][2]interface{}
+	owner    *hivego.Auths
+}
 
 func (f *fakeHiveCreator) UpdateAccount(_ string, owner *hivego.Auths, _ *hivego.Auths, _ *hivego.Auths, _ string, _ string) hivego.HiveOperation {
 	f.keyAuths = owner.KeyAuths
+	f.owner = owner
 	return nil
 }
 func (f *fakeHiveCreator) CustomJson(_ []string, _ []string, _ string, _ string) hivego.HiveOperation {
@@ -49,46 +55,53 @@ func (f *fakeHiveCreator) Sign(_ hivego.HiveTransaction) (string, error)        
 func (f *fakeHiveCreator) Broadcast(_ hivego.HiveTransaction) (string, error)            { return "", nil }
 
 // review2 MEDIUM #57 — keyRotation sorted the gateway keys with
-// `int(weightMap[a]) - int(weightMap[b])`. uint64→int truncates weights
-// >= 2^63 to negative int64, so the comparator orders the highest-weight
-// keys (>= 2^63) as if they were the lowest. The gateway multisig key
-// set must be ordered identically and correctly on every node, so this
+// `int(weightMap[a]) - int(weightMap[b])`. uint64→int truncates stakes
+// >= 2^63 to negative int64, so the comparator ordered the highest-stake
+// keys (>= 2^63) as if they were the lowest. The gateway multisig key set
+// must be selected identically and correctly on every node, so this
 // mis-order is a consensus/correctness defect. Fixed with cmp.Compare on
-// the uint64 weights.
+// the uint64 stakes.
 //
-// Two clean groups make the comparator a *total order* on both arms (so
-// the sort is deterministic) but reversed between them:
-//   - s1..s4: small weights (1..4)        — int64  1..4
-//   - b1..b4: weights near 2^64 (uint max) — int64 -4..-1 after truncation
+// With stake-proportional weighting the >40-key cutoff now keeps the LARGEST
+// stakers (sort by stake DESC). This test pins both properties at once: with
+// more than MAX_GATEWAY_KEYS eligible witnesses, the near-uint64-max-stake
+// keys must be RETAINED and the tiny-stake keys DROPPED. Under the old
+// truncating comparator the near-max keys would rank lowest and be the ones
+// dropped — the inverse of correct — so this catches a regression.
 //
-// Cross-compare int(s)-int(b) = (1..4)-(-4..-1) is a small positive (no
-// overflow), so baseline ranks the huge-weight b* keys BELOW the tiny s*
-// keys. Correct (fix) ascending order: s1..s4 then b1..b4. Assert a
-// small-weight key precedes a near-max-weight key.
+// (Final on-wire key order is canonicalized by hivego's serializer, so the
+// test asserts membership, not positional order.)
 func TestReview2KeyRotationWeightSort(t *testing.T) {
 	const bh = uint64(20) // bh % ACTION_INTERVAL == 0
 
-	// 8 members (keyRotation requires >= 8 keys). Accounts double as
-	// gateway keys for easy identification.
-	accounts := []string{"s1", "s2", "s3", "s4", "b1", "b2", "b3", "b4"}
-	weights := []uint64{
-		1, 2, 3, 4, // small — int64 1..4
-		^uint64(0) - 3, // b1 = 2^64-4 -> int64 -4
-		^uint64(0) - 2, // b2        -> int64 -3
-		^uint64(0) - 1, // b3        -> int64 -2
-		^uint64(0),     // b4 = 2^64-1 -> int64 -1
+	// 4 whale accounts with stakes near 2^64 (int64-negative if truncated) and
+	// 40 small accounts with stakes 1..40 → 44 eligible > MAX_GATEWAY_KEYS (40).
+	// Top-40 by stake keeps the 4 whales + the 36 largest small accounts; the 4
+	// smallest small accounts (stakes 1..4) are dropped.
+	type member struct {
+		account string
+		stake   uint64
+	}
+	mems := []member{
+		{"b1", ^uint64(0) - 3}, // 2^64-4 -> int64 -4 if truncated
+		{"b2", ^uint64(0) - 2},
+		{"b3", ^uint64(0) - 1},
+		{"b4", ^uint64(0)}, // 2^64-1 -> int64 -1 if truncated
+	}
+	for i := 1; i <= 40; i++ {
+		mems = append(mems, member{account: "s" + strconv.Itoa(i), stake: uint64(i)})
 	}
 
 	witnessDb := &test_utils.MockWitnessDb{ByAccount: map[string]*witnesses.Witness{}}
-	members := make([]elections.ElectionMember, len(accounts))
-	// FUZZ-1: keyRotation now skips witnesses whose GatewayKey would crash
-	// the hivego serializer. Plug in deterministic well-formed STM pubkeys.
-	gatewayKeys := make(map[string]string, len(accounts))
-	for i, acc := range accounts {
-		gk := fixtureGatewayKey(acc)
-		gatewayKeys[acc] = gk
-		witnessDb.ByAccount[acc] = &witnesses.Witness{Account: acc, GatewayKey: gk}
-		members[i] = elections.ElectionMember{Account: acc, Key: acc}
+	members := make([]elections.ElectionMember, len(mems))
+	weights := make([]uint64, len(mems))
+	gatewayKeys := make(map[string]string, len(mems))
+	for i, m := range mems {
+		gk := fixtureGatewayKey(m.account)
+		gatewayKeys[m.account] = gk
+		witnessDb.ByAccount[m.account] = &witnesses.Witness{Account: m.account, GatewayKey: gk}
+		members[i] = elections.ElectionMember{Account: m.account, Key: m.account}
+		weights[i] = m.stake
 	}
 
 	electionDb := &test_utils.MockElectionDb{
@@ -114,20 +127,29 @@ func TestReview2KeyRotationWeightSort(t *testing.T) {
 		t.Fatalf("review2 #57: keyRotation returned error: %v", err)
 	}
 
-	idx := func(key string) int {
-		for i, ka := range fake.keyAuths {
+	present := func(key string) bool {
+		for _, ka := range fake.keyAuths {
 			if ka[0].(string) == key {
-				return i
+				return true
 			}
 		}
-		return -1
+		return false
 	}
-	si, bi := idx(gatewayKeys["s1"]), idx(gatewayKeys["b1"])
-	if si < 0 || bi < 0 {
-		t.Fatalf("review2 #57: keys missing from rotation auths: s1=%d b1=%d (auths=%v)", si, bi, fake.keyAuths)
+
+	if got := len(fake.keyAuths); got != MAX_GATEWAY_KEYS {
+		t.Fatalf("review2 #57: expected exactly %d gateway keys after cutoff, got %d", MAX_GATEWAY_KEYS, got)
 	}
-	if si > bi {
-		t.Fatalf("review2 #57: small-weight key s1 (1) sorted AFTER near-max-weight key b1 (2^64-4): "+
-			"s1@%d b1@%d — uint64→int truncation ranked the highest weight lowest", si, bi)
+	// All 4 near-uint64-max-stake whales must survive the cutoff.
+	for _, b := range []string{"b1", "b2", "b3", "b4"} {
+		if !present(gatewayKeys[b]) {
+			t.Fatalf("review2 #57: near-max-stake key %s was DROPPED by the cutoff — "+
+				"uint64→int truncation ranked the highest stake lowest", b)
+		}
+	}
+	// The smallest stakers (stakes 1..4) must be the ones dropped.
+	for _, s := range []string{"s1", "s2", "s3", "s4"} {
+		if present(gatewayKeys[s]) {
+			t.Fatalf("review2 #57: smallest-stake key %s should have been dropped by the cutoff", s)
+		}
 	}
 }
