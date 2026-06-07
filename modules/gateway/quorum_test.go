@@ -20,6 +20,12 @@ func TestGatewayWeightThreshold_CeilOfTwoThirds(t *testing.T) {
 		{9, 6},  // exact
 		{10, 7}, // ceil(6.67) — the reported case; floor gave 6
 		{19, 13},
+		// Summed stake-proportional weights (no longer a key count) — the
+		// argument is now Σ assigned weights, which is ~GATEWAY_WEIGHT_SCALE.
+		{10000, 6667},   // ceil(6666.67)
+		{10039, 6693},   // ceil(6692.67) — scale + min-1 floor slack
+		{120000, 80000}, // exact
+		{262140, 174760},
 	}
 	for _, c := range cases {
 		got := gatewayWeightThreshold(c.total)
