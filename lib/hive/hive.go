@@ -162,9 +162,12 @@ func (t *TransactionCrafter) TransferToSavings(from string, to string, amount st
 }
 
 func (t *TransactionCrafter) TransferFromSavings(from string, to string, amount string, asset string, memo string, requestId int) hivego.HiveOperation {
-	// hivego.TransferFromSavings.RequestId is uint32 (Hive L1 wire type). Live
-	// callers pass int(bh) (block height) which is always in [0, MaxUint32].
-	// Guard against an out-of-range value silently wrapping the request id.
+	// Hive's request_id is a uint32 on the wire; the pinned hivego models it as
+	// int (RequestId int). Live callers pass int(bh) (block height), always in
+	// [0, MaxUint32]. Keep the range guard (a negative/oversized id would be a
+	// caller bug) and assign the int directly to match the pinned hivego type.
+	// (Base-commit 937ae771 cast to uint32 against a different hivego version —
+	// a build break vs the go.mod-pinned dep; this matches the pin.)
 	if requestId < 0 || requestId > math.MaxUint32 {
 		panic("hive: TransferFromSavings requestId out of uint32 range")
 	}
@@ -173,9 +176,6 @@ func (t *TransactionCrafter) TransferFromSavings(from string, to string, amount 
 		To:        to,
 		Amount:    amount + " " + asset,
 		Memo:      memo,
-		// hivego's RequestId field is int; its serializer truncates to uint32
-		// at wire-encode time, so the guard above is what prevents a negative /
-		// >uint32 value from silently wrapping. Assign the int directly.
 		RequestId: requestId,
 	}
 	return op

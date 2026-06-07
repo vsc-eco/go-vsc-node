@@ -58,11 +58,27 @@ func (d *electionProposer) stopP2P() error {
 	return d.service.Close()
 }
 
-// ValidateMessage rejects structurally invalid messages and messages arriving
-// after the election proposer has been GC'd (prevents the weak.Pointer nil
-// deref in HandleMessage — finding W-M4). Full BLS authentication of
-// sign_response happens downstream in AddAndVerify; sign_request only
-// triggers deterministic computation guarded by epoch/existence checks.
+// ValidateMessage rejects (1) structurally invalid messages and (2) messages
+// from non-witness peers. Combines two audit fixes:
+//
+//   - W-M4 (structural + GC guard): only the two election message types and the
+//     hold_election op are ever valid; a nil proposer (GC'd) fails open here and
+//     is re-guarded in HandleMessage, so there is no weak.Pointer nil deref.
+//   - H-2 / F5 (witness allowlist — DoS/spam only, NOT consensus-affecting): the
+//     election CID is deterministic from on-chain data and the deterministic
+//     anchor (CP-0b) closed the anchor-poison vector, so this gate only stops an
+//     UNAUTHENTICATED peer from forcing every node to do real work (a
+//     sign_request for a not-yet-stored epoch drives makeElection → the
+//     state-engine barrier → O(witnesses) ledger reads). GossipSub runs the
+//     default StrictSign policy, so msg.GetFrom() is the cryptographically
+//     authenticated author — a witness peer id cannot be spoofed.
+//
+// FAIL OPEN on the witness check: only a message whose authenticated author
+// resolves DEFINITIVELY to no witness record is dropped. A nil proposer, an
+// invalid/empty author, or ANY witness-DB lookup error → ALLOW, so a transient
+// DB hiccup or an un-announced peer id can never stall election liveness.
+// Determinism is not required here — this is a per-node propagation filter, not
+// a CID input.
 func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
 	if parsedMsg.Type != "sign_request" && parsedMsg.Type != "sign_response" {
 		return false
@@ -70,7 +86,24 @@ func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.
 	if parsedMsg.Op != "hold_election" {
 		return false
 	}
-	if s.electionProposer.Value() == nil {
+	proposer := s.electionProposer.Value()
+	if proposer == nil {
+		return true
+	}
+	author := msg.GetFrom()
+	if author.Validate() != nil {
+		// Unauthenticated / missing author (e.g. if signing were ever relaxed) —
+		// fail open rather than risk dropping legitimate traffic.
+		return true
+	}
+	res, err := proposer.witnesses.GetWitnessesByPeerId([]string{author.String()})
+	if err != nil {
+		// DB hiccup — never drop a legitimate message over a transient read.
+		return true
+	}
+	if len(res) == 0 {
+		log.Verbose("election pubsub: dropping message from non-witness peer",
+			"author", author.String(), "type", parsedMsg.Type)
 		return false
 	}
 	return true
@@ -88,7 +121,7 @@ func (s p2pSpec) HandleMessage(
 		return nil
 	}
 	if msg.Type == "sign_request" {
-		if ep.bh == 0 {
+		if ep.bh.Load() == 0 {
 			log.Verbose("sign_request: skipping (local bh=0, not yet synced)", "from", from.String())
 			return nil
 		}
@@ -100,7 +133,12 @@ func (s p2pSpec) HandleMessage(
 				return nil
 			}
 
-			electionHeader, electionData, err := ep.makeElection(signReq.BlockHeight)
+			// Re-derive the election for the requested EPOCH. The anchor is
+			// computed deterministically inside makeElection from the on-chain
+			// previous election, so the peer-supplied BlockHeight is advisory
+			// only (kept in logs for diagnostics) and cannot poison the anchor
+			// or shift the sample window (audit F5 / CP-0b).
+			electionHeader, electionData, err := ep.makeElection(signReq.Epoch)
 
 			if err != nil {
 				log.Warn("sign_request: makeElection failed; not signing",
@@ -124,21 +162,8 @@ func (s p2pSpec) HandleMessage(
 				log.Verbose("sign_request: election already stored locally; not signing again",
 					"from", from.String(),
 					"req_epoch", signReq.Epoch)
-				ep.lastAttemptedElectionMu.Lock()
-				delete(ep.lastAttemptedElectionBh, signReq.Epoch)
-				ep.lastAttemptedElectionMu.Unlock()
 				return nil
 			}
-
-			// Record the anchor height from this proposal so that if this node
-			// later becomes the slot leader for the same epoch, it reuses the
-			// same block height — keeping the settlement record identical across
-			// consecutive proposers and allowing BLS signatures to pool.
-			ep.lastAttemptedElectionMu.Lock()
-			if _, alreadySet := ep.lastAttemptedElectionBh[signReq.Epoch]; !alreadySet {
-				ep.lastAttemptedElectionBh[signReq.Epoch] = signReq.BlockHeight
-			}
-			ep.lastAttemptedElectionMu.Unlock()
 
 			cid, err := electionHeader.Cid()
 
@@ -211,11 +236,17 @@ func (s p2pSpec) HandleMessage(
 
 			// err = s.electionProposer.waitCheckBh(ROTATION_INTERVAL, signResp.BlockHeight)
 
-			if ch := ep.sigChannels[signResp.Epoch]; ch != nil {
-				select {
-				case ch <- &signResp:
-				default:
-				}
+			// H-15: look the channel up under the map lock, then send OUTSIDE
+			// the lock. The send must be outside because a blocking send held
+			// under sigChannelsMu would block HoldElection's delete (which also
+			// takes sigChannelsMu, under electionMu) once the collector stops
+			// receiving — wedging blockTick and the node. This closes the
+			// concurrent map read/write crash without changing delivery.
+			ep.sigChannelsMu.Lock()
+			sigCh := ep.sigChannels[signResp.Epoch]
+			ep.sigChannelsMu.Unlock()
+			if sigCh != nil {
+				sigCh <- &signResp
 			}
 		}
 	}

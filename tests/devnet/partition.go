@@ -74,21 +74,45 @@ func (d *Devnet) Heal(ctx context.Context, nodeA, nodeB int) error {
 	return nil
 }
 
-// Disconnect drops all network traffic to/from a magi node,
-// isolating it from every other container.
+// Disconnect isolates a magi node from its PEERS (every other magi node),
+// simulating a consensus partition. It deliberately does NOT cut the node off
+// from the shared infrastructure (HAF, Mongo, drone): a blanket "-j DROP" kills
+// the node's L1 block streamer ("StreamReader stopped — listener error") and DB
+// connection, so the node shuts itself down — and with no container restart
+// policy it never comes back on Reconnect (the reconnect exec then fails with
+// "container is not running"). Blocking only peer IPs keeps the node alive
+// (still ingesting L1 from HAF) while severing VSC p2p gossip, which is the
+// fault the chaos stage means to inject, and the node re-syncs on Reconnect.
 func (d *Devnet) Disconnect(ctx context.Context, node int) error {
 	name := d.containerName(node)
-	log.Printf("[devnet] disconnecting magi-%d", node)
-	return d.iptables(ctx, name, "-A", "INPUT", "-j", "DROP")
+	log.Printf("[devnet] disconnecting magi-%d (peer partition; infra kept reachable)", node)
+	for peer := 1; peer <= d.cfg.Nodes; peer++ {
+		if peer == node {
+			continue
+		}
+		peerIP, err := d.containerIP(ctx, d.containerName(peer))
+		if err != nil {
+			return fmt.Errorf("getting IP for magi-%d: %w", peer, err)
+		}
+		if err := d.iptables(ctx, name, "-A", "INPUT", "-s", peerIP, "-j", "DROP"); err != nil {
+			return err
+		}
+		if err := d.iptables(ctx, name, "-A", "OUTPUT", "-d", peerIP, "-j", "DROP"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// Reconnect restores all network traffic to a previously
-// disconnected magi node.
+// Reconnect restores peer traffic to a previously disconnected magi node by
+// flushing the per-peer DROP rules Disconnect added (both directions).
 func (d *Devnet) Reconnect(ctx context.Context, node int) error {
 	name := d.containerName(node)
 	log.Printf("[devnet] reconnecting magi-%d", node)
-	// Flush all rules to restore connectivity
-	return d.iptables(ctx, name, "-F", "INPUT")
+	if err := d.iptables(ctx, name, "-F", "INPUT"); err != nil {
+		return err
+	}
+	return d.iptables(ctx, name, "-F", "OUTPUT")
 }
 
 // AddLatency adds network delay to traffic between two specific nodes

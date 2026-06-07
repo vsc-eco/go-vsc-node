@@ -62,6 +62,22 @@ func (ls *LedgerState) ledgerRangeOrBlock(account string, start, end uint64, ass
 	return *out
 }
 
+// hiveConsensusLedgerOps are the ONLY four LedgerDb op types that mutate the
+// hive_consensus balance: consensus_stake (+), consensus_unstake (−),
+// safety_slash_consensus (−, debits a slashed bond) and
+// safety_slash_consensus_reverse (+, re-credits a bond on governance reversal
+// of an erroneous slash). Single source of truth shared by GetBalance and
+// GetConsensusBalanceAt — if a fifth mutator is ever added, extending this
+// list updates both reads at once (a silent drift between them would make the
+// bond inclusion gate and other hive_consensus consumers disagree about the
+// same account at the same height).
+var hiveConsensusLedgerOps = []string{
+	"consensus_stake",
+	"consensus_unstake",
+	LedgerTypeSafetySlashConsensus,
+	LedgerTypeSafetySlashConsensusReverse,
+}
+
 // Used to represent the global ledger state in the execution environment
 type LedgerState struct {
 	//List of finalized operations such as transfers, withdrawals.
@@ -235,4 +251,84 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		balAdjust += v.Amount
 	}
 	return base + balAdjust
+}
+
+// GetConsensusBalanceAt is the ERROR-AWARE replay read of hive_consensus at
+// blockHeight: the BalanceDb snapshot field at-or-before blockHeight plus the
+// replay of every hiveConsensusLedgerOps record past the snapshot height —
+// the exact value the same way GetBalance computes it, but with every DB error
+// PROPAGATED instead of swallowed.
+//
+// It exists for the bond inclusion gate (audit F4/H-10, z3 m63-6): a seat gate
+// that silently treats a read error as 0/stale either evicts an honest member
+// on one node's transient DB hiccup (cross-node CID fork) or counts stale
+// stake; fail-stop — abort the election attempt and retry next slot — is the
+// unique non-divergent option. GetBalance keeps its legacy swallow semantics
+// for its existing consumers; consensus-gating callers use this instead.
+// (A nil snapshot record is NOT an error: it is the legitimate
+// "account has no snapshot row yet" case and replay starts from genesis,
+// exactly as GetBalance treats it.)
+func (ls *LedgerState) GetConsensusBalanceAt(account string, blockHeight uint64) (int64, error) {
+	balRecordPtr, err := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
+	if err != nil {
+		return 0, fmt.Errorf("consensus balance snapshot read failed for %s at %d: %w", account, blockHeight, err)
+	}
+
+	var base int64
+	var recordHeight uint64
+	if balRecordPtr != nil {
+		base = balRecordPtr.HIVE_CONSENSUS
+		recordHeight = balRecordPtr.BlockHeight + 1
+	}
+
+	ledgerResults, err := ls.LedgerDb.GetLedgerRange(
+		account,
+		recordHeight,
+		blockHeight,
+		"hive_consensus",
+		ledger_db.LedgerOptions{
+			OpType: hiveConsensusLedgerOps,
+		},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("consensus ledger range read failed for %s in (%d,%d]: %w", account, recordHeight, blockHeight, err)
+	}
+	if ledgerResults == nil {
+		return 0, fmt.Errorf("consensus ledger range read returned nil for %s in (%d,%d]", account, recordHeight, blockHeight)
+	}
+	for _, v := range *ledgerResults {
+		base += v.Amount
+	}
+	return base, nil
+}
+
+// ConsensusReverseCreditsInRange returns every safety_slash_consensus_reverse
+// ledger row for account with start <= block_height <= end (error-aware, like
+// GetConsensusBalanceAt). It exists for the bond inclusion gate's reverse-slash
+// grandfather (audit X1/H-17): an erroneous safety_slash_consensus debits the
+// bond, a governance reversal re-credits it, but the trailing min-over-window
+// still reads the slashed-low value at samples that PRE-DATE the reversal — so
+// an exonerated node would stay below MinStake (exiled) for up to a full window
+// after being cleared (W == the slash burn delay, exactly). The gate uses these
+// rows to add the reversed amount back to the pre-reversal samples, undoing the
+// erroneous dip without affecting fresh stake / top-ups / unstakes. Dormant
+// until SafetySlashEnabled (safety_slash/policy.go) — built defensively so the
+// gate is correct the day slashing is turned on.
+func (ls *LedgerState) ConsensusReverseCreditsInRange(account string, start, end uint64) ([]ledger_db.LedgerRecord, error) {
+	rows, err := ls.LedgerDb.GetLedgerRange(
+		account,
+		start,
+		end,
+		"hive_consensus",
+		ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashConsensusReverse},
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("consensus reverse-credit read failed for %s in [%d,%d]: %w", account, start, end, err)
+	}
+	if rows == nil {
+		return nil, fmt.Errorf("consensus reverse-credit read returned nil for %s in [%d,%d]", account, start, end)
+	}
+	return *rows, nil
 }

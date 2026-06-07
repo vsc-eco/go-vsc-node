@@ -140,14 +140,30 @@ func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []Electi
 		electionRecord := ElectionResultRecord{}
 		err := cursor.Decode(&electionRecord)
 		if err != nil {
-			continue
+			// Audit (final pass): a decode error means a corrupt election row.
+			// Returning the partial set would SILENTLY DROP that election —
+			// which, for the bond gate's established-member map, would miss an
+			// established member → gate their already-earned stake → a RESET (the
+			// one thing the established exception must never do). Fail the whole
+			// read instead; the bond gate's `len(prevs)==0 && previousElection!=nil`
+			// guard then fail-stops the election attempt (retries next slot).
+			return nil
 		}
 		electionResult := ElectionResult{}
 		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
 		if err != nil {
-			continue
+			return nil
 		}
 		results = append(results, electionResult)
+	}
+	// Audit (final pass): a mid-cursor getMore/network error makes Next() return
+	// false WITHOUT exhausting the result, silently TRUNCATING it. Unlike a
+	// decode error this is per-node and non-deterministic — a truncated read on
+	// one node would drop an established member there only → cross-node committee
+	// /CID divergence (same M-10 class fixed for GetLedgerRange). Surface it
+	// (return nil → fail-closed at the callers) instead of returning a partial.
+	if err := cursor.Err(); err != nil {
+		return nil
 	}
 	return results
 }
