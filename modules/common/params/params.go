@@ -105,22 +105,10 @@ var CONTRACT_UPDATE_TIMELOCK_BLOCKS uint64 = 57_600
 // networks (testnet/devnet) so the timelock is exercisable: 30 blocks ≈ 90s.
 // Mocknet uses 0 (disabled) so the in-process e2e harness keeps its immediate-
 // update mechanics.
-var CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET uint64 = 30
-
-// CONTRACT_UPDATE_TIMELOCK_HEIGHT is the MAINNET rollout gate. Updates submitted
-// at/after this Hive height are timelocked; earlier ones stay immediate so a
-// full reindex reproduces historical state byte-for-byte. 0 == disabled.
-// MUST be a height STRICTLY ABOVE the current chain head when this binary is
-// deployed — a value at/below an already-processed block is a consensus footgun
-// (live nodes activated those updates immediately, a reindex would delay them).
-// Non-mainnet networks ignore this gate (always timelocked at their block count).
 //
-// Pinned 2026-06-05 to ~1h above the Hive head at the time (107,009,647 @ 15:09
-// UTC) per a fast rollout. CONSENSUS-CRITICAL DEPLOY CONSTRAINT: every mainnet
-// witness must be running this binary BEFORE Hive reaches this height, otherwise
-// upgraded and not-yet-upgraded nodes disagree on whether updates in the gap are
-// timelocked. If the rollout slips past this height, bump it before deploying.
-var CONTRACT_UPDATE_TIMELOCK_HEIGHT uint64 = 107_011_000
+// The MAINNET rollout gate height lives in ConsensusParams.ContractUpdateTimelockHeight
+// (set per-network in system-config), alongside the other rollout heights.
+var CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET uint64 = 30
 
 // review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
 // with no explicit length cap — the node implicitly relied on Hive's
@@ -178,6 +166,23 @@ type ConsensusParams struct {
 	// verbatim behavior) — the correct default until an operator pins the
 	// activation height for a deploy.
 	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
+
+	// ContractUpdateTimelockHeight is the MAINNET rollout gate for the contract-
+	// update timelock. A vsc.update_contract submitted at BlockHeight >= this value
+	// is queued and only activates after the network timelock
+	// (ContractUpdateTimelockBlocks); earlier updates stay immediate so a full
+	// reindex reproduces historical state byte-for-byte. 0 == disabled (every
+	// update immediate). Only consulted on mainnet — test networks always timelock
+	// at their block count and ignore this gate.
+	//
+	// MUST be a height STRICTLY ABOVE the current chain head when this binary is
+	// deployed — a value at/below an already-processed block is a consensus footgun
+	// (live nodes activated those updates immediately, a reindex would delay them).
+	// CONSENSUS-CRITICAL DEPLOY CONSTRAINT: every mainnet witness must be running a
+	// binary with this gate BEFORE Hive reaches it, otherwise upgraded and not-yet-
+	// upgraded nodes disagree on whether updates in the gap are timelocked. If the
+	// rollout slips past this height, bump it before deploying.
+	ContractUpdateTimelockHeight uint64 `json:"contractUpdateTimelockHeight,omitempty"`
 
 	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
 	// vsc.recovery_suspend and vsc.recovery_require_version.
