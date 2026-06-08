@@ -11,7 +11,7 @@ import (
 
 // callOp crafts a valid `call` VSCTransactionOp with the given rc_limit
 // via the same SerializeVSC path IngestTx sees from real clients.
-func callOp(t *testing.T, rcLimit uint) transactionpool.VSCTransactionOp {
+func callOp(t *testing.T, rcLimit uint64) transactionpool.VSCTransactionOp {
 	t.Helper()
 	call := &transactionpool.VscContractCall{
 		Caller:     "hive:alice",
