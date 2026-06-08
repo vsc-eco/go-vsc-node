@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"math/big"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -15,6 +16,13 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	blocks "github.com/ipfs/go-block-format"
 )
+
+// btcDIDHalfOrderN is N/2 of the secp256k1 group order. A compact-signature S
+// value above it is the non-canonical (high-S) form. HG-H5: RecoverCompact
+// recovers the same pubkey from both S and N-S (with the recovery id flipped),
+// so without a low-S guard a single message has two distinct valid signature
+// strings — signature malleability that defeats any sig-string-based dedup.
+var btcDIDHalfOrderN = new(big.Int).Rsh(btcec.S256().Params().N, 1)
 
 // ===== constants =====
 
@@ -125,6 +133,17 @@ func (d BtcDID) Verify(data blocks.Block, sig string) (bool, error) {
 
 func verifyBIP137(addr string, addrType string, data blocks.Block, sigBytes []byte) (bool, error) {
 	hash := BitcoinMessageHash(data.Cid().String())
+
+	// HG-H5: reject non-canonical (high-S) signatures before recovery. A
+	// 65-byte compact signature is [header(1) | R(32) | S(32)]; RecoverCompact
+	// accepts both S and N-S, so enforce the low-S canonical form (0 < S <= N/2)
+	// to make a signature string unique per (key, message).
+	if len(sigBytes) == 65 {
+		s := new(big.Int).SetBytes(sigBytes[33:65])
+		if s.Sign() <= 0 || s.Cmp(btcDIDHalfOrderN) > 0 {
+			return false, fmt.Errorf("non-canonical signature: high-S form not allowed")
+		}
+	}
 
 	// recover public key — RecoverCompact handles the header byte internally
 	pubKey, _, err := ecdsa.RecoverCompact(sigBytes, hash)
