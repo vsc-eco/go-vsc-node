@@ -116,14 +116,12 @@ NON_HOST_PACKAGES := \
 # so the targets stay green. They are tracked for fixing, not abandoned.
 #
 # Whole packages (don't build, or pervasively broken):
-#   modules/e2e            - missing evm_mapping.wasm build artifact (won't build)
 #   modules/announcements  - stale Hive mock model panics; needs mock rewrite
 #   modules/hive/streamer  - crash masks ~8 broken tests; needs test-suite rehab
 #   modules/p2p            - Test (gossipsub) hangs on a non-resolving promise;
 #                            excluded whole-package because a test named "Test"
 #                            also exists in lib/dids, so it can't be safely -skip'd
 KNOWN_FAILING_PACKAGES := \
-	modules/e2e \
 	modules/announcements \
 	modules/hive/streamer \
 	modules/p2p
@@ -160,7 +158,13 @@ SLOW_TIMEOUT  := 30m
 # Preferred over piping `go test` output through grep, which would clobber the
 # test exit code. Note: test-less packages are therefore not compile-checked here
 # — `make` (the build target) covers the binaries.
-LIST_TEST_PKGS := go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -E '^vsc-node/'
+#
+# `-e` makes `go list` tolerant of broken packages: without it, a single
+# unparseable file anywhere in the module (e.g. an empty generated *_tinyjson.go
+# in a wasm-guest dir that is excluded below) aborts enumeration entirely,
+# yielding an empty package list — at which point `go test` falls back to `.` and
+# fails with "build constraints exclude all Go files" on the root package.
+LIST_TEST_PKGS := go list -e -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... 2>/dev/null | grep -E '^vsc-node/'
 
 # -count=1 disables Go's test cache so these targets always actually run. The
 # cache key doesn't capture external state (MongoDB, libp2p, time), so a cached
@@ -190,6 +194,27 @@ test-full:
 test-regression:
 	@echo "==> Node-wide regression (TestFullNetworkRegression, ~70-110 min)"
 	$(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
+
+# In-process devnet e2e tests (TestE2E, TestPostEVM). Opt-in via E2E_DEVNET
+# because they spin up a multi-node devnet backed by MongoDB; they self-skip
+# under `make test` / `make test-full`, so removing modules/e2e from the
+# known-failing list does not turn them on in CI. Requires MongoDB. Example:
+#   make test-e2e
+test-e2e:
+	@echo "==> In-process devnet e2e (E2E_DEVNET=1)"
+	E2E_DEVNET=1 $(GO_TEST) $(VERBOSE) -timeout 30m -run 'TestE2E|TestPostEVM' ./modules/e2e
+
+# EVM bridge e2e tests (TestEVMBridgeE2E, TestEVMAutoExpiry). These are gated
+# behind the `evm_e2e` build tag so the rest of modules/e2e builds without them,
+# and they load the EVM mapping contract wasm at run time rather than embedding a
+# committed binary. The wasm is built from the external vsc-eco/account-mapping
+# contract — point EVM_MAPPING_WASM at the compiled binary (defaults to
+# modules/e2e/artifacts/evm_mapping.wasm). Without the artifact the tests skip.
+# Requires Docker + MongoDB (9-node devnet). Example:
+#   make test-evm-e2e EVM_MAPPING_WASM=/abs/path/to/evm_mapping.wasm
+test-evm-e2e:
+	@echo "==> EVM bridge e2e (build tag: evm_e2e)"
+	$(GO_TEST) $(VERBOSE) -tags evm_e2e -timeout 30m -run 'TestEVMBridgeE2E|TestEVMAutoExpiry' ./modules/e2e
 
 clean:
 	rm -rf $(BUILD_DIR)
