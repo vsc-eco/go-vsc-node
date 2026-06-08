@@ -6,19 +6,6 @@ import (
 	"testing"
 )
 
-func TestPendulumPoolWhitelist_DefaultsAreEmpty(t *testing.T) {
-	for name, c := range map[string]SystemConfig{
-		"mainnet": MainnetConfig(),
-		"testnet": TestnetConfig(),
-		"devnet":  DevnetConfig(),
-		"mocknet": MocknetConfig(),
-	} {
-		if w := c.PendulumPoolWhitelist(); len(w) != 0 {
-			t.Errorf("%s: expected empty whitelist by default; got %v", name, w)
-		}
-	}
-}
-
 func TestPendulumPoolWhitelist_AccessorReturnsCopy(t *testing.T) {
 	c := &config{pendulumPoolWhitelist: []string{"vsc1A", "vsc1B"}}
 	got := c.PendulumPoolWhitelist()

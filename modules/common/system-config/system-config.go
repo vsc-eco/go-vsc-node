@@ -223,7 +223,9 @@ func MainnetConfig() SystemConfig {
 			},
 		},
 		tssParams: params.DefaultTssParams,
-		// Mainnet defaults to empty — eligibility falls back to PendulumBolt's DAO-owner check.
+		// Seeded with the deployed pool contract IDs; operators can override via
+		// -sysconfig pendulumPoolWhitelist. Listed pools bypass the DAO-owner
+		// check in PendulumBolt.
 		pendulumPoolWhitelist: []string{
 			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp",
 			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM",

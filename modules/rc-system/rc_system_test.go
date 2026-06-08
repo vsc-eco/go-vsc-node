@@ -62,18 +62,22 @@ func (m *mockLedgerSystem) NewEmptyState() *ledgerSystem.LedgerState { return ni
 func (m *mockLedgerSystem) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
-	return ledgerSystem.LedgerResult{}
-}
 func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashConsensusParams) ledgerSystem.LedgerResult {
 	_ = p
 	return ledgerSystem.LedgerResult{Ok: false}
 }
 func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
-func (m *mockLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 {
-	_ = bucket
-	_ = blockHeight
-	return 0
+func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false}
+}
+func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.ReverseSafetySlashConsensusDebitParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false}
+}
+func (m *mockLedgerSystem) EnqueueRestitutionClaim(p ledgerSystem.EnqueueRestitutionClaimParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false}
 }
 
 // ── CalculateFrozenBal tests ──

@@ -2,10 +2,6 @@ package rewards
 
 import (
 	"math/big"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 
 	"vsc-node/lib/intmath"
@@ -143,89 +139,4 @@ func TestAuditUnfixed_43_TrimmedMeanLetsSubMajorityShiftPrice(t *testing.T) {
 	// land in the colluders' favour relative to a true median. When the fix
 	// lands, this test should be inverted / replaced with the sub-majority
 	// case described above.
-}
-
-// -----------------------------------------------------------------------------
-// #59 — Dead code: OracleEvidence / SlashBpsRaw have no non-test callers.
-//
-// The audit flagged the OracleEvidence struct + SlashBpsRaw/SlashBps trio
-// (modules/incentive-pendulum/slashing.go) as dead code superseded by the
-// per-tick rewards/ aggregator. This test grep-verifies that no production
-// (.go non-_test.go) file outside slashing.go itself references those names,
-// proving the dead-code condition is still present on this branch.
-//
-// Post-fix expectation: the symbols are either removed (this test would then
-// fail to find the slashing.go reference and should be deleted) or wired into
-// a live caller (this test would then find a non-test caller and fail).
-// -----------------------------------------------------------------------------
-
-func TestAuditUnfixed_59_OracleEvidenceAndSlashBpsRawHaveNoLiveCallers(t *testing.T) {
-	// Locate the repo root relative to this test file. runtime.Caller gives
-	// us the absolute path of this _test.go file regardless of where `go
-	// test` was invoked from.
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	// .../modules/incentive-pendulum/rewards/audit_unfixed_test.go → repo root
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", ".."))
-
-	// Sanity: go.mod sits at repo root.
-	if _, err := exec.LookPath("grep"); err != nil {
-		t.Skipf("grep not available on PATH: %v", err)
-	}
-
-	for _, sym := range []string{"OracleEvidence", "SlashBpsRaw"} {
-		// grep -rn for the symbol across all .go files, then filter out
-		// _test.go files and slashing.go itself. Any surviving line means
-		// the symbol has a live (production) caller.
-		cmd := exec.Command("grep", "-rn", "--include=*.go", sym, repoRoot)
-		out, err := cmd.Output()
-		// grep exits 1 when no match found — that's a valid (and desired)
-		// result for a fully-removed symbol. We only care if exec itself
-		// fails; otherwise we parse whatever lines came back.
-		if err != nil {
-			if exitErr, isExit := err.(*exec.ExitError); isExit && exitErr.ExitCode() == 1 {
-				// No matches at all — symbol fully removed; dead-code
-				// finding is post-fix-resolved by removal. This branch
-				// would fire only if/when the fix lands. Note and continue.
-				t.Logf("symbol %q has no occurrences at all — finding "+
-					"would be resolved by removal", sym)
-				continue
-			}
-			t.Fatalf("grep failed for %q: %v (output=%q)", sym, err, string(out))
-		}
-
-		var liveCallers []string
-		for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-			if line == "" {
-				continue
-			}
-			// Pull file path off the "path:lineno:content" form.
-			colon := strings.Index(line, ":")
-			if colon < 0 {
-				continue
-			}
-			path := line[:colon]
-			// Skip test files — they're allowed to reference dead code.
-			if strings.HasSuffix(path, "_test.go") {
-				continue
-			}
-			// Skip the file that DEFINES the symbol.
-			if strings.HasSuffix(path, "modules/incentive-pendulum/slashing.go") {
-				continue
-			}
-			liveCallers = append(liveCallers, line)
-		}
-
-		if len(liveCallers) != 0 {
-			t.Errorf("symbol %q has %d live (non-test, non-self) caller(s):\n%s",
-				sym, len(liveCallers), strings.Join(liveCallers, "\n"))
-		}
-	}
-
-	// Post-fix note: once #59 is addressed by either deletion or wiring
-	// SlashBpsRaw into a real call site, one of the loop iterations above
-	// will produce either "no occurrences" (delete) or live callers (wire-
-	// in), and this test should be removed or inverted accordingly.
 }

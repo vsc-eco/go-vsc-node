@@ -1,15 +1,17 @@
+//go:build evm_e2e
+
 package e2e_test
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
-	"testing"
-	"time"
 	"io"
 	"net/http"
+	"os"
 	"strings"
+	"testing"
+	"time"
 	"vsc-node/modules/common"
 	"vsc-node/modules/config"
 	"vsc-node/modules/db/vsc/contracts"
@@ -28,10 +30,32 @@ import (
 	"github.com/vsc-eco/hivego"
 )
 
-//go:embed artifacts/evm_mapping.wasm
-var EVM_CONTRACT_WASM []byte
-
 const EVM_E2E_NODES = 9
+
+// loadEVMContractWasm returns the compiled EVM mapping contract used by the EVM
+// bridge e2e tests.
+//
+// The wasm is intentionally NOT committed to this repo — it is built from the
+// external vsc-eco/account-mapping contract. Provide it at run time via the
+// EVM_MAPPING_WASM env var (path to the compiled binary); if unset it falls back
+// to ./artifacts/evm_mapping.wasm. When the artifact is absent the test skips, so
+// the rest of the modules/e2e suite still builds and runs without it.
+func loadEVMContractWasm(t *testing.T) []byte {
+	t.Helper()
+	path := os.Getenv("EVM_MAPPING_WASM")
+	if path == "" {
+		path = "artifacts/evm_mapping.wasm"
+	}
+	wasm, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf(
+			"EVM mapping contract wasm unavailable (%v); build it from vsc-eco/account-mapping and set EVM_MAPPING_WASM to the binary (or place it at %s)",
+			err,
+			path,
+		)
+	}
+	return wasm
+}
 
 // TestEVMBridgeE2E deploys the EVM mapping contract in a local Magi devnet,
 // submits block headers, submits a deposit proof, and verifies the balance
@@ -39,6 +63,9 @@ const EVM_E2E_NODES = 9
 func TestEVMBridgeE2E(t *testing.T) {
 	vsclog.ParseAndApply("verbose")
 	config.UseMainConfigDuringTests = true
+
+	// Skips early (before spinning up the devnet) when the wasm is unavailable.
+	evmContractWasm := loadEVMContractWasm(t)
 
 	container := e2e.NewContainer(EVM_E2E_NODES)
 	container.Init()
@@ -50,8 +77,8 @@ func TestEVMBridgeE2E(t *testing.T) {
 	didKey := dids.NewEthDID(testAddr)
 
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewEthProvider(testKey),
-		Did:      didKey,
+		Identity:     dids.NewEthProvider(testKey),
+		Did:          didKey,
 		VSCBroadcast: container.VSCBroadcast(),
 	}
 	var nonce uint64
@@ -86,7 +113,13 @@ func TestEVMBridgeE2E(t *testing.T) {
 					err := graphClient.Query(context.Background(), &q, map[string]any{
 						"account": graphql.String(didKey.String()),
 					})
-					t.Logf("balance poll: hbd=%d hive=%d err=%v did=%s", q.GetAccountBalance.Hbd, q.GetAccountBalance.Hive, err, didKey.String())
+					t.Logf(
+						"balance poll: hbd=%d hive=%d err=%v did=%s",
+						q.GetAccountBalance.Hbd,
+						q.GetAccountBalance.Hive,
+						err,
+						didKey.String(),
+					)
 					if q.GetAccountBalance.Hbd > 0 || q.GetAccountBalance.Hive > 0 {
 						t.Log("test account funded")
 						return nil
@@ -112,7 +145,7 @@ func TestEVMBridgeE2E(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			t.Log("deploying EVM mapping contract...")
 			storageProof, err := ctx.Container.Client().RequestProof(
-				"http://localhost:7080/api/v1/graphql", EVM_CONTRACT_WASM,
+				"http://localhost:7080/api/v1/graphql", evmContractWasm,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("storage proof: %w", err)
@@ -239,8 +272,15 @@ func TestEVMBridgeE2E(t *testing.T) {
 			t.Logf("verifying contract state for %s", contractId)
 			return func(ctx e2e.StepCtx) error {
 				// Use raw HTTP to avoid graphql-client type mapping issues
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"h\", \"vault\", \"chainid\"], encoding: \"raw\") }"}`, contractId)
-				resp, err := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"h\", \"vault\", \"chainid\"], encoding: \"raw\") }"}`,
+					contractId,
+				)
+				resp, err := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				if err != nil {
 					return fmt.Errorf("query state http: %w", err)
 				}
@@ -311,8 +351,16 @@ func TestEVMBridgeE2E(t *testing.T) {
 				// Query balance for the sender's DID
 				senderDID := "did:pkh:eip155:1:0xc066ac5d385419b1a8c43a0e146fa439837a8b8c"
 				balanceKey := "a-" + senderDID + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"%s\"], encoding: \"raw\") }"}`, contractId, balanceKey)
-				resp, err := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"%s\"], encoding: \"raw\") }"}`,
+					contractId,
+					balanceKey,
+				)
+				resp, err := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				if err != nil {
 					return fmt.Errorf("query balance: %w", err)
 				}
@@ -325,8 +373,15 @@ func TestEVMBridgeE2E(t *testing.T) {
 				if strings.Contains(bodyStr, "null") || !strings.Contains(bodyStr, balanceKey) {
 					// Balance might be keyed differently — check the full response
 					t.Logf("checking supply + observed state...")
-					reqBody2 := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"s\", \"gr\", \"o-24910634\", \"h\", \"n\", \"np\"], encoding: \"raw\") }"}`, contractId)
-					resp2, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody2))
+					reqBody2 := fmt.Sprintf(
+						`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"s\", \"gr\", \"o-24910634\", \"h\", \"n\", \"np\"], encoding: \"raw\") }"}`,
+						contractId,
+					)
+					resp2, _ := http.Post(
+						"http://localhost:7080/api/v1/graphql",
+						"application/json",
+						strings.NewReader(reqBody2),
+					)
 					body2, _ := io.ReadAll(resp2.Body)
 					resp2.Body.Close()
 					t.Logf("contract state: %s", string(body2))
@@ -405,8 +460,16 @@ func TestEVMBridgeE2E(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				balKey := "a-" + didKey.String() + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"%s\", \"gr\"], encoding: \"raw\") }"}`, contractId, balKey)
-				resp, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"%s\", \"gr\"], encoding: \"raw\") }"}`,
+					contractId,
+					balKey,
+				)
+				resp, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				t.Logf("minted balance + gas reserve: %s", string(body))
@@ -465,8 +528,16 @@ func TestEVMBridgeE2E(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				balKey := "a-" + didKey.String() + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"gr\", \"%s\"], encoding: \"raw\") }"}`, contractId, balKey)
-				resp, err := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"gr\", \"%s\"], encoding: \"raw\") }"}`,
+					contractId,
+					balKey,
+				)
+				resp, err := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				if err != nil {
 					return fmt.Errorf("query state: %w", err)
 				}
@@ -489,8 +560,15 @@ func TestEVMBridgeE2E(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				// Get the unsigned TX hex from d-0 to compute sighash
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"d-0\"], encoding: \"raw\") }"}`, contractId)
-				resp, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"d-0\"], encoding: \"raw\") }"}`,
+					contractId,
+				)
+				resp, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				t.Logf("d-0 state: %s", string(body))
@@ -498,14 +576,25 @@ func TestEVMBridgeE2E(t *testing.T) {
 				// Query getTssRequests via GraphQL
 				tssKeyID := contractId + "-main"
 				reqBody2 := fmt.Sprintf(`{"query":"{ getTssRequests(keyId: \"%s\") { msg sig status } }"}`, tssKeyID)
-				resp2, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody2))
+				resp2, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody2),
+				)
 				body2, _ := io.ReadAll(resp2.Body)
 				resp2.Body.Close()
 				t.Logf("getTssRequests: %s", string(body2))
 
 				// Also query the TSS key info
-				reqBody3 := fmt.Sprintf(`{"query":"{ getTssKey(keyId: \"%s-primary\") { public_key status algo } }"}`, contractId)
-				resp3, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody3))
+				reqBody3 := fmt.Sprintf(
+					`{"query":"{ getTssKey(keyId: \"%s-primary\") { public_key status algo } }"}`,
+					contractId,
+				)
+				resp3, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody3),
+				)
 				body3, _ := io.ReadAll(resp3.Body)
 				resp3.Body.Close()
 				t.Logf("getTssKey: %s", string(body3))
