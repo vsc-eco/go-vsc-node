@@ -492,6 +492,49 @@ type SettlementRecord {
 }
 
 """
+Per-account reward-reduction breakdown for a settled epoch — the explanation
+behind the single consolidated bps in the settlement record. Derived locally
+by each node from on-chain L2 evidence (block production/attestation, TSS,
+oracle) and not part of consensus; query it to answer "why was this node
+reduced", filtered by account.
+
+The per-signal *_bps fields are each signal's bps summed across the epoch's
+ticks (contributing evidence); they do NOT sum to consolidated_bps because the
+consolidated path takes the per-tick max across signals before summing and then
+subtracts the per-epoch forgiveness.
+"""
+type PendulumReductionRecord {
+  """Settled (closing) epoch this breakdown belongs to."""
+  epoch: Uint64!
+  """Hive account (hive:username form)."""
+  account: String!
+  """Block height the settlement was applied at."""
+  block_height: Uint64!
+  """Exclusive lower bound of the scored L2 evidence window (block height)."""
+  snapshot_range_from: Uint64!
+  """Inclusive upper bound of the scored L2 evidence window (block height)."""
+  snapshot_range_to: Uint64!
+  """Authoritative post-forgiveness, post-cap reduction applied to the bond (matches the on-chain settlement entry). 0 if penalties were forgiven."""
+  consolidated_bps: Int!
+  """Pre-forgiveness sum of per-tick max-of bps."""
+  raw_consolidated_bps: Int!
+  """Block-production-miss bps summed across ticks."""
+  block_production_bps: Int!
+  """Block-attestation-miss bps summed across ticks."""
+  block_attestation_bps: Int!
+  """TSS reshare-exclusion bps summed across ticks."""
+  tss_reshare_exclusion_bps: Int!
+  """TSS blame bps summed across ticks."""
+  tss_blame_bps: Int!
+  """TSS sign non-participation bps summed across ticks."""
+  tss_sign_non_participation_bps: Int!
+  """Oracle quote-divergence bps summed across ticks."""
+  oracle_quote_divergence_bps: Int!
+  """HBD actually paid to this account in the same settlement (canonical record is in findLedgerTXs, type pendulum_distribute)."""
+  hbd_distributed: Int64!
+}
+
+"""
 Result of a consensus election for a given epoch.
 """
 type ElectionResult {
@@ -779,6 +822,24 @@ input TssCommitmentFilter {
 }
 
 """
+Filter options for querying pendulum reward-reduction breakdowns.
+"""
+input PendulumReductionFilter {
+  """Filter by account (hive:username form)."""
+  byAccount: String
+  """Filter by exact epoch (takes precedence over the fromEpoch/toEpoch range)."""
+  byEpoch: Uint64
+  """Include only epochs at or above this value."""
+  fromEpoch: Uint64
+  """Include only epochs at or below this value."""
+  toEpoch: Uint64
+  """Number of records to skip (for pagination)."""
+  offset: Int
+  """Maximum number of records to return (for pagination)."""
+  limit: Int
+}
+
+"""
 An intent declaration for a simulated contract call.
 """
 input IntentInput {
@@ -1027,6 +1088,16 @@ type Query {
     """Filter criteria for the TSS commitment search."""
     filterOptions: TssCommitmentFilter
   ): [TssCommitment!]
+
+  """
+  Search per-account pendulum reward-reduction breakdowns for settled epochs.
+  Explains which behaviors (block production/attestation, TSS, oracle) drove a
+  node's reward reduction; filter by account to see one node's history.
+  """
+  findPendulumReductions(
+    """Filter criteria for the reward-reduction search."""
+    filterOptions: PendulumReductionFilter
+  ): [PendulumReductionRecord!]
 
   """
   Simulate one or more contract calls without committing state changes. Useful for estimating gas costs, testing contract logic, and previewing state diffs.

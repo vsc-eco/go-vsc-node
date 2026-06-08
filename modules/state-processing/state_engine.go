@@ -30,6 +30,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_reductions"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -125,6 +126,11 @@ type StateEngine struct {
 	// record. Drives the proposer's `canHold` guard and the
 	// `vsc.election_result` handler's "prior epoch must be settled" check.
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements
+	// pendulumReductionsDb stores the per-account reward-reduction breakdown
+	// derived at settlement-apply time. Local explorer/diagnostic cache only —
+	// never consensus state. May be nil (e.g. geometry-only test engines), so
+	// every write site nil-checks it.
+	pendulumReductionsDb pendulum_reductions.PendulumReductions
 	// pendulumApplier is the swap-time SDK method's executor.
 	pendulumApplier wasm_context.PendulumApplier
 	// pendulumGeometry recomputes (V, P, E, T, s) on demand from contract
@@ -2465,6 +2471,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
+	pendulumReductionsDb pendulum_reductions.PendulumReductions,
 	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
 	identityConfig common.IdentityConfig,
@@ -2534,6 +2541,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 
 		pendulumFeed:          pendulumoracle.NewFeedTracker(sconf.OnMainnet()),
 		pendulumSettlementsDb: pendulumSettlementsDb,
+		pendulumReductionsDb:  pendulumReductionsDb,
 		balanceDb:             balanceDb,
 	}
 	if identityConfig != nil {

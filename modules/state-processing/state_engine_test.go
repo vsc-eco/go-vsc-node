@@ -113,6 +113,7 @@ func newTestEnvWithConsensus(cs consensus_state.ConsensusState, sconf systemconf
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
 		tssKeys, tssCommitments, tssRequests,
 		nil, // pendulumSettlementsDb
+		nil, // pendulumReductionsDb
 		cs,  // consensusStateDb
 		nil, // wasm
 		nil, // identityConfig

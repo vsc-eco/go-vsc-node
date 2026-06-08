@@ -74,6 +74,73 @@ func ComputeReductionsForEpoch(
 	return out
 }
 
+// EpochReductionEvidence is the per-account explanation behind the single
+// consolidated reduction bps that lands in the settlement record. Signals
+// carries each liveness signal's bps summed across the epoch's ticks;
+// RawConsolidatedBps is the sum of the per-tick max-of — the pre-forgiveness,
+// pre-cap total ComputeReductionsForEpoch accumulates before subtracting
+// PerEpochForgivenessBps.
+//
+// The Signals fields do NOT add up to the consolidated reduction: the
+// consolidated path takes the per-tick max across signals before summing
+// across ticks, so they are contributing evidence, not additive shares.
+//
+// Derived purely from on-chain L2 evidence at fixed snapshot heights — two
+// honest nodes produce identical maps — but it is NOT part of the signed
+// settlement payload. It backs a local explorer/diagnostic view the state
+// engine persists at settlement-apply time.
+type EpochReductionEvidence struct {
+	Signals            WitnessLivenessEvidence
+	RawConsolidatedBps int
+}
+
+// ComputeReductionEvidenceForEpoch re-runs per-tick scoring across
+// `(fromBh, toBh]` and accumulates, per witness, the per-signal bps breakdown
+// plus the raw consolidated total. It shares the exact tick loop, provider,
+// and skip logic of ComputeReductionsForEpoch so the breakdown lines up with
+// the consolidated reductions that drive settlement; the only difference is
+// what it keeps from each AggregateTick record.
+//
+// Witnesses that accrued no penalty (every tick scored 0) are omitted, so the
+// map holds only accounts that registered at least one signal during the epoch.
+func ComputeReductionEvidenceForEpoch(
+	provider EpochInputsProvider,
+	fromBh, toBh uint64,
+	tickInterval uint64,
+) map[string]EpochReductionEvidence {
+	if provider == nil || tickInterval == 0 || toBh <= fromBh {
+		return nil
+	}
+
+	firstTick := fromBh + tickInterval - (fromBh % tickInterval)
+
+	acc := make(map[string]EpochReductionEvidence)
+	for tickHeight := firstTick; tickHeight <= toBh; tickHeight += tickInterval {
+		in, ok := provider.TickInputsForRange(tickHeight)
+		if !ok {
+			continue
+		}
+		for _, r := range AggregateTick(in) {
+			if r.Bps <= 0 {
+				continue
+			}
+			e := acc[r.Witness]
+			e.Signals.BlockProductionBps += r.Evidence.BlockProductionBps
+			e.Signals.BlockAttestationBps += r.Evidence.BlockAttestationBps
+			e.Signals.TssReshareExclusionBps += r.Evidence.TssReshareExclusionBps
+			e.Signals.TssBlameBps += r.Evidence.TssBlameBps
+			e.Signals.TssSignNonParticipationBps += r.Evidence.TssSignNonParticipationBps
+			e.Signals.OracleQuoteDivergenceBps += r.Evidence.OracleQuoteDivergenceBps
+			e.RawConsolidatedBps += r.Bps
+			acc[r.Witness] = e
+		}
+	}
+	if len(acc) == 0 {
+		return nil
+	}
+	return acc
+}
+
 // SortedAccountsFromMap returns the keys of a reductions map in
 // lexicographic order — a re-export shim for callers building deterministic
 // settlement payloads.

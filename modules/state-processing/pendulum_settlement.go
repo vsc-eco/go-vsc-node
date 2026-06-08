@@ -11,6 +11,7 @@ import (
 	pendulumsettlement "vsc-node/modules/incentive-pendulum/settlement"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
+	pendulum_reductions_db "vsc-node/modules/db/vsc/pendulum_reductions"
 	pendulum_settlements_db "vsc-node/modules/db/vsc/pendulum_settlements"
 )
 
@@ -196,6 +197,88 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 		"residual_hbd", rec.ResidualHBD,
 		"distributions", len(rec.Distributions),
 		"reductions", len(rec.RewardReductions))
+
+	// Persist the per-account reward-reduction breakdown for the explorer /
+	// diagnostic view. Derived locally from the same on-chain evidence the
+	// re-derivation above already validated; never consensus state, so a
+	// failure here is logged but must not block the (already-applied)
+	// settlement. Runs after SaveMarker so an interrupted persist re-attempts
+	// on restart-replay only while the marker still gates re-application.
+	se.persistReductionEvidence(rec, blockHeight)
+}
+
+// persistReductionEvidence derives and stores the per-account, per-signal
+// reward-reduction breakdown behind `rec` into the pendulum_reductions
+// collection. It is best-effort and side-effect-only:
+//
+//   - It is NOT consensus state — every node re-derives identical rows from
+//     the same on-chain L2 evidence at the settlement's snapshot heights, so
+//     divergence (or absence on a node that couldn't re-derive) is harmless.
+//   - Errors and the no-provider / no-evidence cases are swallowed (logged at
+//     most) so they never affect the settlement that already applied.
+//
+// Idempotent: HasEpoch short-circuits restart-replay of an already-recorded
+// epoch, and the row Id ("epoch:account") makes SaveReductions an upsert.
+func (se *StateEngine) persistReductionEvidence(rec pendulumsettlement.SettlementRecord, blockHeight uint64) {
+	if se == nil || se.pendulumReductionsDb == nil {
+		return
+	}
+	if has, err := se.pendulumReductionsDb.HasEpoch(rec.Epoch); err == nil && has {
+		return
+	}
+
+	provider := se.PendulumEpochInputsProvider()
+	if provider == nil {
+		return
+	}
+	evidence := rewards.ComputeReductionEvidenceForEpoch(
+		provider,
+		rec.SnapshotRangeFrom,
+		rec.SnapshotRangeTo,
+		uint64(pendulumoracle.DefaultTickIntervalBlocks),
+	)
+	if len(evidence) == 0 {
+		return
+	}
+
+	// Consolidated (post-forgiveness, authoritative) bps and HBD payout from
+	// the applied record, keyed by normalized account so they join the
+	// committee-name-keyed evidence map.
+	consolidated := make(map[string]int, len(rec.RewardReductions))
+	for _, rr := range rec.RewardReductions {
+		consolidated[normalizeHiveAccount(rr.Account)] = rr.Bps
+	}
+	distributed := make(map[string]int64, len(rec.Distributions))
+	for _, d := range rec.Distributions {
+		distributed[normalizeHiveAccount(d.Account)] += d.HBDAmt
+	}
+
+	rows := make([]pendulum_reductions_db.PendulumReductionRecord, 0, len(evidence))
+	for acct, ev := range evidence {
+		account := normalizeHiveAccount(acct)
+		rows = append(rows, pendulum_reductions_db.PendulumReductionRecord{
+			Id:                         uintToDecString(rec.Epoch) + ":" + account,
+			Epoch:                      rec.Epoch,
+			Account:                    account,
+			BlockHeight:                blockHeight,
+			SnapshotRangeFrom:          rec.SnapshotRangeFrom,
+			SnapshotRangeTo:            rec.SnapshotRangeTo,
+			ConsolidatedBps:            consolidated[account],
+			RawConsolidatedBps:         ev.RawConsolidatedBps,
+			BlockProductionBps:         ev.Signals.BlockProductionBps,
+			BlockAttestationBps:        ev.Signals.BlockAttestationBps,
+			TssReshareExclusionBps:     ev.Signals.TssReshareExclusionBps,
+			TssBlameBps:                ev.Signals.TssBlameBps,
+			TssSignNonParticipationBps: ev.Signals.TssSignNonParticipationBps,
+			OracleQuoteDivergenceBps:   ev.Signals.OracleQuoteDivergenceBps,
+			HbdDistributed:             distributed[account],
+		})
+	}
+
+	if err := se.pendulumReductionsDb.SaveReductions(rows); err != nil {
+		log.Warn("pendulum settlement: reduction evidence persist failed",
+			"epoch", rec.Epoch, "rows", len(rows), "err", err)
+	}
 }
 
 // validatePendulumSettlement performs structural safety checks that hold

@@ -9,6 +9,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_reductions"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -45,6 +46,8 @@ type Resolver struct {
 	TssCommitments tss_db.TssCommitments
 	TssRequests    tss_db.TssRequests
 	ChainOracle    *chain.ChainOracle
+
+	PendulumReductions pendulum_reductions.PendulumReductions
 }
 
 // electionSettlement re-hydrates the closing committee's pendulum settlement

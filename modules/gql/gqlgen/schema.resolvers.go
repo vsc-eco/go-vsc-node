@@ -24,6 +24,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_reductions"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -234,6 +235,31 @@ func (r *opLogEventResolver) Amount(ctx context.Context, obj *ledgerSystem.OpLog
 // Params is the resolver for the params field.
 func (r *opLogEventResolver) Params(ctx context.Context, obj *ledgerSystem.OpLogEvent) (model.Map, error) {
 	return model.Map(obj.Params), nil
+}
+
+// Epoch is the resolver for the epoch field.
+func (r *pendulumReductionRecordResolver) Epoch(ctx context.Context, obj *pendulum_reductions.PendulumReductionRecord) (model.Uint64, error) {
+	panic(fmt.Errorf("not implemented: Epoch - epoch"))
+}
+
+// BlockHeight is the resolver for the block_height field.
+func (r *pendulumReductionRecordResolver) BlockHeight(ctx context.Context, obj *pendulum_reductions.PendulumReductionRecord) (model.Uint64, error) {
+	panic(fmt.Errorf("not implemented: BlockHeight - block_height"))
+}
+
+// SnapshotRangeFrom is the resolver for the snapshot_range_from field.
+func (r *pendulumReductionRecordResolver) SnapshotRangeFrom(ctx context.Context, obj *pendulum_reductions.PendulumReductionRecord) (model.Uint64, error) {
+	panic(fmt.Errorf("not implemented: SnapshotRangeFrom - snapshot_range_from"))
+}
+
+// SnapshotRangeTo is the resolver for the snapshot_range_to field.
+func (r *pendulumReductionRecordResolver) SnapshotRangeTo(ctx context.Context, obj *pendulum_reductions.PendulumReductionRecord) (model.Uint64, error) {
+	panic(fmt.Errorf("not implemented: SnapshotRangeTo - snapshot_range_to"))
+}
+
+// HbdDistributed is the resolver for the hbd_distributed field.
+func (r *pendulumReductionRecordResolver) HbdDistributed(ctx context.Context, obj *pendulum_reductions.PendulumReductionRecord) (model.Int64, error) {
+	panic(fmt.Errorf("not implemented: HbdDistributed - hbd_distributed"))
 }
 
 // Ct is the resolver for the ct field.
@@ -627,6 +653,28 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 		return nil, err
 	}
 	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
+}
+
+// FindPendulumReductions is the resolver for the findPendulumReductions field.
+func (r *queryResolver) FindPendulumReductions(ctx context.Context, filterOptions *PendulumReductionFilter) ([]pendulum_reductions.PendulumReductionRecord, error) {
+	if r.PendulumReductions == nil {
+		return nil, fmt.Errorf("pendulum reductions store unavailable")
+	}
+	if filterOptions == nil {
+		filterOptions = &PendulumReductionFilter{}
+	}
+	offset, limit, paginateErr := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if paginateErr != nil {
+		return nil, paginateErr
+	}
+	return r.PendulumReductions.FindReductions(
+		filterOptions.ByAccount,
+		(*uint64)(filterOptions.ByEpoch),
+		(*uint64)(filterOptions.FromEpoch),
+		(*uint64)(filterOptions.ToEpoch),
+		offset,
+		limit,
+	)
 }
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.
@@ -1069,6 +1117,11 @@ func (r *Resolver) NonceRecord() NonceRecordResolver { return &nonceRecordResolv
 // OpLogEvent returns OpLogEventResolver implementation.
 func (r *Resolver) OpLogEvent() OpLogEventResolver { return &opLogEventResolver{r} }
 
+// PendulumReductionRecord returns PendulumReductionRecordResolver implementation.
+func (r *Resolver) PendulumReductionRecord() PendulumReductionRecordResolver {
+	return &pendulumReductionRecordResolver{r}
+}
+
 // PostingJsonKeys returns PostingJsonKeysResolver implementation.
 func (r *Resolver) PostingJsonKeys() PostingJsonKeysResolver { return &postingJsonKeysResolver{r} }
 
@@ -1114,6 +1167,7 @@ type ledgerClaimRecordResolver struct{ *Resolver }
 type ledgerRecordResolver struct{ *Resolver }
 type nonceRecordResolver struct{ *Resolver }
 type opLogEventResolver struct{ *Resolver }
+type pendulumReductionRecordResolver struct{ *Resolver }
 type postingJsonKeysResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
 type rcRecordResolver struct{ *Resolver }

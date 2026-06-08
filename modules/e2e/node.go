@@ -19,6 +19,7 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_reductions"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rc_db "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -133,6 +134,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
+	pendulumReductionsDb := pendulum_reductions.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 
 	sysConfig := systemconfig.MocknetConfig()
@@ -181,6 +183,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		pendulumReductionsDb,
 		consensusStateDb,
 		wasm,
 		identityConfig,
@@ -285,6 +288,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssKeys,
 		tssRequests,
 		pendulumSettlementsDb,
+		pendulumReductionsDb,
 		consensusStateDb,
 		dataAvailability,
 		blockConsumer,
@@ -318,6 +322,8 @@ func MakeNode(input MakeNodeInput) *Node {
 			TssCommitments: tssCommitments,
 			TssRequests:    tssRequests,
 			InterestClaims: interestClaims,
+
+			PendulumReductions: pendulumReductionsDb,
 		}}), gqlConfig)
 		plugins = append(plugins, gqlManager)
 	}

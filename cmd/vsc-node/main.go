@@ -23,6 +23,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/pendulum_reductions"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -96,6 +97,7 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
+	pendulumReductionsDb := pendulum_reductions.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	wasm_sdk.Init(sysConfig.OnMainnet())
@@ -192,6 +194,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		pendulumReductionsDb,
 		consensusStateDb,
 		wasm,
 		identityConfig,
@@ -278,6 +281,8 @@ func main() {
 		TssRequests:    tssRequests,
 		InterestClaims: interestClaims,
 		ChainOracle:    oracle.ChainOracle(),
+
+		PendulumReductions: pendulumReductionsDb,
 	}}), gqlConf)
 
 	plugins := make([]aggregate.Plugin, 0)
@@ -313,6 +318,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		pendulumSettlementsDb,
+		pendulumReductionsDb,
 		consensusStateDb,
 
 		p2p,

@@ -127,6 +127,7 @@ func NewContractTest() ContractTest {
 		&tssCommitments,
 		&tssRequests,
 		nil, // pendulumSettlementsDb
+		nil, // pendulumReductionsDb
 		nil, // consensusStateDb
 		nil, // wasm
 		nil, // identityConfig

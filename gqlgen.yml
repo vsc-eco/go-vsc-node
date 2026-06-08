@@ -16,6 +16,7 @@ autobind:
   - vsc-node/modules/db/vsc/elections
   - vsc-node/modules/db/vsc/hive_blocks
   - vsc-node/modules/db/vsc/ledger
+  - vsc-node/modules/db/vsc/pendulum_reductions
   - vsc-node/modules/db/vsc/transactions
   - vsc-node/modules/db/vsc/vsc_blocks
   - vsc-node/modules/db/vsc/witnesses
