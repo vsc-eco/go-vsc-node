@@ -3,6 +3,7 @@ package tss_helpers
 import (
 	"crypto/elliptic"
 	"errors"
+	"fmt"
 	"math"
 	"math/big"
 
@@ -11,11 +12,33 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+// secp256k1DigestBytes is the curve-order byte length for secp256k1 — the size
+// of a well-formed ECDSA message digest (a BTC/ETH sighash is exactly this).
+const secp256k1DigestBytes = 32
+
+// MsgToHashInt converts a sign-request message into the scalar the threshold
+// signing party signs.
+//
+// GV-H4: the ECDSA path must reject a non-32-byte digest rather than silently
+// truncating it. hashToInt drops every byte past the 32nd, so two different
+// messages sharing a 32-byte prefix would be signed to the SAME scalar — one
+// threshold signature valid for both. We deliberately do NOT re-hash or
+// domain-tag here: the resulting ECDSA signature must verify on the destination
+// chain (BTC/ETH) over the exact 32-byte sighash, and any transformation would
+// make it unverifiable there. Cross-key replay across purposes is separately
+// prevented by the per-contract key namespace (contractId-keyId) at the call
+// site. A valid 32-byte digest is therefore signed verbatim — unchanged.
 func MsgToHashInt(msg []byte, algo SigningAlgo) (*big.Int, error) {
 	switch algo {
 	case SigningAlgoEcdsa:
+		if len(msg) != secp256k1DigestBytes {
+			return nil, fmt.Errorf("ecdsa sign message must be a %d-byte digest, got %d bytes", secp256k1DigestBytes, len(msg))
+		}
 		return hashToInt(msg, btcec.S256()), nil
 	case SigningAlgoEddsa:
+		if len(msg) == 0 {
+			return nil, errors.New("eddsa sign message must not be empty")
+		}
 		// directly convert the byte array to big int
 		return new(big.Int).SetBytes(msg), nil
 	default:
