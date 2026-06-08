@@ -1,8 +1,9 @@
+//go:build evm_e2e
+
 package e2e_test
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +39,9 @@ func TestEVMAutoExpiry(t *testing.T) {
 	vsclog.ParseAndApply("verbose")
 	config.UseMainConfigDuringTests = true
 
+	// Skips early (before spinning up the devnet) when the wasm is unavailable.
+	evmContractWasm := loadEVMContractWasm(t)
+
 	container := e2e.NewContainer(EVM_E2E_NODES)
 	container.Init()
 	container.Start(t)
@@ -47,8 +51,8 @@ func TestEVMAutoExpiry(t *testing.T) {
 	didKey := dids.NewEthDID(testAddr)
 
 	transactionCreator := transactionpool.TransactionCrafter{
-		Identity: dids.NewEthProvider(testKey),
-		Did:      didKey,
+		Identity:     dids.NewEthProvider(testKey),
+		Did:          didKey,
 		VSCBroadcast: container.VSCBroadcast(),
 	}
 	var nonce uint64
@@ -101,7 +105,7 @@ func TestEVMAutoExpiry(t *testing.T) {
 		Name: "Deploy EVM contract",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			storageProof, err := ctx.Container.Client().RequestProof(
-				"http://localhost:7080/api/v1/graphql", EVM_CONTRACT_WASM,
+				"http://localhost:7080/api/v1/graphql", evmContractWasm,
 			)
 			if err != nil {
 				return nil, err
@@ -131,9 +135,30 @@ func TestEVMAutoExpiry(t *testing.T) {
 		Name: "Configure contract",
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			calls := []map[string]interface{}{
-				{"contract_id": contractId, "action": "setVault", "payload": "6026449a55b7eb5c1b1a5e33e02e542bbba719ce", "rc_limit": 10000, "intents": []interface{}{}, "net_id": "vsc-mocknet"},
-				{"contract_id": contractId, "action": "setChainId", "payload": "1", "rc_limit": 10000, "intents": []interface{}{}, "net_id": "vsc-mocknet"},
-				{"contract_id": contractId, "action": "createKey", "payload": "test", "rc_limit": 10000, "intents": []interface{}{}, "net_id": "vsc-mocknet"},
+				{
+					"contract_id": contractId,
+					"action":      "setVault",
+					"payload":     "6026449a55b7eb5c1b1a5e33e02e542bbba719ce",
+					"rc_limit":    10000,
+					"intents":     []interface{}{},
+					"net_id":      "vsc-mocknet",
+				},
+				{
+					"contract_id": contractId,
+					"action":      "setChainId",
+					"payload":     "1",
+					"rc_limit":    10000,
+					"intents":     []interface{}{},
+					"net_id":      "vsc-mocknet",
+				},
+				{
+					"contract_id": contractId,
+					"action":      "createKey",
+					"payload":     "test",
+					"rc_limit":    10000,
+					"intents":     []interface{}{},
+					"net_id":      "vsc-mocknet",
+				},
 			}
 			ops := make([]hivego.HiveOperation, len(calls))
 			for i, call := range calls {
@@ -174,8 +199,22 @@ func TestEVMAutoExpiry(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			mintPayload := fmt.Sprintf(`{"address":"%s","asset":"eth","amount":1000000000000000000}`, didKey.String())
 			calls := []map[string]interface{}{
-				{"contract_id": contractId, "action": "adminMint", "payload": json.RawMessage(mintPayload), "rc_limit": 10000, "intents": []interface{}{}, "net_id": "vsc-mocknet"},
-				{"contract_id": contractId, "action": "setGasReserve", "payload": "500000000000000000", "rc_limit": 10000, "intents": []interface{}{}, "net_id": "vsc-mocknet"},
+				{
+					"contract_id": contractId,
+					"action":      "adminMint",
+					"payload":     json.RawMessage(mintPayload),
+					"rc_limit":    10000,
+					"intents":     []interface{}{},
+					"net_id":      "vsc-mocknet",
+				},
+				{
+					"contract_id": contractId,
+					"action":      "setGasReserve",
+					"payload":     "500000000000000000",
+					"rc_limit":    10000,
+					"intents":     []interface{}{},
+					"net_id":      "vsc-mocknet",
+				},
 			}
 			ops := make([]hivego.HiveOperation, len(calls))
 			for i, call := range calls {
@@ -221,8 +260,16 @@ func TestEVMAutoExpiry(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				balKey := "a-" + didKey.String() + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"%s\"], encoding: \"raw\") }"}`, contractId, balKey)
-				resp, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"%s\"], encoding: \"raw\") }"}`,
+					contractId,
+					balKey,
+				)
+				resp, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				t.Logf("PRE-EXPIRY state: %s", string(body))
@@ -286,8 +333,16 @@ func TestEVMAutoExpiry(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				balKey := "a-" + didKey.String() + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"%s\", \"h\"], encoding: \"raw\") }"}`, contractId, balKey)
-				resp, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-0\", \"%s\", \"h\"], encoding: \"raw\") }"}`,
+					contractId,
+					balKey,
+				)
+				resp, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				t.Logf("POST-EXPIRY state: %s", string(body))
@@ -340,8 +395,16 @@ func TestEVMAutoExpiry(t *testing.T) {
 		TestFunc: func(ctx e2e.StepCtx) (e2e.EvaluateFunc, error) {
 			return func(ctx e2e.StepCtx) error {
 				balKey := "a-" + didKey.String() + "-eth"
-				reqBody := fmt.Sprintf(`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-1\", \"%s\"], encoding: \"raw\") }"}`, contractId, balKey)
-				resp, _ := http.Post("http://localhost:7080/api/v1/graphql", "application/json", strings.NewReader(reqBody))
+				reqBody := fmt.Sprintf(
+					`{"query":"{ getStateByKeys(contractId: \"%s\", keys: [\"n\", \"np\", \"d-1\", \"%s\"], encoding: \"raw\") }"}`,
+					contractId,
+					balKey,
+				)
+				resp, _ := http.Post(
+					"http://localhost:7080/api/v1/graphql",
+					"application/json",
+					strings.NewReader(reqBody),
+				)
 				body, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 				t.Logf("SECOND WITHDRAWAL state: %s", string(body))

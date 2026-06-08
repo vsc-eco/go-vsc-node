@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -701,7 +702,30 @@ func (r *queryResolver) FindTssCommitments(ctx context.Context, filterOptions *T
 	if err := ValidateBlockRange(filterOptions.FromBlock, filterOptions.ToBlock); err != nil {
 		return nil, err
 	}
-	return r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
+	commits, err := r.TssCommitments.FindCommitments(filterOptions.ByKeyID, filterOptions.ByTypes, (*uint64)(filterOptions.ByEpoch), (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), off, lim)
+	if err != nil {
+		return nil, err
+	}
+	// The DB layer returns rows in DedupCommitmentsBySemanticKey's canonical
+	// ascending order (chosen for cross-node determinism on the consensus
+	// consumers, which aggregate order-independently). The aggregation pipeline
+	// already paginated newest-first (block_height DESC + skip/limit), so present
+	// the page newest-first to match. Re-sort here, at the presentation boundary
+	// only — leaving the shared dedup helper's ascending output untouched for its
+	// consensus callers (state_engine pendulum reductions, tss.go blame windows).
+	sort.SliceStable(commits, func(i, j int) bool {
+		if commits[i].BlockHeight != commits[j].BlockHeight {
+			return commits[i].BlockHeight > commits[j].BlockHeight
+		}
+		if commits[i].KeyId != commits[j].KeyId {
+			return commits[i].KeyId < commits[j].KeyId
+		}
+		if commits[i].Type != commits[j].Type {
+			return commits[i].Type < commits[j].Type
+		}
+		return commits[i].TxId < commits[j].TxId
+	})
+	return commits, nil
 }
 
 // SimulateContractCalls is the resolver for the simulateContractCalls field.

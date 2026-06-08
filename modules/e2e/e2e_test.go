@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 	"vsc-node/modules/common"
@@ -38,7 +39,22 @@ var CONTRACT_WASM []byte
 // 4 nodes minimum for 2/3 consensus minimum
 const NODE_COUNT = 9
 
+// requireE2EDevnet skips unless E2E_DEVNET is set. These tests spin up an
+// in-process multi-node devnet backed by MongoDB, so they are opt-in and do not
+// run under `make test` / `make test-full` by default.
+func requireE2EDevnet(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping in-process devnet e2e test in short mode")
+	}
+	if os.Getenv("E2E_DEVNET") == "" {
+		t.Skip("set E2E_DEVNET=1 to run the in-process devnet e2e tests (requires MongoDB)")
+	}
+}
+
 func TestE2E(t *testing.T) {
+	requireE2EDevnet(t)
+
 	vsclog.ParseAndApply("verbose")
 	config.UseMainConfigDuringTests = true
 
@@ -408,6 +424,8 @@ func TestE2E(t *testing.T) {
 // Mock seed for testing
 
 func TestPostEVM(t *testing.T) {
+	requireE2EDevnet(t)
+
 	// ethKeyHex := "ea3625737c9840af61e95a9fab172a5495b533978ba88cb68723514802119917" // 0x00000E1c8094cAC66CD1adf4C240cd9Cf43B4D46
 	ethKeyHex := "5feac6ad3d3556a3a81bd9d2c881f195b5a8b4a5ce8f7bd4fa32c10bf186575a" // 0xcafe412dC5fb69FD5155a3b63A5AD6d3Bb80738b
 
