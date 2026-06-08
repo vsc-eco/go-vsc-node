@@ -30,7 +30,7 @@ type mappingBotConfig struct {
 	// RcLimit is the resource-credit limit attached to every VSC L2 transaction
 	// the bot submits. The VSC node rejects the transaction if the caller's RC
 	// balance is below this value, so set it high enough for your contract calls.
-	RcLimit uint
+	RcLimit uint64
 	// BotEthPrivKey is a hex-encoded secp256k1 private key used to sign
 	// VSC L2 transactions (did:pkh:eip155 caller). It is auto-generated on
 	// first run; the derived DID must be funded with HBD to pay for RCs.
@@ -72,7 +72,7 @@ func (c *mappingBotConfigStruct) OpsApiKey() string {
 	return c.Get().OpsApiKey
 }
 
-func (c *mappingBotConfigStruct) RcLimit() uint {
+func (c *mappingBotConfigStruct) RcLimit() uint64 {
 	if v := c.Get().RcLimit; v > 0 {
 		return v
 	}
