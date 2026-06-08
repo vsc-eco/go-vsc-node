@@ -14,22 +14,25 @@ import (
 
 func TestElectionMinimum(t *testing.T) {
 	//Yes it won't fail
+	// GV-H3: the decay floor is now ceil(2N/3) (the BFT-safe quorum), not the old
+	// floor(N/2+1) bare majority. The threshold no longer drops over time, so the
+	// stale/decayed cases below now equal their fresh 2/3 value.
 	val := elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION-1, 0)
 	assert.Equal(t, uint64(0), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MAX_BLOCKS_SINCE_LAST_ELECTION, 8)
-	assert.Equal(t, uint64(5), val)
+	assert.Equal(t, uint64(6), val) // GV-H3: was 5 (N/2+1); ceil(2*8/3)=6
 	val = elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION, 8)
 	assert.Equal(t, uint64(6), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MIN_BLOCKS_SINCE_LAST_ELECTION, 9)
 	assert.Equal(t, uint64(6), val)
 	val = elections.MinimalRequiredElectionVotes(elections.MAX_BLOCKS_SINCE_LAST_ELECTION+1, 9)
-	assert.Equal(t, uint64(5), val)
+	assert.Equal(t, uint64(6), val) // GV-H3: was 5 (N/2+1); ceil(2*9/3)=6
 
 	val = elections.MinimalRequiredElectionVotes((elections.MAX_BLOCKS_SINCE_LAST_ELECTION-elections.MIN_BLOCKS_SINCE_LAST_ELECTION)/2, 100)
-	assert.Equal(t, uint64(59), val)
+	assert.Equal(t, uint64(67), val) // GV-H3: was 59; ceil(2*100/3)=67
 	val = elections.MinimalRequiredElectionVotes((elections.MAX_BLOCKS_SINCE_LAST_ELECTION-elections.MIN_BLOCKS_SINCE_LAST_ELECTION)/2, 101)
 
-	assert.Equal(t, uint64(60), val)
+	assert.Equal(t, uint64(68), val) // GV-H3: was 60; ceil(2*101/3)=68
 }
 
 func TestGetElectionByHeight(t *testing.T) {
