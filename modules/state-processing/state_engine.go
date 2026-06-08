@@ -496,16 +496,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 					log.Verbose("frSync", "stakeAmt", frSync.StakedAmount, "unstakeAmt", frSync.UnstakedAmount)
 
-					var amt int64
-
-					if frSync.StakedAmount > 0 {
-						amt = frSync.StakedAmount
-					} else {
-						//Must be negative to indicate unstaking has occurred
-						amt = -frSync.UnstakedAmount
-					}
-
-					if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+					amt, ok := frSyncLedgerAmount(frSync.StakedAmount, frSync.UnstakedAmount)
+					if !ok {
+						// GV-H9: a malformed/replayed fr_sync carrying a negative
+						// amount is rejected, not applied — see frSyncLedgerAmount.
+						log.Warn("fr_sync: rejecting op with negative amount(s)",
+							"txId", tx.TransactionID, "stake_amt", frSync.StakedAmount, "unstake_amt", frSync.UnstakedAmount)
+					} else if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 						Id:          MakeTxId(tx.TransactionID, 0),
 						Amount:      amt,
 						BlockHeight: blockInfo.BlockHeight + 1,
@@ -2238,6 +2235,26 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 //
 // (Operator visibility is via logs for now; a health-endpoint surface for
 // the stalled state is deferred to the in-flight health PR.)
+// frSyncLedgerAmount converts an L1 vsc.fr_sync report into the signed
+// hbd_savings delta applied to the fractional-reserve virtual account. A stake
+// credits the reserve (+), an unstake debits it (-). stake_amt and unstake_amt
+// are magnitudes reported by the gateway and MUST be non-negative; a negative
+// field is malformed/malicious and is rejected (ok=false).
+//
+// GV-H9: the prior inline form `amt = -frSync.UnstakedAmount` silently flipped a
+// negative unstake_amt into a positive credit (e.g. {stake_amt:0,
+// unstake_amt:-1000} -> +1000), inflating the FR balance with no L1 backing.
+func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool) {
+	if stakedAmount < 0 || unstakedAmount < 0 {
+		return 0, false
+	}
+	if stakedAmount > 0 {
+		return stakedAmount, true
+	}
+	// Zero stake -> this is an unstake report; debit the reserve.
+	return -unstakedAmount, true
+}
+
 func blockingRetry(what string, read func() error) {
 	const (
 		baseDelay = 100 * time.Millisecond
