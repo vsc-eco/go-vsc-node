@@ -222,8 +222,15 @@ func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElec
 		return uint64(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
 	}
 
-	// Calculate minimum and maximum members.
-	minMembers := int(math.Floor(float64(memberCountOfLastElection)/2 + 1))
+	// GV-H3: the decay floor must NOT drop below the BFT-safe 2/3 quorum. The
+	// old floor was floor(N/2 + 1) — a bare majority with ZERO Byzantine fault
+	// tolerance: a patient minority controlling >N/2 (vs the 2/3 needed when
+	// fresh) could wait out the 2-week timer and finalize a captured committee.
+	// This is the exact concern MinimalRequiredConsensusVersionVotes is
+	// deliberately NOT decayed for ("must not become adoptable by a small
+	// minority"). Floor minMembers at ceil(2N/3) so the time-based structure is
+	// preserved but the threshold can never decay below the safe quorum.
+	minMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
 	maxMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
 
 	// Compute drift.
