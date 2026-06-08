@@ -49,7 +49,8 @@ func TestAuditUnfixed_CRYP13_StripWorldNotCalledOnInit(t *testing.T) {
 
 	c := config.New(secretConf{"default-seed"}, &dir)
 
-	// --- Init() path: existing file → read branch, must NOT strip today. ---
+	// --- Init() path: existing file → read branch now strips world bits
+	// (review8 GV-H7); this assertion was flipped from documenting the bug. ---
 	if err := c.Init(); err != nil {
 		t.Fatalf("Init returned error: %v", err)
 	}
@@ -58,18 +59,17 @@ func TestAuditUnfixed_CRYP13_StripWorldNotCalledOnInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o644 {
-		t.Fatalf("audit CRYP-13: after Init() on pre-existing 0644 file, mode = %o, want 0644 "+
-			"(this assertion documents the bug — Init() never calls stripWorld; "+
-			"post-fix it must, and this test should flip to expect 0o640)", perm)
+	if perm := fi.Mode().Perm(); perm&0o007 != 0 {
+		t.Fatalf("GV-H7/CRYP-13: after Init() on pre-existing 0644 file, mode = %o, "+
+			"world bits must be stripped", perm)
 	}
 	di, err := os.Stat(confDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := di.Mode().Perm(); perm != 0o755 {
-		t.Fatalf("audit CRYP-13: after Init() on pre-existing 0755 dir, mode = %o, want 0755 "+
-			"(Init() else-branch should also call stripWorld(dir) post-fix)", perm)
+	if perm := di.Mode().Perm(); perm&0o007 != 0 {
+		t.Fatalf("GV-H7/CRYP-13: after Init() on pre-existing 0755 dir, mode = %o, "+
+			"world bits must be stripped", perm)
 	}
 
 	// --- Update() path: stripWorld IS wired up here, narrow positive check. ---

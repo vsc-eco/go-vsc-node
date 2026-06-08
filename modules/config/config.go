@@ -120,6 +120,19 @@ func (c *Config[T]) Init() error {
 		if err != nil {
 			return err
 		}
+		// GV-H7: the config can hold the BLS seed, Hive WIF and libp2p private
+		// key. Run the world-bit-strip migration on the existing-file path too —
+		// a node that only reads its config at startup (never writes) would
+		// otherwise keep 0644 perms left by an earlier build, leaving the keys
+		// world-readable. Group bits are preserved so operators can still grant
+		// shared-group access deliberately.
+		dir := path.Dir(c.FilePath())
+		if err = stripWorld(dir); err != nil {
+			return err
+		}
+		if err = stripWorld(c.FilePath()); err != nil {
+			return err
+		}
 	}
 	c.loaded = true
 	return nil
