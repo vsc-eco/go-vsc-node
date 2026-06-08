@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/vsclog"
@@ -157,7 +158,36 @@ type ChainOracle struct {
 	// recentlyWitnessed tracks block ranges this node recently signed as a
 	// witness for another producer. If we become producer and see the same
 	// range, we skip it to avoid duplicate submissions across nodes.
-	recentlyWitnessed map[string]time.Time // "SYMBOL:startHeight-endHeight" -> when witnessed
+	//
+	// GV-H6: written from the p2p message-handler goroutine (witnessChainData)
+	// and read/deleted from the block-tick goroutine (handleBlockTick), so every
+	// access MUST hold recentlyWitnessedMu — an unsynchronized concurrent map
+	// write is a `fatal error: concurrent map writes` that kills the process
+	// (uncatchable by recover).
+	recentlyWitnessedMu sync.Mutex
+	recentlyWitnessed   map[string]time.Time // "SYMBOL:startHeight-endHeight" -> when witnessed
+}
+
+// markWitnessed records that this node signed `key` as a witness (write path).
+func (c *ChainOracle) markWitnessed(key string) {
+	c.recentlyWitnessedMu.Lock()
+	c.recentlyWitnessed[key] = time.Now()
+	c.recentlyWitnessedMu.Unlock()
+}
+
+// witnessedAt returns when `key` was witnessed, if recorded (read path).
+func (c *ChainOracle) witnessedAt(key string) (time.Time, bool) {
+	c.recentlyWitnessedMu.Lock()
+	defer c.recentlyWitnessedMu.Unlock()
+	t, ok := c.recentlyWitnessed[key]
+	return t, ok
+}
+
+// clearWitnessed drops `key` from the witnessed set (delete path).
+func (c *ChainOracle) clearWitnessed(key string) {
+	c.recentlyWitnessedMu.Lock()
+	delete(c.recentlyWitnessed, key)
+	c.recentlyWitnessedMu.Unlock()
 }
 
 func New(

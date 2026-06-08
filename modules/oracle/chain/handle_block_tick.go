@@ -147,7 +147,7 @@ func (o *ChainOracle) processChainRelay(
 	// Skip if we recently witnessed (signed) this range for another producer
 	// AND the contract height has advanced (meaning their submission succeeded).
 	witnessKey := fmt.Sprintf("%s:%s", strings.ToUpper(chainStatus.symbol), rangeKey)
-	if witnessedAt, ok := o.recentlyWitnessed[witnessKey]; ok {
+	if witnessedAt, ok := o.witnessedAt(witnessKey); ok {
 		if time.Since(witnessedAt) < 5*time.Minute {
 			contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
 			if err == nil && contractHeight >= endHeight {
@@ -163,7 +163,7 @@ func (o *ChainOracle) processChainRelay(
 				"witnessedAgo", time.Since(witnessedAt),
 			)
 		}
-		delete(o.recentlyWitnessed, witnessKey)
+		o.clearWitnessed(witnessKey)
 	}
 
 	o.logger.Debug("initiating chain relay consensus",
