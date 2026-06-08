@@ -28,7 +28,7 @@ func (l2TestBotConfig) HttpPort() uint16   { return 0 }
 func (l2TestBotConfig) SignApiKey() string { return "" }
 func (l2TestBotConfig) OpsApiKey() string  { return "" }
 func (l2TestBotConfig) FilePath() string   { return "" }
-func (l2TestBotConfig) RcLimit() uint      { return 10000 }
+func (l2TestBotConfig) RcLimit() uint64    { return 10000 }
 
 // buildBotForL2Test creates a minimal Bot wired for L2-path tests.
 func buildBotForL2Test(t *testing.T, gql GraphQLFetcher) (*Bot, dids.EthDID) {

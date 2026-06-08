@@ -574,7 +574,7 @@ func (s *l2Submitter) callContractL2(
 		ContractId: contractID,
 		Action:     action,
 		Payload:    string(payload),
-		RcLimit:    uint(rcLimit),
+		RcLimit:    rcLimit,
 		Intents:    []contracts.Intent{},
 		Caller:     did.String(),
 		NetId:      s.cfg.NetID,
