@@ -159,6 +159,18 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
 	p := se.sconf.ConsensusParams()
 	if !VerifyRecoveryMultisig(p, tx.Self.RequiredAuths) {
+		// GV-H5: a silent return here hid the fact that on a network whose
+		// ConsensusParams omit the recovery roster, the emergency stop is inert.
+		// Make the two failure modes distinguishable and loud.
+		if !RecoveryMultisigConfigured(p) {
+			log.Warn("vsc.recovery_suspend had NO EFFECT: no recovery multisig is configured for this network — "+
+				"the on-chain emergency stop is INERT (GV-H5). Populate RecoveryMultisigAccounts and "+
+				"RecoveryMultisigThreshold in the network ConsensusParams to enable it.",
+				"txId", tx.Self.TxId, "requiredAuths", tx.Self.RequiredAuths)
+		} else {
+			log.Warn("vsc.recovery_suspend rejected: required_auths do not meet the recovery multisig threshold",
+				"txId", tx.Self.TxId, "threshold", p.RecoveryMultisigThreshold, "requiredAuths", tx.Self.RequiredAuths)
+		}
 		return
 	}
 	if se.consensusState == nil {
@@ -176,6 +188,17 @@ func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
 func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersion) {
 	p := se.sconf.ConsensusParams()
 	if !VerifyRecoveryMultisig(p, tx.Self.RequiredAuths) {
+		// GV-H5: see executeRecoverySuspend — surface an unconfigured roster loudly
+		// rather than silently dropping the recovery transaction.
+		if !RecoveryMultisigConfigured(p) {
+			log.Warn("vsc.recovery_require_version had NO EFFECT: no recovery multisig is configured for this network — "+
+				"the on-chain emergency stop is INERT (GV-H5). Populate RecoveryMultisigAccounts and "+
+				"RecoveryMultisigThreshold in the network ConsensusParams to enable it.",
+				"txId", tx.Self.TxId, "requiredAuths", tx.Self.RequiredAuths)
+		} else {
+			log.Warn("vsc.recovery_require_version rejected: required_auths do not meet the recovery multisig threshold",
+				"txId", tx.Self.TxId, "threshold", p.RecoveryMultisigThreshold, "requiredAuths", tx.Self.RequiredAuths)
+		}
 		return
 	}
 	if se.consensusState == nil {
