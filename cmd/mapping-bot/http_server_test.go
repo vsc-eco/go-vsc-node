@@ -35,7 +35,7 @@ func (c *testBotConfig) HttpPort() uint16   { return 8000 }
 func (c *testBotConfig) SignApiKey() string { return "test-sign-key" }
 func (c *testBotConfig) OpsApiKey() string  { return "test-ops-key" }
 func (c *testBotConfig) FilePath() string   { return "test-config.json" }
-func (c *testBotConfig) RcLimit() uint      { return 10000 }
+func (c *testBotConfig) RcLimit() uint64    { return 10000 }
 
 // noopChainClient prevents any real blockchain calls from being made.
 type noopChainClient struct {

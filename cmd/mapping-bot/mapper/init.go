@@ -49,7 +49,7 @@ type BotConfiger interface {
 	SignApiKey() string
 	OpsApiKey() string
 	FilePath() string
-	RcLimit() uint
+	RcLimit() uint64
 }
 
 type Bot struct {
