@@ -1,9 +1,66 @@
 package ledgerSystem
 
 import (
+	"fmt"
 	"slices"
+	"time"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 )
+
+// blockingLedgerRead runs read() until it returns nil, with capped exponential
+// backoff. Fail-stop primitive for the ledger-system spend-check path: a
+// balance read that one node completes but another swallows lets the two nodes
+// decide a tx outcome differently — a consensus fork — and the nil slice
+// pointer GetLedgerRange returns on a Mongo error panics the node if
+// dereferenced. Blocking until the DB recovers keeps every honest node either
+// computing the identical balance or making no progress, never crashing and
+// never forking. Mirrors state-processing.blockingRetry.
+func blockingLedgerRead(what string, read func() error) {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		if err := read(); err == nil {
+			if attempt > 1 {
+				log.Error("ledger DB read recovered; resuming", "op", what, "attempts", attempt)
+			}
+			return
+		} else {
+			log.Error("ledger DB read failed; blocking until DB recovers (fail-stop)",
+				"op", what, "attempt", attempt, "retryIn", delay.String(), "err", err)
+		}
+		time.Sleep(delay)
+		if delay < maxDelay {
+			if delay *= 2; delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
+
+// ledgerRangeOrBlock fail-stops on a GetLedgerRange error (GV-H1). The prior
+// code discarded the error and ranged over the nil slice pointer the DB returns
+// on a Mongo fault, panicking the node mid-spend-check; silently treating the
+// error as "no records" would compute a balance from a partial read and fork
+// this node from peers. Block until the read succeeds and return a non-nil
+// slice.
+func (ls *LedgerState) ledgerRangeOrBlock(account string, start, end uint64, asset string, opTypes []string) []ledger_db.LedgerRecord {
+	var out *[]ledger_db.LedgerRecord
+	blockingLedgerRead(fmt.Sprintf("GetLedgerRange(%s @%d %s)", account, end, asset), func() error {
+		r, err := ls.LedgerDb.GetLedgerRange(account, start, end, asset, ledger_db.LedgerOptions{OpType: opTypes})
+		if err != nil {
+			return err
+		}
+		if r == nil {
+			return fmt.Errorf("GetLedgerRange returned a nil result without an error")
+		}
+		out = r
+		return nil
+	})
+	return *out
+}
 
 // Used to represent the global ledger state in the execution environment
 type LedgerState struct {
@@ -112,7 +169,17 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		return 0
 	}
 
-	balRecordPtr, _ := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
+	// GV-H1: fail-stop both DB reads. GetBalanceRecord returning (nil,nil) is a
+	// valid "no snapshot yet" state, but a non-nil error must not be swallowed.
+	var balRecordPtr *ledger_db.BalanceRecord
+	blockingLedgerRead(fmt.Sprintf("GetBalanceRecord(%s @%d)", account, blockHeight), func() error {
+		r, err := ls.BalanceDb.GetBalanceRecord(account, blockHeight)
+		if err != nil {
+			return err
+		}
+		balRecordPtr = r
+		return nil
+	})
 
 	var recordHeight uint64
 	var balRecord ledger_db.BalanceRecord
@@ -156,9 +223,12 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 	// (one leader per slot). A divergent balance can therefore stall a slot but
 	// can neither fork the chain nor change the replay of an already-finalized
 	// block.
-	ledgerResults, _ := ls.LedgerDb.GetLedgerRange(account, recordHeight, blockHeight, asset)
+	// GV-H1: fail-stop this range read too (was `, _` discarding the error and
+	// dereferencing the nil slice GetLedgerRange returns on a Mongo fault —
+	// panicking the node mid-spend-check). nil opTypes == no `t` filter == every
+	// record of the asset, identical to the prior unfiltered call.
 	balAdjust := int64(0)
-	for _, v := range *ledgerResults {
+	for _, v := range ls.ledgerRangeOrBlock(account, recordHeight, blockHeight, asset, nil) {
 		if IsProtocolMetaLedgerType(v.Type) {
 			continue
 		}
