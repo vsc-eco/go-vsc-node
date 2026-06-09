@@ -334,6 +334,36 @@ func RevertMe(a *string) *string {
 	return &ret
 }
 
+// setThenAbort writes a state key then aborts. Used to prove a try-call rolls
+// back the callee's state when it fails. Payload: "key,value".
+//
+//go:wasmexport setThenAbort
+func SetThenAbort(a *string) *string {
+	params := strings.Split(*a, ",")
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	sdk.StateSetObject(params[0], params[1])
+	sdk.Abort("intentional abort after write")
+	return a
+}
+
+// tryThenSet does a try/catch call to a callee, then writes its OWN state marker
+// to prove it kept running after a caught failure. It returns the raw try
+// outcome JSON for the test to assert on. Payload (";"-separated, so the call
+// payload may contain commas): "calleeId;method;callPayload;markerKey;markerVal".
+//
+//go:wasmexport tryThenSet
+func TryThenSet(a *string) *string {
+	parts := strings.Split(*a, ";")
+	if len(parts) < 5 {
+		sdk.Abort("invalid payload")
+	}
+	outcome := sdk.TryContractCall(parts[0], parts[1], parts[2])
+	sdk.StateSetObject(parts[3], parts[4])
+	return outcome
+}
+
 //go:wasmexport contractGetString
 func ContractGetString(a *string) *string {
 	params := strings.Split((*a), ",")
