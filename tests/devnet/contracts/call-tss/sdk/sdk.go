@@ -62,6 +62,16 @@ func ContractStateGet(contractId string, key string) *string {
 	return contractRead(&contractId, &key)
 }
 
+// TryContractCall calls another contract in try/catch mode. If the callee
+// reverts, the caller is NOT trapped: the returned *string is a JSON outcome
+// {"ok":false,...} and the callee's state/ledger writes are rolled back. On
+// success it is {"ok":true,"result":<callee return>}. RC and gas are charged
+// either way.
+func TryContractCall(contractId string, method string, payload string) *string {
+	opts := `{"try":true}`
+	return contractCall(&contractId, &method, &payload, &opts)
+}
+
 func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")
