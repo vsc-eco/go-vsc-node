@@ -32,6 +32,7 @@ cross-node consistency. It is too long for the 30m slow budget, so `test-full`
 
 Currently-failing tests are temporarily excluded from both targets so they stay
 green, tracked in the Makefile for fixing (remove each once fixed):
+
 - `KNOWN_FAILING_PACKAGES` — whole packages: `modules/e2e` (missing wasm
   artifact), `modules/announcements` (stale Hive mock), `modules/hive/streamer`
   (test-suite rehab), `modules/p2p` (gossipsub `Test` hang).
@@ -112,9 +113,11 @@ func (round *base) CanProceed() bool {
 Every `oldOK[j]` and every `newOK[j]` must be true before any round advances. One missing message from one listed party = round blocked until 2-minute timeout. The threshold (`ceil(N*2/3)-1`, e.g., 12 for 19 nodes) governs the math (Lagrange interpolation), NOT the protocol. The protocol requires ALL listed parties.
 
 The SSID reinforces this cryptographically. At `ecdsa/resharing/rounds.go:145`:
+
 ```go
 ssidList = append(ssidList, round.Parties().IDs().Keys()...)
 ```
+
 `round.Parties()` returns the OLD committee PeerContext (`tss/params.go:66,144-145`). The SSID is a SHA-512/256 hash of every old party's Key, plus BigXj, NTildej, H1j, H2j, round number, and nonce. Round 2 (`round_2_new_step_1.go:44-52`) verifies SSID from ALL old parties byte-for-byte. One party with a different Key = `WrapError("ssid mismatch", Pj)` = session poisoned for every node.
 
 **Consequence: the party lists passed to `btss.NewReSharingParameters()` at `dispatcher.go:247-256` (old) and `dispatcher.go:285-294` (new) are a contract. Every party MUST send valid messages in every round. Every node MUST construct identical party lists — same members, same order, same epoch-modified Keys. Any divergence silently poisons the session for all nodes.**
@@ -122,29 +125,40 @@ ssidList = append(ssidList, round.Parties().IDs().Keys()...)
 ## Constraint 2: Party List Must Be Identical Across All Nodes
 
 **What is ALLOWED to modify the party list (deterministic — same on all nodes):**
+
 - On-chain blame exclusion: `blamedAccounts[member.Account]` — from Hive blame commitments (`tss.go:718-722`, `741`)
 - On-chain ban exclusion: `blameMap.BannedNodes[member.Account]` — from `BlameScore()` which reads only on-chain data (`tss.go:745,767`)
 - On-chain commitment bitset: which members were in the prior keygen/reshare (`tss.go:730-739`)
+- **Gossip readiness attestations** (`gossipAttestations` → `readyAccounts`) — a per-member entry is a single BLS-signed claim that converges across all nodes before the session. ALLOWED, REQUIRED, and the most-often mis-"fixed" input here — see "Gossip readiness is convergent and REQUIRED" below.
 
 **What is FORBIDDEN to modify the party list (non-deterministic — differs per node):**
-- RPC readiness check results (5s timeout is non-deterministic)
-- libp2p connection state (`Connectedness()`)
-- Local witness DB sync state
 
-**The codebase itself documents this problem:**
-- `p2p.go:318`: *"excluding them non-deterministically causes SSID mismatch between nodes"*
-- `tss.go:639`: *"keepTimeouts=true so transient timeouts don't cause non-deterministic party lists across nodes"*
-- `tss.go:796`: *"Same non-determinism bug as signing — if nodes disagree on which new members are reachable, they build different party sets → SSID mismatch"*
+- Instantaneous, unsynchronized per-node probes — a live RPC ping, libp2p `Connectedness()`, or local witness-DB sync state. Each node samples a different instant, so the sets never line up → divergent party lists → SSID mismatch → silent failure (the codebase warns of exactly this: _"excluding them non-deterministically causes SSID mismatch between nodes"_).
 
-**The current violation:** `checkParticipantReadiness()` with `keepTimeouts=true` (`tss.go:793`, `p2p.go:325-398`) keeps timeout nodes but excludes nodes with "definitive" errors (`no_witness`, `bad_peer_id`, `rpc_error`). These "definitive" errors are NOT deterministic — `no_witness` depends on local witness DB sync, `rpc_error` depends on the target's transient state. When they disagree across nodes, party lists diverge, SSIDs diverge, and the session fails silently.
+The dividing line: a FORBIDDEN input is sampled locally and never reconciled. The gossip readiness set (last ALLOWED bullet) is the opposite — a signed claim that every node converges on _before_ the session. That distinction is the whole reason gossip is allowed, so it is spelled out next.
 
-**Additionally:** `keepTimeouts=true` contradicts Constraint 1. A timeout node is kept in the party list but may be genuinely offline. btss expects messages from it in every round. `CanProceed()` blocks. The session waits 2 minutes and times out. This is an intentional tradeoff (deterministic party list at the cost of 2-minute timeout per offline member), but it means every offline old member costs the network a full timeout cycle.
+### Gossip readiness is convergent and REQUIRED — do NOT "fix" it toward determinism
+
+🛑 **This is the single most repeated mistake in this module.** More than once, a session has read the FORBIDDEN list, labeled the gossip readiness filter a "non-determinism bug," and proposed replacing it with an on-chain / election-snapshot source "for determinism." **That is wrong every time.** It shipped once as **GV-H8** (`selectReshareNewCommittee`) and was **reverted** — for regressing liveness (offline-member timeouts) and version accuracy (stale snapshot vs. live attested version) to solve a non-problem. Do not re-derive it.
+
+**It is REQUIRED — because of Constraint 1.** btss demands 100% participation from ALL listed parties in BOTH committees (every `oldOK[j]` and `newOK[j]`). So the list can **never** be "all on-chain election members": any member offline at session time forces a full 2-minute `CanProceed` stall and almost always a failed session. You MUST narrow the list to nodes actually online/ready. Readiness is load-bearing for liveness; deleting it "for determinism" guarantees a 2-minute timeout per offline member, every cycle.
+
+**It is CONVERGENT, not a per-node probe.** The readiness set is an eventually-convergent BLS-gossip protocol engineered so all honest nodes hold the SAME set by session time:
+
+- **BLS-signed attestations** (`ReadyAttestation`, `signReadyAttestation` / `verifyAttestation`): each member's readiness + running version is ONE signed claim. Every receiver stores the byte-identical signed object — nothing about a member's entry is per-node except _whether you've received it yet_. The version carried is the node's **live** `RunningVersion()`, both deterministic across receivers (one signed value) and more accurate than any election snapshot.
+- **Amplification** (`broadcastGossipBundle`): every member re-broadcasts the FULL bundle of known attestations every block, so a node that missed one catches up within a block or two.
+- **Settle window** (`DEFAULT_SETTLE_BLOCKS = 3`): in the last 3 blocks before the target, NEW attestations are REJECTED — only re-gossip continues (enforced on both the send and receive paths). This freezes the set well before the session, so it converges.
+
+**Residual divergence is HARMLESS — fail-and-retry, never silent corruption.** Convergence is overwhelming but not guaranteed (a partition, or an attestation arriving right at the settle boundary, can still differ). When it does, nothing is corrupted silently: a mismatched list yields an SSID mismatch (Constraint 1) or a share-verification failure, the session simply FAILS, and it RETRIES at the next rotation (`TSS_ROTATE_INTERVAL` blocks) — by which point the set has almost certainly converged. The price of a rare divergence is one wasted, auto-retried session; the price of "determinizing" it by including every on-chain member is a guaranteed 2-minute stall per offline member, forever. The design trades a rare, free, self-healing retry for everyday liveness. **Do not invert that trade.**
+
+**Before changing readiness / party-list selection, answer in writing:** _"Does my change keep each per-member readiness entry a single signed claim that converges via the settle window, and does it preserve fail-and-retry rather than forcing offline members into the list?"_ If you are about to swap the live gossip readiness set for an on-chain / election-snapshot source, STOP — you have re-derived the reverted GV-H8.
 
 ## Constraint 3: Consensus Boundary — Identical CIDs Required
 
 **`result.Serialize()` → CBOR → CID must produce the identical byte sequence on every node.** If even one node produces a different CID, its BLS signature doesn't match the leader's commitment, and that signature doesn't count toward the 2/3 threshold.
 
 The BLS collection at `tss.go:1276-1376` works as follows:
+
 1. Leader serializes its result: `result.Serialize()` → `EncodeDagCbor()` → `HashBytes()` → CID
 2. Leader broadcasts `ask_sigs` via pubsub (one-shot, no retry) (`tss.go:1299-1305`)
 3. Each node independently: looks up its own `sessionResults[sessionId]` → calls its own `Serialize()` → computes its own CID → BLS-signs ONLY if its CID matches (`p2p.go:92-131`)
@@ -154,6 +168,7 @@ The BLS collection at `tss.go:1276-1376` works as follows:
 Different party lists → different PartyIDs → different SSID → different protocol errors → different `WaitingFor()` results → different `TimeoutResult.Culprits` → different `setToCommitment()` bitsets → different `BaseCommitment` → different CBOR → different CID → BLS signature mismatch → `waitForSigs` times out → commitment never lands on Hive → no error logged → failure is completely silent.
 
 **What feeds into Serialize() (must be identical across nodes):**
+
 - `TimeoutResult.Culprits` — from `WaitingFor()` (NON-DETERMINISTIC if party lists differ)
 - `ErrorResult.tssErr.Culprits()` — from btss error (NON-DETERMINISTIC, depends on message arrival)
 - `ReshareResult.Commitment` — from `setToCommitment(newParticipants, newEpoch)` (DETERMINISTIC if newParticipants identical)
@@ -247,11 +262,11 @@ flowchart TD
         CURELEC --> NEWCMTE
     end
 
-    subgraph READINESS["Readiness Checks — ✗ NON-DETERMINISTIC"]
-        CPR["checkParticipantReadiness<br/>p2p.go:325-398<br/>keepTimeouts=true for old committee<br/>✗ NON-DETERMINISTIC"]
-        WRPC["RPC ping: vsc.tss ReceiveMsg Type=ready<br/>5s timeout<br/>✗ NON-DETERMINISTIC"]
-        WDB["GetWitnessAtHeight → peer.Decode<br/>p2p.go:343-348<br/>⚠ Depends on local witness DB sync"]
-        CRP["countReadyParticipants (new cmte)<br/>p2p.go:404 — count only, no filter<br/>✗ NON-DETERMINISTIC but doesn't modify list"]
+    subgraph READINESS["Readiness Filter — gossip readyAccounts (eventually CONVERGENT)"]
+        CPR["readyAccounts ← gossipAttestations[bh]<br/>BLS-signed, version-filtered<br/>tss.go:1318-1328<br/>✓ same set on all nodes by session time"]
+        WRPC["Gossip amplification: broadcastGossipBundle<br/>full bundle re-broadcast every block<br/>✓ converges"]
+        WDB["Settle window: DEFAULT_SETTLE_BLOCKS=3<br/>no NEW attestations in last 3 blocks<br/>tss.go:86-88, p2p.go:309-314"]
+        CRP["Old + new committee: keep member iff readyAccounts[member]<br/>(+ minus blamed/banned), tss.go:1352<br/>✓ deterministic given converged set"]
         PREFLIGHT["Pre-flight: threshold+1 required<br/>tss.go:801-812"]
 
         OLDCMTE --> CPR
@@ -379,8 +394,6 @@ flowchart TD
 
     style CANPROCEED fill:#ff6b6b,stroke:#333,color:#000
     style DECODE fill:#ff6b6b,stroke:#333,color:#000
-    style CPR fill:#ffaa00,stroke:#333,color:#000
-    style WRPC fill:#ffaa00,stroke:#333,color:#000
     style FEK fill:#ffaa00,stroke:#333,color:#000
     style MISSED fill:#ff6b6b,stroke:#333,color:#000
     style NODESIGN fill:#ff6b6b,stroke:#333,color:#000
@@ -410,11 +423,11 @@ func ProcessBlock(blk) {
 func BlockTick(bh, headHeight) {
     if bh < *headHeight-20 { return }      // tss.go:145 — sync guard DETERMINISTIC
     if TssIndexHeight > bh { return }       // tss.go:149 — not yet active
-    
+
     slotInfo := CalculateSlotInfo(bh)       // tss.go:153 ON-CHAIN DETERMINISTIC
     schedule := GetSchedule(slotInfo)       // tss.go:155 ON-CHAIN DETERMINISTIC
     isLeader := witnessSlot.Account == self // tss.go:167 ON-CHAIN DETERMINISTIC
-    
+
     if bh % TSS_ROTATE_INTERVAL == 0 {     // tss.go:171 — every 100 blocks (~5 min)
         election := GetElectionByHeight(bh) // tss.go:173 ON-CHAIN DETERMINISTIC
         reshareKeys := FindEpochKeys(epoch) // keys.go:136 ON-CHAIN ⚠ NO SORT — latent ordering bug
@@ -426,7 +439,7 @@ func BlockTick(bh, headHeight) {
         sigReqs := FindUnsignedRequests(bh) // tss.go:202 ON-CHAIN DETERMINISTIC
     }
     // Drain queuedActions (tss.go:233-247) — consumed and cleared
-    
+
     RunActions(generatedActions, leader, isLeader, bh)  // tss.go:250
 }
 
@@ -440,7 +453,7 @@ func RunActions(actions, leader, isLeader, bh) {
     if !locked { return }                     // ⚠ Actions from this BlockTick are LOST
     // Lock released at tss.go:917 after Start(), BEFORE Done/Await
     // → multiple sessions from different blocks can run concurrently
-    
+
     currentElection := GetElectionByHeight(bh)  // tss.go:481 ON-CHAIN DETERMINISTIC
     blameMap := BlameScore()                     // tss.go:493 ON-CHAIN DETERMINISTIC
     // ⚠ BlameScore uses GetElectionByHeight(MaxInt64-1) at tss.go:285
@@ -455,7 +468,7 @@ func RunActions(actions, leader, isLeader, bh) {
         initialElection := GetElectionByHeight(MaxInt64-1) // tss.go:285 ON-CHAIN
         previousElections := GetPreviousElections(epoch, 27) // tss.go:299 ON-CHAIN
         // TSS_BLAME_EPOCH_COUNT = 27 (tss.go:52)
-        
+
         for each election in window:                        // tss.go:320
             blames := GetBlames(&election.Epoch)            // tss.go:321 ON-CHAIN
             for each member in election:
@@ -465,13 +478,13 @@ func RunActions(actions, leader, isLeader, bh) {
                 for idx, member in election.Members:
                     if bitset.Bit(idx) == 1:
                         blameMap[account] += 1              // tss.go:343 — actual failures
-        
+
         for each account:
             failureRate := Score / Weight * 100             // tss.go:403
             if epochsSinceFirst < 3: continue               // tss.go:383 — grace period
             if Score > Weight * 60 / 100:                   // tss.go:405 — ban threshold
                 BannedNodes[account] = true
-        
+
         return ScoreMap{BannedNodes}
     }
 
@@ -482,15 +495,15 @@ func RunActions(actions, leader, isLeader, bh) {
     // For reshare action:
     sessionId = "reshare-" + bh + "-" + idx + "-" + keyId   // tss.go:683 DETERMINISTIC
     // ⚠ idx depends on FindEpochKeys order — latent fragmentation risk
-    
+
     commitment := GetCommitmentByHeight(keyId, bh, "keygen", "reshare") // tss.go:686 ON-CHAIN
     lastBlame := GetCommitmentByHeight(keyId, bh, "blame")              // tss.go:687 ON-CHAIN
     // ⚠ Only reads SINGLE most recent blame — not accumulated
     // accumulateBlames() on techcoderx/blame-tuning branch fixes this
-    
+
     if lastBlame is valid and not expired:                    // tss.go:698-703
         blameBits := base64Decode(lastBlame.Commitment)       // tss.go:701
-    
+
     // ⚠ DECODING BUG ON MAIN: decoded against currentElection, NOT blame's own epoch
     for idx, member := range currentElection.Members {        // tss.go:718
         if blameBits.Bit(idx) == 1:
@@ -499,7 +512,7 @@ func RunActions(actions, leader, isLeader, bh) {
     // Comment at tss.go:712-715 documents the assumption:
     // "blame is always encoded against the current election"
     // This is WRONG for pre-f850533 blame commitments (encoded against keygen epoch)
-    
+
     commitmentElection := GetElection(commitment.Epoch)       // tss.go:706 ON-CHAIN
 
 // ═══════════════════════════════════════════════════════════════
@@ -515,13 +528,13 @@ func RunActions(actions, leader, isLeader, bh) {
             if blamedAccounts[member.Account]: continue       // tss.go:741 DETERMINISTIC
             if blameMap.BannedNodes[member.Account]: continue // tss.go:745 DETERMINISTIC
             commitedMembers = append(member)                  // tss.go:749
-    
+
     // NEW COMMITTEE (tss.go:755-775)
     for member := range currentElection.Members:              // tss.go:758
         if blamedAccounts[member.Account]: continue           // tss.go:761 DETERMINISTIC
         if blameMap.BannedNodes[member.Account]: continue     // tss.go:767 DETERMINISTIC
         newParticipants = append(member)                      // tss.go:772
-    
+
     origOldSize := fullOldCommitteeSize                       // tss.go:836 — pre-filter
     origNewSize := full new committee size                    // tss.go:837 — pre-filter
     // ⚠ Thresholds calculated from origOldSize/origNewSize (pre-filter)
@@ -532,32 +545,24 @@ func RunActions(actions, leader, isLeader, bh) {
 // PHASE 6: Readiness Checks — ✗ NON-DETERMINISTIC
 // ═══════════════════════════════════════════════════════════════
 
-    // OLD COMMITTEE — checkParticipantReadiness (tss.go:793, p2p.go:325-398)
-    commitedMembers = checkParticipantReadiness(
-        commitedMembers, sessionId, "RESHARE-OLD",
-        true,  // keepTimeouts=true
-    )
-    // For each participant:
-    //   witness := GetWitnessAtHeight(account, nil)    // p2p.go:343 LOCAL ⚠ sync-dependent
-    //   peerId := peer.Decode(witness.PeerId)           // p2p.go:348 LOCAL
-    //   err := CallContext(5s, peerId, "vsc.tss",        // p2p.go:362 NON-DETERMINISTIC
-    //          "ReceiveMsg", TMsg{Type:"ready"})
-    //   Failure reasons:
-    //     "no_witness"  — LOCAL, depends on DB sync ⚠ NON-DETERMINISTIC
-    //     "bad_peer_id" — LOCAL, same data = same result ✓
-    //     "timeout"     — KEPT when keepTimeouts=true (p2p.go:382)
-    //     "rpc_error"   — NON-DETERMINISTIC, transient state
+    // READINESS = gossip readyAccounts (CONVERGENT — see Constraint 2)
+    // readyAccounts ← gossipAttestations[bh], BLS-signed, version-filtered
+    // against the active floor (tss.go:1318-1328). The set converges across
+    // nodes because attestations are signed claims, re-gossiped in full every
+    // block (broadcastGossipBundle), and frozen by the settle window
+    // (DEFAULT_SETTLE_BLOCKS=3) before the session.
     //
-    // ⚠ CONSTRAINT VIOLATION: keepTimeouts=true keeps offline nodes in party list
-    //   btss CanProceed() requires messages from ALL listed parties
-    //   Offline node → 2-minute timeout guaranteed
-    
-    // NEW COMMITTEE — count only, don't filter (tss.go:798, p2p.go:404-474)
-    newReady := countReadyParticipants(newParticipants, sessionId, "RESHARE-NEW")
-    // Full unfiltered list goes to dispatcher regardless
-    
-    // Pre-flight: threshold+1 required (tss.go:801-812)
-    if newReady < origNewThreshold+1: skip
+    //   for member in committee:
+    //     if blamed/banned: exclude (on-chain, deterministic)
+    //     if !readyAccounts[member.Account]: exclude   // tss.go:1352
+    //
+    // Applied to BOTH old and new committees — same converged set, so all
+    // honest nodes build the same party lists. Residual divergence (rare) →
+    // SSID mismatch / share-verify fail → session fails → retries next
+    // rotation. Never a silent corrupt key.
+
+    // Pre-flight: threshold+1 required for each committee (tss.go:801-812)
+    if len(newParticipants) < origNewThreshold+1: skip
     if len(commitedMembers) < origOldThreshold+1: skip
 
 // ═══════════════════════════════════════════════════════════════
@@ -578,12 +583,12 @@ func RunActions(actions, leader, isLeader, bh) {
     msgCtx, cancelMsgs = context.WithCancel(Background())    // tss.go:840
     actionMap[sessionId] = dispatcher                         // tss.go:845
     sessionMap[sessionId] = sessionInfo{leader, bh, type}    // tss.go:868
-    
+
     // Start() — dispatcher.go:96
     func (dispatcher *ReshareDispatcher) Start() error {
         sortedPids, myParty, p2pCtx := baseInfo()            // dispatcher.go:100
         // baseInfo(): Key = bytes(account), NO epoch mod    // dispatcher.go:1439-1461
-        
+
         // ⚠ prevCommitmentType branching (dispatcher.go:107)
         if prevCommitmentType == "reshare":                   // dispatcher.go:107
             // Re-create old PartyIDs with epoch multiplication
@@ -593,47 +598,47 @@ func RunActions(actions, leader, isLeader, bh) {
             sortedPids = SortPartyIDs(pIds)                  // dispatcher.go:120
             // ⚠ Different Keys → different sort order → different SSID
         // else (keygen): Key = bytes(account) from baseInfo(), no epoch mod
-        
+
         dispatcher.oldPids = sortedPids                      // dispatcher.go:133
-        
+
         // New committee always gets epoch modification
         for each newParticipant:
             key = bytes(account) * (newEpoch+1)              // dispatcher.go:144-146
             NewPartyID(account, sessionId+"-new", key)       // dispatcher.go:148
         dispatcher.newPids = SortPartyIDs(newPids)           // dispatcher.go:157
-        
+
         threshold := GetThreshold(origOldSize)               // dispatcher.go:170
         // GetThreshold: ceil(N*2/3)-1 — helpers/tss_helpers.go:45
         // 19→12, 15→9, 13→8
         newThreshold := GetThreshold(origNewSize)             // dispatcher.go:172
-        
+
         keydata := keystore.Get("key", keyId, epoch)         // dispatcher.go:184-187
-        
+
         go reshareMsgs()                                      // dispatcher.go:218
-        
+
         // waitForParticipantReadiness — libp2p level only (dispatcher.go:784-852)
         // Polls Connectedness() every 500ms, needs threshold+1
         // ✗ NON-DETERMINISTIC but doesn't modify party list
         ready := waitForParticipantReadiness(oldPids, newPids, syncDelay) // dispatcher.go:225
         if !ready: return error
-        
+
         // ═══ DUAL ALGO: ECDSA + EdDSA in parallel, both must succeed ═══
-        
+
         // ECDSA old party (dispatcher.go:247-261)
         params := NewReSharingParameters(S256(), p2pCtx, newP2pCtx, myParty,
             len(sortedPids), threshold, len(newPids), newThreshold)
         dispatcher.party = NewLocalParty(params, keydata, p2pMsg, endOld)
         dispatcher.party.Start()    // → launches btss Round 1
-        
+
         // ECDSA new party (dispatcher.go:285-299)
         newParams := NewReSharingParameters(S256(), p2pCtx, newP2pCtx, myNewParty,
             len(sortedPids), threshold, len(newPids), newThreshold)
         dispatcher.newParty = NewLocalParty(newParams, save, p2pMsg, end)
         dispatcher.newParty.Start() // → launches btss Round 1
-        
+
         // EdDSA old + new party (dispatcher.go:364-505) — identical structure
         // Key difference: NO Paillier/FacProof, adds EightInvEight() cofactor clearing
-        
+
         // Result handler goroutine (dispatcher.go:317-363)
         go func() {
             reshareResult := <-end                            // Wait for new party completion
@@ -644,7 +649,7 @@ func RunActions(actions, leader, isLeader, bh) {
             }
             signalDone()                                      // dispatcher.go:359
         }()
-        
+
         partyInitWg.Wait()                                    // dispatcher.go:508
         baseStart()                                           // dispatcher.go:509
         // baseStart launches:
@@ -653,13 +658,13 @@ func RunActions(actions, leader, isLeader, bh) {
         //     resets on lastMsg activity (dispatcher.go:1409-1413)
         //   - releases startLock (dispatcher.go:1436)
     }
-    
+
     // On Start() failure: Cleanup() cancels msgCtx + releases startLock
     // dispatcher.go:1367-1382, called at tss.go:898
-    
+
     // Lock released HERE — tss.go:917
     tssMgr.lock.Unlock()
-    
+
     // Done/Await runs in BACKGROUND goroutine — tss.go:919
 
 // ═══════════════════════════════════════════════════════════════
@@ -669,7 +674,7 @@ func RunActions(actions, leader, isLeader, bh) {
     // CanProceed() gates EVERY round transition (rounds.go:75-85)
     // ALL oldOK[j] AND ALL newOK[j] must be true
     // ONE missing message = round BLOCKED until 2-minute timeout
-    
+
     // Round 1 — OLD committee (round_1_old_step_1.go:29-85)
     //   getSSID() — hash of: curve params, OLD party Keys, BigXj, NTildej, H1j, H2j, round#, nonce
     //     rounds.go:142-159
@@ -681,7 +686,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //   vi, shares := vss.Create(curve, newThreshold, wi, newKeys)        // round_1:61
     //   commitment := HashCommit(vi)                                       // round_1:71
     //   Send DGRound1Message → all new parties: {ECDSAPub, commitment, SSID}
-    
+
     // Round 2 — NEW committee (round_2_new_step_1.go:23-118)
     //   ⚠ SSID VERIFICATION — ALL old parties, byte-for-byte (round_2:40-52):
     //   for j, Pj := range OldParties().IDs():
@@ -689,11 +694,11 @@ func RunActions(actions, leader, isLeader, bh) {
     //           return WrapError("ssid mismatch", Pj)  // → tssErr → session poisoned
     //   Paillier setup + DLN proofs + ModProof (ECDSA only, round_2:65-117)
     //   EdDSA: NO Paillier/DLN/ModProof
-    
+
     // Round 3 — OLD committee (round_3_old_step_2.go:15-47)
     //   DGRound3Message1: share unicast to each new party (round_3:33-37)
     //   DGRound3Message2: decommitment broadcast (round_3:40-45)
-    
+
     // Round 4 — NEW committee — CRITICAL (round_4_new_step_2.go:27-241)
     //   newXi := big.NewInt(0)                                  // round_4:128
     //   for j := 0 to len(oldParties)-1:                         // round_4:133
@@ -706,7 +711,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //   New party public keys via polynomial eval on Vc           // round_4:191-205
     //   FacProof generation (ECDSA only, round_4:214-230)
     //   EdDSA: EightInvEight() cofactor clearing (eddsa round_4:63-65)
-    
+
     // Round 5 — Finalization (round_5_new_step_3.go:17-74)
     //   New: save BigXj, ShareID, Xi=newXi, Ks + FacProof verify (ECDSA)
     //   Old: Xi zeroed (round_5:68-69)
@@ -723,7 +728,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //   Detects source: match GetKey() against oldPids/newPids    // dispatcher.go:733-746
     //   Self-delivery: HandleP2P() directly                        // dispatcher.go:760
     //   Remote: SendMsg() via goroutine                            // dispatcher.go:768
-    
+
     // HandleP2P() — dispatcher.go:628-712
     //   Guard: msgCtx.Done() → return if session complete          // dispatcher.go:632
     //   startWait() blocks until Start() releases startLock        // dispatcher.go:629
@@ -733,7 +738,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //     Success → lastMsg = time.Now() under p2pMu lock          // dispatcher.go:681
     //   New party: go UpdateFromBytes(...)                          // dispatcher.go:696
     //     Same error/success handling                               // dispatcher.go:701,705
-    
+
     // RPC ReceiveMsg() — rpc.go:65
     //   Type=="ready" → ready_ack, return                          // rpc.go:74-76
     //   Type=="msg":
@@ -752,13 +757,13 @@ func RunActions(actions, leader, isLeader, bh) {
     //   Resets if lastMsg activity within timeout window            // dispatcher.go:1409-1413
     //   ⚠ Different nodes receive different late messages → different timeout times
     //   On fire: timeout=true, cancelMsgs(), drainP2pMsg(), done<- // dispatcher.go:1416-1429
-    
+
     // signalDone() — dispatcher.go:1155-1172
     //   cancelMsgs() → all goroutines exit via msgCtx.Done()
     //   doneMu guard → prevents double-signal
     //   drainP2pMsg() → goroutine drains p2pMsg channel (30s timeout)
     //   done <- struct{}{} → unblocks Done()
-    
+
     // Done() — dispatcher.go:514-626
     //   <-dispatcher.done                                           // dispatcher.go:516
     //   Read tssErr under p2pMu lock                                // dispatcher.go:518-520
@@ -785,16 +790,16 @@ func RunActions(actions, leader, isLeader, bh) {
     //   BaseCommitment{Type:"reshare", Commitment: result.Commitment, Epoch: newEpoch}
     //   Commitment was set during result handler:
     //     setToCommitment(newParticipants, newEpoch)                // dispatcher.go:352
-    
+
     // TimeoutResult.Serialize() — dispatcher.go:1839-1863
     //   commitment := setToCommitment(Culprits→Participants, result.Epoch)
     //   BaseCommitment{Type:"blame", Commitment, Metadata:{Error:"timeout"}}
-    
+
     // ErrorResult.Serialize() — dispatcher.go:1780-1823
     //   blameNodes from tssErr.Culprits() → n.GetId() → account name string
     //   commitment := setToCommitment(blameNodes→Participants, eres.Epoch)
     //   BaseCommitment{Type:"blame", Commitment, Metadata:{Error: tssErr.Error()}}
-    
+
     // setToCommitment() — tss.go:1260-1274
     //   election := GetElection(epoch)                              // ON-CHAIN DETERMINISTIC
     //   for each participant:
@@ -808,21 +813,21 @@ func RunActions(actions, leader, isLeader, bh) {
 // ═══════════════════════════════════════════════════════════════
 
     // Only if isLeader (tss.go:1070)
-    
+
     time.Sleep(CommitDelay)  // 5 seconds — params.go:70, tss.go:1111
     // Wait for other nodes to finish their sessions
-    
+
     // For each commitable result:
     bytes := EncodeDagCbor(commitment)                       // tss.go:1139
     cid := HashBytes(bytes, DagCbor)                          // tss.go:1140
-    
+
     ctx := WithTimeout(Background(), WaitForSigsTimeout)      // 6 seconds — params.go:71
     circuit := waitForSigs(ctx, cid, sessionId, election)     // tss.go:1148
-    
+
     // waitForSigs() — tss.go:1276-1376
     //   Register sigChannels[sessionId]                         // tss.go:1296
     //   pubsub.Send(ask_sigs{session_id})                       // tss.go:1299 — ONE-SHOT, no retry
-    //   
+    //
     //   Loop: collect signatures for 6 seconds                  // tss.go:1323
     //     for signedWeight*3 < weightTotal*2:
     //       msg := <-sigChan                                    // tss.go:1328
@@ -834,7 +839,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //   ⚠ Total window = 5s CommitDelay + 6s WaitForSigsTimeout = 11 seconds
     //   ⚠ With 19 nodes at equal weight, need 13 signatures (68.4%)
     //     4 bad nodes + 3 late finishers = 7 unavailable → BELOW 2/3 threshold
-    
+
     // Each non-leader node on receiving ask_sigs (p2p.go:85-132):
     //   entry := sessionResults[sessionId]
     //   if !hasResult: silently ignore (⚠ NOT FINISHED YET)
@@ -843,7 +848,7 @@ func RunActions(actions, leader, isLeader, bh) {
     //   ⚠ CONSENSUS BOUNDARY: if commitCid != leader's CID → signature doesn't match
     //   sig := BLS.Sign(privateKey, commitCid.Bytes())          // p2p.go:117
     //   send(res_sig{sig, session_id})                          // p2p.go:124
-    
+
     // If 2/3 reached:
     //   Hive broadcast — CustomJsonOperation{                   // tss.go:1219-1241
     //     RequiredAuths: [hiveUsername],
@@ -876,7 +881,7 @@ func RunActions(actions, leader, isLeader, bh) {
 // tss.go:603-648
 // Signing builds participant list from keygen/reshare commitment bitset
 // against commitElection (tss.go:621-632)
-// Only readiness filtering via checkParticipantReadiness(keepTimeouts=true)
+// Only readiness filtering via the gossip readyAccounts set (convergent — see Constraint 2)
 // No blamedAccounts check. No BannedNodes check.
 // A node blamed for reshare failures can still participate in signing.
 ```
@@ -885,41 +890,41 @@ func RunActions(actions, leader, isLeader, bh) {
 
 From `modules/common/params/params.go:63-72` (mainnet defaults):
 
-| Parameter | Value | Used At |
-|-----------|-------|---------|
-| ReshareSyncDelay | 5s | dispatcher.go:221 — waitForParticipantReadiness |
-| ReshareTimeout | 2m | dispatcher.go:1388 — timeout monitor |
-| DefaultTimeout | 1m | dispatcher.go:1390 — keygen/sign timeout |
-| MessageRetryDelay | 1s | — |
-| BufferedMessageMaxAge | 1m | — |
-| RpcTimeout | 30s | — |
-| CommitDelay | 5s | tss.go:1111 — leader waits before BLS collection |
-| WaitForSigsTimeout | 6s | tss.go:1144 — BLS collection window |
+| Parameter             | Value | Used At                                          |
+| --------------------- | ----- | ------------------------------------------------ |
+| ReshareSyncDelay      | 5s    | dispatcher.go:221 — waitForParticipantReadiness  |
+| ReshareTimeout        | 2m    | dispatcher.go:1388 — timeout monitor             |
+| DefaultTimeout        | 1m    | dispatcher.go:1390 — keygen/sign timeout         |
+| MessageRetryDelay     | 1s    | —                                                |
+| BufferedMessageMaxAge | 1m    | —                                                |
+| RpcTimeout            | 30s   | —                                                |
+| CommitDelay           | 5s    | tss.go:1111 — leader waits before BLS collection |
+| WaitForSigsTimeout    | 6s    | tss.go:1144 — BLS collection window              |
 
 ## TSS Constants
 
 From `modules/tss/tss.go:45-53`:
 
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| TSS_SIGN_INTERVAL | 50 | Sign every 50 L1 blocks |
-| TSS_ROTATE_INTERVAL | 100 | Reshare every 100 blocks (~5 min) |
-| TSS_MESSAGE_RETRY_COUNT | 3 | P2P message retries |
-| TSS_BAN_THRESHOLD_PERCENT | 60 | Ban if >60% failure rate |
-| TSS_BAN_GRACE_PERIOD_EPOCHS | 3 | New nodes exempt for 3 epochs |
-| BLAME_EXPIRE | 28800 | 24-hour blame window in blocks |
-| TSS_BLAME_EPOCH_COUNT | 27 | Score across ~4 weeks of epochs |
+| Constant                    | Value | Meaning                           |
+| --------------------------- | ----- | --------------------------------- |
+| TSS_SIGN_INTERVAL           | 50    | Sign every 50 L1 blocks           |
+| TSS_ROTATE_INTERVAL         | 100   | Reshare every 100 blocks (~5 min) |
+| TSS_MESSAGE_RETRY_COUNT     | 3     | P2P message retries               |
+| TSS_BAN_THRESHOLD_PERCENT   | 60    | Ban if >60% failure rate          |
+| TSS_BAN_GRACE_PERIOD_EPOCHS | 3     | New nodes exempt for 3 epochs     |
+| BLAME_EXPIRE                | 28800 | 24-hour blame window in blocks    |
+| TSS_BLAME_EPOCH_COUNT       | 27    | Score across ~4 weeks of epochs   |
 
 ## Message Buffer Constants
 
 From `modules/tss/rpc.go:14-27`:
 
-| Constant | Value | Meaning |
-|----------|-------|---------|
-| maxMessagesPerSession | 100 | Max buffered messages per session before drops |
-| maxBufferedSessions | 50 | Max distinct sessions with buffered messages |
-| maxBufferedMessageSize | 256KB | Max single message size (largest is reshare DGRound2Message1 ~175KB) |
-| maxBufferBlockAge | 80 blocks | Sessions older than current-80 blocks are rejected |
+| Constant               | Value     | Meaning                                                              |
+| ---------------------- | --------- | -------------------------------------------------------------------- |
+| maxMessagesPerSession  | 100       | Max buffered messages per session before drops                       |
+| maxBufferedSessions    | 50        | Max distinct sessions with buffered messages                         |
+| maxBufferedMessageSize | 256KB     | Max single message size (largest is reshare DGRound2Message1 ~175KB) |
+| maxBufferBlockAge      | 80 blocks | Sessions older than current-80 blocks are rejected                   |
 
 ## Known Bugs on Main (f850533)
 
@@ -940,6 +945,7 @@ These checks exist because abstract rules ("check determinism," "trace the outpu
 ### CHECK 1: Trace the Output to btss or Serialize()
 
 Write down:
+
 1. The data structure your change modifies (variable name, file:line)
 2. The function that consumes it
 3. The function that consumes THAT
@@ -953,34 +959,37 @@ If you can't trace it → your understanding is incomplete. Read more code befor
 
 Write a table. One row per party in the list your change produces. Three columns:
 
-| Account | Will send valid messages in all 5 rounds? | Evidence |
-|---------|------------------------------------------|----------|
-| ... | YES / NO | (cite: RPC succeeded / on-chain data / etc.) |
+| Account | Will send valid messages in all 5 rounds? | Evidence                                     |
+| ------- | ----------------------------------------- | -------------------------------------------- |
+| ...     | YES / NO                                  | (cite: RPC succeeded / on-chain data / etc.) |
 
 Rules:
+
 - **YES** requires evidence (readiness ping succeeded, on-chain membership, etc.)
-- **NO** means this party will cause `CanProceed()` to return false. The round blocks until `ReshareTimeout` (2 minutes). Write: *"Party X will block CanProceed for 2m. Tradeoff: [what is gained] at the cost of [what is lost]."*
+- **NO** means this party will cause `CanProceed()` to return false. The round blocks until `ReshareTimeout` (2 minutes). Write: _"Party X will block CanProceed for 2m. Tradeoff: [what is gained] at the cost of [what is lost]."_
 - **MAYBE** is **NO**. `CanProceed()` does not have a "maybe" path. `oldOK[j]` is a bool.
 - If ANY row is NO, you must present the tradeoff explicitly to the user. Do not hide it.
 
 `CanProceed()` — `rounds.go:75-85`:
+
 ```go
 for _, ok := range append(round.oldOK, round.newOK...) {
     if !ok { return false }
 }
 ```
+
 One false = round blocked. No exceptions. No threshold fallback.
 
 ### CHECK 3: Can Two Nodes Build Different Lists?
 
 Write a table. One row per input to party list construction:
 
-| Input | Source (file:line) | Deterministic? | If NO: how does your change handle divergence? |
-|-------|--------------------|---------------|------------------------------------------------|
-| ... | ... | YES (on-chain) / NO (local state) | ... |
+| Input | Source (file:line) | Deterministic?                    | If NO: how does your change handle divergence? |
+| ----- | ------------------ | --------------------------------- | ---------------------------------------------- |
+| ...   | ...                | YES (on-chain) / NO (local state) | ...                                            |
 
 For each NON-DETERMINISTIC input, write a concrete divergence scenario:
-*"Node A sees [X], Node B sees [Y], because [Z]. Result: Node A builds list [...], Node B builds list [...]. These differ at position [N]."*
+_"Node A sees [X], Node B sees [Y], because [Z]. Result: Node A builds list [...], Node B builds list [...]. These differ at position [N]."_
 
 If you can construct ANY scenario where two honest nodes build different party lists → your change introduces SSID mismatch risk. Either eliminate the non-deterministic input or explicitly document why the residual risk is acceptable.
 
@@ -989,6 +998,7 @@ If you can construct ANY scenario where two honest nodes build different party l
 This is the check that catches consensus boundary violations. Do not skip it.
 
 Write:
+
 1. **Node A state**: What local state does node A have when Done() runs? (Which messages arrived? Did it detect a protocol error? Which parties timed out?)
 2. **Node B state**: Same questions, but node B had different P2P message timing.
 3. **Node A Done() output**: Which branch? (timeout/error/success) What result type? What culprits/commitment?
@@ -1003,12 +1013,12 @@ If CIDs can differ between any two honest nodes → your change is broken regard
 
 ### CHECK 5: Name the Assumption — Then Kill It
 
-Write a sentence starting with: *"This change assumes that..."*
+Write a sentence starting with: _"This change assumes that..."_
 
-Then answer: *"Can I prove this assumption from the code? Not from reasoning about what 'should' happen — from a specific line of code that GUARANTEES it?"*
+Then answer: _"Can I prove this assumption from the code? Not from reasoning about what 'should' happen — from a specific line of code that GUARANTEES it?"_
 
 - "This assumes all nodes will detect the same error" → Can you prove P2P delivers the same messages to all nodes? No. P2P is non-deterministic.
-- "This assumes the party list is the same on all nodes" → Can you prove the readiness check returns the same result on all nodes? No. RPC timeouts are non-deterministic.
+- "This assumes every node sees the same reachable-peer set right now" → Can you prove an instantaneous libp2p `Connectedness()` / RPC probe returns the same result on all nodes? No — each node samples a different instant. (The gossip readiness set is the convergent alternative; a raw probe is not — see Constraint 2.)
 - "This assumes the blame commitment is in MongoDB when TSS reads it" → Can you prove the state engine finishes before the async TSS tick reads? No. They run concurrently.
 
 If you cannot point to a line of code that guarantees your assumption → the assumption is unproven → the change is unproven.
@@ -1017,25 +1027,21 @@ If you cannot point to a line of code that guarantees your assumption → the as
 
 ## Applying the Checks — Two Examples
 
-### Example A: "Keep timeout nodes in the list" (keepTimeouts=true)
+### Example A: "Determinize the readiness set from on-chain / election-snapshot data" (this is GV-H8 — reverted)
 
-**CHECK 2 catches it:**
+The recurring mistake: read Constraint 2's FORBIDDEN list, decide the gossip `readyAccounts` filter is "non-deterministic," and replace it with an on-chain/election-snapshot source.
 
-| Account | Will participate? | Evidence |
-|---------|------------------|----------|
-| bala.vsc | **NO** | RPC timed out. May be slow or offline. No guarantee. |
+**CHECK 2 catches it (binary participation):**
 
-*"bala.vsc will cause CanProceed to block for 2 minutes. Tradeoff: deterministic party list (no SSID mismatch) at the cost of guaranteed timeout per offline old member."*
+| Account  | Will send valid messages in all rounds? | Evidence                                                                          |
+| -------- | --------------------------------------- | --------------------------------------------------------------------------------- |
+| bala.vsc | **NO**                                  | In the election snapshot, but offline at session time — nothing checked liveness. |
 
-→ This is a legitimate tradeoff. CHECK 2 doesn't prevent it — it forces explicit acknowledgment.
+_"Including bala because it's in the on-chain snapshot (not because it attested readiness) puts a likely-offline node in the list → `CanProceed` blocks 2 minutes. The gossip set would have excluded it. The 'determinism fix' trades a convergent, online-only list for a deterministic-but-offline-inclusive one — guaranteeing the timeout it was meant to avoid."_
 
-**CHECK 3 also catches residual risk:**
+**CHECK 5 catches it (name the assumption — then kill it):**
 
-| Input | Deterministic? | Divergence scenario |
-|-------|---------------|---------------------|
-| readiness: `no_witness` | NO — depends on witness DB sync | Node A has witness record (DB synced), Node B doesn't (DB behind) → A keeps member, B excludes → different lists |
-
-→ keepTimeouts=true reduces divergence but doesn't eliminate it for non-timeout failures.
+_"This assumes an on-chain/snapshot source is 'more deterministic' than the gossip set."_ Can I prove the gossip set is non-deterministic at session time? No — the settle window + amplification converge it, and residual divergence is fail-and-retry, not corruption. The assumption is false: the snapshot is not more deterministic, only more **stale** (it also misses live version upgrades the live attestation carries). → shipped as GV-H8, reverted.
 
 ### Example B: "Call signalDone() on protocol error" (SSID-BLAME-FIX)
 
@@ -1051,7 +1057,7 @@ If you cannot point to a line of code that guarantees your assumption → the as
 
 **CHECK 5 also catches it:**
 
-*"This assumes all nodes will detect the same protocol error at the same time and produce ErrorResult."*
+_"This assumes all nodes will detect the same protocol error at the same time and produce ErrorResult."_
 Can I prove it? No — P2P message delivery is non-deterministic. One node sees bala's bad message first. Others may never see it.
 → Assumption is unproven → change is unproven.
 
@@ -1064,16 +1070,18 @@ CHECKs 2, 3, 4 all **PASS**: remaining parties are healthy (CHECK 2), exclusion 
 Trace: `BannedNodes` → excludes from `commitedMembers` → `dispatcher.participants` → `sortedPids` (e.g., 13 after banning 3 of 16) → `NewReSharingParameters(... len(sortedPids)=13 ...)` → `NewLocalParty(params, keydata, ...)` → Round 1 `Start()` → `PrepareForSigning(curve, i, 13, xi, ks, bigXj)`.
 
 But `keydata.Ks` has 16 entries (original keygen party count). `signing/prepare.go:24-25`:
+
 ```go
 if len(ks) != pax {
     panic("PrepareForSigning: len(ks) != pax (16 != 13)")
 }
 ```
+
 **PANIC.** btss enforces that the key data party count matches the current old committee size. Excluding nodes without rebuilding key data crashes the node.
 
 **CHECK 5 also catches it:**
 
-*"This assumes btss can operate with fewer old parties than the key data contains."*
+_"This assumes btss can operate with fewer old parties than the key data contains."_
 Can I prove it from the code? `PrepareForSigning` at `signing/prepare.go:24` explicitly panics when `len(ks) != pax`. Assumption is **provably false**.
 
 **Currently safe on mainnet** — BannedNodes is always empty because blame has never landed on Hive (BLS collection fails). But the code path is live. If techcoderx's blame accumulation fix lands and blame starts landing, nodes that cross the 60% ban threshold WILL be excluded, and `PrepareForSigning` WILL panic. This is a **latent crash bug** gated only by blame never landing.
