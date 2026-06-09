@@ -106,7 +106,7 @@ var CONTRACT_UPDATE_TIMELOCK_BLOCKS uint64 = 57_600
 // Mocknet uses 0 (disabled) so the in-process e2e harness keeps its immediate-
 // update mechanics.
 //
-// The MAINNET rollout gate height lives in ConsensusParams.ContractUpdateTimelockHeight
+// The MAINNET rollout gate height lives in ConsensusParams.Version0_2_0Height
 // (set per-network in system-config), alongside the other rollout heights.
 var CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET uint64 = 30
 
@@ -167,22 +167,26 @@ type ConsensusParams struct {
 	// activation height for a deploy.
 	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
 
-	// ContractUpdateTimelockHeight is the MAINNET rollout gate for the contract-
-	// update timelock. A vsc.update_contract submitted at BlockHeight >= this value
-	// is queued and only activates after the network timelock
-	// (ContractUpdateTimelockBlocks); earlier updates stay immediate so a full
-	// reindex reproduces historical state byte-for-byte. 0 == disabled (every
-	// update immediate). Only consulted on mainnet — test networks always timelock
-	// at their block count and ignore this gate.
+	// Version0_2_0Height is the single activation height for the v0.2.0 release
+	// batch — one named "fork" (Ethereum ChainConfig style) that every
+	// consensus-affecting change shipping in v0.2.0 keys off via Version0_2_0Active,
+	// instead of minting a separate gate per change that all carry the same value.
+	//
+	// The contract-update timelock is the first rule on it: on mainnet a
+	// vsc.update_contract at BlockHeight >= this value is queued behind the network
+	// timelock (ContractUpdateTimelockBlocks); earlier updates stay immediate so a
+	// full reindex reproduces historical state byte-for-byte. 0 == not scheduled
+	// (every v0.2.0 rule inert; updates immediate).
 	//
 	// MUST be a height STRICTLY ABOVE the current chain head when this binary is
 	// deployed — a value at/below an already-processed block is a consensus footgun
-	// (live nodes activated those updates immediately, a reindex would delay them).
-	// CONSENSUS-CRITICAL DEPLOY CONSTRAINT: every mainnet witness must be running a
-	// binary with this gate BEFORE Hive reaches it, otherwise upgraded and not-yet-
-	// upgraded nodes disagree on whether updates in the gap are timelocked. If the
-	// rollout slips past this height, bump it before deploying.
-	ContractUpdateTimelockHeight uint64 `json:"contractUpdateTimelockHeight,omitempty"`
+	// (live nodes ran pre-v0.2.0 behavior over those blocks; a reindex would apply
+	// the new behavior and diverge). CONSENSUS-CRITICAL DEPLOY CONSTRAINT: every
+	// witness must run a binary carrying this height BEFORE Hive reaches it, or
+	// upgraded and not-yet-upgraded nodes disagree across the gap. If the rollout
+	// slips past this height, bump it before deploying. Ephemeral networks
+	// (devnet/mocknet) may pin it at 1 to exercise v0.2.0 behavior from genesis.
+	Version0_2_0Height uint64 `json:"version0_2_0Height,omitempty"`
 
 	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
 	// vsc.recovery_suspend and vsc.recovery_require_version.
@@ -230,6 +234,14 @@ type ConsensusParams struct {
 // height means the feature is disabled entirely (legacy verbatim casing).
 func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
 	return cp.EvmAddressChecksumHeight != 0 && blockHeight >= cp.EvmAddressChecksumHeight
+}
+
+// Version0_2_0Active reports whether the v0.2.0 release batch is in force at
+// blockHeight. Every consensus-affecting change shipping in v0.2.0 gates on this
+// single predicate so the network has one coordinated activation rather than a
+// gate per change. Zero height means the batch is not yet scheduled (inert).
+func (cp ConsensusParams) Version0_2_0Active(blockHeight uint64) bool {
+	return cp.Version0_2_0Height != 0 && blockHeight >= cp.Version0_2_0Height
 }
 
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this

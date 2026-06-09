@@ -434,8 +434,9 @@ func (se *StateEngine) contractUpdateActivationHeight(submitHeight uint64) uint6
 		return submitHeight
 	}
 	if se.sconf.OnMainnet() {
-		gate := se.sconf.ConsensusParams().ContractUpdateTimelockHeight
-		if gate == 0 || submitHeight < gate {
+		// Pre-v0.2.0 (or unpinned gate): updates stay immediate so a full reindex
+		// reproduces historical state byte-for-byte.
+		if !se.sconf.ConsensusParams().Version0_2_0Active(submitHeight) {
 			return submitHeight
 		}
 	}
