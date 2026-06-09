@@ -10,7 +10,7 @@ import (
 )
 
 // timelockHeightSconf wraps a base SystemConfig so a test can override the
-// mainnet rollout gate (ConsensusParams.ContractUpdateTimelockHeight) without a
+// mainnet rollout gate (ConsensusParams.Version0_2_0Height) without a
 // JSON override loader — mirroring the testChecksumSconf pattern used for the
 // EVM-checksum gate. OnMainnet()/ContractUpdateTimelockBlocks() fall through to
 // the embedded base.
@@ -24,7 +24,7 @@ func (t *timelockHeightSconf) ConsensusParams() params.ConsensusParams { return 
 func mainnetWithTimelockHeight(h uint64) systemconfig.SystemConfig {
 	base := systemconfig.MainnetConfig()
 	cp := base.ConsensusParams()
-	cp.ContractUpdateTimelockHeight = h
+	cp.Version0_2_0Height = h
 	return &timelockHeightSconf{SystemConfig: base, cp: cp}
 }
 
@@ -46,7 +46,7 @@ func TestContractUpdateActivationHeight(t *testing.T) {
 		testnet.contractUpdateActivationHeight(submit),
 	)
 
-	// Mainnet: gated by ConsensusParams.ContractUpdateTimelockHeight.
+	// Mainnet: gated by ConsensusParams.Version0_2_0Height.
 
 	// Gate unset (0 == disabled): updates stay immediate (today's behavior).
 	mainnetUngated := &StateEngine{sconf: mainnetWithTimelockHeight(0)}
