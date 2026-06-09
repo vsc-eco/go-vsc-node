@@ -215,6 +215,16 @@ func ContractCall(contractId string, method string, payload string, options *Con
 	return contractCall(&contractId, &method, &payload, &optStr)
 }
 
+// TryContractCall calls another contract in try/catch mode. If the callee
+// reverts, the caller is NOT trapped: the returned *string is a JSON outcome
+// {"ok":false,"error_code":...,"error":...} and every state/ledger write the
+// callee made is rolled back. On success it is {"ok":true,"result":<callee
+// return>}. RC and gas are charged either way (the callee really executed).
+// Callers decode "ok" to branch.
+func TryContractCall(contractId string, method string, payload string) *string {
+	return ContractCall(contractId, method, payload, &ContractCallOptions{Try: true})
+}
+
 // TssCreateKey creates a key with the maximum epoch lifespan.
 // Deprecated: use TssCreateKeyForEpochs to specify a lifespan.
 func TssCreateKey(keyId string, algo string) string {
