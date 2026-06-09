@@ -16,6 +16,9 @@ type Sender struct {
 //tinyjson:json
 type ContractCallOptions struct {
 	Intents []Intent `json:"intents,omitempty"`
+	// Try opts into try/catch: a reverting callee returns a structured outcome
+	// instead of trapping the caller, and its state/ledger writes are rolled back.
+	Try bool `json:"try,omitempty"`
 }
 
 type AddressDomain string

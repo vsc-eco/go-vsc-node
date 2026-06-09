@@ -547,6 +547,8 @@ func tinyjson223cdf42DecodeVscNodeModulesWasmE2eGoWasmSdk4(in *jlexer.Lexer, out
 				}
 				in.Delim(']')
 			}
+		case "try":
+			out.Try = bool(in.Bool())
 		default:
 			in.SkipRecursive()
 		}
@@ -575,6 +577,15 @@ func tinyjson223cdf42EncodeVscNodeModulesWasmE2eGoWasmSdk4(out *jwriter.Writer, 
 			}
 			out.RawByte(']')
 		}
+	}
+	if in.Try {
+		if first {
+			out.RawString("\"try\":")
+			first = false
+		} else {
+			out.RawString(",\"try\":")
+		}
+		out.Bool(in.Try)
 	}
 	out.RawByte('}')
 }
