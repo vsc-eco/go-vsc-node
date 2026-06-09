@@ -83,6 +83,13 @@ type ContractMetadata struct {
 
 type ICCallOptions struct {
 	Intents []Intent `json:"intents,omitempty"`
+	// Try opts the call into try/catch semantics: if the callee reverts, the
+	// caller is NOT trapped — instead the call returns a structured outcome
+	// ({"ok":false,...}) and every state/ledger effect of the callee is rolled
+	// back to a savepoint taken just before it. RC and gas are still charged (the
+	// callee really executed). Default false keeps the legacy abort-propagates
+	// behaviour, so existing contracts are unaffected.
+	Try bool `json:"try,omitempty"`
 }
 
 const (
