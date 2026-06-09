@@ -560,6 +560,20 @@ func (ctx *contractExecutionContext) ContractStateGet(contractId string, key str
 	return result.Ok(resStr)
 }
 
+// tryOutcome encodes the structured result a try/catch inter-contract call hands
+// back to the caller (instead of trapping). The caller's SDK decodes the "ok"
+// field to branch. gas is what the callee actually consumed — charged either way,
+// since the callee really executed.
+func tryOutcome(ok bool, errorCode contracts.ContractOutputError, errMsg, resultStr string, gas uint) wasm_types.WasmResultStruct {
+	payload, _ := json.Marshal(struct {
+		Ok        bool   `json:"ok"`
+		Result    string `json:"result,omitempty"`
+		ErrorCode string `json:"error_code,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}{Ok: ok, Result: resultStr, ErrorCode: string(errorCode), Error: errMsg})
+	return wasm_types.WasmResultStruct{Result: string(payload), Gas: gas}
+}
+
 func (ctx *contractExecutionContext) ContractCall(
 	contractId string,
 	method string,
@@ -634,8 +648,30 @@ func (ctx *contractExecutionContext) ContractCall(
 				wasm_context.WasmExecCodeCtxKey,
 				hex.EncodeToString(ct.Code),
 			)
+			// try/catch (ICCallOptions.Try): snapshot state + ledger just before
+			// the callee runs, so a revert can be unwound without disturbing the
+			// caller. Default (Try=false) keeps the legacy abort-propagates path.
+			var stateSnap *contract_session.CallSnapshot
+			var ledgerSp ledgerSystem.LedgerSavepoint
+			if opts.Try {
+				stateSnap = ctx.callSession.Snapshot()
+				if ctx.ledger != nil {
+					ledgerSp = ctx.ledger.Savepoint()
+				}
+			}
+
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
+				if opts.Try {
+					// Roll back every state/ledger effect of the failed callee and
+					// hand the caller a structured failure instead of trapping. Gas
+					// (res.Gas) is still charged — the callee really executed.
+					ctx.callSession.Restore(stateSnap)
+					if ctx.ledger != nil {
+						ctx.ledger.RestoreSavepoint(ledgerSp)
+					}
+					return result.Ok(tryOutcome(false, res.ErrorCode, *res.Error, "", res.Gas))
+				}
 				return result.Err[wasm_types.WasmResultStruct](
 					errors.Join(
 						fmt.Errorf("%s", res.ErrorCode),
@@ -643,6 +679,9 @@ func (ctx *contractExecutionContext) ContractCall(
 						fmt.Errorf("%d", res.Gas),
 					),
 				)
+			}
+			if opts.Try {
+				return result.Ok(tryOutcome(true, "", "", res.Result, res.Gas))
 			}
 			return result.Ok(res)
 		},
