@@ -44,6 +44,40 @@ func clearString(input *string) *string {
 	return &out
 }
 
+// setThenAbort writes a state key then aborts. Used by the try/catch devnet test
+// to prove a try-call rolls back the callee's state when it fails. Input "key,value".
+//
+//go:wasmexport setThenAbort
+func setThenAbort(input *string) *string {
+	parts := strings.SplitN(*input, ",", 2)
+	if len(parts) != 2 {
+		sdk.Abort("invalid input, expected key,value")
+	}
+	sdk.StateSetObject(parts[0], parts[1])
+	sdk.Abort("intentional abort after write")
+	out := "unreachable"
+	return &out
+}
+
+// tryThenSet does a try/catch call to a callee, then writes its OWN state marker
+// to prove it kept running after a caught failure. Returns the raw try outcome
+// JSON. Input (";"-separated): "calleeId;method;callPayload;markerKey;markerVal".
+//
+//go:wasmexport tryThenSet
+func tryThenSet(input *string) *string {
+	parts := strings.Split(*input, ";")
+	if len(parts) < 5 {
+		sdk.Abort("invalid input")
+	}
+	outcome := sdk.TryContractCall(parts[0], parts[1], parts[2])
+	sdk.StateSetObject(parts[3], parts[4])
+	if outcome == nil {
+		out := "nil-outcome"
+		return &out
+	}
+	return outcome
+}
+
 //go:wasmexport tssCreate
 func tssCreate(input *string) *string {
 	var args Params
