@@ -1,6 +1,7 @@
 package common_types
 
 import (
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -62,6 +63,10 @@ type StateEngine interface {
 	// data plane (snapshot DB, ledger, whitelist) isn't fully initialized;
 	// the SDK method short-circuits to ErrUnimplemented in that case.
 	PendulumApplier() wasm_context.PendulumApplier
+	// ActiveConsensusVersion returns the chain-active consensus triple at a block
+	// height, sourced from the on-chain election (deterministic, height-addressable).
+	// Used to gate consensus-version-coordinated features (e.g. try/catch ICC).
+	ActiveConsensusVersion(blockHeight uint64) consensusversion.Version
 }
 
 type BlockStatusGetter interface {

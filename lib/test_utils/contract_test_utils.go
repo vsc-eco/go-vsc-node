@@ -64,6 +64,10 @@ type ContractTest struct {
 	// fresh test). Use SetPendulumGeometry to inject deterministic geometry
 	// for manual swap-fee testing.
 	PendulumApplier wasm_context.PendulumApplier
+	// TryCatchActive gates ICCallOptions.Try in this harness. Defaults to true
+	// (contract tests exercise the feature as it will run once activated on the
+	// network); set false to test the pre-activation legacy trap behaviour.
+	TryCatchActive bool
 }
 
 // stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
@@ -157,6 +161,7 @@ func NewContractTest() ContractTest {
 		DataLayer:       dl,
 		StateEngine:     se,
 		PendulumApplier: se.PendulumApplier(),
+		TryCatchActive:  true,
 		Tss: TssState{
 			Keys:        &tssKeys,
 			Commitments: &tssCommitments,
@@ -296,6 +301,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		},
 		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
 		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
+		contract_execution_context.WithTryCatch(ct.TryCatchActive),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),

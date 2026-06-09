@@ -50,6 +50,13 @@ type contractExecutionContext struct {
 	tokenLimits map[string]*int64
 
 	pendulumApplier wasm_context.PendulumApplier
+
+	// tryCatchActive gates the ICCallOptions.Try semantics on the chain-active
+	// consensus version (>= TryCatchICCVersion). False => Try is ignored and a
+	// reverting callee traps as before, keeping pre-activation behaviour identical
+	// across binaries. Set once per tx by the state engine and propagated into
+	// nested calls.
+	tryCatchActive bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -147,6 +154,13 @@ type Option func(*contractExecutionContext)
 
 func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 	return func(ctx *contractExecutionContext) { ctx.pendulumApplier = p }
+}
+
+// WithTryCatch enables the ICCallOptions.Try semantics. The state engine sets
+// this from the chain-active consensus version so try/catch only activates at a
+// coordinated version floor.
+func WithTryCatch(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -638,7 +652,8 @@ func (ctx *contractExecutionContext) ContractCall(
 				// configured". When the parent context has no applier (e.g.
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
-				WithPendulumApplier(ctx.pendulumApplier))
+				WithPendulumApplier(ctx.pendulumApplier),
+				WithTryCatch(ctx.tryCatchActive))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
@@ -650,10 +665,12 @@ func (ctx *contractExecutionContext) ContractCall(
 			)
 			// try/catch (ICCallOptions.Try): snapshot state + ledger just before
 			// the callee runs, so a revert can be unwound without disturbing the
-			// caller. Default (Try=false) keeps the legacy abort-propagates path.
+			// caller. Gated on the chain-active consensus version (tryCatchActive);
+			// when inactive, or Try unset, the legacy abort-propagates path runs.
+			tryMode := opts.Try && ctx.tryCatchActive
 			var stateSnap *contract_session.CallSnapshot
 			var ledgerSp ledgerSystem.LedgerSavepoint
-			if opts.Try {
+			if tryMode {
 				stateSnap = ctx.callSession.Snapshot()
 				if ctx.ledger != nil {
 					ledgerSp = ctx.ledger.Savepoint()
@@ -662,7 +679,7 @@ func (ctx *contractExecutionContext) ContractCall(
 
 			res := w.Execute(wasmCtx, gasRemaining, method, callPayload, ct.Info.Runtime)
 			if res.Error != nil {
-				if opts.Try {
+				if tryMode {
 					// Roll back every state/ledger effect of the failed callee and
 					// hand the caller a structured failure instead of trapping. Gas
 					// (res.Gas) is still charged — the callee really executed.
@@ -680,7 +697,7 @@ func (ctx *contractExecutionContext) ContractCall(
 					),
 				)
 			}
-			if opts.Try {
+			if tryMode {
 				return result.Ok(tryOutcome(true, "", "", res.Result, res.Gas))
 			}
 			return result.Ok(res)

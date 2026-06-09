@@ -12,6 +12,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -150,6 +151,12 @@ func (t TxVscCallContract) ExecuteTx(
 		PendulumOracle:       se.PendulumOracleEnv(),
 	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
 		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
+		// Gate try/catch inter-contract calls on the chain-active consensus version
+		// (deterministic, height-addressable) so the new semantics activate only at
+		// a coordinated version floor.
+		contract_execution_context.WithTryCatch(
+			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
+		),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
