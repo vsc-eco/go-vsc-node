@@ -209,11 +209,11 @@ func MainnetConfig() SystemConfig {
 			ConsensusVersionFloorConsensus: 1,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
-			// Mainnet contract-update timelock rollout gate (see
-			// ConsensusParams.ContractUpdateTimelockHeight). Updates at/after this
-			// height are timelocked 48h; earlier ones stay immediate. MUST be bumped
-			// above the chain head at deploy time if the rollout slips past it.
-			ContractUpdateTimelockHeight: 0,
+			// v0.2.0 release activation gate (see ConsensusParams.Version0_2_0Height).
+			// Gates the contract-update timelock and every other consensus change
+			// shipping in v0.2.0. 0 == unpinned/inert. PIN to a future mainnet height
+			// (strictly above the chain head at deploy) before the v0.2.0 rollout.
+			Version0_2_0Height: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -263,6 +263,10 @@ func TestnetConfig() SystemConfig {
 			// Set to a future testnet height before rollout (same reindex-
 			// divergence rule as mainnet). 0 = disabled until then.
 			EvmAddressChecksumHeight: 3467200,
+			// v0.2.0 release activation gate. Testnet has persistent history, so
+			// PIN a future testnet height (above chain head) before rollout — not 1.
+			// 0 = inert until then.
+			Version0_2_0Height: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -305,6 +309,9 @@ func DevnetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
+			// Ephemeral network (fresh per run): pin at 1 so v0.2.0 behavior is
+			// active from genesis and exercised by devnet/regression tests.
+			Version0_2_0Height: 1,
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -333,6 +340,9 @@ func MocknetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
+			// Ephemeral network: pin at 1 so the in-process e2e harness runs with
+			// v0.2.0 behavior active from genesis.
+			Version0_2_0Height: 1,
 		},
 		tssParams: params.MocknetTssParams,
 	}
