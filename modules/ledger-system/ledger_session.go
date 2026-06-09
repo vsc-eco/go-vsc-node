@@ -44,6 +44,60 @@ func (lss *ledgerSession) Revert() {
 	lss.balances = make(map[string]*int64)
 }
 
+// LedgerSavepoint captures a rollback point within a ledger session so a failed
+// try/catch inter-contract call can be unwound without touching anything the
+// caller did before it. oplog and ledgerOps are append-only within a session, so
+// the savepoint records their lengths plus a copy of the balance cache and the
+// id dedup counter; RestoreSavepoint truncates the slices back and restores the
+// maps, discarding exactly what was appended after the savepoint.
+type LedgerSavepoint struct {
+	oplogLen     int
+	ledgerOpsLen int
+	balances     map[string]*int64
+	idCache      map[string]int
+}
+
+func cloneBalances(src map[string]*int64) map[string]*int64 {
+	dst := make(map[string]*int64, len(src))
+	for k, v := range src {
+		if v == nil {
+			dst[k] = nil
+			continue
+		}
+		val := *v
+		dst[k] = &val
+	}
+	return dst
+}
+
+func (lss *ledgerSession) Savepoint() LedgerSavepoint {
+	idCache := make(map[string]int, len(lss.idCache))
+	for k, v := range lss.idCache {
+		idCache[k] = v
+	}
+	return LedgerSavepoint{
+		oplogLen:     len(lss.oplog),
+		ledgerOpsLen: len(lss.ledgerOps),
+		balances:     cloneBalances(lss.balances),
+		idCache:      idCache,
+	}
+}
+
+func (lss *ledgerSession) RestoreSavepoint(sp LedgerSavepoint) {
+	if sp.oplogLen <= len(lss.oplog) {
+		lss.oplog = lss.oplog[:sp.oplogLen]
+	}
+	if sp.ledgerOpsLen <= len(lss.ledgerOps) {
+		lss.ledgerOps = lss.ledgerOps[:sp.ledgerOpsLen]
+	}
+	lss.balances = cloneBalances(sp.balances)
+	idCache := make(map[string]int, len(sp.idCache))
+	for k, v := range sp.idCache {
+		idCache[k] = v
+	}
+	lss.idCache = idCache
+}
+
 // Appends an Oplog with no validation
 func (session *ledgerSession) AppendOplog(event OpLogEvent) {
 	session.state.Validate()
