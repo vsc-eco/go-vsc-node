@@ -91,4 +91,66 @@ func TestReview8_TryContractCall(t *testing.T) {
 	assert.Equal(t, "value", ct.StateGet(callee, "kept"),
 		"a successful callee's write must persist through a try-call")
 	assert.Equal(t, "done2", ct.StateGet(caller, "caller_marker2"))
+
+	// --- Gate: with try/catch INACTIVE (pre-activation consensus version), the
+	// Try flag is ignored and a reverting callee traps the caller (legacy). ---
+	ctOff := test_utils.NewContractTest()
+	ctOff.TryCatchActive = false
+	ctOff.RegisterContract(caller, "hive:someone", code[:])
+	ctOff.RegisterContract(callee, "hive:someone", code[:])
+	rOff := ctOff.Call(stateEngine.TxVscCallContract{
+		Self:       self,
+		ContractId: caller,
+		Action:     "tryThenSet",
+		Payload:    json.RawMessage([]byte(callee + ";setThenAbort;doomed,written;caller_marker;continued")),
+		RcLimit:    2000,
+		Intents:    []contracts.Intent{},
+	})
+	assert.False(t, rOff.Success,
+		"gate off: Try must be ignored and the reverting callee must trap the caller (legacy)")
+	assert.Equal(t, "", ctOff.StateGet(caller, "caller_marker"),
+		"gate off: nothing should commit when the tx traps")
+}
+
+// Hardening: the savepoint rolls back a caught callee's STATE/LEDGER, but its gas
+// and RC must still be charged — otherwise a try-call would be a free probe/retry
+// (DoS lever). A caught try-call (which spawns + runs a whole sub-contract) must
+// cost strictly more than a bare single-contract write.
+func TestReview8_TryCatch_ChargesGasOnCatch(t *testing.T) {
+	wkdir := projectRoot(t)
+	require.NoError(t, os.Chdir(wkdir))
+	wasmPath, err := Compile(wkdir)
+	require.NoError(t, err, "compile test wasm")
+	code, err := os.ReadFile(wasmPath)
+	require.NoError(t, err)
+
+	caller, callee := "vsccaller", "vsccallee"
+	self := stateEngine.TxSelf{
+		TxId: "gas-tx", BlockId: "blk", Index: 0, OpIndex: 0,
+		Timestamp: "2025-09-03T00:00:00", RequiredAuths: []string{"hive:someone"}, RequiredPostingAuths: []string{},
+	}
+	ct := test_utils.NewContractTest()
+	ct.RegisterContract(caller, "hive:someone", code[:])
+	ct.RegisterContract(callee, "hive:someone", code[:])
+
+	// A caught try-call: the callee writes then aborts; the whole callee execution
+	// is rolled back but still ran.
+	caught := ct.Call(stateEngine.TxVscCallContract{
+		Self: self, ContractId: caller, Action: "tryThenSet",
+		Payload: json.RawMessage([]byte(callee + ";setThenAbort;d,w;m;c")),
+		RcLimit: 2000, Intents: []contracts.Intent{},
+	})
+	require.True(t, caught.Success, "caught call: %s %s", caught.Err, caught.ErrMsg)
+
+	// A bare single-contract write (no sub-call) for comparison.
+	bare := ct.Call(stateEngine.TxVscCallContract{
+		Self: self, ContractId: caller, Action: "setString",
+		Payload: json.RawMessage([]byte("g,1")),
+		RcLimit: 2000, Intents: []contracts.Intent{},
+	})
+	require.True(t, bare.Success)
+
+	assert.Greater(t, caught.GasUsed, bare.GasUsed,
+		"a caught try-call must charge the callee's gas (the callee really executed)")
+	assert.Positive(t, caught.RcUsed, "a caught try-call must consume RC")
 }

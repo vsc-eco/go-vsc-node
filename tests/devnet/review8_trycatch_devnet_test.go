@@ -14,6 +14,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 )
 
 func TestReview8_TryCatchDevnet(t *testing.T) {
@@ -33,6 +36,16 @@ func TestReview8_TryCatchDevnet(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
+	// try/catch ICC activates at consensus version >= 0.2.0 (TryCatchICCVersion).
+	// Pin the floor to 0.2.0 from epoch 1 for THIS deployment only (merged onto the
+	// devnet defaults), so the feature is active by the time we deploy + call. All
+	// nodes run the current binary (0.2.0), so none are excluded by the floor.
+	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
+		ConsensusParams: &params.ConsensusParams{
+			ConsensusVersionFloorEpoch:     1,
+			ConsensusVersionFloorConsensus: 2,
+		},
+	}
 	d, err := New(cfg)
 	if err != nil {
 		t.Fatalf("creating devnet: %v", err)
