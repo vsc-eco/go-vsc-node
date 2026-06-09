@@ -240,6 +240,10 @@ type LedgerSession interface {
 	ConsensusUnstake(ConsensusParams) LedgerResult
 	Done() []string
 	Revert()
+	// Savepoint/RestoreSavepoint support nested rollback for try/catch
+	// inter-contract calls: capture a point, then unwind to it on a caught failure.
+	Savepoint() LedgerSavepoint
+	RestoreSavepoint(LedgerSavepoint)
 }
 
 type LedgerSystem interface {
