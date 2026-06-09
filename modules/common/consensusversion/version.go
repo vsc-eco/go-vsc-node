@@ -25,11 +25,22 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
+//   - 0.2.0 — try/catch inter-contract calls (ICCallOptions.Try). The Consensus 1→2 bump
+//     gates the new contracts.call semantics (a caught revert returns a structured
+//     outcome + rolls back to a savepoint instead of trapping). Until the floor reaches
+//     0.2.0 the Try flag is IGNORED and a reverting callee traps as before, so old and
+//     new binaries stay byte-identical pre-activation. See TryCatchICCVersion.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 1
+	currentConsensus    uint64 = 2
 	currentNonConsensus uint64 = 0
 )
+
+// TryCatchICCVersion is the minimum chain-active consensus version at which the
+// try/catch inter-contract-call semantics (ICCallOptions.Try) take effect. Below
+// it a Try call behaves exactly like a legacy call (a reverting callee traps the
+// caller), so activation is fully coordinated by the election version floor.
+var TryCatchICCVersion = Version{Major: 0, Consensus: 2, NonConsensus: 0}
 
 // ParseComponent parses a numeric version-component string, defaulting to 0 when
 // empty/invalid. Retained for the announcement payload helper; the running version itself
