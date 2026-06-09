@@ -202,6 +202,119 @@ func (cs *CallSession) Rollback() {
 	}
 }
 
+// --- Savepoint support for try/catch inter-contract calls ---------------------
+//
+// Snapshot/Restore let a failed inter-contract call be rolled back without
+// disturbing the caller. Unlike Commit/Rollback (a single, whole-tx commit
+// point), Snapshot captures the FULL mutable state of the call session at an
+// arbitrary nesting depth so the runtime can unwind exactly the sub-call's
+// effects. Cost is O(state already touched), and a try-call is a deliberate,
+// occasional operation — not a hot path.
+
+func cloneBytesMap(src map[string][]byte) map[string][]byte {
+	dst := make(map[string][]byte, len(src))
+	for k, v := range src {
+		if v == nil {
+			dst[k] = nil
+			continue
+		}
+		dst[k] = slices.Clone(v)
+	}
+	return dst
+}
+
+type contractSnapshot struct {
+	// committed base (ContractSession). Not mutated by a sub-call today (Commit
+	// only runs at tx end) but captured defensively so the savepoint is correct
+	// regardless of future call ordering.
+	cache     map[string][]byte
+	deletions map[string]bool
+	metadata  contracts.ContractMetadata
+	logsLen   int
+	tssOpsLen int
+	// working overlay (StateStore). stateInit is false when the state store was
+	// not yet instantiated at snapshot time.
+	stateInit   bool
+	ssCache     map[string][]byte
+	ssDeletions map[string]bool
+	ssEphem     map[string][]byte
+}
+
+// CallSnapshot is an opaque rollback point produced by CallSession.Snapshot.
+type CallSnapshot struct {
+	sessions map[string]*contractSnapshot
+	pending  map[string]*TempOutput
+}
+
+// Snapshot captures the current mutable state so a later Restore can discard
+// everything done since (state writes, ephemeral state, logs, TSS ops, and any
+// contract sessions created after this point).
+func (cs *CallSession) Snapshot() *CallSnapshot {
+	snap := &CallSnapshot{
+		sessions: make(map[string]*contractSnapshot, len(cs.sessions)),
+		pending:  cloneTempOutputs(cs.pending),
+	}
+	for id, sess := range cs.sessions {
+		s := &contractSnapshot{
+			cache:     cloneBytesMap(sess.cache),
+			deletions: maps.Clone(sess.deletions),
+			metadata:  sess.metadata,
+			logsLen:   len(sess.logs),
+			tssOpsLen: len(sess.tssOps),
+		}
+		if sess.state != nil {
+			s.stateInit = true
+			s.ssCache = cloneBytesMap(sess.state.cache)
+			s.ssDeletions = maps.Clone(sess.state.deletions)
+			s.ssEphem = cloneBytesMap(sess.state.ephem)
+		}
+		snap.sessions[id] = s
+	}
+	return snap
+}
+
+// Restore reverts the call session to a prior Snapshot. Sessions created after
+// the snapshot are dropped; surviving sessions have their state, logs and TSS
+// ops rewound. Gas and RC accounting live outside the call session and are
+// deliberately untouched (the work was really executed and must still be paid).
+func (cs *CallSession) Restore(snap *CallSnapshot) {
+	// Drop sessions created after the snapshot.
+	for id := range cs.sessions {
+		if _, existed := snap.sessions[id]; !existed {
+			delete(cs.sessions, id)
+		}
+	}
+	for id, s := range snap.sessions {
+		sess, ok := cs.sessions[id]
+		if !ok {
+			continue
+		}
+		sess.cache = cloneBytesMap(s.cache)
+		sess.deletions = maps.Clone(s.deletions)
+		sess.metadata = s.metadata
+		if len(sess.logs) > s.logsLen {
+			sess.logs = sess.logs[:s.logsLen]
+		}
+		if len(sess.tssOps) > s.tssOpsLen {
+			sess.tssOps = sess.tssOps[:s.tssOpsLen]
+		}
+		if sess.state != nil {
+			if s.stateInit {
+				sess.state.cache = cloneBytesMap(s.ssCache)
+				sess.state.deletions = maps.Clone(s.ssDeletions)
+				sess.state.ephem = cloneBytesMap(s.ssEphem)
+			} else {
+				// The state store was instantiated after the snapshot — clear its
+				// working overlay so no sub-call write survives.
+				sess.state.cache = make(map[string][]byte)
+				sess.state.deletions = make(map[string]bool)
+				sess.state.ephem = make(map[string][]byte)
+			}
+		}
+	}
+	cs.pending = cloneTempOutputs(snap.pending)
+}
+
 func (cs *CallSession) GetStateDiff() map[string]StateDiff {
 	res := make(map[string]StateDiff)
 	for id, session := range cs.sessions {
