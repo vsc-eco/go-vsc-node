@@ -38,6 +38,14 @@ func (m *mockLedgerSession) ConsensusUnstake(c ledgerSystem.ConsensusParams) led
 func (m *mockLedgerSession) Done() []string   { return nil }
 func (m *mockLedgerSession) Revert()          {}
 
+// Savepoint/RestoreSavepoint are no-ops here: the RC-system tests don't exercise
+// nested ledger rollback (try/catch inter-contract calls); the mock only needs
+// them to satisfy the LedgerSession interface.
+func (m *mockLedgerSession) Savepoint() ledgerSystem.LedgerSavepoint {
+	return ledgerSystem.LedgerSavepoint{}
+}
+func (m *mockLedgerSession) RestoreSavepoint(ledgerSystem.LedgerSavepoint) {}
+
 type mockLedgerSystem struct {
 	balances map[string]int64
 }
