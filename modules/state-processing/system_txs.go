@@ -637,9 +637,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			}
 		}
 
-		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
-
-		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight)
+		minimums := elections.MinimalRequiredElectionVotes(totalWeight)
 
 		realWeight := uint64(0)
 		bv := blsCircuit.RawBitVector()
