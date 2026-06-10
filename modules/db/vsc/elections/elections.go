@@ -212,35 +212,12 @@ func MinimumSigningScore(lastElectionHeight int64, memberCount int64) {
 
 }
 
-// Probably should be a minimum of 6
-const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200   // 1 hour
-const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
-
-func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection uint64) uint64 {
-	if blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION {
-		//Return 2/3
-		return uint64(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
-	}
-
-	// GV-H3: the decay floor must NOT drop below the BFT-safe 2/3 quorum. The
-	// old floor was floor(N/2 + 1) — a bare majority with ZERO Byzantine fault
-	// tolerance: a patient minority controlling >N/2 (vs the 2/3 needed when
-	// fresh) could wait out the 2-week timer and finalize a captured committee.
-	// This is the exact concern MinimalRequiredConsensusVersionVotes is
-	// deliberately NOT decayed for ("must not become adoptable by a small
-	// minority"). Floor minMembers at ceil(2N/3) so the time-based structure is
-	// preserved but the threshold can never decay below the safe quorum.
-	minMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
-	maxMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
-
-	// Compute drift.
-	cappedBlocks := math.Min(float64(blocksSinceLastElection), float64(MAX_BLOCKS_SINCE_LAST_ELECTION))
-	drift := (float64(MAX_BLOCKS_SINCE_LAST_ELECTION) - cappedBlocks) / float64(MAX_BLOCKS_SINCE_LAST_ELECTION)
-
-	// Map drift from [0, 1] to [minMembers, maxMembers].
-	mappedValue := float64(minMembers) + (float64(maxMembers)-float64(minMembers))*drift
-
-	return uint64(math.Round(mappedValue))
+// MinimalRequiredElectionVotes returns the vote-weight threshold to finalize an
+// election: the BFT-safe 2/3 quorum of the electorate's weight, fixed with no
+// time-based decay. GV-H3: an earlier design decayed this floor to a bare
+// majority (floor(W/2 + 1)) over the MAX_BLOCKS_SINCE_LAST_ELECTION window
+func MinimalRequiredElectionVotes(memberCountOfLastElection uint64) uint64 {
+	return (2*memberCountOfLastElection + 2) / 3
 }
 
 // MinimalRequiredConsensusVersionVotes is a fixed 2/3 stake threshold for adopting a proposed
