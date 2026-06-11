@@ -282,7 +282,17 @@ func TestnetConfig() SystemConfig {
 			// v0.2.0 release activation gate. Testnet has persistent history, so
 			// PIN a future testnet height (above chain head) before rollout — not 1.
 			// 0 = inert until then.
-			Version0_2_0Height: 323_250,
+			//
+			// FIX(election-stall 2026-06-11): the prior 323_250 was BELOW the testnet
+			// head (~3.84M), so the H-6 gateway-PoP gate (+ contract-update timelock)
+			// went active the instant nodes ran the binary — against witness records
+			// the upgrade never backfilled with gateway_key_pop → the epoch-662
+			// election formed with member_count=0 and the chain stopped rotating
+			// committees. Re-pinned ~8h above the head (3_842_080 @ 2026-06-11) so every
+			// witness re-announces (its record gains gateway_key_pop) before the gate
+			// activates. protocol_version was already stored by the old indexer, so the
+			// 0.2.0 floor at ConsensusVersionFloorEpoch=662 already passes.
+			Version0_2_0Height: 3_852_000,
 			// Bond inclusion window (CP-2): 7,200 blocks (~6h) for faster testnet
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
