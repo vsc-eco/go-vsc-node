@@ -508,8 +508,8 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	}
 
 	// CP-4 (audit A3-2): removal of the vsc.dao OWNER backstop is gated on the
-	// v0.2.0 activation (Version0_2_0Active) — gateway decentralization ships as
-	// part of the coordinated v0.2.0 batch rather than a standalone CP-4 height.
+	// v0.2.0 activation (GatewayDecentralizationActive) — gateway decentralization
+	// ships as part of the coordinated v0.2.0 batch rather than a standalone height.
 	// At/after activation the OWNER auth is the committee keys ONLY and posting
 	// carries only vsc.network — only the elected committee (2/3-of-stake
 	// supermajority) can re-key or move custody, with no single-account backstop.
@@ -524,7 +524,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	//
 	// Determinism (Constraint 3): decentralizeOwner is a pure function of bh + the
 	// compile-time param, so every cosigner builds the identical account_update.
-	decentralizeOwner := ms.sconf.ConsensusParams().Version0_2_0Active(bh)
+	decentralizeOwner := ms.sconf.ConsensusParams().GatewayDecentralizationActive(bh)
 
 	var eb [2]interface{}
 	eb[0] = "vsc.network"

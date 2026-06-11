@@ -440,10 +440,10 @@ func (e *electionProposer) GenerateFullElection(
 		},
 	)
 
-	// Strict consensus-key admission (audit H-6), height-gated. Below the
-	// activation height (and on every network whose WitnessKeyStrictHeight is 0)
-	// this is skipped entirely — the legacy warn-only-PoP, no-dedup behaviour is
-	// unchanged. At/after it:
+	// Strict consensus + gateway key admission (audit H-6), gated on the v0.2.0
+	// activation (Version0_2_0Height, via WitnessKeyStrictActive). Below it (and
+	// on every network where v0.2.0 is unpinned) this is skipped entirely — the
+	// legacy warn-only-PoP, no-dedup behaviour is unchanged. At/after it:
 	//   (a) EXCLUDE any witness whose consensus BLS key fails proof-of-possession
 	//       — a rogue key the announcer does not hold the secret for (admitted
 	//       today because the announce check is warn-only) can never reach the
@@ -457,6 +457,7 @@ func (e *electionProposer) GenerateFullElection(
 	// unparseable consensus key as a final safety net.
 	if e.sconf.ConsensusParams().WitnessKeyStrictActive(blockHeight) {
 		seenConsensusKeys := make(map[string]string, len(witnessList))
+		seenGatewayKeys := make(map[string]string, len(witnessList))
 		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 			if popErr := w.VerifyConsensusPoP(); popErr != nil {
 				log.Warn("H-6: excluding witness with invalid consensus-key PoP",
@@ -475,7 +476,34 @@ func (e *electionProposer) GenerateFullElection(
 					"account", w.Account, "kept", first)
 				return true
 			}
+			// Gateway-key strict admission (audit H-6, gateway companion): the
+			// gateway key is an unauthenticated announced string unless its
+			// proof-of-possession verifies. Without this, a distinct elected node
+			// could announce ANOTHER member's public gateway key and wedge gateway
+			// rotation with a duplicate key_auth (Hive rejects duplicate keys).
+			//   (c) EXCLUDE any witness whose gateway-key PoP is missing/invalid —
+			//       it has not proven it holds the announced gateway key.
+			//   (d) DEDUPE by gateway key. With a valid PoP a duplicate implies a
+			//       copied seed (also caught by the consensus-key dedup above for
+			//       the normal derivation); this still covers a shared gateway key
+			//       paired with distinct consensus keys. Keep the
+			//       account-lexicographically-first (witnessList is account-sorted).
+			// Pure function of the on-chain witness record ⇒ identical committee/CID
+			// on every node (Constraint 3). After this gate every elected member
+			// provably holds a unique gateway key, so the committee size and the
+			// gateway multisig's signer count track the same population.
+			if popErr := w.VerifyGatewayKeyPoP(); popErr != nil {
+				log.Warn("H-6: excluding witness with invalid gateway-key PoP",
+					"account", w.Account, "err", popErr)
+				return true
+			}
+			if first, dup := seenGatewayKeys[w.GatewayKey]; dup {
+				log.Warn("H-6: excluding witness with duplicate gateway key",
+					"account", w.Account, "kept", first)
+				return true
+			}
 			seenConsensusKeys[ks] = w.Account
+			seenGatewayKeys[w.GatewayKey] = w.Account
 			return false
 		})
 	}
