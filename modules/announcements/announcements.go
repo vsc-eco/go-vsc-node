@@ -169,6 +169,7 @@ type payloadVscNode struct {
 	ProtocolVersion uint64   `json:"protocol_version"`
 	VersionNonConsensus uint64 `json:"version_non_consensus"`
 	GatewayKey      string   `json:"gateway_key"`
+	GatewayKeyPoP   string   `json:"gateway_key_pop"`
 	Witness         struct {
 		Enabled bool `json:"enabled"`
 	} `json:"witness"`
@@ -269,6 +270,16 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	gatewayKP := hivego.KeyPairFromBytes(gatewayKey[:])
 
+	// Proof-of-possession over the gateway secp256k1 key, bound to this Hive
+	// account, so ingesting nodes can confirm we hold the secret behind the
+	// announced gateway key (audit H-6, companion to the BLS PoP above). Closes
+	// the duplicate-key griefing vector — a distinct node announcing our public
+	// gateway key to wedge gateway rotation cannot produce this signature.
+	gatewayPoP, err := dids.GenerateGatewayKeyPoP(gatewayKP, a.conf.Get().HiveUsername)
+	if err != nil {
+		return fmt.Errorf("failed to generate gateway proof-of-possession: %w", err)
+	}
+
 	peerAddrs := make([]string, 0)
 
 	if len(a.p2pconf.Get().AnnounceAddrs) > 0 {
@@ -306,6 +317,7 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 			ProtocolVersion:     runningVersion.Consensus,
 			VersionNonConsensus: runningVersion.NonConsensus,
 			GatewayKey:      *gatewayKP.GetPublicKeyString(),
+			GatewayKeyPoP:   gatewayPoP,
 			Witness: struct {
 				Enabled bool `json:"enabled"`
 			}{

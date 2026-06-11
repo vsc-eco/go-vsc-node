@@ -55,7 +55,10 @@ func TestReview2GenerateFullElectionBadConsensusKey(t *testing.T) {
 		ct.DataLayer,                 // da
 		nil,                          // txCreator
 		nil,                          // conf
-		systemconfig.MocknetConfig(), // sconf
+		// H-6 gate OFF (v0.2.0 unpinned): this isolates the members-loop bad-key
+		// safety net, which sits AFTER the gate; with the gate on, the gate would
+		// exclude the bad-key witness first and the loop guard would never run.
+		v020Sconf{SystemConfig: systemconfig.MocknetConfig(), height: 0}, // sconf
 		nil,                          // se
 		nil,                          // hiveConsumer
 	)
