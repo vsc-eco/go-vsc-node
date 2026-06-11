@@ -224,10 +224,6 @@ func MainnetConfig() SystemConfig {
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
 			MaxNewMembersPerElection: 0,
-			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
-			// PoP, no key dedup). Pin a future height once all witnesses carry a
-			// valid PoP (network-wide, reindex-stable rollout).
-			WitnessKeyStrictHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
@@ -296,10 +292,6 @@ func TestnetConfig() SystemConfig {
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
 			MaxNewMembersPerElection: 0,
-			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
-			// PoP, no key dedup). Pin a future height once all witnesses carry a
-			// valid PoP (network-wide, reindex-stable rollout).
-			WitnessKeyStrictHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
@@ -361,10 +353,6 @@ func DevnetConfig() SystemConfig {
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
 			MaxNewMembersPerElection: 0,
-			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
-			// PoP, no key dedup). Pin a future height once all witnesses carry a
-			// valid PoP (network-wide, reindex-stable rollout).
-			WitnessKeyStrictHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
@@ -409,10 +397,6 @@ func MocknetConfig() SystemConfig {
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
 			MaxNewMembersPerElection: 0,
-			// H-6 strict consensus-key admission: 0 = disabled (legacy warn-only
-			// PoP, no key dedup). Pin a future height once all witnesses carry a
-			// valid PoP (network-wide, reindex-stable rollout).
-			WitnessKeyStrictHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if

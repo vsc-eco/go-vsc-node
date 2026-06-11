@@ -70,9 +70,12 @@ func TestAuditUnfixed_37_NoMaxCommitteeSizeCap(t *testing.T) {
 		ct.DataLayer,                 // da
 		nil,                          // txCreator
 		nil,                          // conf
-		systemconfig.MocknetConfig(), // sconf
-		nil,                          // se
-		nil,                          // hiveConsumer
+		// H-6 gate OFF (v0.2.0 unpinned): this test's 200 witnesses are PoP-less
+		// fixtures; the gate is orthogonal to the committee-size-cap behaviour
+		// under test, so keep it disabled here.
+		v020Sconf{SystemConfig: systemconfig.MocknetConfig(), height: 0}, // sconf
+		nil, // se
+		nil, // hiveConsumer
 	)
 
 	_, data, err := ep.GenerateFullElection(witnessList, 0, consensusversion.Version{}, 100)
