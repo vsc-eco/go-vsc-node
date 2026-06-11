@@ -268,9 +268,9 @@ func TestnetConfig() SystemConfig {
 			TssIndexHeight:                 1409500,
 			ElectionInterval:               3600,
 			ElectionDupeFixEpoch:           268,
-			ConsensusVersionFloorEpoch:     591,
+			ConsensusVersionFloorEpoch:     662,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 1,
+			ConsensusVersionFloorConsensus: 2,
 			// Last pre-rollout testnet epoch. Seeds latestSettledEpoch=515 on
 			// upgrade so the first post-rollout election (epoch 516) can fire;
 			// epoch 515's settlement is skipped as stale and its bucket HBD
@@ -282,7 +282,7 @@ func TestnetConfig() SystemConfig {
 			// v0.2.0 release activation gate. Testnet has persistent history, so
 			// PIN a future testnet height (above chain head) before rollout — not 1.
 			// 0 = inert until then.
-			Version0_2_0Height: 0,
+			Version0_2_0Height: 323_250,
 			// Bond inclusion window (CP-2): 7,200 blocks (~6h) for faster testnet
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
@@ -389,7 +389,7 @@ func MocknetConfig() SystemConfig {
 			ConsensusVersionActivationDen: 5,
 			// Ephemeral network: pin at 1 so the in-process e2e harness runs with
 			// v0.2.0 behavior active from genesis.
-			Version0_2_0Height: 1,
+			Version0_2_0Height:            1,
 			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
 			BondInclusionSampleCount:      8,
