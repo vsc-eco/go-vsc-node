@@ -596,11 +596,24 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 		time.Sleep(3 * time.Second)
 	}
 
-	// Per-node view after the attempted restore.
+	// Per-node view after the attempted restore. Each node folds the reverse
+	// credit into its hive_consensus balance snapshot on its own slot cadence, so
+	// the credit row (already written on every node by applySafetySlashReverse)
+	// surfaces in getAccountBalance a slot or two apart. Poll each node to
+	// convergence with a deadline — exactly like the node-1 `restored` loop above
+	// — instead of reading once: a single-shot multi-node read taken right after
+	// only node-1 converged is racy and reports false negatives (e.g. node-1/2 at
+	// wantBond while node-3..6 are still one slot behind) even though every node
+	// has applied the reverse. The honest-bond invariant is still asserted per node.
 	t.Logf("[reverse] === per-node bond after reverse (want >= %d) ===", wantBond)
 	allRestored := true
 	for n := 1; n <= cfg.Nodes; n++ {
+		nodeDeadline := time.Now().Add(2 * time.Minute)
 		a3 := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker)
+		for a3 < wantBond && time.Now().Before(nodeDeadline) {
+			time.Sleep(3 * time.Second)
+			a3 = gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker)
+		}
 		aH := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+honest)
 		t.Logf("[reverse] node-%d: %s=%d (want>=%d, baseline %d) %s(honest)=%d", n, attacker, a3, wantBond, baseH, honest, aH)
 		if a3 < wantBond {
