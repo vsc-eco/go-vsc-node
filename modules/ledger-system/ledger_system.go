@@ -173,13 +173,21 @@ const (
 func IsProtocolMetaLedgerType(t string) bool {
 	switch t {
 	case LedgerTypeSafetySlashHiveBurn,
+		// LedgerTypeSafetySlashReserve is the keyless insurance-reserve credit:
+		// held, never spendable. It MUST be excluded here so the residual does not
+		// count as spendable HIVE on system:protocol_slash_reserve (the reserve has
+		// no key and no transfer path; a future consensus-level mover sums these
+		// rows to pay funds back to the witness/victims, which is the only way value
+		// ever leaves the reserve). Replaces the removed restitution-claim rows,
+		// which were deleted with the victim-restitution machinery — their cases
+		// here were left dangling (referencing now-undefined constants), which broke
+		// the build AND silently dropped the reserve from the exclusion set.
+		LedgerTypeSafetySlashReserve,
 		LedgerTypeSafetySlashHiveBurnPending,
 		LedgerTypeSafetySlashHiveBurnPendingRelease,
 		LedgerTypeSafetySlashHiveBurnPendingFinalized,
 		LedgerTypeSafetySlashHiveBurnPendingCancelled,
-		LedgerTypeSafetySlashBurnFinalizeCursor,
-		LedgerTypeSafetyRestitutionClaim,
-		LedgerTypeSafetyRestitutionClaimConsumed:
+		LedgerTypeSafetySlashBurnFinalizeCursor:
 		return true
 	default:
 		return false
@@ -314,7 +322,14 @@ func (ls *ledgerSystem) readSafetySlashFinalizeCursor() uint64 {
 	recs, err := ls.LedgerDb.GetLedgerRange(
 		params.ProtocolSlashFinalizeCursorAccount,
 		0,
-		math.MaxUint64,
+		// math.MaxInt64, NOT math.MaxUint64: on a real MongoDB ledger a uint64
+		// above math.MaxInt64 marshals to a BSON int64 that two's-complement-wraps
+		// to -1, so `block_height $lte -1` matches ZERO rows — the cursor read then
+		// always returns 0 and the finalize scan silently restarts from height 0
+		// every tick (the cursor optimization is dead). MaxInt64 is a valid BSON
+		// int64 and dwarfs any real Hive block height. Mirrors maxLedgerScanHeight
+		// in state-processing/safety_slash_chain_ops.go (same bug class, same fix).
+		math.MaxInt64,
 		"hive",
 		ledger_db.LedgerOptions{OpType: []string{LedgerTypeSafetySlashBurnFinalizeCursor}},
 	)
