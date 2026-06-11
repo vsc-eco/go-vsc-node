@@ -31,3 +31,17 @@ func (w *Witness) VerifyConsensusPoP() error {
 	}
 	return errors.New("consensus key not found")
 }
+
+// VerifyGatewayKeyPoP verifies the proof-of-possession of this witness's
+// announced gateway secp256k1 key against the witness account (audit H-6,
+// gateway companion to VerifyConsensusPoP). A valid PoP proves the announcer
+// holds the secret behind the announced gateway key, closing the duplicate-key
+// griefing vector — a distinct elected node announcing another member's public
+// gateway key to force a duplicate-key account_update that Hive rejects, wedging
+// gateway rotation. Pure function of the on-chain witness record (no
+// state/time/RNG), so every node reaches the identical verdict — safe to gate
+// election membership on. Returns an error when the gateway key or its PoP is
+// missing, or the PoP fails to verify.
+func (w *Witness) VerifyGatewayKeyPoP() error {
+	return dids.VerifyGatewayKeyPoP(w.GatewayKey, w.Account, w.GatewayKeyPoP)
+}

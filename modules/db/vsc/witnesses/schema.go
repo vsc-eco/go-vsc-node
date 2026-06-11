@@ -17,7 +17,11 @@ type Witness struct {
 	VersionId        string            `json:"version_id" bson:"version_id"`
 	GatewayKey       string            `json:"gateway_key" bson:"gateway_key"`
 	GatewayActiveKey string            `json:"gateway_active_key" bson:"gateway_active_key"`
-	PeerAddrs        []string          `json:"peer_addrs" bson:"peer_addrs"`
+	// GatewayKeyPoP is a hex secp256k1 proof-of-possession for GatewayKey, bound
+	// to the announcing account (audit H-6, gateway companion to the consensus
+	// key's PoP). Empty for witnesses that announced before gateway-PoP support.
+	GatewayKeyPoP string   `json:"gateway_key_pop" bson:"gateway_key_pop,omitempty"`
+	PeerAddrs     []string `json:"peer_addrs" bson:"peer_addrs"`
 }
 
 type PostingJsonMetadata struct {
@@ -54,6 +58,7 @@ type PostingJsonMetadataVscNode struct {
 	} `json:"witness"`
 	GatewayKey       string `json:"gateway_key"`
 	GatewayActiveKey string `json:"gateway_active_key"`
+	GatewayKeyPoP    string `json:"gateway_key_pop"`
 }
 
 type SetWitnessUpdateType struct {

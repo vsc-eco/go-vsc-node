@@ -86,6 +86,7 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 			"enabled":               request.Metadata.VscNode.Witness.Enabled,
 			"did_keys":         request.Metadata.DidKeys,
 			"gateway_key":      request.Metadata.VscNode.GatewayKey,
+			"gateway_key_pop":  request.Metadata.VscNode.GatewayKeyPoP,
 		},
 	}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
