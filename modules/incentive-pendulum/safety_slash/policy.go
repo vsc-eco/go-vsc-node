@@ -27,16 +27,15 @@
 // state-engine rules ever wrote it and nothing moves it out.
 package safetyslash
 
-// SafetySlashEnabled gates the principal (HIVE_CONSENSUS bond) slashing path.
-// When false, slashForEvidenceIfPolicyAllows returns a no-op result, so no
-// detector ever debits a bond and the downstream reserve/reversal machinery
-// stays dormant. Detection logging and normal block validation are
-// unaffected. This is a COMPILE-TIME, consensus-critical gate: it is
-// deterministic only because every node runs the same build. Do NOT convert it
-// to a per-node runtime config — nodes disagreeing on this value would diverge
-// ledger state and fork the network. Temporarily false on mainnet while the
-// safety-slash path gets more testing; flip to true to re-enable.
-const SafetySlashEnabled = false
+// Principal (HIVE_CONSENSUS bond) slashing is gated by a per-network ACTIVATION
+// HEIGHT, not a compile-time flag: see params.ConsensusParams.SafetySlashActive /
+// SafetySlashActivationHeight and the single enforcing call in
+// StateEngine.slashForEvidenceIfPolicyAllows. Below the height (and when 0 ==
+// inert) detectors still run and log but never debit a bond, so the downstream
+// reserve/reversal machinery stays dormant. The gate is a height rather than a
+// bare bool because the slash mutates ledger state: every node must switch at
+// the SAME block (pinned above chain head) or upgraded-vs-not nodes — and a
+// reindex vs live history — would diverge and fork.
 
 // CorrelatedSlashCapBps is the maximum total principal slash in basis points
 // applied from one correlation group (e.g. same L1 tx or same block height),

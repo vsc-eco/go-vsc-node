@@ -40,8 +40,9 @@ var DAO_WALLET = "hive:vsc.dao"
 // HISTORICAL: matured slash residual USED to land here (destroyed). It now lands
 // on ProtocolSlashReserveAccount instead (the slash-reserve workstream). This
 // account is retained only so any pre-existing burn rows keep resolving; no new
-// rows are written to it (SafetySlashEnabled has never fired on any network, so
-// there are none in practice).
+// rows are written to it (safety slashing has never fired on any network — no
+// activation height has been pinned, see SafetySlashActivationHeight — so there
+// are none in practice).
 var ProtocolSlashBurnAccount = "system:protocol_slash_burn"
 
 // ProtocolSlashReserveAccount is the keyless insurance reserve. This is a
@@ -291,6 +292,24 @@ type ConsensusParams struct {
 	// LONGER than this grace ⇒ the exception expires and the member must
 	// re-mature. 0 == disabled. Only consulted when the bond gate is active.
 	BondInclusionEstablishedGraceBlocks uint64 `json:"bondInclusionEstablishedGraceBlocks,omitempty"`
+
+	// SafetySlashActivationHeight gates verifiable-fault PRINCIPAL slashing (the
+	// HIVE_CONSENSUS bond debit in slashForEvidenceIfPolicyAllows →
+	// SafetySlashConsensusBond). At blockHeight >= this value the detectors debit
+	// the bond; below it — and when 0 — they still run and log but never touch the
+	// ledger (0 = inert, the safe default). Kept as its OWN height (NOT folded into
+	// Version0_2_0Height) because principal slashing is on a more cautious maturity
+	// timeline than the rest of v0.2.0 and must be stageable independently.
+	//
+	// CONSENSUS-CRITICAL: the slash changes ledger state, so this MUST be a fixed
+	// network-wide constant set STRICTLY ABOVE the current chain head before
+	// deploy, identical on every node (reindex or not). A height at/below an
+	// already-processed block is a consensus footgun — live nodes ran the
+	// no-slash path over those blocks; a reindex with this binary would slash them
+	// and diverge — exactly like EvmAddressChecksumHeight / Version0_2_0Height.
+	// Every witness must run a binary carrying this height BEFORE Hive reaches it.
+	// Ephemeral networks may pin it low to exercise the active path.
+	SafetySlashActivationHeight uint64 `json:"safetySlashActivationHeight,omitempty"`
 }
 
 // ───── Named activation predicates (Ethereum ChainConfig style) ─────
@@ -314,6 +333,15 @@ func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
 // gate per change. Zero height means the batch is not yet scheduled (inert).
 func (cp ConsensusParams) Version0_2_0Active(blockHeight uint64) bool {
 	return cp.Version0_2_0Height != 0 && blockHeight >= cp.Version0_2_0Height
+}
+
+// SafetySlashActive reports whether verifiable-fault principal (HIVE_CONSENSUS
+// bond) slashing is in force at blockHeight. Call sites gate the ledger debit on
+// this instead of reading a compile-time constant, so activation is a per-network
+// height pinned above chain head (see SafetySlashActivationHeight). Zero height
+// means slashing is inert (detectors still run and log; no bond is debited).
+func (cp ConsensusParams) SafetySlashActive(blockHeight uint64) bool {
+	return cp.SafetySlashActivationHeight != 0 && blockHeight >= cp.SafetySlashActivationHeight
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate

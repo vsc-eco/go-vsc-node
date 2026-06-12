@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	safetyslash "vsc-node/modules/incentive-pendulum/safety_slash"
@@ -113,15 +114,35 @@ func TestBlamedAccountsFromBitSet(t *testing.T) {
 	}
 }
 
+// safetySlashSconf wraps a base SystemConfig so a test can pin the principal-
+// slash activation height (ConsensusParams.SafetySlashActivationHeight) without a
+// JSON override loader — mirroring timelockHeightSconf for the timelock gate.
+type safetySlashSconf struct {
+	systemconfig.SystemConfig
+	cp params.ConsensusParams
+}
+
+func (s *safetySlashSconf) ConsensusParams() params.ConsensusParams { return s.cp }
+
+func mocknetWithSafetySlashHeight(h uint64) systemconfig.SystemConfig {
+	base := systemconfig.MocknetConfig()
+	cp := base.ConsensusParams()
+	cp.SafetySlashActivationHeight = h
+	return &safetySlashSconf{SystemConfig: base, cp: cp}
+}
+
 // newTestSlashingEngine builds a minimal StateEngine wired to a stub
 // LedgerSystem. The detector call sites in state_engine.go funnel through
 // slashForEvidenceIfPolicyAllows → SafetySlashConsensusBond, so exercising
 // that path with a stub captures the policy decisions (kind acceptance,
-// dedup, correlation cap) without needing a full BLS-signed block fixture.
+// dedup, correlation cap) without needing a full BLS-signed block fixture. The
+// gate height is pinned at 1 so every evidence height in these tests is active;
+// TestSafetySlashActivationHeightGate covers the below/at-height boundary.
 func newTestSlashingEngine() (*StateEngine, *stubLedgerSystem) {
 	stub := &stubLedgerSystem{slashOk: true}
 	se := &StateEngine{
 		LedgerSystem:                  stub,
+		sconf:                         mocknetWithSafetySlashHeight(1),
 		safetyEvidenceSeen:            make(map[string]uint64),
 		seenProposalBySlotProposer:    make(map[string]string),
 		slashIncidentBpsBySlotAccount: make(map[string]int),
@@ -132,9 +153,6 @@ func newTestSlashingEngine() (*StateEngine, *stubLedgerSystem) {
 // TestSlashForEvidence_DoubleBlockSign covers the double-sign detector's
 // policy hand-off: first proof slashes, replay/duplicate evidence does not.
 func TestSlashForEvidence_DoubleBlockSign(t *testing.T) {
-	if !safetyslash.SafetySlashEnabled {
-		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
-	}
 	se, stub := newTestSlashingEngine()
 
 	res := se.slashForEvidenceIfPolicyAllows(
@@ -178,9 +196,6 @@ func TestSlashForEvidence_DoubleBlockSign(t *testing.T) {
 // TestSlashForEvidence_InvalidBlock covers the invalid-block detector's
 // policy hand-off.
 func TestSlashForEvidence_InvalidBlock(t *testing.T) {
-	if !safetyslash.SafetySlashEnabled {
-		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
-	}
 	se, stub := newTestSlashingEngine()
 
 	res := se.slashForEvidenceIfPolicyAllows(
@@ -207,9 +222,6 @@ func TestSlashForEvidence_InvalidBlock(t *testing.T) {
 // capped against CorrelatedSlashCapBps so the producer doesn't take two
 // independent 10% hits beyond the policy ceiling.
 func TestSlashForEvidence_CorrelatedIncident(t *testing.T) {
-	if !safetyslash.SafetySlashEnabled {
-		t.Skip("principal slashing compile-disabled (SafetySlashEnabled=false); policy hand-off returns Ok=false by design")
-	}
 	se, stub := newTestSlashingEngine()
 	incidentKey := "slot-500|hive:alice"
 
@@ -266,6 +278,67 @@ func TestSlashForEvidence_CorrelatedIncident(t *testing.T) {
 	}
 	if len(stub.slashCalls) != 2 {
 		t.Fatalf("over-cap kind must not reach ledger: got %d calls", len(stub.slashCalls))
+	}
+}
+
+// TestSafetySlashActivationHeightGate covers the height gate that replaced the
+// old compile-time SafetySlashEnabled const: below the activation height the
+// path is inert (no ledger debit), at/above it slashes, and an unpinned (0)
+// height stays inert at any height. This is the consensus boundary — every node
+// must flip at the same block, so the gate is a pure function of (config height,
+// processing height).
+func TestSafetySlashActivationHeightGate(t *testing.T) {
+	const activation = uint64(1_000)
+
+	mkEngine := func(h uint64) (*StateEngine, *stubLedgerSystem) {
+		stub := &stubLedgerSystem{slashOk: true}
+		se := &StateEngine{
+			LedgerSystem:                  stub,
+			sconf:                         mocknetWithSafetySlashHeight(h),
+			safetyEvidenceSeen:            make(map[string]uint64),
+			seenProposalBySlotProposer:    make(map[string]string),
+			slashIncidentBpsBySlotAccount: make(map[string]int),
+		}
+		return se, stub
+	}
+
+	// Below the activation height: inert, no ledger call.
+	below, belowStub := mkEngine(activation)
+	resBelow := below.slashForEvidenceIfPolicyAllows(
+		"alice", safetyslash.EvidenceVSCDoubleBlockSign,
+		"double-block|slot-999", "tx-below", activation-1, "slot-999|hive:alice",
+	)
+	if resBelow.Ok {
+		t.Fatalf("below activation height must not slash; got %s", resBelow.Msg)
+	}
+	if len(belowStub.slashCalls) != 0 {
+		t.Fatalf("below activation height must not reach ledger: got %d calls", len(belowStub.slashCalls))
+	}
+
+	// At the activation height: slashes once.
+	at, atStub := mkEngine(activation)
+	resAt := at.slashForEvidenceIfPolicyAllows(
+		"alice", safetyslash.EvidenceVSCDoubleBlockSign,
+		"double-block|slot-1000", "tx-at", activation, "slot-1000|hive:alice",
+	)
+	if !resAt.Ok {
+		t.Fatalf("at activation height should slash: %s", resAt.Msg)
+	}
+	if len(atStub.slashCalls) != 1 {
+		t.Fatalf("at activation height should reach ledger once: got %d calls", len(atStub.slashCalls))
+	}
+
+	// Unpinned (0): inert even at a far-future height.
+	off, offStub := mkEngine(0)
+	resOff := off.slashForEvidenceIfPolicyAllows(
+		"alice", safetyslash.EvidenceVSCDoubleBlockSign,
+		"double-block|slot-x", "tx-off", 9_000_000, "slot-x|hive:alice",
+	)
+	if resOff.Ok {
+		t.Fatalf("unpinned (0) gate must stay inert; got %s", resOff.Msg)
+	}
+	if len(offStub.slashCalls) != 0 {
+		t.Fatalf("unpinned gate must not reach ledger: got %d calls", len(offStub.slashCalls))
 	}
 }
 

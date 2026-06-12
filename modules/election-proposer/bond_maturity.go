@@ -152,8 +152,9 @@ func maturedConsensusStake(
 	//      add-back can never inflate matured stake above what the node holds
 	//      right now.
 	//
-	// Dormant until SafetySlashEnabled (safety_slash/policy.go); with slashing
-	// off there are no reverse rows so this is a no-op (one extra empty read).
+	// Dormant until safety slashing activates (params.SafetySlashActive /
+	// SafetySlashActivationHeight); with slashing off there are no reverse rows
+	// so this is a no-op (one extra empty read).
 	reverses, rErr := reader.ConsensusReverseCreditsInRange(account, windowStart, electionHeight)
 	if rErr != nil {
 		return 0, rErr

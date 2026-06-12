@@ -230,6 +230,12 @@ func MainnetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 403_200,
+			// Principal (HIVE_CONSENSUS bond) safety slashing. 0 = INERT
+			// (detectors log but never debit). PIN a future mainnet height
+			// (strictly above chain head, every witness upgraded first) before
+			// turning slashing on — same reindex/upgrade-window footgun as the
+			// other height gates. Stage AFTER the v0.2.0 batch has soaked.
+			SafetySlashActivationHeight: 0,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -296,7 +302,7 @@ func TestnetConfig() SystemConfig {
 			// Bond inclusion window (CP-2): 7,200 blocks (~6h) for faster testnet
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
-			BondInclusionActivationHeight: 0,
+			BondInclusionActivationHeight: 3_870_000,
 			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
@@ -308,6 +314,10 @@ func TestnetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 33_600,
+			// Principal (HIVE_CONSENSUS bond) safety slashing. 0 = INERT until
+			// pinned. Set a future testnet height (above chain head) to soak
+			// slashing before mainnet — same above-head rule as mainnet.
+			SafetySlashActivationHeight: 3_870_000,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -369,6 +379,13 @@ func DevnetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 400,
+			// Principal safety slashing ACTIVE from genesis on this ephemeral net
+			// (matches Version0_2_0Height=1) so the devnet double-sign integration
+			// test (tests/devnet/malicious_doublesign_test.go) can observe a real
+			// bond slash. Honest nodes never equivocate / propose invalid blocks,
+			// so no slash fires in normal runs; internal unit tests still pin their
+			// own height via an sconf override.
+			SafetySlashActivationHeight: 1,
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -413,6 +430,9 @@ func MocknetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 400,
+			// Principal safety slashing. 0 = INERT; the in-process e2e harness
+			// and internal unit tests pin their own height via an sconf override.
+			SafetySlashActivationHeight: 0,
 		},
 		tssParams: params.MocknetTssParams,
 	}
