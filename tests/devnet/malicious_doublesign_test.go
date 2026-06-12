@@ -41,7 +41,8 @@ func gqlConsensus(t *testing.T, gqlURL, account string) int64 {
 	return out.Data.GetAccountBalance.HiveConsensus
 }
 
-// TestMaliciousDoubleSign runs 6 nodes on origin/main with SafetySlashEnabled=true.
+// TestMaliciousDoubleSign runs 6 nodes with safety slashing active on devnet
+// (SafetySlashActivationHeight=1, active from genesis).
 // node-3 (magi.test3) is forced, whenever it is the elected producer, to broadcast
 // a SECOND competing vsc.produce_block for the same slot height (different block
 // ref) — classic equivocation. The on-chain double-sign detector
@@ -102,7 +103,7 @@ func TestMaliciousDoubleSign(t *testing.T) {
 	if slashed {
 		t.Logf("[ds] RESULT: node-3's HIVE_CONSENSUS bond is BELOW the honest node's — double-sign slash fired.")
 	} else {
-		t.Logf("[ds] RESULT: node-3's bond NOT below honest — slash did not fire (inspect logs: did node-3 produce? did the competing block land? is SafetySlashEnabled true?).")
+		t.Logf("[ds] RESULT: node-3's bond NOT below honest — slash did not fire (inspect logs: did node-3 produce? did the competing block land? is safety slashing active at this height?).")
 	}
 
 	for _, kw := range []string{

@@ -317,8 +317,9 @@ func (ls *LedgerState) GetConsensusBalanceAt(account string, blockHeight uint64)
 // after being cleared (W == the slash burn delay, exactly). The gate uses these
 // rows to add the reversed amount back to the pre-reversal samples, undoing the
 // erroneous dip without affecting fresh stake / top-ups / unstakes. Dormant
-// until SafetySlashEnabled (safety_slash/policy.go) — built defensively so the
-// gate is correct the day slashing is turned on.
+// until safety slashing activates (params.SafetySlashActive /
+// SafetySlashActivationHeight) — built defensively so the gate is correct the
+// day slashing is turned on.
 func (ls *LedgerState) ConsensusReverseCreditsInRange(account string, start, end uint64) ([]ledger_db.LedgerRecord, error) {
 	rows, err := ls.LedgerDb.GetLedgerRange(
 		account,

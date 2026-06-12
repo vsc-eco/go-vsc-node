@@ -3101,8 +3101,9 @@ func (se *StateEngine) slashForEvidenceIfPolicyAllows(
 	if se == nil {
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "state engine not configured"}
 	}
-	if !safetyslash.SafetySlashEnabled {
-		// Principal slashing temporarily disabled (see safetyslash.SafetySlashEnabled).
+	if se.sconf == nil || !se.sconf.ConsensusParams().SafetySlashActive(blockHeight) {
+		// Principal slashing inert until the per-network activation height is
+		// reached (params.SafetySlashActive / SafetySlashActivationHeight).
 		// Detectors still run and log; they just don't debit the consensus bond.
 		return ledgerSystem.LedgerResult{Ok: false, Msg: "safety slashing disabled"}
 	}
