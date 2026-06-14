@@ -312,6 +312,8 @@ type PostingJsonKeys {
   t: String
   """Public key value."""
   key: String
+  """Base64 (raw-url) BLS proof-of-possession bound to the announcing Hive account. Lets ingesters confirm the witness controls the secret behind `key` (defeats rogue-key aggregate forgery). Empty for witnesses that announced before PoP support."""
+  pop: String
 }
 
 """
