@@ -28,6 +28,26 @@ type SystemConfig interface {
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
 	TrustedForwarders() []string
+	// TrustedForwardersGovernanceContractId returns the contract id of
+	// the on-chain governance contract that maintains the trusted-
+	// forwarders allow-list, or "" if not configured. When set AND
+	// the chain consensus version is at-or-above
+	// consensusversion.TrustedForwardersFromContractVersion, the state-
+	// engine reads the active list from that contract's state at tx
+	// execution time and unions it with the sysconfig list — letting
+	// trusted-forwarder management migrate from per-operator files
+	// onto governance-controlled state without invalidating the local
+	// kill-switch path.
+	TrustedForwardersGovernanceContractId() string
+	// RevokedForwarders is the operator-side kill-switch: contract ids
+	// listed here are SUBTRACTED from the union of sysconfig.
+	// TrustedForwarders + the governance contract's active list when
+	// the state-engine wires the per-tx execution context. Lets an
+	// operator locally revoke a forwarder without coordinating with
+	// the wider witness fleet — emergency-response surface when the
+	// governance contract is compromised. Subtract-only: this field
+	// can never ADD a forwarder, only remove one.
+	RevokedForwarders() []string
 	LoadOverrides(path string) error
 }
 
@@ -46,6 +66,17 @@ type config struct {
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
 	trustedForwarders            []string
+	// On-chain governance contract id for trusted-forwarders. Empty
+	// disables the contract-side path (sysconfig stays authoritative).
+	// Set per-network via DevnetConfig / TestnetConfig / MainnetConfig
+	// hard-defaults — or overridden via SysConfigOverrides for
+	// per-operator devnet flexibility.
+	trustedForwardersGovernanceContractId string
+	// Operator-side kill-switch for trusted-forwarders. Subtract-only:
+	// these entries are removed from the union of sysconfig +
+	// governance-contract lists before the state engine wires the
+	// execution context. Never adds.
+	revokedForwarders []string
 }
 
 func (c *config) OnMainnet() bool {
@@ -129,6 +160,24 @@ func (c *config) TrustedForwarders() []string {
 	return out
 }
 
+// TrustedForwardersGovernanceContractId returns the on-chain governance
+// contract id (or "" if not configured). See the interface doc for the
+// activation semantics.
+func (c *config) TrustedForwardersGovernanceContractId() string {
+	return c.trustedForwardersGovernanceContractId
+}
+
+// RevokedForwarders returns the local subtract-only kill-switch list.
+// Defensive copy so callers can't mutate the underlying config.
+func (c *config) RevokedForwarders() []string {
+	if len(c.revokedForwarders) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.revokedForwarders))
+	copy(out, c.revokedForwarders)
+	return out
+}
+
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
@@ -143,6 +192,16 @@ type SysConfigOverrides struct {
 	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
 	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
 	TrustedForwarders     *[]string               `json:"trustedForwarders,omitempty"`
+	// On-chain governance contract id (Phase 2 of the TrustedForwarders
+	// migration). Empty disables the governance-contract path —
+	// sysconfig stays the sole source. See
+	// docs/dash-is-login/trusted-forwarders-governance.md.
+	TrustedForwardersGovernanceContractId *string `json:"trustedForwardersGovernanceContractId,omitempty"`
+	// Operator-side subtract-only kill-switch — entries are removed
+	// from the union of TrustedForwarders + the governance contract's
+	// active list. Cannot add. Emergency-response surface for
+	// governance-contract compromise.
+	RevokedForwarders *[]string `json:"revokedForwarders,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -164,6 +223,8 @@ func (c *config) LoadOverrides(path string) error {
 		TssParams             json.RawMessage `json:"tssParams,omitempty"`
 		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
 		TrustedForwarders     *[]string       `json:"trustedForwarders,omitempty"`
+		TrustedForwardersGovernanceContractId *string `json:"trustedForwardersGovernanceContractId,omitempty"`
+		RevokedForwarders     *[]string       `json:"revokedForwarders,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -203,6 +264,12 @@ func (c *config) LoadOverrides(path string) error {
 	}
 	if raw.TrustedForwarders != nil {
 		c.trustedForwarders = append([]string(nil), (*raw.TrustedForwarders)...)
+	}
+	if raw.TrustedForwardersGovernanceContractId != nil {
+		c.trustedForwardersGovernanceContractId = *raw.TrustedForwardersGovernanceContractId
+	}
+	if raw.RevokedForwarders != nil {
+		c.revokedForwarders = append([]string(nil), (*raw.RevokedForwarders)...)
 	}
 	return nil
 }

@@ -158,14 +158,21 @@ func (t TxVscCallContract) ExecuteTx(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
 		// Audit `trusted-forwarders-not-wired-in-state-processing`: pass
-		// the active system-config's TrustedForwarders list so contracts
-		// can invoke contracts.call_as when called by one of these
-		// trusted-forwarder contract IDs (ERC-2771-style metadata).
-		// Without this, IsTrustedForwarder() returns false unconditionally
-		// and every call_as aborts. Propagation into nested calls is
-		// handled by ContractCall (NOT by CallAs, which preserves the
-		// per-frame privilege boundary).
-		contract_execution_context.WithTrustedForwarders(se.SystemConfig().TrustedForwarders()),
+		// the active trusted-forwarders allow-list so contracts can
+		// invoke contracts.call_as when called by one of these forwarder
+		// IDs (ERC-2771-style metadata).
+		//
+		// Below consensusversion.TrustedForwardersFromContractVersion
+		// this reads sysconfig only (legacy byte-identical path). At or
+		// above it, resolveTrustedForwarders returns the union of
+		// sysconfig + the governance contract's "active" state key,
+		// minus sysconfig.RevokedForwarders. See trusted_forwarders.go.
+		//
+		// Propagation into nested calls is handled by ContractCall (NOT
+		// by CallAs, which preserves the per-frame privilege boundary).
+		contract_execution_context.WithTrustedForwarders(
+			resolveTrustedForwarders(se, callSession, t.Self.BlockHeight),
+		),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
