@@ -332,6 +332,8 @@ type Witness {
   net_id: String
   """Libp2p peer ID of the witness."""
   peer_id: String
+  """Libp2p multiaddrs the witness most recently announced. Used by external services (e.g. the IS service's auto-discovery path) to bootstrap a gossipsub mesh with the active witness fleet without operator-side hardcoding. Empty for witnesses that haven't yet announced any peer addresses."""
+  peer_addrs: [String!]!
   """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
   """Major component of major.consensus.non_consensus."""

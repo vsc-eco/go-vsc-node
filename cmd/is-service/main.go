@@ -196,14 +196,45 @@ func main() {
 	// framing — both wirings shipped in the R15-fix run.
 	collector := newAttestationCollector()
 
-	// libp2p broadcaster — when -p2pBootstrapPeers is set, the IS
-	// service joins the islock-attestation gossip topic and uses real
-	// broadcast + response collection. Without it, the noop
-	// broadcaster is used (sessions stall at ATTESTING_TIMEOUT).
+	// libp2p broadcaster — chooses bootstrap peers from one of:
+	//   (1) -p2pBootstrapPeers CSV — explicit operator config; takes
+	//       precedence so tests / non-standard deploys can pin a custom
+	//       fleet.
+	//   (2) auto-discovery via L2 GraphQL — when (1) is empty AND
+	//       -l2GqlURL is set, query witnessNodes(height) and flat-map
+	//       the active fleet's peer_addrs. One-flag deploy with no
+	//       hardcoded witness list to drift; refreshes once per IS-
+	//       service restart against the on-chain announcement state.
+	// Without either, the noop broadcaster runs (sessions stall at
+	// ATTESTATION_TIMEOUT) — historically the dev / log-only mode.
 	var broadcaster Broadcaster = noopBroadcaster{}
 	var p2pCloseFn func() error
+	var boot []string
+	bootSource := ""
 	if args.p2pBootstrapPeers != "" {
-		boot := splitCSV(args.p2pBootstrapPeers)
+		boot = splitCSV(args.p2pBootstrapPeers)
+		bootSource = "operator-csv"
+	} else if args.l2GqlURL != "" {
+		// Future height (math.MaxUint64) so the witnessNodes resolver
+		// returns the latest-known announcement per account — matches
+		// the GQL semantics described in peer_discovery.go.
+		discoverCtx, cancelDiscover := context.WithTimeout(context.Background(), 15*time.Second)
+		discovered, derr := discoverBootstrapPeers(discoverCtx, args.l2GqlURL, ^uint64(0))
+		cancelDiscover()
+		if derr != nil {
+			slog.Error("auto-discover bootstrap peers from L2 failed — refusing to start",
+				"endpoint", sanitizeURLForLogWithFlag("-l2GqlURL", args.l2GqlURL),
+				"err", derr,
+				"hint", "set -p2pBootstrapPeers <csv> to bypass auto-discovery")
+			os.Exit(1)
+		}
+		boot = discovered
+		bootSource = "l2-witnessNodes-discovery"
+		slog.Info("auto-discovered bootstrap peers from L2",
+			"endpoint", sanitizeURLForLogWithFlag("-l2GqlURL", args.l2GqlURL),
+			"discoveredCount", len(boot))
+	}
+	if len(boot) > 0 {
 		listen := splitCSV(args.p2pListenAddrs)
 		topicPrefix := "/vsc/" + args.network // matches PubSubTopicPrefix
 		p2pBcast, err := newLibp2pBroadcaster(context.Background(), libp2pBroadcasterConfig{
@@ -213,7 +244,7 @@ func main() {
 			ListenAddrs:    listen,
 		})
 		if err != nil {
-			slog.Error("libp2p broadcaster failed to start", "err", err)
+			slog.Error("libp2p broadcaster failed to start", "err", err, "bootSource", bootSource)
 			os.Exit(1)
 		}
 		// Subscriber goroutine routes responses straight into the
@@ -225,9 +256,11 @@ func main() {
 		slog.Info("libp2p broadcaster started",
 			"topic", topicPrefix+"/islock-attestation/v1",
 			"bootstrapConnectedPeers", p2pBcast.BootstrapConnectedCount(),
-			"configuredPeers", len(boot))
+			"configuredPeers", len(boot),
+			"bootSource", bootSource)
 	} else {
-		slog.Info("libp2p broadcaster NOT configured — using noop (no attestations gathered)")
+		slog.Info("libp2p broadcaster NOT configured — using noop (no attestations gathered)",
+			"hint", "set -p2pBootstrapPeers OR -l2GqlURL to enable real broadcast")
 	}
 
 	// L2 submitter — all-or-nothing on the trio. Partial configs are a
