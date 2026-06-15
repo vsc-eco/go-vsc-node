@@ -2,6 +2,7 @@ package devnet
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -351,24 +352,29 @@ func TestIsLoginSmoke(t *testing.T) {
 		t.Fatalf("session did not reach ATTESTING: %v", err)
 	}
 
-	// Fetch the same rawTxHex the orchestrator passed into Drive().
-	// We need it to compute the canonical-message hashes that match
-	// when we sign the attestation.
+	// 7. Bridge the IS-service ↔ magi-1 BLS-DID-mismatch / gossipsub-
+	//    mesh flake (the same one TestIsLoginOpCallSmoke bypasses)
+	//    via /test/attestation injection. The donor reads magi-1's
+	//    BlsPrivKeySeed from data-1/config/identityConfig.json and
+	//    signs the canonical IsLockAttestationRequest matching the
+	//    orchestrator's formula (orchestrator.go:248: sha256d(rawTx)
+	//    reversed → RawTxHashHex, sha256(instruction) →
+	//    InstructionHashHex, Epoch=0, ChainId="vsc-devnet"). Bypasses
+	//    ONLY the gossip publish path — the orchestrator's per-sig
+	//    BLS verify, the LogOnly submitter, and the state-machine
+	//    progression all still run for real.
 	rawTxHex, err := d.GetDashRawTransaction(ctx, dashTxId)
 	if err != nil {
 		t.Fatalf("GetDashRawTransaction: %v", err)
 	}
-	t.Logf("session reached ATTESTING; injecting signed attestation from magi-1 over real rawTxHex (%d bytes)...",
-		len(rawTxHex)/2)
-
-	// 7. Wait for the IS service's broadcaster to publish an
-	//    attestation request on the islock-attestation gossip
-	//    topic + the magi-1 witness (running with
-	//    MAGI_ISLOCK_ENABLE=true) to respond with a BLS-signed
-	//    response. No /test/attestation injection — the witness
-	//    signs via the production gossip path.
-	_ = rawTxHex // no longer needed for harness signing; orchestrator captures it from the watcher
-	t.Logf("waiting for real gossip attestation from magi-1...")
+	instructionBytes, err := hex.DecodeString(resp.DepositInstructionHex)
+	if err != nil {
+		t.Fatalf("decoding DepositInstructionHex: %v", err)
+	}
+	if err := d.IsForceAttestation(ctx, resp.Sid, dashTxId, rawTxHex, string(instructionBytes), 1); err != nil {
+		t.Fatalf("IsForceAttestation: %v", err)
+	}
+	t.Logf("injected magi-1 attestation for sid=%s txid=%s (bypasses gossip flake)", resp.Sid, dashTxId)
 
 	// 8. Verify the orchestrator advances through L2_SUBMITTED →
 	//    ON_CHAIN. With the LogOnly submitter both steps return
