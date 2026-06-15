@@ -27,27 +27,22 @@ type SystemConfig interface {
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
-	TrustedForwarders() []string
-	// TrustedForwardersGovernanceContractId returns the contract id of
-	// the on-chain governance contract that maintains the trusted-
-	// forwarders allow-list, or "" if not configured. When set AND
-	// the chain consensus version is at-or-above
-	// consensusversion.TrustedForwardersFromContractVersion, the state-
-	// engine reads the active list from that contract's state at tx
-	// execution time and unions it with the sysconfig list — letting
-	// trusted-forwarder management migrate from per-operator files
-	// onto governance-controlled state without invalidating the local
-	// kill-switch path.
-	TrustedForwardersGovernanceContractId() string
-	// RevokedForwarders is the operator-side kill-switch: contract ids
-	// listed here are SUBTRACTED from the union of sysconfig.
-	// TrustedForwarders + the governance contract's active list when
-	// the state-engine wires the per-tx execution context. Lets an
-	// operator locally revoke a forwarder without coordinating with
-	// the wider witness fleet — emergency-response surface when the
-	// governance contract is compromised. Subtract-only: this field
-	// can never ADD a forwarder, only remove one.
-	RevokedForwarders() []string
+	// DashMappingContractId returns the contract id of the dash-mapping-
+	// contract this network treats as the IS-login feature root.
+	//
+	// The dash-mapping-contract holds the trusted dash-forwarder-contract
+	// id at its "forwarder" state key (set once via setForwarderContractId,
+	// locked thereafter). When magi's state engine wires per-tx execution
+	// contexts, it reads that key and uses its value (with a "contract:"
+	// prefix) as the single-entry trusted-forwarders list. Changing the
+	// trusted forwarder requires updating the dash-mapping-contract via
+	// vsc.update_contract — which goes through the network-baked
+	// ContractUpdateTimelockBlocks window so witnesses + community have
+	// time to review the diff.
+	//
+	// Empty disables the Dash IS-login feature on this network (the
+	// trusted-forwarders list is empty → call_as aborts unconditionally).
+	DashMappingContractId() string
 	LoadOverrides(path string) error
 }
 
@@ -65,18 +60,11 @@ type config struct {
 	oracleParams                 params.OracleParams
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
-	trustedForwarders            []string
-	// On-chain governance contract id for trusted-forwarders. Empty
-	// disables the contract-side path (sysconfig stays authoritative).
-	// Set per-network via DevnetConfig / TestnetConfig / MainnetConfig
-	// hard-defaults — or overridden via SysConfigOverrides for
-	// per-operator devnet flexibility.
-	trustedForwardersGovernanceContractId string
-	// Operator-side kill-switch for trusted-forwarders. Subtract-only:
-	// these entries are removed from the union of sysconfig +
-	// governance-contract lists before the state engine wires the
-	// execution context. Never adds.
-	revokedForwarders []string
+	// dash-mapping-contract id, the feature root for Dash IS-login.
+	// Magi reads the "forwarder" state key from this contract to
+	// populate the trusted-forwarders allow-list for call_as gating.
+	// Empty disables the feature.
+	dashMappingContractId string
 }
 
 func (c *config) OnMainnet() bool {
@@ -142,40 +130,12 @@ func (c *config) PendulumPoolWhitelist() []string {
 	return out
 }
 
-// TrustedForwarders returns the per-network list of contract IDs that are
-// allowed to invoke the WASM `call_as` host function — i.e. set the
-// effectiveCaller of an outbound contract call to an arbitrary DID. This is
-// a protocol-level privilege gate analogous to ERC-2771's trusted-forwarder
-// list. Currently used by dash-forwarder-contract for the Dash InstantSend
-// login feature; can be extended to ltc/bch/doge forwarders later.
-//
-// Empty list (the default on networks that don't deploy the feature) means
-// `call_as` is unreachable — no contract can spoof effectiveCaller.
-func (c *config) TrustedForwarders() []string {
-	if len(c.trustedForwarders) == 0 {
-		return nil
-	}
-	out := make([]string, len(c.trustedForwarders))
-	copy(out, c.trustedForwarders)
-	return out
-}
-
-// TrustedForwardersGovernanceContractId returns the on-chain governance
-// contract id (or "" if not configured). See the interface doc for the
-// activation semantics.
-func (c *config) TrustedForwardersGovernanceContractId() string {
-	return c.trustedForwardersGovernanceContractId
-}
-
-// RevokedForwarders returns the local subtract-only kill-switch list.
-// Defensive copy so callers can't mutate the underlying config.
-func (c *config) RevokedForwarders() []string {
-	if len(c.revokedForwarders) == 0 {
-		return nil
-	}
-	out := make([]string, len(c.revokedForwarders))
-	copy(out, c.revokedForwarders)
-	return out
+// DashMappingContractId returns the dash-mapping-contract id for this
+// network, or "" if Dash IS-login isn't deployed. Magi reads the
+// "forwarder" state key from that contract to populate the trusted-
+// forwarders allow-list at tx-execution time.
+func (c *config) DashMappingContractId() string {
+	return c.dashMappingContractId
 }
 
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
@@ -191,17 +151,10 @@ type SysConfigOverrides struct {
 	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
 	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
 	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
-	TrustedForwarders     *[]string               `json:"trustedForwarders,omitempty"`
-	// On-chain governance contract id (Phase 2 of the TrustedForwarders
-	// migration). Empty disables the governance-contract path —
-	// sysconfig stays the sole source. See
-	// docs/dash-is-login/trusted-forwarders-governance.md.
-	TrustedForwardersGovernanceContractId *string `json:"trustedForwardersGovernanceContractId,omitempty"`
-	// Operator-side subtract-only kill-switch — entries are removed
-	// from the union of TrustedForwarders + the governance contract's
-	// active list. Cannot add. Emergency-response surface for
-	// governance-contract compromise.
-	RevokedForwarders *[]string `json:"revokedForwarders,omitempty"`
+	// Dash IS-login feature root — the dash-mapping-contract id. Magi
+	// reads "forwarder" state key from it at tx execution time. Empty
+	// disables the feature.
+	DashMappingContractId *string `json:"dashMappingContractId,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -221,10 +174,8 @@ func (c *config) LoadOverrides(path string) error {
 		ConsensusParams       json.RawMessage `json:"consensusParams,omitempty"`
 		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
 		TssParams             json.RawMessage `json:"tssParams,omitempty"`
-		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
-		TrustedForwarders     *[]string       `json:"trustedForwarders,omitempty"`
-		TrustedForwardersGovernanceContractId *string `json:"trustedForwardersGovernanceContractId,omitempty"`
-		RevokedForwarders     *[]string       `json:"revokedForwarders,omitempty"`
+		PendulumPoolWhitelist *[]string `json:"pendulumPoolWhitelist,omitempty"`
+		DashMappingContractId *string   `json:"dashMappingContractId,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -262,14 +213,8 @@ func (c *config) LoadOverrides(path string) error {
 	if raw.PendulumPoolWhitelist != nil {
 		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
 	}
-	if raw.TrustedForwarders != nil {
-		c.trustedForwarders = append([]string(nil), (*raw.TrustedForwarders)...)
-	}
-	if raw.TrustedForwardersGovernanceContractId != nil {
-		c.trustedForwardersGovernanceContractId = *raw.TrustedForwardersGovernanceContractId
-	}
-	if raw.RevokedForwarders != nil {
-		c.revokedForwarders = append([]string(nil), (*raw.RevokedForwarders)...)
+	if raw.DashMappingContractId != nil {
+		c.dashMappingContractId = *raw.DashMappingContractId
 	}
 	return nil
 }

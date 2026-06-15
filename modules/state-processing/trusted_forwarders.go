@@ -4,162 +4,72 @@ import (
 	"strings"
 
 	common_types "vsc-node/modules/common/common_types"
-	"vsc-node/modules/common/consensusversion"
 	contract_session "vsc-node/modules/contract/session"
 )
 
-// trustedForwardersActiveKey is the state key the governance-trusted-
-// forwarders contract uses for its active list. Stable on-chain
-// protocol surface; changing this requires a contract + magi release
-// in lockstep. Mirrors
-// governance-trusted-forwarders-contract/contract/constants.ActiveListKey.
-const trustedForwardersActiveKey = "active"
+// trustedForwarderStateKey is the dash-mapping-contract state key that
+// names the trusted dash-forwarder-contract id. Set once via the
+// mapping's setForwarderContractId action and locked thereafter ("pause
+// + clear required to change"). To change in production: update the
+// dash-mapping-contract via vsc.update_contract, which goes through the
+// network-baked ContractUpdateTimelockBlocks window.
+//
+// MUST match
+// utxo-mapping/dash-mapping-contract/contract/constants.ForwarderContractIdStateKey.
+const trustedForwarderStateKey = "forwarder"
 
-// trustedForwardersEntryDelim must match the contract's
-// constants.EntryDelim. Pipe is the protocol-canonical delimiter.
-const trustedForwardersEntryDelim = "|"
-
-// resolveTrustedForwarders computes the per-tx trusted-forwarders allow-
-// list seen by the execution context for a single tx execution. Three
-// inputs are folded:
+// resolveTrustedForwarders returns the trusted-forwarders allow-list
+// magi's execution context honours for call_as gating, for a single tx
+// execution. The list has at most one entry: the dash-forwarder-
+// contract id named in the dash-mapping-contract's "forwarder" state
+// key, prefixed with "contract:" so it matches the
+// `"contract:" + ctx.env.ContractId` check inside IsTrustedForwarder().
 //
-//  1. sysconfig.TrustedForwarders — legacy per-witness file (the only
-//     source pre-activation). Stays authoritative for backwards-compat
-//     and for emergency-ADD scenarios where the governance contract
-//     can't be reached.
+// Resolution:
 //
-//  2. The governance contract's "active" state key — when the consensus
-//     version is at-or-above
-//     consensusversion.TrustedForwardersFromContractVersion AND
-//     sysconfig.TrustedForwardersGovernanceContractId() is non-empty.
-//     Read directly via callSession.GetStateStore(<governance-id>).Get
-//     (no contract call — just a state read), so the per-tx cost is one
-//     additional state lookup regardless of active-list size.
+//  1. sysconfig.DashMappingContractId() — the dash-mapping-contract id
+//     for this network. Empty → no Dash IS-login feature on this
+//     network → empty trusted-forwarders → call_as aborts. Safe default.
 //
-//  3. sysconfig.RevokedForwarders — subtract-only kill-switch. Entries
-//     here are removed from the union of (1) and (2). Lets an operator
-//     locally veto a forwarder during a compromise without
-//     coordinating with the rest of the witness fleet.
+//  2. callSession.GetStateStore(mappingId).Get("forwarder") — one
+//     StateGetObject. Empty / missing → mapping was deployed but the
+//     admin hasn't yet wired the forwarder via setForwarderContractId
+//     → call_as still aborts. Safe default.
 //
-// Pre-activation (consensus version below
-// TrustedForwardersFromContractVersion) the function returns sysconfig.
-// TrustedForwarders exactly — byte-identical to the previous
-// implementation so binaries can roll forward independent of the
-// consensus version flip.
+//  3. Trim + prefix with "contract:" so the magi-side
+//     IsTrustedForwarder() string-compares directly.
 //
-// Output is always deduped (sysconfig + governance lists can overlap
-// during the migration window; magi treats duplicates as harmless
-// since IsTrustedForwarder() does linear scan, but downstream
-// observability is cleaner with a unique list).
+// To change the trusted forwarder on a live network the operator-of-
+// record runs vsc.update_contract on the dash-mapping-contract — the
+// existing contract-update governance (single admin key, 48h timelock,
+// community-visible diff during the window) is also the trusted-
+// forwarder governance. No separate admin surface.
+//
+// Operators retain local emergency response by setting sysconfig.
+// DashMappingContractId to "" on their node — that node refuses every
+// call_as via the mapping, falling out of consensus until the operator
+// re-enables it. Coarser than the previous RevokedForwarders kill-
+// switch but matches the simpler one-source design.
 func resolveTrustedForwarders(
 	se common_types.StateEngine,
 	callSession *contract_session.CallSession,
 	blockHeight uint64,
 ) []string {
-	sc := se.SystemConfig()
-
-	// Pre-activation: byte-identical to the legacy path. Single point
-	// of truth at this gate so the rest of the function never runs
-	// pre-activation.
-	if !se.ActiveConsensusVersion(blockHeight).MeetsConsensusMin(
-		consensusversion.TrustedForwardersFromContractVersion,
-	) {
-		return sc.TrustedForwarders()
-	}
-
-	// Activation reached. Pull the governance contract's active list
-	// (one StateGetObject) if a contract id is configured.
-	var fromContract []string
-	if govId := sc.TrustedForwardersGovernanceContractId(); govId != "" {
-		fromContract = readGovernanceActiveList(callSession, govId)
-	}
-
-	return mergeTrustedForwarders(
-		sc.TrustedForwarders(),
-		fromContract,
-		sc.RevokedForwarders(),
-	)
-}
-
-// mergeTrustedForwarders is the pure side of resolveTrustedForwarders:
-// given sysconfig, governance, and revoke lists, returns the effective
-// allow-list. Extracted as a separate function so the union+revoke
-// semantics can be unit-tested without a real CallSession + state
-// engine + DB. resolveTrustedForwarders's only contribution on top is
-// the consensus-version gate + the live state read.
-//
-// Semantics:
-//   - Union (sysconfigList, contractList) — deduplicated. Either side
-//     can ADD an entry to the effective list.
-//   - Subtract revokedList. Strictly removes; never adds. An entry in
-//     revokedList that isn't in the union is a no-op (silent — local
-//     kill-switch should never error just because a forwarder hasn't
-//     been added yet).
-//
-// Allocation: O(union size); revokedList is small enough that
-// indexing it into a set is a one-off win even at length 1.
-func mergeTrustedForwarders(sysconfigList, contractList, revokedList []string) []string {
-	if len(sysconfigList)+len(contractList) == 0 {
+	mappingId := se.SystemConfig().DashMappingContractId()
+	if mappingId == "" {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(sysconfigList)+len(contractList))
-	union := make([]string, 0, len(sysconfigList)+len(contractList))
-	for _, e := range sysconfigList {
-		if _, ok := seen[e]; ok {
-			continue
-		}
-		seen[e] = struct{}{}
-		union = append(union, e)
-	}
-	for _, e := range contractList {
-		if _, ok := seen[e]; ok {
-			continue
-		}
-		seen[e] = struct{}{}
-		union = append(union, e)
-	}
-
-	if len(revokedList) == 0 {
-		return union
-	}
-	revokedSet := make(map[string]struct{}, len(revokedList))
-	for _, r := range revokedList {
-		revokedSet[r] = struct{}{}
-	}
-	out := union[:0] // safe to alias — never grows
-	for _, e := range union {
-		if _, banned := revokedSet[e]; banned {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
-
-// readGovernanceActiveList does the single state-key read against the
-// governance contract. Empty / missing key → empty list (safe-default).
-// Splits on the contract's documented delim; rejects empty fragments
-// that would otherwise round-trip as the empty string match.
-func readGovernanceActiveList(
-	callSession *contract_session.CallSession,
-	govContractId string,
-) []string {
-	ss := callSession.GetStateStore(govContractId)
+	ss := callSession.GetStateStore(mappingId)
 	if ss == nil {
 		return nil
 	}
-	raw := ss.Get(trustedForwardersActiveKey)
+	raw := ss.Get(trustedForwarderStateKey)
 	if len(raw) == 0 {
 		return nil
 	}
-	parts := strings.Split(string(raw), trustedForwardersEntryDelim)
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
+	forwarderId := strings.TrimSpace(string(raw))
+	if forwarderId == "" {
+		return nil
 	}
-	return out
+	return []string{"contract:" + forwarderId}
 }

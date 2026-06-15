@@ -30,15 +30,9 @@ import (
 //     outcome + rolls back to a savepoint instead of trapping). Until the floor reaches
 //     0.2.0 the Try flag is IGNORED and a reverting callee traps as before, so old and
 //     new binaries stay byte-identical pre-activation. See TryCatchICCVersion.
-//   - 0.3.0 — trusted-forwarders moves from per-witness sysconfig to an on-chain
-//     governance contract. Above the floor the execution context reads the union of
-//     sysconfig.TrustedForwarders + the active list at sysconfig.
-//     TrustedForwardersGovernanceContractId, minus sysconfig.RevokedForwarders.
-//     Below the floor the governance-contract path is IGNORED and the sysconfig-only
-//     legacy path runs unchanged. See TrustedForwardersFromContractVersion.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 3
+	currentConsensus    uint64 = 2
 	currentNonConsensus uint64 = 0
 )
 
@@ -47,20 +41,6 @@ const (
 // it a Try call behaves exactly like a legacy call (a reverting callee traps the
 // caller), so activation is fully coordinated by the election version floor.
 var TryCatchICCVersion = Version{Major: 0, Consensus: 2, NonConsensus: 0}
-
-// TrustedForwardersFromContractVersion is the minimum chain-active consensus
-// version at which the state engine reads the trusted-forwarders allow-list
-// from the on-chain governance contract (in addition to sysconfig). Below it
-// only sysconfig.TrustedForwarders is honored — the governance contract's
-// state is maintained but not consulted by the execution context. Above it
-// the per-tx allow-list is computed as:
-//
-//	(sysconfig.TrustedForwarders ∪ governance.active) \ sysconfig.RevokedForwarders
-//
-// Pre-activation operators can already deploy + populate the governance
-// contract (it has no chain-side dependency on this constant); the activation
-// is purely about when magi switches the read path.
-var TrustedForwardersFromContractVersion = Version{Major: 0, Consensus: 3, NonConsensus: 0}
 
 // ParseComponent parses a numeric version-component string, defaulting to 0 when
 // empty/invalid. Retained for the announcement payload helper; the running version itself

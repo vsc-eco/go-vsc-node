@@ -115,11 +115,12 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 
 	// Initialise an empty SysConfigOverrides so the magi nodes are
 	// started with the `-sysconfig /data/devnet/sysconfig.json` flag
-	// (see tests/devnet/compose.go:107). The forwarder id is appended
-	// to TrustedForwarders AFTER deploy and the nodes are restarted to
-	// pick up the change. Without this initial setup the magi nodes
-	// would be started without -sysconfig + any later SetTrustedForwarders
-	// would write the JSON file but the running nodes wouldn't read it.
+	// (see tests/devnet/compose.go:107). The dash-mapping-contract id
+	// is set in sysconfig AFTER deploy + setForwarderContractId, and
+	// the nodes are restarted to pick up the change. Without this
+	// initial setup the magi nodes would be started without -sysconfig
+	// and any later SetDashMappingContractId would write the JSON file
+	// but the running nodes wouldn't read it.
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{}
 
 	d, err := New(cfg)
@@ -179,31 +180,34 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	}
 	t.Logf("call-tss deployed: %s", targetId)
 
-	// === Register forwarder as a trusted call_as caller + restart nodes ===
+	// === Wire mapping → forwarder + point sysconfig at the mapping ===
 	//
 	// The dash-forwarder-contract calls sdk.ContractCallAs(target, method,
 	// args, sender, opts) to dispatch op=call payments into the target
 	// contract with the Dash payer's DashDID as effectiveCaller (ERC-2771
-	// pattern). The WASM host's call_as is gated by
-	// system-config.TrustedForwarders — the calling contract's id MUST be
-	// in that list, otherwise the call aborts with:
-	//   err="sdk_error" errMsg="call_as: caller contract:<id> is not in
-	//                          system-config.TrustedForwarders"
+	// pattern). The WASM host's call_as is gated by an allow-list at
+	// system-config.TrustedForwarders — magi populates it for each tx
+	// by reading the dash-mapping-contract's "forwarder" state key (see
+	// modules/state-processing/trusted_forwarders.go).
 	//
-	// Magi nodes only read sysconfig at startup, so we register the
-	// just-deployed forwarder id + restart all magi nodes (~8-10s) before
-	// initialising the forwarder or starting the IS service.
-	// The IsTrustedForwarder check (execution-context.go:704-715)
-	// compares list entries against `"contract:" + ContractId`. So the
-	// JSON entries MUST be the prefixed form, NOT the bare vsc1... id.
-	// Pre-fix (just `forwarderId`) the comparison always missed, even
-	// after the magi-node restart picked up the new sysconfig.
-	if err := d.SetTrustedForwarders([]string{"contract:" + forwarderId}); err != nil {
-		t.Fatalf("SetTrustedForwarders: %v", err)
+	// So the sequence is:
+	//   1. mapping.setForwarderContractId(forwarderId) — pins the
+	//      "forwarder" state key in the mapping contract. The state key
+	//      is read by magi at every TxVscCallContract.ExecuteTx; the
+	//      lock-on-first-set behaviour in the contract means this can
+	//      only be set once (re-init requires pause + clear).
+	//   2. SetDashMappingContractId(mappingId) — tells magi WHICH
+	//      contract to read the "forwarder" key from. Sysconfig-side
+	//      pointer; if not set, the trusted-forwarders list is empty
+	//      and every call_as aborts.
+	//   3. RestartAllMagiNodes — magi only re-reads sysconfig at
+	//      startup, so the pointer change requires a restart.
+	if _, err := d.CallContract(ctx, 1, mappingId, "setForwarderContractId", forwarderId); err != nil {
+		t.Fatalf("setForwarderContractId: %v", err)
 	}
-	// Sanity-check: read back the sysconfig.json that the magi nodes
-	// will see on restart. Confirms the SetTrustedForwarders write
-	// landed on the correct path with the expected JSON.
+	if err := d.SetDashMappingContractId(mappingId); err != nil {
+		t.Fatalf("SetDashMappingContractId: %v", err)
+	}
 	sysconfigPath := filepath.Join(d.DataDir(), "devnet-data", "sysconfig.json")
 	if sysconfigBytes, rerr := os.ReadFile(sysconfigPath); rerr == nil {
 		t.Logf("sysconfig.json (path=%s) post-Set contents:\n%s",
@@ -211,13 +215,14 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	} else {
 		t.Logf("sysconfig.json readback failed at %s: %v", sysconfigPath, rerr)
 	}
-	t.Logf("set TrustedForwarders=[%s]; restarting magi nodes...", forwarderId)
+	t.Logf("set DashMappingContractId=%s (forwarder state-key pinned to %s); restarting magi nodes...",
+		mappingId, forwarderId)
 	if err := d.RestartAllMagiNodes(ctx); err != nil {
 		t.Fatalf("RestartAllMagiNodes: %v", err)
 	}
 	// Confirm the bind-mounted sysconfig.json is visible from INSIDE the
 	// magi-1 container after the force-recreate. If the inside-container
-	// content shows the trustedForwarders entry, the host write
+	// content shows the dashMappingContractId entry, the host write
 	// propagated correctly and any further "not in TrustedForwarders"
 	// failure is a magid-internal reload bug. If the inside-container
 	// content is stale, the bind mount has a write-propagation issue.
@@ -283,14 +288,11 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		t.Fatalf("registerPublicKey: %v", err)
 	}
 
-	// setForwarderContractId — pins the just-deployed forwarder as
-	// the trusted dispatcher.
-	if _, err := d.CallContract(ctx, 1, mappingId, "setForwarderContractId", forwarderId); err != nil {
-		t.Fatalf("setForwarderContractId: %v", err)
-	}
-
 	// setAllowedTargetImmediate — testnet-only shortcut around the
-	// 7-day allowlist timelock (commit 7188e11 enabler).
+	// 7-day allowlist timelock (commit 7188e11 enabler). (Note:
+	// setForwarderContractId was already called pre-restart so the
+	// "forwarder" state key is populated before magi starts reading
+	// it.)
 	if _, err := d.CallContract(ctx, 1, mappingId, "setAllowedTargetImmediate", targetId); err != nil {
 		t.Fatalf("setAllowedTargetImmediate: %v", err)
 	}

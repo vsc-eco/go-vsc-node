@@ -114,32 +114,32 @@ func (d *Devnet) WriteOracleConfigsForHost(ctx context.Context, rpcHost string) 
 	return nil
 }
 
-// SetTrustedForwarders updates the SysConfigOverrides JSON file in-place
-// to set the TrustedForwarders list — contract IDs that may invoke the
-// WASM `call_as` host function (i.e. set effectiveCaller to an arbitrary
-// DID). Required for the dash-forwarder-contract to call into op=call
-// target contracts on behalf of the Dash payer's DashDID.
+// SetDashMappingContractId updates the SysConfigOverrides JSON file
+// in-place to set the dash-mapping-contract id — the IS-login feature
+// root for this network. Magi reads the "forwarder" state key from
+// that contract at tx execution time to populate the trusted-
+// forwarders allow-list (the one-and-only entry that may invoke the
+// WASM `call_as` host function for setting effectiveCaller to an
+// arbitrary DID).
 //
-// Magi nodes only re-read the sysconfig file at startup, so callers must
-// restart the nodes for the change to take effect. Same flow as
-// SetOracleContractIDs:
+// Magi nodes only re-read the sysconfig file at startup, so callers
+// must restart the nodes for the change to take effect:
 //
-//	forwarderId, _ := d.DeployContract(ctx, ...)
-//	_ = d.SetTrustedForwarders([]string{forwarderId})
+//	mappingId, _ := d.DeployContract(ctx, ...)
+//	_ = d.CallContract(ctx, 1, mappingId, "setForwarderContractId", forwarderId)
+//	_ = d.SetDashMappingContractId(mappingId)
 //	_ = d.RestartAllMagiNodes(ctx)
 //
-// Without this, sdk.ContractCallAs from the forwarder aborts with
+// Without this, magi's state engine sees an empty DashMappingContractId
+// → empty trusted-forwarders → every call_as aborts with
 // `errMsg="call_as: caller contract:<id> is not in system-config.
-// TrustedForwarders"` (see system-config.go's TrustedForwarders comment
-// for the ERC-2771 analogy).
-func (d *Devnet) SetTrustedForwarders(contractIds []string) error {
+// TrustedForwarders"`.
+func (d *Devnet) SetDashMappingContractId(mappingId string) error {
 	if d.cfg.SysConfigOverrides == nil {
 		d.cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{}
 	}
-	// Copy so callers' slice isn't aliased into devnet config.
-	cp := make([]string, len(contractIds))
-	copy(cp, contractIds)
-	d.cfg.SysConfigOverrides.TrustedForwarders = &cp
+	cp := mappingId
+	d.cfg.SysConfigOverrides.DashMappingContractId = &cp
 	return writeSysConfigOverrides(d.cfg, d.devnetDir)
 }
 
@@ -169,7 +169,7 @@ func (d *Devnet) SetOracleContractIDs(contractIds map[string]string) error {
 
 // RestartAllMagiNodes recreates every magi-N container so they re-read
 // their config files. Useful after SetOracleContractIDs /
-// SetTrustedForwarders.
+// SetDashMappingContractId.
 //
 // Uses `docker compose up -d --force-recreate` rather than stop+start
 // because `start` after `stop` keeps the SAME container instance, and

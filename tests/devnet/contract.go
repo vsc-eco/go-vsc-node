@@ -247,42 +247,6 @@ func DashMappingContractPath() (string, error) {
 	)
 }
 
-// GovernanceTrustedForwardersContractPath returns the absolute path to
-// the prebuilt governance-trusted-forwarders-contract WASM. Same env-
-// var > sibling-repo resolution order as DashMappingContractPath. Built
-// in utxo-mapping/governance-trusted-forwarders-contract via
-// `USE_DOCKER=1 make dev`.
-//
-// Uses dev.wasm (not testnet.wasm) because the contract has no per-
-// network behavioural divergence — testnet/dev wasms are byte-
-// equivalent on this contract's source; dev is the canonical CI
-// artifact, so prefer it for test stability.
-func GovernanceTrustedForwardersContractPath() (string, error) {
-	candidates := make([]string, 0, 2)
-	if p := os.Getenv("GOVERNANCE_TRUSTED_FORWARDERS_WASM_PATH"); p != "" {
-		candidates = append(candidates, p)
-	}
-	candidates = append(candidates,
-		filepath.Join(findSourceRoot(), "..", "utxo-mapping", "governance-trusted-forwarders-contract", "bin", "dev.wasm"),
-	)
-	for _, p := range candidates {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			continue
-		}
-		if info, err := os.Stat(abs); err == nil && !info.IsDir() && info.Size() > 0 {
-			return abs, nil
-		}
-	}
-	return "", fmt.Errorf(
-		"governance-trusted-forwarders-contract WASM not found. Tried: %v\n"+
-			"Build it first:\n"+
-			"  cd <utxo-mapping>/governance-trusted-forwarders-contract && USE_DOCKER=1 make dev\n"+
-			"Or set GOVERNANCE_TRUSTED_FORWARDERS_WASM_PATH to an absolute path.",
-		candidates,
-	)
-}
-
 func parseContractId(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)

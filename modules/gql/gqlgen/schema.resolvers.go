@@ -874,8 +874,24 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// simulate path matches real-execution semantics for
 			// contracts.call_as — audit
 			// `trusted-forwarders-not-wired-in-state-processing`.
+			//
+			// Read the dash-mapping-contract's "forwarder" state key
+			// (single-source-of-truth for the trusted-forwarders list)
+			// via the existing callSession. Same shape as
+			// state_engine.resolveTrustedForwarders but inlined here to
+			// avoid pulling the state-processing package into the gql
+			// resolver's import graph.
 			if sc := r.StateEngine.SystemConfig(); sc != nil {
-				ctxOpts = append(ctxOpts, contract_execution_context.WithTrustedForwarders(sc.TrustedForwarders()))
+				if mappingId := sc.DashMappingContractId(); mappingId != "" {
+					if ss := callSession.GetStateStore(mappingId); ss != nil {
+						if raw := ss.Get("forwarder"); len(raw) > 0 {
+							fwdId := strings.TrimSpace(string(raw))
+							if fwdId != "" {
+								ctxOpts = append(ctxOpts, contract_execution_context.WithTrustedForwarders([]string{"contract:" + fwdId}))
+							}
+						}
+					}
+				}
 			}
 		}
 		ctxValue := contract_execution_context.New(

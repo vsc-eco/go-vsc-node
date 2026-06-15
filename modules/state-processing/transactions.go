@@ -158,15 +158,15 @@ func (t TxVscCallContract) ExecuteTx(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
 		// Audit `trusted-forwarders-not-wired-in-state-processing`: pass
-		// the active trusted-forwarders allow-list so contracts can
-		// invoke contracts.call_as when called by one of these forwarder
-		// IDs (ERC-2771-style metadata).
+		// the trusted-forwarders allow-list so contracts can invoke
+		// contracts.call_as when called by one of these forwarder IDs
+		// (ERC-2771-style metadata).
 		//
-		// Below consensusversion.TrustedForwardersFromContractVersion
-		// this reads sysconfig only (legacy byte-identical path). At or
-		// above it, resolveTrustedForwarders returns the union of
-		// sysconfig + the governance contract's "active" state key,
-		// minus sysconfig.RevokedForwarders. See trusted_forwarders.go.
+		// resolveTrustedForwarders reads the dash-mapping-contract's
+		// "forwarder" state key — the contract names its own trusted
+		// forwarder, and that link is changed only through a
+		// vsc.update_contract on the mapping (which has its own
+		// network-baked timelock). See trusted_forwarders.go.
 		//
 		// Propagation into nested calls is handled by ContractCall (NOT
 		// by CallAs, which preserves the per-frame privilege boundary).
