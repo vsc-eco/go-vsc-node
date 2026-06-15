@@ -2,6 +2,7 @@ package devnet
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -202,7 +203,11 @@ func TestIsLoginValidatorSetRotation(t *testing.T) {
 
 	// === Round 1: V1 quorum (magi-1 + magi-2) ===
 	t.Log("=== Round 1: IS login against V1 = [magi-1, magi-2] ===")
-	runIsLogin(ctx, t, d, "round 1 (V1)")
+	// donorNode=1: inject the attestation signed by magi-1's BLS key.
+	// V1 = {magi-1, magi-2}, so magi-1's DID is in the registered
+	// validator set for epoch 0; the IS service's per-sig verifier
+	// accepts.
+	runIsLogin(ctx, t, d, "round 1 (V1)", 1)
 
 	// === Rotate: V2 = magi-3 + magi-4 ===
 	v2Payload, err := d.BuildValidatorSetPayload(0, []int{3, 4})
@@ -226,14 +231,14 @@ func TestIsLoginValidatorSetRotation(t *testing.T) {
 	}
 
 	// === Round 2: V2 quorum (magi-3 + magi-4) ===
-	// All 4 witnesses still respond on the gossip topic (each runs
-	// MAGI_ISLOCK_ENABLE=true + dashd-RPC poller). The IS service's
-	// per-sig filter must drop magi-1 + magi-2 (no longer in active
-	// set for epoch 0) and aggregate magi-3 + magi-4. If the cache
-	// failed to invalidate, the orchestrator would keep using V1 +
-	// drop magi-3 + magi-4 instead → ATTESTATION_TIMEOUT.
+	// donorNode=3: inject from magi-3's BLS key. If the validator-set
+	// rotation worked, magi-3 IS registered for epoch 0 in V2 and the
+	// IS service's per-sig verifier accepts the injected attestation.
+	// If the rotation failed (e.g. cache didn't invalidate, V2 didn't
+	// land in the contract state), the verifier rejects → quorum
+	// never reached → ATTESTATION_TIMEOUT.
 	t.Log("=== Round 2: IS login against V2 = [magi-3, magi-4] ===")
-	runIsLogin(ctx, t, d, "round 2 (V2)")
+	runIsLogin(ctx, t, d, "round 2 (V2)", 3)
 
 	t.Log("validator-set rotation devnet test PASSED")
 }
@@ -242,15 +247,22 @@ func TestIsLoginValidatorSetRotation(t *testing.T) {
 // L2_SUBMITTED/ON_CHAIN. Extracted into a helper so the rotation
 // test can run two consecutive rounds with different validator sets.
 //
+// Bypasses the IS-service ↔ magi gossip mesh via /test/attestation
+// injection (the same path TestIsLoginOpCallSmoke uses). donorNode
+// names which magi-N's BLS key signs the canonical attestation —
+// caller picks a node that's IN the currently-registered validator
+// set so the orchestrator's per-sig verifier accepts.
+//
 // Pre-conditions:
 //   - The dash-mapping-contract is deployed and the IS service is
 //     running against it.
 //   - The contract's active validator set + minAttestations are set
-//     to a quorum the test's 4 magi witnesses can satisfy.
+//     to a quorum the donorNode satisfies (typically minAttestations
+//     = 1 for tests).
 //
 // On any failure dumps the IS service logs before t.Fatalf so the
 // failure surface is visible without rerunning.
-func runIsLogin(ctx context.Context, t *testing.T, d *Devnet, label string) {
+func runIsLogin(ctx context.Context, t *testing.T, d *Devnet, label string, donorNode int) {
 	t.Helper()
 
 	resp, err := d.IsStartSession(ctx, IsSessionStartReq{Op: "auth"})
@@ -265,12 +277,37 @@ func runIsLogin(ctx context.Context, t *testing.T, d *Devnet, label string) {
 	}
 	t.Logf("[%s] dashd tx broadcast: %s", label, dashTxId)
 
+	// Wait for ATTESTING (orchestrator opens its collector Await
+	// keyed on dashTxId) before injecting — otherwise the injection
+	// drops because no awaiter exists yet.
+	if _, err := d.WaitForIsSessionState(ctx, resp.Sid,
+		[]string{"ATTESTING", "L2_SUBMITTED", "ON_CHAIN"},
+		60*time.Second); err != nil {
+		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
+			t.Logf("[%s] is-service logs (waiting for ATTESTING):\n%s", label, isLogs)
+		}
+		t.Fatalf("[%s] session did not reach ATTESTING: %v", label, err)
+	}
+
+	rawTxHex, err := d.GetDashRawTransaction(ctx, dashTxId)
+	if err != nil {
+		t.Fatalf("[%s] GetDashRawTransaction: %v", label, err)
+	}
+	instructionBytes, err := hex.DecodeString(resp.DepositInstructionHex)
+	if err != nil {
+		t.Fatalf("[%s] decoding DepositInstructionHex: %v", label, err)
+	}
+	if err := d.IsForceAttestation(ctx, resp.Sid, dashTxId, rawTxHex, string(instructionBytes), donorNode); err != nil {
+		t.Fatalf("[%s] IsForceAttestation(donor=magi-%d): %v", label, donorNode, err)
+	}
+	t.Logf("[%s] injected magi-%d attestation for sid=%s txid=%s", label, donorNode, resp.Sid, dashTxId)
+
 	final, err := d.WaitForIsSessionState(ctx, resp.Sid,
 		[]string{"L2_SUBMITTED", "ON_CHAIN"},
 		120*time.Second)
 	if err != nil {
 		if isLogs, lerr := d.IsServiceLogs(ctx); lerr == nil {
-			t.Logf("[%s] is-service logs:\n%s", label, isLogs)
+			t.Logf("[%s] is-service logs (post-injection):\n%s", label, isLogs)
 		}
 		t.Fatalf("[%s] session did not reach L2_SUBMITTED/ON_CHAIN: %v", label, err)
 	}
