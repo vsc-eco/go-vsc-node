@@ -72,6 +72,21 @@ func TryContractCall(contractId string, method string, payload string) *string {
 	return contractCall(&contractId, &method, &payload, &opts)
 }
 
+// ContractCallAs invokes contractId.method(payload) with effectiveCaller
+// set to the provided DID instead of the literal caller. The calling
+// contract MUST be in system-config.TrustedForwarders (gated by magi's
+// resolveTrustedForwarders reading the dash-mapping-contract's
+// "forwarder" state key) — otherwise the host aborts the call with
+// "call_as: caller contract:<id> is not in system-config.
+// TrustedForwarders".
+//
+// Used by tests that need to exercise the call_as gate without going
+// through the full IS-login attestation pipeline.
+func ContractCallAs(contractId string, method string, payload string, effectiveCaller string) *string {
+	opts := "{}"
+	return contractCallAs(&contractId, &method, &payload, &opts, &effectiveCaller)
+}
+
 func TssCreateKey(keyId string, algo string, epochs uint64) string {
 	if algo != "ecdsa" && algo != "eddsa" {
 		Abort("algo must be ecdsa or eddsa")
