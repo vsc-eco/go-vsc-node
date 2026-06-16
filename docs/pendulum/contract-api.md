@@ -165,5 +165,5 @@ The SDK itself is consensus-deterministic: it reads the snapshot at `block_heigh
 
 ## Open items the spec defers to the testnet plan
 
-- **LP minimum-floor cliff** (B12) — the SDK's `MinFractionBps` knob is currently 0; a future bump caps LP dilution at equilibrium. The contract surface is unchanged; only the SDK output `(new_X, new_Y)` shifts. No contract changes needed when the knob moves.
+- **LP minimum-floor** (B12) — IMPLEMENTED. The SDK caps the node fraction of every pendulum pot at `BpsScale − MinFractionBps`, including on the under-secured cliff, so liquidity providers always retain at least `MinFractionBps` of each pot. The knob defaults to `pendulum.DefaultLPFloorBps` (2500 bps = 25%, i.e. node share capped at 75%) and is gated on consensus `0.2.0` (`pendulum.LPFloorActivation`): below the activation line the floor is inert and splits are byte-identical to the pre-floor behavior. The contract surface is unchanged; only the SDK output `(new_X, new_Y)` shifts. Retune the floor by editing `DefaultLPFloorBps`; it ships inert until the chain activates `0.2.0`.
 - **Network-share asset of record** current design keeps the network cut native (output asset of each swap) and lets the claimer take a basket.

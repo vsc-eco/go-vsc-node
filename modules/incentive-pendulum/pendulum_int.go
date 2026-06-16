@@ -38,6 +38,13 @@ type SplitOutputsInt struct {
 //
 // where c = CliffSBps/BpsScale is the cliff ratio (see params.go). This is the
 // generalized PDF closed form; c = 1 recovers the original V ≥ E cliff.
+//
+// This is the raw (un-floored) reference split; it is consumed only by the
+// settlement split preview (settlement.CalculateSplitPreviewFixed) and tests.
+// The live swap-fee path (wasm.splitFractionsBps) caps the node fraction with
+// the LP minimum-floor (B12, see floor.go / MaxNodeShareBps); SplitInt is left
+// un-floored on purpose because the floor is an application-layer policy gated
+// on a consensus version that this pure helper has no height to resolve.
 func SplitInt(in SplitInputsInt) (SplitOutputsInt, bool) {
 	out := SplitOutputsInt{}
 

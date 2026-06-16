@@ -2766,6 +2766,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			effectiveStakeDen: 3,
 		},
 		func() []string { return sconf.PendulumPoolWhitelist() },
+		se.ActiveConsensusVersion, // gates the LP minimum-floor on consensus 0.2.0
 		pendulumCfg,
 	)
 
