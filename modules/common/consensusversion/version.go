@@ -25,11 +25,18 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
-//   - 0.2.0 — try/catch inter-contract calls (ICCallOptions.Try). The Consensus 1→2 bump
-//     gates the new contracts.call semantics (a caught revert returns a structured
-//     outcome + rolls back to a savepoint instead of trapping). Until the floor reaches
-//     0.2.0 the Try flag is IGNORED and a reverting callee traps as before, so old and
-//     new binaries stay byte-identical pre-activation. See TryCatchICCVersion.
+//   - 0.2.0 — the Consensus 1→2 bump gates TWO independent consensus changes, both
+//     activated together when the election floor reaches 0.2.0:
+//     (a) try/catch inter-contract calls (ICCallOptions.Try): a caught revert returns a
+//     structured outcome + rolls back to a savepoint instead of trapping. Until the
+//     floor reaches 0.2.0 the Try flag is IGNORED and a reverting callee traps as
+//     before. See TryCatchICCVersion.
+//     (b) pendulum LP minimum-floor (B12): the swap-fee split caps the node fraction at
+//     BpsScale − MinFractionBps (including on the under-secured cliff), so liquidity
+//     providers always retain a minimum share of every pot. Gated on this line via
+//     pendulum.LPFloorActivation.
+//     Until 0.2.0 is chain-active both behaviors are inert and splits/call semantics stay
+//     byte-identical to 0.1.0, so old and new binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
 	currentConsensus    uint64 = 2
@@ -69,8 +76,8 @@ func RunningVersion() Version {
 
 // Version is the canonical on-chain / wire representation.
 type Version struct {
-	Major         uint64 `json:"major" bson:"version_major,omitempty"`
-	Consensus     uint64 `json:"consensus" bson:"version_consensus,omitempty"`
+	Major        uint64 `json:"major"         bson:"version_major,omitempty"`
+	Consensus    uint64 `json:"consensus"     bson:"version_consensus,omitempty"`
 	NonConsensus uint64 `json:"non_consensus" bson:"version_non_consensus,omitempty"`
 }
 
@@ -139,4 +146,3 @@ func MaxComponentwise(a, b Version) Version {
 	}
 	return out
 }
-
