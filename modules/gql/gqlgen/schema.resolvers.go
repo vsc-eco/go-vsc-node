@@ -287,6 +287,22 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if err != nil {
 		return nil, err
 	}
+	// GetLastOutput returns a zero-valued ContractOutput (no error) for
+	// contracts that have never produced a state output — see
+	// modules/oracle/chain/chain_relay.go:381 for the "fresh contract"
+	// guard pattern. Without this branch, the empty StateMerkle string
+	// reaches cid.Parse and surfaces as the misleading
+	// "invalid cid: cid too short" GQL error — which made every test
+	// that polls a fresh contract's state look like a CID-decoding bug.
+	// Return a result map with each requested key mapped to nil, the
+	// same shape as the per-key not-found case below.
+	if output.StateMerkle == "" {
+		empty := make(map[string]interface{}, len(keys))
+		for _, key := range keys {
+			empty[key] = nil
+		}
+		return model.Map(empty), nil
+	}
 	cidz, err := cid.Parse(output.StateMerkle)
 	if err != nil {
 		return nil, err
