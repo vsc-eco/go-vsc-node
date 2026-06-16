@@ -78,13 +78,25 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
 	defer cancel()
 
-	mappingWasm, err := DashMappingContractPath()
-	if err != nil {
-		t.Fatalf("%v", err)
+	// op=call requires the regtest-gated `seedInternalHbd` and
+	// `setAllowedTargetImmediate` enablers. Both are present only in
+	// the `dev.wasm` build (NetworkMode=regtest); the stock
+	// `testnet.wasm` aborts them with `is regtest-only`. Beyond that
+	// the sibling `testnet/utxo-mapping/` checkout that
+	// DashMappingContractPath/DashForwarderContractPath default to is
+	// stale on this server (Jun 3) and lacks the SeedInternalHbd
+	// export entirely. Resolve to the dash_work feature builds via
+	// env var or the fixed sibling fallback before falling back to the
+	// default helpers.
+	mappingWasm := resolveDashWorkWasm("DASH_MAPPING_WASM_PATH",
+		"dash-mapping-contract", DashMappingContractPath)
+	forwarderWasm := resolveDashWorkWasm("DASH_FORWARDER_WASM_PATH",
+		"dash-forwarder-contract", DashForwarderContractPath)
+	if mappingWasm == "" {
+		t.Fatal("dash-mapping wasm could not be resolved")
 	}
-	forwarderWasm, err := DashForwarderContractPath()
-	if err != nil {
-		t.Fatalf("%v", err)
+	if forwarderWasm == "" {
+		t.Fatal("dash-forwarder wasm could not be resolved")
 	}
 	t.Logf("mapping wasm: %s", mappingWasm)
 	t.Logf("forwarder wasm: %s", forwarderWasm)
@@ -428,6 +440,71 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 		t.Fatal("ctx cancelled waiting for mesh")
 	}
 
+	// === Pre-warmup the sender DashDID + seed HBD before the real session ===
+	//
+	// Dispatch race fix (ported from TestIsLoginOpCall_TwoSequential):
+	// the previous flow fired seedInternalHbd AFTER the real SendDashTo,
+	// then raced the L2 seed-indexer against the IS-service's
+	// mapInstantSendV2 broadcast. When the seed lost the race,
+	// dispatchForward read zero HBD and short-circuited with
+	// StatusForwardFailedInsufficientRC — even though the seed L1 tx
+	// itself landed cleanly. The "WARN: seedInternalHbd not indexed
+	// within 60s" log line was the symptom.
+	//
+	// dashd regtest's sendtoaddress reuses the same funded address as
+	// input for subsequent sends, so the warmup tx (a tiny throwaway
+	// send to a fresh getnewaddress) locks in the wallet's coin-
+	// selection sender. We then resolve THAT did, seedInternalHbd
+	// against it, and poll until indexed BEFORE firing the real
+	// SendDashTo. By the time the orchestrator's mapInstantSendV2
+	// runs, the dispatchForward HBD pre-check sees the seed
+	// deterministically.
+	warmupAddr, err := d.dashCli(ctx, "getnewaddress")
+	if err != nil {
+		t.Fatalf("getnewaddress (warmup): %v", err)
+	}
+	warmupTxId, err := d.SendDashTo(ctx, warmupAddr, "0.00001")
+	if err != nil {
+		t.Fatalf("warmup SendDashTo: %v", err)
+	}
+	warmupSenderAddr, err := d.ResolveDashTxSenderAddress(ctx, warmupTxId)
+	if err != nil {
+		t.Fatalf("resolving warmup sender: %v", err)
+	}
+	walletDID := DashTestnetDIDFromAddress(warmupSenderAddr)
+	t.Logf("pre-warmup: wallet's coin-selection sender DID = %s", walletDID)
+
+	// 2000 milli-HBD ≫ 500-milli dispatchForward pre-check budget.
+	const seedAmountMilliHbd = 2000
+	seedHbdPayload := fmt.Sprintf("%s,%d", walletDID, seedAmountMilliHbd)
+	seedTxId, err := d.CallContract(ctx, 1, mappingId, "seedInternalHbd", seedHbdPayload)
+	if err != nil {
+		t.Fatalf("seedInternalHbd(warmup): %v", err)
+	}
+	t.Logf("seedInternalHbd broadcast for %s (L1 tx=%s); polling for L2 indexing...", walletDID, seedTxId)
+
+	seedKey := "a-hbd-" + walletDID
+	seedDeadline := time.Now().Add(60 * time.Second)
+	seedIndexed := false
+	for time.Now().Before(seedDeadline) {
+		bal, qerr := d.GetStateByKeysHex(ctx, 1, mappingId, []string{seedKey})
+		if qerr == nil && bal != nil {
+			if v, ok := bal[seedKey].(string); ok && v != "" {
+				t.Logf("seed indexed: %s=%s (hex) ✓", seedKey, v)
+				seedIndexed = true
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("ctx cancelled while polling seed-balance")
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if !seedIndexed {
+		t.Fatalf("warmup seed at %s did not index within 60s — dispatch would fail INSUFFICIENT_RC", seedKey)
+	}
+
 	// === /session/start with op=call ===
 	//
 	// call-tss's setString expects "key,value" raw bytes in the
@@ -461,64 +538,23 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	}
 	t.Logf("dashd tx: %s", dashTxId)
 
-	// === Pre-seed the sender DashDID's contract-internal HBD ===
-	//
-	// mapping.dispatchForward (spec §5.2.6) debits ~500 milli-HBD of
-	// RC-reimbursement from the SENDER's internal HBD balance BEFORE
-	// invoking the forwarder. A fresh DashDID — every first-time
-	// user — has zero internal HBD on the mapping contract, so the
-	// pre-check fails with StatusForwardFailedInsufficientRC and the
-	// forwarder dispatch never runs. In production the sender funds
-	// their internal HBD via a prior DASH→HBD swap; for this devnet
-	// test we use the regtest-only seedInternalHbd admin enabler
-	// (mapping main.go:seedInternalHbd, gated by IsRegtest(NetworkMode))
-	// to credit the DashDID directly. Both the dispatch HBD pre-check
-	// AND this seed enabler are absent on mainnet.
-	//
-	// We resolve the sender by walking back one hop through the
-	// dashd verbose RPC — dashd's wallet picks UTXO inputs from
-	// whichever wallet address has spendable coins. The DashDID is
-	// `did:pkh:bip122:<regtest genesis>:<first-input-address>`,
-	// matching the mapping contract's ResolveSenderDashDID derivation.
+	// Sanity: the real session's sender DID must match the warmup-
+	// learned walletDID — if dashd's coin-selection picked a different
+	// address for the real payment, our pre-seeded HBD wouldn't cover
+	// it and the dispatch would still flake. Fail loudly rather than
+	// silently regressing.
 	senderAddr, err := d.ResolveDashTxSenderAddress(ctx, dashTxId)
 	if err != nil {
 		t.Fatalf("resolving sender of dash tx %s: %v", dashTxId, err)
 	}
 	senderDID := DashTestnetDIDFromAddress(senderAddr)
-	t.Logf("sender DashDID: %s", senderDID)
-
-	// 2000 milli-HBD = 2 HBD — comfortably above the 500-milli
-	// dispatchForward pre-check budget so a future RC-cost bump
-	// doesn't make the test flaky.
-	const seedAmountMilliHbd = 2000
-	seedHbdPayload := fmt.Sprintf("%s,%d", senderDID, seedAmountMilliHbd)
-	seedTxId, err := d.CallContract(ctx, 1, mappingId, "seedInternalHbd", seedHbdPayload)
-	if err != nil {
-		t.Fatalf("seedInternalHbd(%s, %d): %v", senderDID, seedAmountMilliHbd, err)
+	if senderDID != walletDID {
+		t.Fatalf("real session sender DID %q differs from warmup-learned %q — dashd wallet coin-selection switched addresses; warmup-seed assumption invalid",
+			senderDID, walletDID)
 	}
-	t.Logf("seeded %d milli-HBD for sender DashDID (dispatchForward pre-check budget), L1 tx=%s",
-		seedAmountMilliHbd, seedTxId)
+	t.Logf("real-session sender DashDID: %s (matches pre-seeded walletDID ✓)", senderDID)
 
-	// CRITICAL ORDERING: the orchestrator's attestation Collect window
-	// is ~60s. Anything before it that delays the WaitForIsSessionState
-	// poll (e.g. blocking on seed-balance indexing for up to 90s) makes
-	// the session transition into ATTESTATION_TIMEOUT before we even
-	// start watching for ATTESTING — at which point /test/attestation
-	// injection drops because no Await is registered for the txid. So:
-	//   (a) FIRE seedInternalHbd as fire-and-forget (broadcast L1 only,
-	//       don't poll indexing). L1 + L2 streamer pipeline runs in
-	//       parallel with everything below.
-	//   (b) WaitForIsSessionState until ATTESTING — short timeout, so
-	//       any natural-gossip win is observed and we don't waste the
-	//       Collect window.
-	//   (c) Inject IsForceAttestation. This kicks the orchestrator out
-	//       of Collect immediately on quorum=1, so the L2 submitter
-	//       fires within seconds of the inject.
-	//   (d) THEN poll for L2_SUBMITTED, by which time the seed has
-	//       finished indexing (~10-15s from broadcast).
-	seedBalanceKey := "a-hbd-" + senderDID
-
-	// (b) Wait for the orchestrator to register an Await for our txid.
+	// Wait for the orchestrator to register an Await for our txid.
 	// The dashd watcher observed the tx (IS_OBSERVED) and the
 	// orchestrator immediately transitioned ATTESTING + opened the
 	// Collect window. 45s buffer covers slow watcher polls.
@@ -553,37 +589,9 @@ func TestIsLoginOpCallSmoke(t *testing.T) {
 	}
 	t.Logf("injected magi-1 attestation for sid=%s txid=%s", resp.Sid, dashTxId)
 
-	// (d) Poll for seed-balance indexing. By the time the L2 submitter
-	// has broadcast mapInstantSendV2 (~3-6s after injection) and the
-	// L2 streamer has picked it up (~3-6s more), the seed broadcast
-	// (which started ~30s ago) should be fully indexed.
-	const seedBalancePollTimeout = 60 * time.Second
-	seedBalanceDeadline := time.Now().Add(seedBalancePollTimeout)
-	seedBalanceIndexed := false
-	for time.Now().Before(seedBalanceDeadline) {
-		bal, qerr := d.GetStateByKeysHex(ctx, 1, mappingId, []string{seedBalanceKey})
-		if qerr == nil && bal != nil {
-			if v, ok := bal[seedBalanceKey].(string); ok && v != "" {
-				t.Logf("seed balance indexed at L2 GQL: %s=%s (hex)", seedBalanceKey, v)
-				seedBalanceIndexed = true
-				break
-			}
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("ctx cancelled while waiting for seed-balance indexing")
-		case <-time.After(3 * time.Second):
-		}
-	}
-	if !seedBalanceIndexed {
-		if status, terr := d.FindTransactionStatus(ctx, 1, seedTxId); terr == nil {
-			t.Logf("seed L1 tx status: %s", status)
-		}
-		if outs, oerr := d.FindContractOutputByInput(ctx, 1, seedTxId); oerr == nil {
-			t.Logf("seed contract-output records on miss: %+v", outs)
-		}
-		t.Logf("WARN: seedInternalHbd not indexed within %s — mapInstantSendV2 may still see InsufficientRC. Proceeding to surface any downstream errors.", seedBalancePollTimeout)
-	}
+	// Seed-balance indexing is no longer a race here — the warmup
+	// block pinned it BEFORE this session even started. Go straight
+	// to L2_SUBMITTED wait.
 
 	final, err := d.WaitForIsSessionState(ctx, resp.Sid,
 		[]string{"L2_SUBMITTED", "ON_CHAIN"},

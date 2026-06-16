@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -43,60 +42,23 @@ func TestIsLoginOpCall_TwoSequential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 22*time.Minute)
 	defer cancel()
 
-	// G requires seedInternalHbd, which is regtest-only in the
-	// dash-mapping-contract (main.go:455 — `if !IsRegtest(NetworkMode)
-	// abort`). The default testnet.wasm has NetworkMode=testnet and
-	// aborts; dev.wasm (NetworkMode=regtest) accepts the call. The
-	// two builds differ in only the 7-byte NetworkMode constant.
-	//
-	// On top of that, the sibling `testnet/utxo-mapping/` checkout
-	// (which findSourceRoot picks by default) is stale — it lacks
-	// the SeedInternalHbd export entirely. The dash-IS-login feature
-	// builds live in `testnet/dash_work/utxo-mapping/`, which has
-	// both regtest enablers + the call_as/BLS imports the testnet
-	// magi expects. Pin G to those builds explicitly via env var or
-	// the dash_work fallback below.
-	mappingWasm := ""
-	if envP := os.Getenv("DASH_MAPPING_WASM_PATH"); envP != "" {
-		mappingWasm = envP
-	} else {
-		devCandidate := filepath.Join(findSourceRoot(), "..", "dash_work", "utxo-mapping", "dash-mapping-contract", "bin", "dev.wasm")
-		abs, _ := filepath.Abs(devCandidate)
-		if info, err := os.Stat(abs); err == nil && !info.IsDir() && info.Size() > 0 {
-			mappingWasm = abs
-		}
-	}
+	// G requires seedInternalHbd + setAllowedTargetImmediate, both
+	// regtest-only in the dash-mapping-contract. The default
+	// testnet.wasm rejects them; only dev.wasm (NetworkMode=regtest)
+	// accepts. resolveDashWorkWasm (dash_work_wasm.go) picks dev.wasm
+	// from the feature-build clone in priority order:
+	// env var > dash_work/utxo-mapping/.../dev.wasm > default helper.
+	mappingWasm := resolveDashWorkWasm("DASH_MAPPING_WASM_PATH",
+		"dash-mapping-contract", DashMappingContractPath)
+	forwarderWasm := resolveDashWorkWasm("DASH_FORWARDER_WASM_PATH",
+		"dash-forwarder-contract", DashForwarderContractPath)
 	if mappingWasm == "" {
-		fallback, ferr := DashMappingContractPath()
-		if ferr != nil {
-			t.Fatalf("%v", ferr)
-		}
-		t.Logf("WARNING: dash_work dev.wasm mapping not found; falling back to %s (seedInternalHbd may abort)", fallback)
-		mappingWasm = fallback
-	}
-	t.Logf("using dash-mapping wasm: %s", mappingWasm)
-	// G's mapping wasm pins to the dash_work feature build (above);
-	// the forwarder wasm must match the same ABI. Same fallback chain:
-	// env var > dash_work dev.wasm > whatever DashForwarderContractPath
-	// finds.
-	forwarderWasm := ""
-	if envP := os.Getenv("DASH_FORWARDER_WASM_PATH"); envP != "" {
-		forwarderWasm = envP
-	} else {
-		devCandidate := filepath.Join(findSourceRoot(), "..", "dash_work", "utxo-mapping", "dash-forwarder-contract", "bin", "dev.wasm")
-		abs, _ := filepath.Abs(devCandidate)
-		if info, ferr := os.Stat(abs); ferr == nil && !info.IsDir() && info.Size() > 0 {
-			forwarderWasm = abs
-		}
+		t.Fatal("dash-mapping wasm could not be resolved")
 	}
 	if forwarderWasm == "" {
-		fallback, ferr := DashForwarderContractPath()
-		if ferr != nil {
-			t.Fatalf("%v", ferr)
-		}
-		t.Logf("WARNING: dash_work dev.wasm forwarder not found; falling back to %s", fallback)
-		forwarderWasm = fallback
+		t.Fatal("dash-forwarder wasm could not be resolved")
 	}
+	t.Logf("using dash-mapping wasm: %s", mappingWasm)
 	t.Logf("using dash-forwarder wasm: %s", forwarderWasm)
 	callTssWasm, err := BuildCallTssContract(ctx)
 	if err != nil {
