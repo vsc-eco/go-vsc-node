@@ -56,6 +56,7 @@ func newApplier(t *testing.T, geo pendulumoracle.GeometryOutputs, whitelist []st
 	a := New(
 		&stubGeometry{out: geo},
 		func() []string { return whitelist },
+		nil, // LP floor inert unless a test wires a consensus-version reader
 		Config{
 			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 			NetworkShareNum: 1,
@@ -435,14 +436,14 @@ func TestExacerbatesFromSnapshot(t *testing.T) {
 // wired state engine returns a clean error rather than panicking. Includes the
 // nil accrual callback case.
 func TestApplierConfiguredNilDeps(t *testing.T) {
-	a := New(nil, nil, DefaultConfig())
+	a := New(nil, nil, nil, DefaultConfig())
 	res := a.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), nil)
 	if !res.IsErr() {
 		t.Fatal("expected error from nil-dep applier")
 	}
 
 	// Configured applier but nil accrual callback also fails cleanly.
-	a2 := New(&stubGeometry{out: balancedGeometry()}, func() []string { return []string{"contract:pool-1"} }, DefaultConfig())
+	a2 := New(&stubGeometry{out: balancedGeometry()}, func() []string { return []string{"contract:pool-1"} }, nil, DefaultConfig())
 	res = a2.ApplySwapFees("contract:pool-1", "tx-1", 100, defaultArgs("hbd", "hive"), nil)
 	if !res.IsErr() {
 		t.Fatal("expected error when accrual callback is nil")

@@ -25,9 +25,15 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
+//   - 0.2.0 — pendulum LP minimum-floor (B12). The swap-fee split now caps the node
+//     fraction at BpsScale − MinFractionBps (including on the under-secured cliff), so
+//     liquidity providers always retain a minimum share of every pot. Gated on this line
+//     via pendulum.LPFloorActivation: while the chain-active version is still 0.1.0 the
+//     floor is inert and splits are byte-identical to 0.1.0, so the two interoperate until
+//     a vsc.propose_consensus_version activates 0.2.0.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 1
+	currentConsensus    uint64 = 2
 	currentNonConsensus uint64 = 0
 )
 

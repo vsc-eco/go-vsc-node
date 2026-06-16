@@ -343,6 +343,7 @@ func (ct *ContractTest) SetPendulumGeometry(out pendulumoracle.GeometryOutputs, 
 	ct.PendulumApplier = pendulumwasm.New(
 		stubGeometryReader{out: out},
 		func() []string { return whitelist },
+		nil, // no consensus-version reader → LP floor inert in contract tests
 		pendulumwasm.DefaultConfig(),
 	)
 }

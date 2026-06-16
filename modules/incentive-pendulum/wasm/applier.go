@@ -11,6 +11,7 @@ import (
 	"math/big"
 
 	"vsc-node/lib/intmath"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/contracts"
 	pendulum "vsc-node/modules/incentive-pendulum"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
@@ -34,24 +35,37 @@ type GeometryReader interface {
 // are picked up without re-construction).
 type WhitelistGetter func() []string
 
+// ConsensusVersionAt resolves the chain-active consensus version at a block
+// height — StateEngine.ActiveConsensusVersion in production, sourced purely
+// from the on-chain election so it is deterministic and replay-correct. When
+// nil the applier treats the chain as pre-activation, so the LP minimum-floor
+// stays inert (tests that don't exercise the floor pass nil).
+type ConsensusVersionAt func(blockHeight uint64) consensusversion.Version
+
 // Config is the per-network tuning the applier reads on every swap.
 type Config struct {
 	Stabilizer      pendulum.StabilizerParamsBps
 	NetworkShareNum int64 // 1 of 4 → 25% network share
 	NetworkShareDen int64
-	// MinFractionBps is the LP-side floor the plan parks behind a TODO. Zero
-	// means PDF behavior (no floor); leaving as a Config knob so we can dial
-	// it without code change once the team picks a value.
-	MinFractionBps int
+	// MinFractionBps is the LP minimum-floor (B12): the minimum fraction (bps;
+	// BpsScale = 100%) of every pendulum pot (CLP + protocol legs) that stays
+	// with liquidity providers. The node fraction is capped at
+	// BpsScale − MinFractionBps, including on the under-secured cliff. Enforced
+	// only from consensus pendulum.LPFloorActivation onward (see floor.go); 0
+	// disables it (historical PDF split).
+	MinFractionBps int64
 }
 
-// DefaultConfig returns the v1 testnet defaults: PDF stabilizer, 25% network
-// share, no LP floor. Override per-network via SystemConfig.
+// DefaultConfig returns the v1 defaults: PDF stabilizer, 25% network share, and
+// the pendulum.DefaultLPFloorBps LP minimum-floor (gated on consensus
+// pendulum.LPFloorActivation — inert until that line is chain-active). Override
+// per-network via SystemConfig.
 func DefaultConfig() Config {
 	return Config{
 		Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 		NetworkShareNum: 1,
 		NetworkShareDen: 4,
+		MinFractionBps:  pendulum.DefaultLPFloorBps,
 	}
 }
 
@@ -59,16 +73,18 @@ func DefaultConfig() Config {
 // It is stateless across calls — per-call ledger movement happens through the
 // AccrueNodeBucketFn the execution context supplies at call time.
 type Applier struct {
-	geometry  GeometryReader
-	whitelist WhitelistGetter
-	cfg       Config
+	geometry    GeometryReader
+	whitelist   WhitelistGetter
+	consensusAt ConsensusVersionAt
+	cfg         Config
 }
 
 // New constructs an Applier. Any nil dep produces an applier that always
 // returns ErrUnimplemented from ApplySwapFees, so the wasm runtime can call
-// without worrying about partial wiring.
-func New(geometry GeometryReader, whitelist WhitelistGetter, cfg Config) *Applier {
-	return &Applier{geometry: geometry, whitelist: whitelist, cfg: cfg}
+// without worrying about partial wiring. A nil consensusAt is permitted and
+// keeps the LP minimum-floor inert (pre-activation behavior).
+func New(geometry GeometryReader, whitelist WhitelistGetter, consensusAt ConsensusVersionAt, cfg Config) *Applier {
+	return &Applier{geometry: geometry, whitelist: whitelist, consensusAt: consensusAt, cfg: cfg}
 }
 
 // Sentinel errors. Wrapped with contracts.SDK_ERROR so the wasm runtime maps
@@ -239,7 +255,20 @@ func (a *Applier) ApplySwapFees(
 	pendulumProtocol := new(big.Int).Sub(totalProtocol, networkProtocol)
 
 	// 9. Split ratios from snapshot — closed form, integer math.
-	fNodeBps, fNodeProtocolBps := splitFractionsBps(T, V, E, P, sBps)
+	//
+	// LP minimum-floor (B12): cap the node fraction at BpsScale − MinFractionBps
+	// so LPs always retain at least MinFractionBps of every pot, including on the
+	// under-secured cliff. Gated on consensus pendulum.LPFloorActivation — below
+	// activation maxNodeBps stays BpsScale (no cap), so pre-upgrade blocks replay
+	// byte-identically and 0.1.0/0.2.0 nodes never fork on a swap. The
+	// active version is a pure function of the on-chain election at this height,
+	// so every node computes the identical gate.
+	maxNodeBps := int64(pendulum.BpsScale)
+	if a.cfg.MinFractionBps > 0 && a.consensusAt != nil &&
+		a.consensusAt(blockHeight).MeetsConsensusMin(pendulum.LPFloorActivation) {
+		maxNodeBps = pendulum.MaxNodeShareBps(a.cfg.MinFractionBps)
+	}
+	fNodeBps, fNodeProtocolBps := splitFractionsBps(T, V, E, P, sBps, maxNodeBps)
 
 	// 10. Per-pot splits (LP gets floor, node side gets residual for exact conservation).
 	scale := big.NewInt(pendulum.BpsScale)
@@ -388,13 +417,19 @@ func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
 // splitFractionsBps returns (f_node, f_node_protocol) as basis points. fNode
 // applies to the CLP pot; fNodeProtocol applies to the protocol+surplus pot
 // with §9 redirect cliffs at the safe-band edges (pendulum.RedirectLo/HiBps).
-func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
+//
+// maxNodeBps is the LP minimum-floor ceiling on the node fraction (B12): every
+// node-share return — the computed fraction, the §9 redirect-to-nodes edge, and
+// the under-secured / degenerate cliffs — is capped at it. The caller passes
+// BpsScale when the floor is inactive, so all caps become no-ops and the result
+// is byte-identical to the pre-floor split.
+func splitFractionsBps(T, V, E, P *big.Int, sBps int64, maxNodeBps int64) (int64, int64) {
 	scale := big.NewInt(pendulum.BpsScale)
 
 	cE := pendulum.CliffTimesE(E)
 	if V.Cmp(cE) >= 0 {
-		// Under-secured cliff: all to nodes.
-		return pendulum.BpsScale, pendulum.BpsScale
+		// Under-secured cliff: route to nodes, but never past the LP floor.
+		return maxNodeBps, maxNodeBps
 	}
 
 	// denom = T·V² + P·E·(c·E − V)
@@ -405,17 +440,17 @@ func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
 	peTerm.Mul(peTerm, cEMinusV)
 	denom := new(big.Int).Add(tvSquared, peTerm)
 	if denom.Sign() == 0 {
-		return pendulum.BpsScale, pendulum.BpsScale
+		return maxNodeBps, maxNodeBps
 	}
 
-	// f_node = T·V² / denom in bps.
+	// f_node = T·V² / denom in bps, capped at the LP-floor ceiling.
 	fNodeBig := intmath.MulDivFloor(tvSquared, scale, denom)
 	if !fNodeBig.IsInt64() {
-		return pendulum.BpsScale, pendulum.BpsScale
+		return maxNodeBps, maxNodeBps
 	}
 	fNode := fNodeBig.Int64()
-	if fNode > pendulum.BpsScale {
-		fNode = pendulum.BpsScale
+	if fNode > maxNodeBps {
+		fNode = maxNodeBps
 	}
 
 	// §9: protocol leg redirects to the rebalancing side past the safe band.
@@ -423,13 +458,13 @@ func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
 	// s>high" (which compensated the starved side and so *dampened*
 	// restoration): below RedirectLo liquidity is starved → fund LPs
 	// (fNodeProtocol=0) to attract it; above RedirectHi liquidity is in excess
-	// → route to nodes (fNodeProtocol=BpsScale) to shed it. Edges are the
-	// safe-band edges (params.go).
+	// → route to nodes (fNodeProtocol=maxNodeBps, i.e. BpsScale absent the LP
+	// floor) to shed it. Edges are the safe-band edges (params.go).
 	fNodeProtocol := fNode
 	if sBps < pendulum.RedirectLoBps {
 		fNodeProtocol = 0
 	} else if sBps > pendulum.RedirectHiBps {
-		fNodeProtocol = pendulum.BpsScale
+		fNodeProtocol = maxNodeBps
 	}
 	return fNode, fNodeProtocol
 }
