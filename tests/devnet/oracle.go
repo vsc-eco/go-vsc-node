@@ -114,6 +114,35 @@ func (d *Devnet) WriteOracleConfigsForHost(ctx context.Context, rpcHost string) 
 	return nil
 }
 
+// SetDashMappingContractId updates the SysConfigOverrides JSON file
+// in-place to set the dash-mapping-contract id — the IS-login feature
+// root for this network. Magi reads the "forwarder" state key from
+// that contract at tx execution time to populate the trusted-
+// forwarders allow-list (the one-and-only entry that may invoke the
+// WASM `call_as` host function for setting effectiveCaller to an
+// arbitrary DID).
+//
+// Magi nodes only re-read the sysconfig file at startup, so callers
+// must restart the nodes for the change to take effect:
+//
+//	mappingId, _ := d.DeployContract(ctx, ...)
+//	_ = d.CallContract(ctx, 1, mappingId, "setForwarderContractId", forwarderId)
+//	_ = d.SetDashMappingContractId(mappingId)
+//	_ = d.RestartAllMagiNodes(ctx)
+//
+// Without this, magi's state engine sees an empty DashMappingContractId
+// → empty trusted-forwarders → every call_as aborts with
+// `errMsg="call_as: caller contract:<id> is not in system-config.
+// TrustedForwarders"`.
+func (d *Devnet) SetDashMappingContractId(mappingId string) error {
+	if d.cfg.SysConfigOverrides == nil {
+		d.cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{}
+	}
+	cp := mappingId
+	d.cfg.SysConfigOverrides.DashMappingContractId = &cp
+	return writeSysConfigOverrides(d.cfg, d.devnetDir)
+}
+
 // SetOracleContractIDs updates the SysConfigOverrides JSON file in-place
 // to set OracleParams.ChainContracts to the provided map. Must be called
 // while the devnet is running. Magi nodes only re-read the sysconfig file
@@ -138,23 +167,30 @@ func (d *Devnet) SetOracleContractIDs(contractIds map[string]string) error {
 	return writeSysConfigOverrides(d.cfg, d.devnetDir)
 }
 
-// RestartAllMagiNodes stops every magi-N container then starts them again
-// so they re-read their config files. Useful after SetOracleContractIDs.
+// RestartAllMagiNodes recreates every magi-N container so they re-read
+// their config files. Useful after SetOracleContractIDs /
+// SetDashMappingContractId.
+//
+// Uses `docker compose up -d --force-recreate` rather than stop+start
+// because `start` after `stop` keeps the SAME container instance, and
+// in some cases the container's PID 1 may not fully re-exec — i.e. the
+// magid process keeps running with its initially-loaded sysconfig.
+// `up --force-recreate` destroys + recreates the container, guaranteeing
+// a fresh process that re-runs magid main() and calls LoadOverrides()
+// against the current sysconfig.json on disk.
 func (d *Devnet) RestartAllMagiNodes(ctx context.Context) error {
 	names := make([]string, d.cfg.Nodes)
 	for i := range names {
 		names[i] = fmt.Sprintf("magi-%d", i+1)
 	}
 
-	log.Printf("[devnet] restarting all magi nodes to pick up config changes...")
-	if err := d.compose(ctx, append([]string{"stop"}, names...)...); err != nil {
-		return fmt.Errorf("stopping magi nodes: %w", err)
-	}
-	if err := d.compose(ctx, append([]string{"start"}, names...)...); err != nil {
-		return fmt.Errorf("starting magi nodes: %w", err)
+	log.Printf("[devnet] recreating all magi nodes to pick up config changes...")
+	upArgs := append([]string{"up", "-d", "--force-recreate"}, names...)
+	if err := d.compose(ctx, upArgs...); err != nil {
+		return fmt.Errorf("recreating magi nodes: %w", err)
 	}
 
-	// Give nodes a moment to reconnect to peers.
-	time.Sleep(8 * time.Second)
+	// Give nodes a moment to reconnect to peers + re-form gossipsub mesh.
+	time.Sleep(15 * time.Second)
 	return nil
 }

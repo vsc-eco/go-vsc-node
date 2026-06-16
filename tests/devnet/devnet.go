@@ -154,7 +154,14 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 
 	log.Printf("[devnet] waiting for MongoDB...")
-	if err := d.waitForService(ctx, "db", 1*time.Minute); err != nil {
+	// MongoDB usually becomes healthy in 10-20s but on a host
+	// running many other containers (shared CI / dev machines with
+	// long-lived prod stacks) docker can take >60s to schedule the
+	// container's first healthcheck. 3 minutes gives the daemon
+	// enough headroom under contention without making clean-host
+	// runs noticeably slower (a healthy db still resolves at the
+	// first successful check, ~10-20s).
+	if err := d.waitForService(ctx, "db", 3*time.Minute); err != nil {
 		return fmt.Errorf("MongoDB health check: %w", err)
 	}
 
@@ -322,12 +329,16 @@ func (d *Devnet) Stop() error {
 	defer cancel()
 
 	// Include all profiles so compose down also tears down profile-gated
-	// services (bitcoind, bitcoind-pruned). No-op if they weren't started.
+	// services (bitcoind, bitcoind-pruned, dashd, is-service). No-op if
+	// they weren't started. Missing a profile here leaves an orphan
+	// container holding its mapped host port; the next test run fails
+	// with "Bind for 127.0.0.1:NNNN failed: port is already allocated".
 	if err := d.compose(ctx,
 		"--profile", "bitcoind",
 		"--profile", "bitcoind-pruned",
 		"--profile", "bitcoind-mainnet-pruned",
 		"--profile", "dashd",
+		"--profile", "is-service",
 		"down", "-v", "--remove-orphans",
 	); err != nil {
 		log.Printf("[devnet] warning: compose down failed: %v", err)
@@ -480,6 +491,16 @@ func (d *Devnet) Logs(ctx context.Context, service string) (string, error) {
 
 // compose runs a docker compose command with output streamed to stdout/stderr.
 func (d *Devnet) compose(ctx context.Context, args ...string) error {
+	return d.composeWithEnv(ctx, nil, args...)
+}
+
+// composeWithEnv runs a docker compose command with extra env vars
+// available to the subprocess (e.g. ${VAR}-substitutions in
+// docker-compose.yml that aren't covered by the project's .env
+// file). Used by service-specific helpers (StartIsService, etc.)
+// to inject runtime-resolved values without polluting the parent
+// process env. Set extraEnv=nil for a no-extra-env call.
+func (d *Devnet) composeWithEnv(ctx context.Context, extraEnv []string, args ...string) error {
 	fullArgs := append(
 		[]string{"compose", "-f", d.composeFile, "-f", d.overrideFile, "--env-file", d.envFile, "-p", d.projectName},
 		args...,
@@ -487,8 +508,20 @@ func (d *Devnet) compose(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", fullArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	log.Printf("[devnet] $ docker %s", strings.Join(fullArgs, " "))
 	return cmd.Run()
+}
+
+// ExecInMagi runs `<cmd...>` inside the magi-N container via
+// `docker compose exec` and returns combined stdout/stderr. Used by
+// devnet tests to inspect the in-container view of bind-mounted files
+// (e.g. sysconfig.json) to confirm host writes actually propagated.
+func (d *Devnet) ExecInMagi(ctx context.Context, node int, cmd ...string) (string, error) {
+	args := append([]string{"exec", "-T", fmt.Sprintf("magi-%d", node)}, cmd...)
+	return d.composeOutput(ctx, args...)
 }
 
 // composeOutput runs a docker compose command and captures its output.

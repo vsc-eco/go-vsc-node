@@ -167,6 +167,16 @@ type ContractOutputResult {
   ret: String!
   """Whether the contract call succeeded."""
   ok: Boolean!
+  """Error message when ok=false. WASM-level panics (nil deref, OOM,
+  fuel exhaustion, unreachable opcode) populate this even when ret
+  is empty. Contract-level aborts via ce.CustomAbort/sdk.Abort
+  produce a human-readable message here. Operator diagnostic only —
+  do NOT pipe to end users."""
+  errMsg: String
+  """Structured error code when ok=false (e.g. ErrInput, ErrNoPermission,
+  ErrInitialization). Mirrors the ContractError.Symbol field set by
+  ce.NewContractError; nil for non-ContractError aborts (WASM panics)."""
+  err: String
 }
 
 """
@@ -302,6 +312,8 @@ type PostingJsonKeys {
   t: String
   """Public key value."""
   key: String
+  """Base64 (raw-url) BLS proof-of-possession bound to the announcing Hive account. Lets ingesters confirm the witness controls the secret behind `key` (defeats rogue-key aggregate forgery). Empty for witnesses that announced before PoP support."""
+  pop: String
 }
 
 """
@@ -322,6 +334,8 @@ type Witness {
   net_id: String
   """Libp2p peer ID of the witness."""
   peer_id: String
+  """Libp2p multiaddrs the witness most recently announced. Used by external services (e.g. the IS service's auto-discovery path) to bootstrap a gossipsub mesh with the active witness fleet without operator-side hardcoding. Empty for witnesses that haven't yet announced any peer addresses."""
+  peer_addrs: [String!]!
   """Magi protocol version supported by the witness."""
   protocol_version: Uint64!
   """Major component of major.consensus.non_consensus."""

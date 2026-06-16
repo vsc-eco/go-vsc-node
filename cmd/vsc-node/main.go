@@ -321,6 +321,7 @@ func main() {
 		da,                   //Deps: [p2p]
 		dataAvailability,     //Deps: [p2p]
 		announcementsManager, // Deps: [p2p]
+		NewIslockAttestationPlugin(sysConfig.NetId(), args.network, identityConfig, p2p),
 
 		blockConsumer,
 		//Startup main state processing pipeline

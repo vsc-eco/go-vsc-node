@@ -53,6 +53,18 @@ func Parse(did string, includeBLS ...bool) (DID, error) {
 	}
 	errs = append(errs, err)
 
+	res, err = ParseDashDID(did)
+	if err == nil {
+		return res, nil
+	}
+	errs = append(errs, err)
+
+	res, err = ParseDashTestnetDID(did)
+	if err == nil {
+		return res, nil
+	}
+	errs = append(errs, err)
+
 	return nil, errors.Join(errs...)
 }
 
@@ -62,13 +74,15 @@ func Parse(did string, includeBLS ...bool) (DID, error) {
 //	"user:hive" — Hive account (hive:<username>)
 //	"user:btc"  — Bitcoin address — mainnet CAIP-2 ID accepted when mainnet=true,
 //	              testnet3 CAIP-2 ID accepted when mainnet=false; the wrong chain returns "unknown"
+//	"user:dash" — Dash address — mainnet CAIP-2 ID accepted when mainnet=true,
+//	              testnet CAIP-2 ID accepted when mainnet=false; the wrong chain returns "unknown"
 //	"key"       — did:key multikey
 //	"contract"  — VSC contract ID (contract:vsc1…)
 //	"system"    — system address (system:<name>)
-//	"unknown"   — unrecognised, malformed, or wrong-network BTC address
+//	"unknown"   — unrecognised, malformed, or wrong-network BTC/Dash address
 //
-// mainnet controls which Bitcoin CAIP-2 chain ID is valid: true for Magi mainnet
-// (Bitcoin mainnet addresses only), false for testnet/devnet (Bitcoin testnet3 addresses only).
+// mainnet controls which CAIP-2 chain ID is valid for chain-specific DIDs:
+// true for Magi mainnet, false for testnet/devnet.
 func VerifyAddress(addr string, mainnet bool) string {
 	switch {
 	case strings.HasPrefix(addr, EthDIDPrefix):
@@ -93,6 +107,24 @@ func VerifyAddress(addr string, mainnet bool) string {
 			return "unknown"
 		}
 		return "user:btc"
+
+	case strings.HasPrefix(addr, DashDIDPrefix):
+		if !mainnet {
+			return "unknown"
+		}
+		if _, err := ParseDashDID(addr); err != nil {
+			return "unknown"
+		}
+		return "user:dash"
+
+	case strings.HasPrefix(addr, DashTestnetDIDPrefix):
+		if mainnet {
+			return "unknown"
+		}
+		if _, err := ParseDashTestnetDID(addr); err != nil {
+			return "unknown"
+		}
+		return "user:dash"
 
 	case strings.HasPrefix(addr, "hive:"):
 		username := strings.TrimPrefix(addr, "hive:")

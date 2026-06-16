@@ -93,6 +93,15 @@ type PendulumApplier interface {
 
 type ExecContextValue interface {
 	ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult
+	// CallAs is ContractCall but with an effectiveCaller override. Only
+	// contracts whose IDs appear in system-config.TrustedForwarders may
+	// invoke this; others get a permission-denied error. Used by the
+	// dash-forwarder-contract for the Dash InstantSend login feature.
+	CallAs(contractId string, method string, payload string, options string, effectiveCallerDID string) wasm_types.WasmResult
+	// IsTrustedForwarder reports whether the executing contract is in the
+	// system-config.TrustedForwarders list. Useful for host-function gating
+	// without exposing the list itself.
+	IsTrustedForwarder() bool
 	ContractStateGet(contractId string, key string) result.Result[string]
 	DeleteEphemState(key string) result.Result[struct{}]
 	DeleteState(key string) result.Result[struct{}]

@@ -287,6 +287,22 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if err != nil {
 		return nil, err
 	}
+	// GetLastOutput returns a zero-valued ContractOutput (no error) for
+	// contracts that have never produced a state output — see
+	// modules/oracle/chain/chain_relay.go:381 for the "fresh contract"
+	// guard pattern. Without this branch, the empty StateMerkle string
+	// reaches cid.Parse and surfaces as the misleading
+	// "invalid cid: cid too short" GQL error — which made every test
+	// that polls a fresh contract's state look like a CID-decoding bug.
+	// Return a result map with each requested key mapped to nil, the
+	// same shape as the per-key not-found case below.
+	if output.StateMerkle == "" {
+		empty := make(map[string]interface{}, len(keys))
+		for _, key := range keys {
+			empty[key] = nil
+		}
+		return model.Map(empty), nil
+	}
 	cidz, err := cid.Parse(output.StateMerkle)
 	if err != nil {
 		return nil, err
@@ -869,6 +885,29 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// session, which is reverted at the end — nothing is committed.
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
+			}
+			// Mirror the production wiring (transactions.go) so the
+			// simulate path matches real-execution semantics for
+			// contracts.call_as — audit
+			// `trusted-forwarders-not-wired-in-state-processing`.
+			//
+			// Read the dash-mapping-contract's "forwarder" state key
+			// (single-source-of-truth for the trusted-forwarders list)
+			// via the existing callSession. Same shape as
+			// state_engine.resolveTrustedForwarders but inlined here to
+			// avoid pulling the state-processing package into the gql
+			// resolver's import graph.
+			if sc := r.StateEngine.SystemConfig(); sc != nil {
+				if mappingId := sc.DashMappingContractId(); mappingId != "" {
+					if ss := callSession.GetStateStore(mappingId); ss != nil {
+						if raw := ss.Get("forwarder"); len(raw) > 0 {
+							fwdId := strings.TrimSpace(string(raw))
+							if fwdId != "" {
+								ctxOpts = append(ctxOpts, contract_execution_context.WithTrustedForwarders([]string{"contract:" + fwdId}))
+							}
+						}
+					}
+				}
 			}
 		}
 		ctxValue := contract_execution_context.New(

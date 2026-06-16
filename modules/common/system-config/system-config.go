@@ -27,6 +27,22 @@ type SystemConfig interface {
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
+	// DashMappingContractId returns the contract id of the dash-mapping-
+	// contract this network treats as the IS-login feature root.
+	//
+	// The dash-mapping-contract holds the trusted dash-forwarder-contract
+	// id at its "forwarder" state key (set once via setForwarderContractId,
+	// locked thereafter). When magi's state engine wires per-tx execution
+	// contexts, it reads that key and uses its value (with a "contract:"
+	// prefix) as the single-entry trusted-forwarders list. Changing the
+	// trusted forwarder requires updating the dash-mapping-contract via
+	// vsc.update_contract — which goes through the network-baked
+	// ContractUpdateTimelockBlocks window so witnesses + community have
+	// time to review the diff.
+	//
+	// Empty disables the Dash IS-login feature on this network (the
+	// trusted-forwarders list is empty → call_as aborts unconditionally).
+	DashMappingContractId() string
 	LoadOverrides(path string) error
 }
 
@@ -44,6 +60,11 @@ type config struct {
 	oracleParams                 params.OracleParams
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
+	// dash-mapping-contract id, the feature root for Dash IS-login.
+	// Magi reads the "forwarder" state key from this contract to
+	// populate the trusted-forwarders allow-list for call_as gating.
+	// Empty disables the feature.
+	dashMappingContractId string
 }
 
 func (c *config) OnMainnet() bool {
@@ -109,6 +130,14 @@ func (c *config) PendulumPoolWhitelist() []string {
 	return out
 }
 
+// DashMappingContractId returns the dash-mapping-contract id for this
+// network, or "" if Dash IS-login isn't deployed. Magi reads the
+// "forwarder" state key from that contract to populate the trusted-
+// forwarders allow-list at tx-execution time.
+func (c *config) DashMappingContractId() string {
+	return c.dashMappingContractId
+}
+
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
@@ -122,6 +151,10 @@ type SysConfigOverrides struct {
 	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
 	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
 	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
+	// Dash IS-login feature root — the dash-mapping-contract id. Magi
+	// reads "forwarder" state key from it at tx execution time. Empty
+	// disables the feature.
+	DashMappingContractId *string `json:"dashMappingContractId,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -141,7 +174,8 @@ func (c *config) LoadOverrides(path string) error {
 		ConsensusParams       json.RawMessage `json:"consensusParams,omitempty"`
 		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
 		TssParams             json.RawMessage `json:"tssParams,omitempty"`
-		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
+		PendulumPoolWhitelist *[]string `json:"pendulumPoolWhitelist,omitempty"`
+		DashMappingContractId *string   `json:"dashMappingContractId,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -178,6 +212,9 @@ func (c *config) LoadOverrides(path string) error {
 	}
 	if raw.PendulumPoolWhitelist != nil {
 		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
+	}
+	if raw.DashMappingContractId != nil {
+		c.dashMappingContractId = *raw.DashMappingContractId
 	}
 	return nil
 }

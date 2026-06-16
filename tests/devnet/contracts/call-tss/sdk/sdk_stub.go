@@ -56,6 +56,11 @@ func contractCall(contractId *string, method *string, payload *string, options *
 	return nil
 }
 
+//go:wasmimport sdk contracts.call_as
+func contractCallAs(contractId *string, method *string, payload *string, options *string, effectiveCaller *string) *string {
+	return nil
+}
+
 //go:wasmimport sdk tss_v2.create_key
 func tssCreateKey(keyId *string, algo *string, epochs *string) *string { return nil }
 

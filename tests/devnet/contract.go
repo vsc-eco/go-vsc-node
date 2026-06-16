@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // ContractDeployOpts holds options for deploying a WASM contract.
@@ -19,19 +18,37 @@ type ContractDeployOpts struct {
 	Name string
 	// Description is an optional contract description.
 	Description string
-	// DeployerNode is which magi node's identity to use (1-indexed, default 1).
+	// DeployerNode chooses which magi node becomes the contract's
+	// `owner` (1-indexed, default 1). The contract is broadcast by
+	// the dedicated `contract-deploy-1` Hive identity (so no magi
+	// node has to be stopped), but the on-chain `contract.owner`
+	// field is set to `<witnessPrefix><DeployerNode>` (e.g.
+	// `magi.test1`) — preserving the prior behaviour that admin-
+	// gated actions (checkAdmin) accept calls from CallContract(ctx,
+	// DeployerNode, ...). Tests that historically used
+	// DeployerNode=1 + CallContract(1, ...) for seedBlocks/etc keep
+	// working unchanged.
 	DeployerNode int
-	// GQLNode is which magi node to request storage proof from (1-indexed, default 1).
+	// GQLNode is which magi node to request storage proof from
+	// (1-indexed, default 1). The deployer talks to this node over
+	// HTTP for the election lookup; libp2p connects to all nodes
+	// via the pre-wired Bootnodes.
 	GQLNode int
 }
 
 // DeployContract deploys a WASM contract to the running devnet.
 //
-// The contract-deployer binary needs P2P connectivity (for storage
-// proof collection) and opens a badger DB lock, so it can't run
-// alongside the magi node that owns the same data directory. We
-// briefly stop the deployer node, run the deployer using that node's
-// data dir, then restart the node.
+// Uses the `contract-deploy-1` identity created by devnet-setup
+// (cmd/devnet-setup/main.go:138-162). That identity:
+//   - lives at <devnetDir>/contract-deploy-1/
+//   - has its own libp2p identity (no conflict with any magi node)
+//   - has explicit Bootnodes set for every magi-N (host+port+peerID)
+//   - has Hive account `vsc-deployer-1` registered + funded with TBD
+//
+// So the deployer can join the libp2p mesh + pay the deploy fee
+// without stopping any magi node. The old "stop magi-N + reuse its
+// data-dir + restart" approach is gone — see audit memory for the
+// fault trace.
 func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (string, error) {
 	if !d.started {
 		return "", fmt.Errorf("devnet not started")
@@ -48,16 +65,12 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	if opts.GQLNode == 0 {
 		opts.GQLNode = 1
 	}
-	// GQL node must be different from deployer node since deployer
-	// node will be stopped during deployment.
-	if opts.GQLNode == opts.DeployerNode {
-		for i := 1; i <= d.cfg.Nodes; i++ {
-			if i != opts.DeployerNode {
-				opts.GQLNode = i
-				break
-			}
-		}
-	}
+	// Map the 1-indexed DeployerNode to the matching witness Hive
+	// account name. devnet-setup creates accounts as
+	// `<witnessPrefix><N>` for N=1..cfg.Nodes (default prefix:
+	// "magi.test"). Setting -owner=<that name> at deploy time keeps
+	// admin-gated actions reachable by CallContract(ctx, N, ...).
+	ownerAcct := fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, opts.DeployerNode)
 
 	wasmPath, err := filepath.Abs(opts.WasmPath)
 	if err != nil {
@@ -69,22 +82,17 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 
 	wasmDir := filepath.Dir(wasmPath)
 	wasmFile := filepath.Base(wasmPath)
-	nodeName := fmt.Sprintf("magi-%d", opts.DeployerNode)
 
-	log.Printf("[devnet] deploying contract %q (stopping %s, using node %d for GQL)...",
-		opts.Name, nodeName, opts.GQLNode)
-
-	// Stop the deployer node to release the badger lock.
-	if err := d.compose(ctx, "stop", nodeName); err != nil {
-		return "", fmt.Errorf("stopping %s: %w", nodeName, err)
-	}
+	log.Printf("[devnet] deploying contract %q (broadcast by vsc-deployer-1, owner=%s, GQL via magi-%d)...",
+		opts.Name, ownerAcct, opts.GQLNode)
 
 	deployCmd := []string{
 		"./contract-deployer",
 		"-network=devnet",
-		fmt.Sprintf("-data-dir=/data/devnet/data-%d", opts.DeployerNode),
+		"-data-dir=/data/devnet/contract-deploy-1",
 		fmt.Sprintf("-wasmPath=/wasm/%s", wasmFile),
 		fmt.Sprintf("-name=%s", opts.Name),
+		fmt.Sprintf("-owner=%s", ownerAcct),
 		fmt.Sprintf("-gqlUrl=http://magi-%d:8080/api/v1/graphql", opts.GQLNode),
 	}
 	if opts.Description != "" {
@@ -99,14 +107,6 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	args = append(args, deployCmd...)
 
 	out, err := d.composeOutput(ctx, args...)
-
-	// Always restart the node, even if deploy failed.
-	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
-		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
-	}
-	// Give the restarted node time to reconnect to peers.
-	time.Sleep(5 * time.Second)
-
 	if err != nil {
 		return "", fmt.Errorf("contract deployment failed: %w\noutput: %s", err, out)
 	}
@@ -172,6 +172,39 @@ func BuildBtcStubContract(ctx context.Context) (string, error) {
 // WASM contract at modules/e2e/artifacts/contract_test.wasm.
 func TestContractPath() string {
 	return filepath.Join(findSourceRoot(), "modules", "e2e", "artifacts", "contract_test.wasm")
+}
+
+// DashForwarderContractPath returns the absolute path to the
+// prebuilt dash-forwarder-contract WASM. Used by the IS-login
+// op=call devnet test to deploy the forwarder alongside the
+// mapping contract. Resolution order mirrors
+// DashMappingContractPath: DASH_FORWARDER_WASM_PATH env > sibling
+// repo at <go-vsc-node>/../utxo-mapping/dash-forwarder-contract/
+// bin/testnet.wasm.
+func DashForwarderContractPath() (string, error) {
+	candidates := make([]string, 0, 2)
+	if p := os.Getenv("DASH_FORWARDER_WASM_PATH"); p != "" {
+		candidates = append(candidates, p)
+	}
+	candidates = append(candidates,
+		filepath.Join(findSourceRoot(), "..", "utxo-mapping", "dash-forwarder-contract", "bin", "testnet.wasm"),
+	)
+	for _, p := range candidates {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		if info, err := os.Stat(abs); err == nil && !info.IsDir() && info.Size() > 0 {
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"dash-forwarder-contract WASM not found. Tried: %v\n"+
+			"Build it first:\n"+
+			"  cd <utxo-mapping>/dash-forwarder-contract && USE_DOCKER=1 make testnet\n"+
+			"Or set DASH_FORWARDER_WASM_PATH to an absolute path.",
+		candidates,
+	)
 }
 
 // DashMappingContractPath returns the absolute path to the prebuilt

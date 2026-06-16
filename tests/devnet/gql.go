@@ -106,9 +106,65 @@ func (d *Devnet) FindTransactionStatus(ctx context.Context, node int, txId strin
 	return out.FindTransaction[0].Status, nil
 }
 
+// ContractCallResult is the per-call outcome row inside a ContractOutput.
+type ContractCallResult struct {
+	Ret    string `json:"ret"`
+	Ok     bool   `json:"ok"`
+	ErrMsg string `json:"errMsg,omitempty"`
+	Err    string `json:"err,omitempty"`
+}
+
+// ContractOutputRecord is the full shape of a ContractOutput row from the
+// L2 GQL. inputs lists the txids batched into this output (one per contract
+// call in the block); results[i] is the per-call outcome for inputs[i].
+type ContractOutputRecord struct {
+	Id          string               `json:"id"`
+	BlockHeight int64                `json:"block_height"`
+	ContractId  string               `json:"contract_id"`
+	Inputs      []string             `json:"inputs"`
+	Results     []ContractCallResult `json:"results"`
+}
+
+// FindContractOutputByInput returns the contract execution output(s) triggered
+// by the given input transaction id. The byInput filter matches outputs
+// whose inputs[] array contains txId — i.e. the L2 block this tx was batched
+// into. `ok=false` means the contract call aborted (e.g. ABORT:ErrNoPermission);
+// `ret` carries the abort/return string. Used by devnet test diagnostics to
+// triage why a contract call's state write didn't appear.
+//
+// Returns the full ContractOutputRecord list — caller can correlate
+// inputs[i] with results[i] to identify which call in a batched output
+// succeeded vs aborted.
+func (d *Devnet) FindContractOutputByInput(ctx context.Context, node int, txId string) ([]ContractOutputRecord, error) {
+	const q = `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){id block_height contract_id inputs results{ret ok errMsg err}}}`
+	var out struct {
+		FindContractOutput []ContractOutputRecord `json:"findContractOutput"`
+	}
+	if err := d.gqlQuery(ctx, node, q, map[string]any{"id": txId}, &out); err != nil {
+		return nil, err
+	}
+	return out.FindContractOutput, nil
+}
+
 // GetStateByKeys reads contract state values for the given keys (UTF-8 decoded).
 func (d *Devnet) GetStateByKeys(ctx context.Context, node int, contractId string, keys []string) (map[string]any, error) {
 	const q = `query($c:String!,$k:[String!]!){getStateByKeys(contractId:$c,keys:$k)}`
+	var out struct {
+		GetStateByKeys map[string]any `json:"getStateByKeys"`
+	}
+	if err := d.gqlQuery(ctx, node, q, map[string]any{"c": contractId, "k": keys}, &out); err != nil {
+		return nil, err
+	}
+	return out.GetStateByKeys, nil
+}
+
+// GetStateByKeysHex reads contract state values for the given keys, hex-
+// encoded so non-UTF8 binary values (e.g. the packed-uint64 internal
+// balance bytes — mapping/forwarder_integration.go:489) round-trip through
+// JSON cleanly. Used by devnet diagnostics where the plain getStateByKeys
+// returns nil for binary state values even when they're set.
+func (d *Devnet) GetStateByKeysHex(ctx context.Context, node int, contractId string, keys []string) (map[string]any, error) {
+	const q = `query($c:String!,$k:[String!]!){getStateByKeys(contractId:$c,keys:$k,encoding:"hex")}`
 	var out struct {
 		GetStateByKeys map[string]any `json:"getStateByKeys"`
 	}

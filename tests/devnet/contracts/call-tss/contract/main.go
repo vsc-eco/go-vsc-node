@@ -78,6 +78,40 @@ func tryThenSet(input *string) *string {
 	return outcome
 }
 
+// tryCallAs invokes sdk.ContractCallAs(target, "setString", "key,val",
+// effectiveCaller) so a devnet test can exercise the call_as gate
+// without going through the full IS-login attestation pipeline. Input
+// is ";"-separated: "targetContractId;effectiveCallerDID;key;val".
+//
+// The contract is wired as the "forwarder" in a dash-mapping-contract,
+// sysconfig points magi at that mapping, and this contract's id ends
+// up in resolveTrustedForwarders's allow-list. When the gate is open,
+// the call_as succeeds and the target's state[key] = val. When the
+// gate is closed (sysconfig cleared, mapping unset, etc.) the call_as
+// aborts and the surrounding wasmexport aborts too — magi records the
+// contract output with err="sdk_error" and the failure message in
+// errMsg.
+//
+// Used by TestIsLoginEmergencyRevokeViaSysconfigClear.
+//
+//go:wasmexport tryCallAs
+func tryCallAs(input *string) *string {
+	parts := strings.Split(*input, ";")
+	if len(parts) != 4 {
+		sdk.Abort("tryCallAs: expected 4 ';'-separated fields (targetId;effectiveCallerDID;key;val), got " + strconv.Itoa(len(parts)))
+	}
+	targetId := parts[0]
+	effectiveCaller := parts[1]
+	key := parts[2]
+	val := parts[3]
+	res := sdk.ContractCallAs(targetId, "setString", key+","+val, effectiveCaller)
+	if res == nil {
+		out := "nil-result"
+		return &out
+	}
+	return res
+}
+
 //go:wasmexport tssCreate
 func tssCreate(input *string) *string {
 	var args Params
