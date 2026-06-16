@@ -147,8 +147,12 @@ func deployNewContract(
 	}
 	fmt.Println(string(j))
 
+	// Mainnet uses HBD; every test network (testnet AND devnet) runs on a Hive
+	// testnet chain whose HBD-equivalent symbol is TBD. OnTestnet() alone misses
+	// devnet, leaving the fee asset as "HBD" which the devnet L1 rejects with
+	// "Cannot parse asset symbol".
 	currency := "HBD"
-	if sysConfig.OnTestnet() {
+	if !sysConfig.OnMainnet() {
 		currency = "TBD"
 	}
 
@@ -203,8 +207,12 @@ func updateContract(
 	}
 	fmt.Println(string(j))
 
+	// Mainnet uses HBD; every test network (testnet AND devnet) runs on a Hive
+	// testnet chain whose HBD-equivalent symbol is TBD. OnTestnet() alone misses
+	// devnet, leaving the fee asset as "HBD" which the devnet L1 rejects with
+	// "Cannot parse asset symbol".
 	currency := "HBD"
-	if sysConfig.OnTestnet() {
+	if !sysConfig.OnMainnet() {
 		currency = "TBD"
 	}
 
