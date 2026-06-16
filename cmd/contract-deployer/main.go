@@ -311,7 +311,9 @@ func submitOrPrepare(
 
 	wif := identityConfig.Get().HiveActiveKey
 	if len(wif) == 0 {
-		fmt.Println("not broadcasting as active key is not specified in identityConfig.json (use -no-broadcast to sign externally)")
+		fmt.Println(
+			"not broadcasting as active key is not specified in identityConfig.json (use -no-broadcast to sign externally)",
+		)
 		return
 	}
 
@@ -477,7 +479,11 @@ func buildSigningBundle(
 	refBlockNum := uint16(props.HeadBlockNumber & 0xffff)
 	hbidB, err := hex.DecodeString(props.HeadBlockId)
 	if err != nil || len(hbidB) < 8 {
-		return signingBundle{}, hivego.HiveTransaction{}, fmt.Errorf("decode head_block_id %q: %w", props.HeadBlockId, err)
+		return signingBundle{}, hivego.HiveTransaction{}, fmt.Errorf(
+			"decode head_block_id %q: %w",
+			props.HeadBlockId,
+			err,
+		)
 	}
 	refBlockPrefix := binary.LittleEndian.Uint32(hbidB[4:8])
 
@@ -552,8 +558,14 @@ func prepareSigningBundle(
 	fmt.Println("=======================================================================")
 	fmt.Printf("\nAccount to sign with (active): %s\n", user)
 	fmt.Printf("Expires at (UTC): %s\n", expiration)
-	fmt.Println("Sign 'signing_digest' on the device (hash/blind signing), or feed 'transaction' + 'chain_id' to a Hive signing tool,")
-	fmt.Printf("then broadcast with:\n  %s -network %s -broadcast-signed <file> -signature <hex>\n", os.Args[0], args.network)
+	fmt.Println(
+		"Sign 'signing_digest' on the device (hash/blind signing), or feed 'transaction' + 'chain_id' to a Hive signing tool,",
+	)
+	fmt.Printf(
+		"then broadcast with:\n  %s -network %s -broadcast-signed <file> -signature <hex>\n",
+		os.Args[0],
+		args.network,
+	)
 
 	if args.out != "" {
 		if err := os.WriteFile(args.out, out, 0600); err != nil {
@@ -606,7 +618,11 @@ func broadcastSignedBundle(
 	}
 	digest := hex.EncodeToString(hivego.HashTxForSig(serialized, hiveClient.ChainID))
 	if bundle.SigningDigest != "" && digest != bundle.SigningDigest {
-		fmt.Printf("refusing to broadcast: reconstructed signing digest %s does not match bundle's %s\n", digest, bundle.SigningDigest)
+		fmt.Printf(
+			"refusing to broadcast: reconstructed signing digest %s does not match bundle's %s\n",
+			digest,
+			bundle.SigningDigest,
+		)
 		fmt.Println("(the bundle may have been edited, or -network / -sysconfig differ from when it was prepared)")
 		os.Exit(1)
 	}
