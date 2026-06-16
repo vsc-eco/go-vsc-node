@@ -144,6 +144,30 @@ func BuildCallTssContract(ctx context.Context) (string, error) {
 	return wasmPath, nil
 }
 
+// BuildAmmPoolContract builds the amm-pool WASM contract used by the pendulum
+// LP-floor devnet test. The pool publishes pendulum geometry state keys, draws
+// HBD to back the node-share drain, and forwards swaps to
+// system.pendulum_apply_swap_fees.
+func BuildAmmPoolContract(ctx context.Context) (string, error) {
+	contractDir := filepath.Join(findSourceRoot(), "tests", "devnet", "contracts", "amm-pool")
+	wasmPath := filepath.Join(contractDir, "bin", "build.wasm")
+
+	log.Printf("[devnet] building amm-pool contract...")
+	cmd := exec.CommandContext(ctx, "make", "-C", contractDir, "build")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("building amm-pool contract: %w", err)
+	}
+
+	if _, err := os.Stat(wasmPath); err != nil {
+		return "", fmt.Errorf("built wasm not found at %s: %w", wasmPath, err)
+	}
+
+	log.Printf("[devnet] amm-pool contract built: %s", wasmPath)
+	return wasmPath, nil
+}
+
 // BuildBtcStubContract builds the btc-stub WASM contract used by oracle
 // chain-relay devnet tests. The stub mimics the BTC mapping contract's
 // `addBlocks` interface but skips all BTC validation, making it cheap to

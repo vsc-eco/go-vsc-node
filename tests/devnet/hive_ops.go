@@ -14,15 +14,33 @@ import (
 // method. The caller is the witness at the given node index (1-indexed).
 // Retries up to 3 times on transient connection errors.
 func (d *Devnet) CallContract(ctx context.Context, node int, contractId, action, payload string) (string, error) {
+	return d.CallContractWithIntents(ctx, node, contractId, action, payload, nil, 500000)
+}
+
+// CallContractWithIntents is CallContract plus an `intents` array (e.g. a
+// transfer.allow intent that authorizes the contract to hive.draw a token from
+// the caller) and an explicit rc_limit. Each intent is
+// {"type": "...", "args": {"k":"v"}}.
+//
+// rc_limit matters for intent draws: PullBalance reserves
+// (rc_limit - free_rc) HBD of the caller's balance against RC, so a call that
+// draws HBD must use a LOW rc_limit (<= RC_HIVE_FREE_AMOUNT) or the caller's
+// balance is reserved out from under the draw (see [[vsc_rc_limit_hbd_exclusion]]).
+func (d *Devnet) CallContractWithIntents(ctx context.Context, node int, contractId, action, payload string, intents []map[string]interface{}, rcLimit int) (string, error) {
 	witnessName := fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, node)
+
+	intentsField := make([]interface{}, 0, len(intents))
+	for _, it := range intents {
+		intentsField = append(intentsField, it)
+	}
 
 	callTx := map[string]interface{}{
 		"net_id":      "vsc-devnet",
 		"contract_id": contractId,
 		"action":      action,
 		"payload":     payload,
-		"rc_limit":    500000,
-		"intents":     []interface{}{},
+		"rc_limit":    rcLimit,
+		"intents":     intentsField,
 	}
 	txJSON, err := json.Marshal(callTx)
 	if err != nil {
