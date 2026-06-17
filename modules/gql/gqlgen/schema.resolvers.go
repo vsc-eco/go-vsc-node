@@ -787,11 +787,17 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
 
 	for opIndex, call := range input.Calls {
-		rcLimit := uint(call.RcLimit)
-		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC
-		if maxGas := ^uint(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
+		rcLimit := uint64(call.RcLimit)
+		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC.
+		// uint64 (not platform-dependent uint) keeps the bound identical
+		// across architectures, matching TxVscCallContract.ExecuteTx.
+		if maxGas := ^uint64(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
 			rcLimit = maxGas
 		}
+		// uint64->uint narrowing forced by WasmEdge's uint gas meter; lossless
+		// on 64-bit and bounded by the maxGas cap above. See
+		// TxVscCallContract.ExecuteTx for the full rationale.
+		gasCycles := uint(rcLimit * params.CYCLE_GAS_PER_RC)
 
 		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
 		if err != nil {
@@ -888,7 +894,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				Intents:              intents,
 				PendulumOracle:       pendulumOracle,
 			},
-			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), gasCycles, ledgerSession, callSession, 0,
 			ctxOpts...,
 		)
 
@@ -906,7 +912,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 		w := wasm_runtime_ipc.New()
 		w.Init()
-		res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
+		res := w.Execute(wasmCtx, gasCycles, call.Action, payload, info.Runtime)
 		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 		if res.Error != nil {

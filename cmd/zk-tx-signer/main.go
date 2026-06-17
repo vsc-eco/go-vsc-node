@@ -86,7 +86,7 @@ func signTransaction(
 		ContractId: contractID,
 		Action:     action,
 		Payload:    payloadJSON,
-		RcLimit:    uint(rcLimit),
+		RcLimit:    rcLimit,
 		Intents:    []contracts.Intent{},
 		Caller:     did.String(),
 		NetId:      netID,

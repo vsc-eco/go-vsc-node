@@ -49,7 +49,7 @@ type TxVscCallContract struct {
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
 	Payload    json.RawMessage    `json:"payload"`
-	RcLimit    uint               `json:"rc_limit"`
+	RcLimit    uint64             `json:"rc_limit"`
 	Intents    []contracts.Intent `json:"intents"`
 }
 
@@ -109,13 +109,23 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(fmt.Errorf("minimum RC requirement is not met. RCs available: %d", availableGas), 100)
 	}
 
-	gas := min(uint(availableGas), t.RcLimit)
+	gas := min(uint64(availableGas), t.RcLimit)
 
-	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC
-	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC.
+	// uint64 (not platform-dependent uint) so the bound is identical on
+	// every node regardless of architecture.
+	const maxGas = ^uint64(0) / params.CYCLE_GAS_PER_RC
 	if gas > maxGas {
 		gas = maxGas
 	}
+
+	// gasCycles is the cycle-denominated gas budget. The uint64->uint
+	// narrowing is forced by WasmEdge's gas meter (SetCostLimit/GetTotalCost
+	// are uint) and is sound under two invariants: (1) nodes only run on
+	// 64-bit, where uint == uint64, so the cast is lossless; (2) the maxGas
+	// cap above keeps gas*CYCLE_GAS_PER_RC within uint64, so the multiply
+	// cannot overflow.
+	gasCycles := uint(gas * params.CYCLE_GAS_PER_RC)
 
 	var caller string = t.Caller
 	if caller == "" {
@@ -149,7 +159,7 @@ func (t TxVscCallContract) ExecuteTx(
 		Sender:               caller,
 		Intents:              t.Intents,
 		PendulumOracle:       se.PendulumOracleEnv(),
-	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gasCycles, ledgerSession, callSession, 0,
 		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
 		// Gate try/catch inter-contract calls on the chain-active consensus version
 		// (deterministic, height-addressable) so the new semantics activate only at
@@ -177,7 +187,7 @@ func (t TxVscCallContract) ExecuteTx(
 		hex.EncodeToString(code),
 	)
 
-	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
+	res := w.Execute(wasmCtx, gasCycles, t.Action, payload, info.Runtime)
 
 	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
 	// overflow for any realistic gas value (denom = 100_000). Floored at the

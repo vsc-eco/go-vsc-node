@@ -274,11 +274,14 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		}
 	}
 
-	gas := min(uint(availableRCs), tx.RcLimit)
-	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	gas := min(uint64(availableRCs), tx.RcLimit)
+	const maxGas = ^uint64(0) / params.CYCLE_GAS_PER_RC
 	if gas > maxGas {
 		gas = maxGas
 	}
+	// uint64->uint narrowing forced by WasmEdge's uint gas meter; lossless on
+	// 64-bit and bounded by the maxGas cap. See TxVscCallContract.ExecuteTx.
+	gasCycles := uint(gas * params.CYCLE_GAS_PER_RC)
 
 	// fmt.Println("tx intents:", tx.Intents)
 
@@ -299,7 +302,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			Intents:              tx.Intents,
 			PendulumOracle:       ct.StateEngine.PendulumOracleEnv(),
 		},
-		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gasCycles, ct.LedgerSession, ct.CallSession, 0,
 		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
 		contract_execution_context.WithTryCatch(ct.TryCatchActive),
 	)
@@ -308,7 +311,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		wasm_context.WasmExecCodeCtxKey,
 		hex.EncodeToString(code),
 	)
-	res := w.Execute(ctx, gas*params.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
+	res := w.Execute(ctx, gasCycles, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 	ct.RcSession.Consume(rcPayer, ct.BlockHeight, rcUsed)
 	ct.StateEngine.RcMap[rcPayer] = ct.StateEngine.RcMap[rcPayer] + rcUsed

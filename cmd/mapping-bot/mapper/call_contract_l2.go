@@ -61,7 +61,7 @@ func (b *Bot) callContractL2(
 		Ops:     []transactionpool.VSCTransactionOp{op},
 		Nonce:   nonce,
 		NetId:   b.SystemConfig.NetId(),
-		RcLimit: uint64(rcLimit),
+		RcLimit: rcLimit,
 	}
 
 	crafter := transactionpool.TransactionCrafter{
