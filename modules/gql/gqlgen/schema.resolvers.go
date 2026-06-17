@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"sort"
 	"strings"
@@ -392,6 +393,41 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	}
 	blockHeight := ParseHeight(height)
 	return r.Balances.GetBalanceRecord(account, blockHeight)
+}
+
+// GetConsensusDelegation is the resolver for the getConsensusDelegation field.
+func (r *queryResolver) GetConsensusDelegation(ctx context.Context, from string, to string, height *model.Uint64) (*ConsensusDelegation, error) {
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("from and to cannot be empty")
+	}
+	blockHeight := ParseHeight(height)
+	session := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+
+	// Gross stake on this edge, and the node's pooled bond (slash-aware) vs its
+	// slash-immune gross delegated total.
+	delegated := session.GetBalance(ledgerSystem.DelegationEdgeKey(from, to), blockHeight, ledgerSystem.AssetDelegation)
+	bond := session.GetBalance(to, blockHeight, "hive_consensus")
+	total := session.GetBalance(to, blockHeight, ledgerSystem.AssetDelegationTotal)
+
+	// Pro-rata claimable (mirrors ledgerSession.slashAdjustedRelease): full
+	// unless the node is slashed (bond < total), then delegated * bond / total.
+	claimable := delegated
+	if delegated > 0 && total > 0 && bond < total {
+		if bond <= 0 {
+			claimable = 0
+		} else {
+			num := new(big.Int).Mul(big.NewInt(delegated), big.NewInt(bond))
+			num.Div(num, big.NewInt(total))
+			claimable = num.Int64()
+		}
+	}
+
+	return &ConsensusDelegation{
+		From:      from,
+		To:        to,
+		Delegated: model.Int64(delegated),
+		Claimable: model.Int64(claimable),
+	}, nil
 }
 
 // GetAccountRc is the resolver for the getAccountRC field.

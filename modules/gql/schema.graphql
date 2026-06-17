@@ -855,6 +855,20 @@ type SimulateContractCallResult {
   state_diff: Map
 }
 
+"""
+A delegator's consensus stake on a single (from -> to) edge. Consensus 0.2.0+.
+"""
+type ConsensusDelegation {
+  """Delegator account."""
+  from: String!
+  """Node account the stake is delegated to."""
+  to: String!
+  """Gross HIVE staked on this edge (base units)."""
+  delegated: Int64!
+  """HIVE currently reclaimable — `delegated` unless the node is slashed, then reduced pro-rata."""
+  claimable: Int64!
+}
+
 type Query {
   """
   Retrieve contract state values by their keys. Returns a map of key-value pairs from the contract's state merkle tree.
@@ -909,6 +923,22 @@ type Query {
     """Block height to query balance at. Defaults to the latest block."""
     height: Uint64
   ): BalanceRecord
+
+  """
+  Consensus stake `from` has delegated to node `to`. Consensus 0.2.0+.
+  `delegated` is the gross amount staked on this edge; `claimable` is what
+  unstaking it would return now — equal to `delegated` unless the node has been
+  slashed, in which case it is reduced pro-rata (every delegator to that node is
+  reduced by the same fraction). Use `claimable` to drive an unstake form.
+  """
+  getConsensusDelegation(
+    """Delegator account (the signer that can reclaim this stake)."""
+    from: String!
+    """Node account the stake is delegated to."""
+    to: String!
+    """Block height to query at. Defaults to the latest block."""
+    height: Uint64
+  ): ConsensusDelegation
 
   """
   Get the resource credit balance for an account, optionally at a specific block height. RCs regenerate over time based on staked balance.
