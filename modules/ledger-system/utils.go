@@ -13,12 +13,19 @@ var transferableAssetTypes = []string{"hive", "hbd", "hbd_savings"}
 // snapshot / in-session cache); it is NOT a real spendable asset. Consensus 0.2.0+.
 const AssetDelegation = "delegation"
 
+// AssetDelegationTotal is the gross sum of all delegation edges to a node, keyed
+// by the node account. It moves with stake/unstake but is NEVER reduced by a
+// slash (unlike the node's hive_consensus bond), so bond/total is the node's
+// post-slash solvency ratio used to share a slash loss pro-rata across every
+// delegator equally (see slashAdjustedRelease). Consensus 0.2.0+.
+const AssetDelegationTotal = "delegation_total"
+
 // delegationEdgeSep separates from/to in a delegation edge owner key. A single ":"
 // appears inside normalized accounts ("hive:alice"), so "::" is used as the joiner
 // and cannot occur inside either side.
 const delegationEdgeSep = "::"
 
-var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus", AssetDelegation})
+var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus", AssetDelegation, AssetDelegationTotal})
 
 // DelegationEdgeKey returns the composite owner key for the (from -> to) delegation
 // edge: the net stake `from` has delegated to node `to`. Read it with
@@ -38,6 +45,29 @@ func opDelegated(v OpLogEvent) bool {
 	}
 	d, _ := v.Params["delegated"].(bool)
 	return d
+}
+
+// opReleased reads the slash-adjusted HIVE amount to actually return for a
+// delegated consensus_unstake (computed by ConsensusUnstake at apply time and
+// stamped into Params so ExecuteOplog stays pure/deterministic). Defaults to
+// fallback (the gross amount, i.e. no slash) when absent. Tolerant of the
+// numeric type the oplog (de)serializer produces.
+func opReleased(v OpLogEvent, fallback int64) int64 {
+	if v.Params == nil {
+		return fallback
+	}
+	switch x := v.Params["released"].(type) {
+	case int64:
+		return x
+	case float64:
+		return int64(x)
+	case uint64:
+		return int64(x)
+	case int:
+		return int64(x)
+	default:
+		return fallback
+	}
 }
 
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
@@ -215,17 +245,32 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 					Owner:       DelegationEdgeKey(v.From, v.To),
 					Type:        "consensus_stake",
 				})
+				// Track the gross delegated total on the node (slash-immune) so a
+				// later slash can be shared pro-rata across all delegators.
+				ledgerRecords = append(ledgerRecords, LedgerUpdate{
+					Id:          v.Id + "#total",
+					BlockHeight: endBlock,
+					Amount:      v.Amount,
+					Asset:       AssetDelegationTotal,
+					Owner:       v.To,
+					Type:        "consensus_stake",
+				})
 			}
 		}
 		if v.Type == "consensus_unstake" {
 			if opDelegated(v) {
-				// Delegated era: debit the NODE's (v.To) bond, decrement the
-				// delegator's edge, and queue the HIVE return to the delegator
-				// (v.From) — the matured-release path credits action.To.
+				// Delegated era. v.Amount is the GROSS edge amount being removed;
+				// `released` is the slash-adjusted HIVE that actually leaves
+				// (released == gross when the node is unslashed). The edge and the
+				// gross node total drain by GROSS (so the pro-rata ratio stays
+				// constant and every delegator is slashed equally, order-
+				// independently); the node bond and the delegator payout move by
+				// RELEASED.
+				released := opReleased(v, v.Amount)
 				ledgerRecords = append(ledgerRecords, LedgerUpdate{
 					Id:          v.Id + "#in",
 					BlockHeight: endBlock,
-					Amount:      -v.Amount,
+					Amount:      -released,
 					Asset:       "hive_consensus",
 					Owner:       v.To,
 					Type:        "consensus_unstake",
@@ -238,9 +283,17 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 					Owner:       DelegationEdgeKey(v.From, v.To),
 					Type:        "consensus_unstake",
 				})
+				ledgerRecords = append(ledgerRecords, LedgerUpdate{
+					Id:          v.Id + "#total",
+					BlockHeight: endBlock,
+					Amount:      -v.Amount,
+					Asset:       AssetDelegationTotal,
+					Owner:       v.To,
+					Type:        "consensus_unstake",
+				})
 				actionRecords = append(actionRecords, ledgerDb.ActionRecord{
 					Id:     v.Id,
-					Amount: v.Amount,
+					Amount: released, // slash-adjusted HIVE returned to the delegator
 					Asset:  "-",
 					To:     v.From, // release returns HIVE to the delegator
 					Memo:   v.Memo,

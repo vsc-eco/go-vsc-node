@@ -1,6 +1,7 @@
 package ledgerSystem
 
 import (
+	"math/big"
 	"regexp"
 	"slices"
 	"strconv"
@@ -301,19 +302,24 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		}
 	}
 
+	// released is the HIVE that actually leaves the bond / returns to the
+	// delegator. In the legacy path it equals the gross amount; in the delegated
+	// path a slash on the node reduces it pro-rata (see slashAdjustedRelease).
+	released := params.Amount
+
 	if params.Delegated {
-		// Authorize against the SIGNER's own delegation edge. The node operator
-		// has no edge to a delegator's stake, so it can never unstake it — only
-		// what it itself delegated (its self-edge from==to).
+		// Authorize against the SIGNER's own delegation edge (GROSS). The node
+		// operator has no edge to a delegator's stake, so it can never unstake it
+		// — only what it itself delegated (its self-edge from==to).
 		edge := ledgerSession.GetBalance(
 			DelegationEdgeKey(params.From, params.To), params.BlockHeight, AssetDelegation)
-		claimable := ledgerSession.applySlashHaircut(params.From, params.To, edge, params.BlockHeight)
-		if params.Amount > claimable {
+		if params.Amount > edge {
 			return LedgerResult{
 				Ok:  false,
 				Msg: "amount exceeds delegated stake",
 			}
 		}
+		released = ledgerSession.slashAdjustedRelease(params.Amount, params.To, params.BlockHeight)
 	} else {
 		// Legacy era (< 0.2.0): debit the signer's own hive_consensus.
 		balAmt := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_consensus")
@@ -338,6 +344,7 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		Params: map[string]interface{}{
 			"epoch":     params.ElectionEpoch,
 			"delegated": params.Delegated,
+			"released":  released,
 		},
 	})
 
@@ -347,18 +354,33 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 	}
 }
 
-// applySlashHaircut caps a delegator's reclaimable stake on a slashed node.
+// slashAdjustedRelease returns the HIVE actually released for a delegated
+// unstake of grossAmount from node `to`, applying the team's slashing policy:
+// EVERY delegator to a slashed node loses the same fraction.
 //
-// ‹Q1 — OPEN: slashing loss attribution› Until the team decides how a slash is
-// shared (operator-only / pro-rata / first-come — see the design spec), this is
-// a no-op returning the full edge. That is correct as long as a slash never
-// drops a node's hive_consensus below the sum of its delegation edges. Once
-// consensus slashing can do that on a delegated network, this MUST implement the
-// chosen rule (e.g. floor(edge * hive_consensus[to] / Σ edges[*][to])), or an
-// unstake could over-draw a slashed node's bond. DO NOT enable consensus
-// slashing on a delegated-stake network before resolving this.
-func (ledgerSession *ledgerSession) applySlashHaircut(from, to string, edge int64, blockHeight uint64) int64 {
-	return edge
+// ‹Q1 — RESOLVED: pro-rata› The node's gross delegated total (AssetDelegationTotal)
+// is slash-immune; its hive_consensus bond is reduced by slashing. So bond/total
+// is the node's post-slash solvency ratio in [0,1], and released =
+// floor(grossAmount * bond / total). Because the edge + gross total drain by the
+// GROSS amount (not released), the ratio stays constant as delegators exit, so
+// the outcome is identical regardless of unstake order — i.e. everyone is slashed
+// equally. Unslashed (bond >= total) returns the full grossAmount unchanged.
+func (ledgerSession *ledgerSession) slashAdjustedRelease(grossAmount int64, to string, blockHeight uint64) int64 {
+	if grossAmount <= 0 {
+		return 0
+	}
+	total := ledgerSession.GetBalance(to, blockHeight, AssetDelegationTotal)
+	bond := ledgerSession.GetBalance(to, blockHeight, "hive_consensus")
+	if total <= 0 || bond >= total {
+		return grossAmount // unslashed / fully solvent → no haircut
+	}
+	if bond <= 0 {
+		return 0 // node fully slashed — nothing to return
+	}
+	// released = floor(grossAmount * bond / total), overflow-safe via big.Int.
+	num := new(big.Int).Mul(big.NewInt(grossAmount), big.NewInt(bond))
+	num.Div(num, big.NewInt(total))
+	return num.Int64()
 }
 
 func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, options ...TransferOptions) LedgerResult {

@@ -226,11 +226,14 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		// (none of which are protocol-meta) — superseding the older explicit
 		// OpType allow-list while keeping the same result.
 		base = balRecord.HIVE_CONSENSUS
-	case AssetDelegation:
-		// Per-edge delegation balance (consensus 0.2.0+). `account` is the composite
-		// owner DelegationEdgeKey(from,to); net = Σ consensus_stake − Σ consensus_unstake
-		// on that edge. Always summed from height 0: composite owners are never
-		// snapshotted into a BalanceRecord (no typed column), so there is no base to add.
+	case AssetDelegation, AssetDelegationTotal:
+		// Virtual delegation balances (consensus 0.2.0+):
+		//   AssetDelegation      — `account` is DelegationEdgeKey(from,to); net of
+		//                          consensus_stake/unstake on that edge.
+		//   AssetDelegationTotal — `account` is the node; gross sum of edges to it,
+		//                          NOT reduced by slashing (bond/total = solvency).
+		// Both always summed from height 0: their owners are never snapshotted into
+		// a BalanceRecord (no typed column), so there is no base to add.
 		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
 			account,
 			0,

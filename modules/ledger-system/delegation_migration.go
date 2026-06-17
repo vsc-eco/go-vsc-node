@@ -39,7 +39,7 @@ func BackfillDelegationEdges(records []ledgerDb.LedgerRecord, atHeight uint64) [
 	edges := map[string]int64{}
 
 	for _, r := range records {
-		if r.Asset == AssetDelegation {
+		if r.Asset == AssetDelegation || r.Asset == AssetDelegationTotal {
 			continue // already-migrated / post-activation edge rows — never re-count
 		}
 		base, suffix := splitLedgerBaseId(r.Id)
@@ -80,11 +80,17 @@ func BackfillDelegationEdges(records []ledgerDb.LedgerRecord, atHeight uint64) [
 	}
 	sort.Strings(keys) // deterministic output order
 
+	// Per-node gross total = Σ positive edges to that node (slash-immune), so the
+	// pro-rata slash ratio (bond/total) is well-defined for migrated stakes too.
+	totals := map[string]int64{}
+
 	out := make([]LedgerUpdate, 0, len(keys))
 	for _, k := range keys {
 		if edges[k] <= 0 {
 			continue // nothing reclaimable on this edge
 		}
+		_, to := splitDelegationEdgeKey(k)
+		totals[to] += edges[k]
 		out = append(out, LedgerUpdate{
 			Id:          "delegation_backfill:" + k,
 			Owner:       k,
@@ -94,7 +100,33 @@ func BackfillDelegationEdges(records []ledgerDb.LedgerRecord, atHeight uint64) [
 			BlockHeight: atHeight,
 		})
 	}
+
+	totalKeys := make([]string, 0, len(totals))
+	for n := range totals {
+		totalKeys = append(totalKeys, n)
+	}
+	sort.Strings(totalKeys)
+	for _, n := range totalKeys {
+		out = append(out, LedgerUpdate{
+			Id:          "delegation_backfill_total:" + n,
+			Owner:       n,
+			Amount:      totals[n],
+			Asset:       AssetDelegationTotal,
+			Type:        "consensus_stake",
+			BlockHeight: atHeight,
+		})
+	}
 	return out
+}
+
+// splitDelegationEdgeKey is the inverse of DelegationEdgeKey: it splits a
+// composite "from::to" owner back into its two accounts.
+func splitDelegationEdgeKey(key string) (from, to string) {
+	parts := strings.SplitN(key, delegationEdgeSep, 2)
+	if len(parts) != 2 {
+		return key, ""
+	}
+	return parts[0], parts[1]
 }
 
 // splitLedgerBaseId strips a single trailing "#segment" (e.g. "#in", "#out",
