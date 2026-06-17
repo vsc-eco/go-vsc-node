@@ -122,6 +122,22 @@ func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversi
 	return elections.ResultVersion(elec)
 }
 
+// delegatedStakeActive reports whether per-delegator consensus stake/unstake
+// semantics are in force at this height (the v0.5.0 batch — see
+// consensusversion.DelegatedStakeActive). Below the line the legacy
+// hive_consensus-holder unstake path runs byte-identically. Sourced from
+// ActiveConsensusVersion (on-chain election) so every node agrees.
+func (se *StateEngine) delegatedStakeActive(blockHeight uint64) bool {
+	return consensusversion.DelegatedStakeActive(se.ActiveConsensusVersion(blockHeight))
+}
+
+// DelegatedStakeActiveForElection is the same 0.5.0 gate evaluated against an
+// already-read election, for the consensus_stake/unstake tx handlers which hold
+// an ElectionResult from the StateEngine interface's fail-stop election read.
+func DelegatedStakeActiveForElection(elec elections.ElectionResult) bool {
+	return consensusversion.DelegatedStakeActive(elections.ResultVersion(elec))
+}
+
 // TssMinimumConsensusVersion implements the tss.GetScheduler extension: the minimum
 // major/consensus triple for TSS at this Hive height (the election-active version).
 func (se *StateEngine) TssMinimumConsensusVersion(blockHeight uint64) consensusversion.Version {

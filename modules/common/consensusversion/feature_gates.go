@@ -159,3 +159,33 @@ func MinMembersGuardActive(active Version) bool {
 func UnstakeHbdDirectionFixActive(active Version) bool {
 	return Version0_4_0Active(active)
 }
+
+// V0_5_0 is the consensus version line at which the v0.5.0 consensus-delegation
+// batch activates. Every consensus-affecting change in v0.5.0 keys off this single
+// version so the network has ONE coordinated activation, driven by the election
+// floor reaching 0.5.0.
+var V0_5_0 = Version{Major: 0, Consensus: 5, NonConsensus: 0}
+
+// Version0_5_0Active reports whether the v0.5.0 batch is in force given the
+// chain-active consensus version. `active` is resolved by the caller from the
+// on-chain election (deterministic, replay-correct). Below the line every v0.5.0
+// rule is inert and behavior stays byte-identical to 0.4.0, so old and new
+// binaries interoperate until the floor reaches 0.5.0.
+func Version0_5_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_5_0)
+}
+
+// DelegatedStakeActive reports whether per-delegator consensus stake/unstake
+// semantics are in force given the chain-active consensus version: consensus_stake
+// records a per-edge delegation balance (asset "delegation", composite owner
+// "from::to") in addition to the unchanged node hive_consensus credit, and
+// consensus_unstake authorizes against the SIGNER's edge + debits the node bond,
+// so a delegator can always reclaim their own delegated bond and the operator can
+// never touch it. Resolve `active` from the version active at the op's block
+// height (StateEngine.ActiveConsensusVersion(blockHeight), or the election the tx
+// handler already read — see state_engine.DelegatedStakeActiveForElection); below
+// the line the legacy hive_consensus-holder unstake path runs byte-identically so
+// a full reindex reproduces historical ledger state.
+func DelegatedStakeActive(active Version) bool {
+	return Version0_5_0Active(active)
+}
