@@ -281,6 +281,10 @@ func (ledgerSession *ledgerSession) ConsensusStake(params ConsensusParams) Ledge
 		Amount: params.Amount,
 		Asset:  "hive",
 		Type:   "consensus_stake",
+
+		Params: map[string]interface{}{
+			"delegated": params.Delegated,
+		},
 	})
 
 	return LedgerResult{
@@ -297,12 +301,27 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		}
 	}
 
-	balAmt := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_consensus")
-
-	if balAmt < params.Amount {
-		return LedgerResult{
-			Ok:  false,
-			Msg: "insufficient balance",
+	if params.Delegated {
+		// Authorize against the SIGNER's own delegation edge. The node operator
+		// has no edge to a delegator's stake, so it can never unstake it — only
+		// what it itself delegated (its self-edge from==to).
+		edge := ledgerSession.GetBalance(
+			DelegationEdgeKey(params.From, params.To), params.BlockHeight, AssetDelegation)
+		claimable := ledgerSession.applySlashHaircut(params.From, params.To, edge, params.BlockHeight)
+		if params.Amount > claimable {
+			return LedgerResult{
+				Ok:  false,
+				Msg: "amount exceeds delegated stake",
+			}
+		}
+	} else {
+		// Legacy era (< 0.2.0): debit the signer's own hive_consensus.
+		balAmt := ledgerSession.GetBalance(params.From, params.BlockHeight, "hive_consensus")
+		if balAmt < params.Amount {
+			return LedgerResult{
+				Ok:  false,
+				Msg: "insufficient balance",
+			}
 		}
 	}
 
@@ -317,7 +336,8 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		Type:   "consensus_unstake",
 
 		Params: map[string]interface{}{
-			"epoch": params.ElectionEpoch,
+			"epoch":     params.ElectionEpoch,
+			"delegated": params.Delegated,
 		},
 	})
 
@@ -325,6 +345,20 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		Ok:  true,
 		Msg: "success",
 	}
+}
+
+// applySlashHaircut caps a delegator's reclaimable stake on a slashed node.
+//
+// ‹Q1 — OPEN: slashing loss attribution› Until the team decides how a slash is
+// shared (operator-only / pro-rata / first-come — see the design spec), this is
+// a no-op returning the full edge. That is correct as long as a slash never
+// drops a node's hive_consensus below the sum of its delegation edges. Once
+// consensus slashing can do that on a delegated network, this MUST implement the
+// chosen rule (e.g. floor(edge * hive_consensus[to] / Σ edges[*][to])), or an
+// unstake could over-draw a slashed node's bond. DO NOT enable consensus
+// slashing on a delegated-stake network before resolving this.
+func (ledgerSession *ledgerSession) applySlashHaircut(from, to string, edge int64, blockHeight uint64) int64 {
+	return edge
 }
 
 func (ledgerSession *ledgerSession) ExecuteTransfer(opLogEvent OpLogEvent, options ...TransferOptions) LedgerResult {

@@ -25,7 +25,7 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
-//   - 0.2.0 — the Consensus 1→2 bump gates TWO independent consensus changes, both
+//   - 0.2.0 — the Consensus 1→2 bump gates THREE independent consensus changes, all
 //     activated together when the election floor reaches 0.2.0:
 //     (a) try/catch inter-contract calls (ICCallOptions.Try): a caught revert returns a
 //     structured outcome + rolls back to a savepoint instead of trapping. Until the
@@ -35,8 +35,15 @@ import (
 //     BpsScale − MinFractionBps (including on the under-secured cliff), so liquidity
 //     providers always retain a minimum share of every pot. Gated on this line via
 //     pendulum.LPFloorActivation.
-//     Until 0.2.0 is chain-active both behaviors are inert and splits/call semantics stay
-//     byte-identical to 0.1.0, so old and new binaries interoperate until activation.
+//     (c) consensus delegated stake/unstake (+ delegator pendulum rewards and operator
+//     opt-in delegation modes): per-edge delegation accounting so a delegator (not the
+//     node operator) can always unstake their own delegated bond; a share-mode node
+//     splits its pendulum reward pro-rata to delegators; third-party delegation requires
+//     the node to opt in. Gated via StateEngine.delegatedStakeActive. The node's
+//     aggregate hive_consensus still feeds election weight + pendulum bond unchanged.
+//     Until 0.2.0 is chain-active all three behaviors are inert and splits/call/stake
+//     semantics stay byte-identical to 0.1.0, so old and new binaries interoperate until
+//     activation.
 const (
 	currentMajor        uint64 = 0
 	currentConsensus    uint64 = 2

@@ -220,7 +220,31 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 	case "hbd_savings":
 		base = balRecord.HBD_SAVINGS
 	case "hive_consensus":
+		// Develop's CRIT-1 path: take the snapshot bond as the base and fall
+		// through to the general sum-all-records-minus-meta fold below, which
+		// nets consensus_stake/unstake and the safety-slash debit/re-credit rows
+		// (none of which are protocol-meta) — superseding the older explicit
+		// OpType allow-list while keeping the same result.
 		base = balRecord.HIVE_CONSENSUS
+	case AssetDelegation:
+		// Per-edge delegation balance (consensus 0.2.0+). `account` is the composite
+		// owner DelegationEdgeKey(from,to); net = Σ consensus_stake − Σ consensus_unstake
+		// on that edge. Always summed from height 0: composite owners are never
+		// snapshotted into a BalanceRecord (no typed column), so there is no base to add.
+		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
+			account,
+			0,
+			blockHeight,
+			asset,
+			ledger_db.LedgerOptions{
+				OpType: []string{"consensus_stake", "consensus_unstake"},
+			},
+		)
+		balAdjust := int64(0)
+		for _, v := range *ledgerResults {
+			balAdjust += v.Amount
+		}
+		return balAdjust
 	default:
 		return 0
 	}

@@ -725,6 +725,10 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
+	// Consensus 0.2.0 gate: record a per-delegator edge so the delegator (not the
+	// node) can reclaim this stake. Pre-activation (or pre-genesis) → legacy path.
+	stakeElec, stakeElecFound := se.GetElectionInfoOrBlock(tx.Self.BlockHeight)
+
 	params := ledgerSystem.ConsensusParams{
 		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:        tx.From,
@@ -732,6 +736,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		Amount:      amount,
 		BlockHeight: tx.Self.BlockHeight,
 		Type:        "stake",
+		Delegated:   stakeElecFound && DelegatedStakeActiveForElection(stakeElec),
 	}
 
 	ledgerResult := ledgerSession.ConsensusStake(params)
@@ -850,6 +855,10 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
 		ElectionEpoch: electionResult.Epoch + 5,
+		// Consensus 0.2.0 gate (reuses the election already read above for the
+		// lock epoch): authorize against the signer's delegation edge + debit the
+		// node bond + return HIVE to the delegator. Pre-activation → legacy path.
+		Delegated: DelegatedStakeActiveForElection(electionResult),
 	}
 	ledgerResult := ledgerSession.ConsensusUnstake(params)
 

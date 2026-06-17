@@ -57,6 +57,13 @@ type ConsensusParams struct {
 	Type          string
 	BlockHeight   uint64
 	ElectionEpoch uint64
+	// Delegated selects per-edge delegation semantics (consensus 0.2.0+). Set by
+	// the caller from StateEngine.delegatedStakeActive(blockHeight). When true,
+	// stake records a from->to edge and unstake authorizes against the signer's
+	// edge + debits the node bond; when false, the legacy hive_consensus-holder
+	// path runs unchanged. Carried through into the OpLogEvent so the (pure)
+	// record builder stays deterministic.
+	Delegated bool
 }
 
 // SafetySlashConsensusParams debits HIVE_CONSENSUS principal for provable safety faults.
