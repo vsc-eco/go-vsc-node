@@ -137,3 +137,60 @@ func TestConsensusUnstakeLegacyUnchanged(t *testing.T) {
 	assert.False(t, over.Ok)
 	assert.Equal(t, "insufficient balance", over.Msg)
 }
+
+// Pro-rata slashing (the team's chosen policy): every delegator to a slashed
+// node loses the SAME fraction, independent of unstake order. Verified via the
+// balance effects of an unstake (released HIVE = the hive_consensus debit).
+//
+// Setup: userA and userC each delegated 10.000 to operatorB (gross total 20.000,
+// bond 20.000); operatorB was then slashed 50% -> bond 10.000, gross total still
+// 20.000. Each unstake of a 10.000 gross edge must release 10.000*bond/total.
+func TestConsensusDelegatedUnstakeProRataSlash(t *testing.T) {
+	const userA = "hive:usera"
+	const userC = "hive:userc"
+	const opB = "hive:operatorb"
+
+	ledgerMock := newMockLedgerDb()
+	seed := []ledgerDb.LedgerRecord{
+		{Id: "a#edge", Owner: ledgerSystem.DelegationEdgeKey(userA, opB), Asset: ledgerSystem.AssetDelegation, Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		{Id: "c#edge", Owner: ledgerSystem.DelegationEdgeKey(userC, opB), Asset: ledgerSystem.AssetDelegation, Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		{Id: "a#total", Owner: opB, Asset: ledgerSystem.AssetDelegationTotal, Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		{Id: "c#total", Owner: opB, Asset: ledgerSystem.AssetDelegationTotal, Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		{Id: "a#out", Owner: opB, Asset: "hive_consensus", Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		{Id: "c#out", Owner: opB, Asset: "hive_consensus", Amount: 10000, Type: "consensus_stake", BlockHeight: 1},
+		// 50% slash of operatorB's bond
+		{Id: "slash#1", Owner: opB, Asset: "hive_consensus", Amount: -10000, Type: ledgerSystem.LedgerTypeSafetySlashConsensus, BlockHeight: 1},
+	}
+	if err := ledgerMock.StoreLedger(seed...); err != nil {
+		t.Fatal(err)
+	}
+
+	ls := ledgerSystem.New(newMockBalanceDb(nil), ledgerMock, nil, newMockActionsDb(), nil)
+	session := ls.NewEmptySession(ls.NewEmptyState(), 1)
+
+	const h = 10
+	assert.Equal(t, int64(10000), session.GetBalance(opB, h, "hive_consensus"), "bond is 50%-slashed")
+	assert.Equal(t, int64(20000), session.GetBalance(opB, h, ledgerSystem.AssetDelegationTotal), "gross total is slash-immune")
+
+	// userA unstakes its full 10.000 gross edge -> released = 10000*10000/20000 = 5000.
+	rA := session.ConsensusUnstake(ledgerSystem.ConsensusParams{
+		Id: "u-a", From: userA, To: opB, Amount: 10000, BlockHeight: h,
+		Type: "unstake", ElectionEpoch: 1, Delegated: true,
+	})
+	assert.True(t, rA.Ok, rA.Msg)
+	assert.Equal(t, int64(5000), session.GetBalance(opB, h, "hive_consensus"),
+		"bond drops by RELEASED (5000), not gross")
+	assert.Equal(t, int64(0), session.GetBalance(ledgerSystem.DelegationEdgeKey(userA, opB), h, ledgerSystem.AssetDelegation),
+		"edge drains by GROSS (10000)")
+	assert.Equal(t, int64(10000), session.GetBalance(opB, h, ledgerSystem.AssetDelegationTotal),
+		"gross total drops by GROSS (10000) — keeps the ratio constant")
+
+	// userC unstakes its full 10.000 -> ratio still 5000/10000 = 0.5 -> released 5000.
+	rC := session.ConsensusUnstake(ledgerSystem.ConsensusParams{
+		Id: "u-c", From: userC, To: opB, Amount: 10000, BlockHeight: h,
+		Type: "unstake", ElectionEpoch: 1, Delegated: true,
+	})
+	assert.True(t, rC.Ok, rC.Msg)
+	assert.Equal(t, int64(0), session.GetBalance(opB, h, "hive_consensus"),
+		"both delegators released an equal 5000 — order-independent, bond fully distributed")
+}

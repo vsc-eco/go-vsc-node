@@ -31,17 +31,28 @@ func TestBackfillDelegationEdges(t *testing.T) {
 
 	out := BackfillDelegationEdges(records, 999)
 
-	got := map[string]int64{}
+	edge := map[string]int64{}
+	total := map[string]int64{}
 	for _, r := range out {
-		assert.Equal(t, AssetDelegation, r.Asset)
 		assert.Equal(t, uint64(999), r.BlockHeight)
-		got[r.Owner] = r.Amount
+		switch r.Asset {
+		case AssetDelegation:
+			edge[r.Owner] = r.Amount
+		case AssetDelegationTotal:
+			total[r.Owner] = r.Amount
+		default:
+			t.Fatalf("unexpected asset %q in backfill output", r.Asset)
+		}
 	}
 
-	assert.Equal(t, int64(10000), got[DelegationEdgeKey(userA, opB)], "userA->operatorB delegation reclaimable")
-	assert.Equal(t, int64(5000), got[DelegationEdgeKey(userC, opB)], "userC->operatorB delegation reclaimable")
-	assert.Equal(t, int64(2000), got[DelegationEdgeKey(opB, opB)], "operatorB self-edge net of its legacy unstake")
-	assert.Len(t, out, 3, "exactly three positive edges")
+	assert.Equal(t, int64(10000), edge[DelegationEdgeKey(userA, opB)], "userA->operatorB delegation reclaimable")
+	assert.Equal(t, int64(5000), edge[DelegationEdgeKey(userC, opB)], "userC->operatorB delegation reclaimable")
+	assert.Equal(t, int64(2000), edge[DelegationEdgeKey(opB, opB)], "operatorB self-edge net of its legacy unstake")
+	assert.Len(t, edge, 3, "exactly three positive edges")
+
+	// Gross per-node total (slash-immune) = sum of all edges to operatorB.
+	assert.Equal(t, int64(17000), total[opB], "operatorB gross delegated total = 10000+5000+2000")
+	assert.Len(t, total, 1, "one node total")
 
 	// Idempotency: re-running over output (AssetDelegation rows) must seed nothing.
 	asDelegationRecords := make([]ledgerDb.LedgerRecord, 0, len(out))
