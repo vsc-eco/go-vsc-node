@@ -25,7 +25,7 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
-//   - 0.2.0 — the Consensus 1→2 bump gates TWO independent consensus changes, both
+//   - 0.2.0 — the Consensus 1→2 bump gates THREE independent consensus changes, all
 //     activated together when the election floor reaches 0.2.0:
 //     (a) try/catch inter-contract calls (ICCallOptions.Try): a caught revert returns a
 //     structured outcome + rolls back to a savepoint instead of trapping. Until the
@@ -56,9 +56,20 @@ import (
 //     offchain unstake_hbd builds TxUnstakeHbd (releases stake) instead of TxStakeHbd
 //     (the 0.3.0 behavior that wrongly STAKED); below the line the legacy stake
 //     direction is preserved so old and new binaries interoperate until activation.
+//   - 0.5.0 — the Consensus 4→5 bump gates the consensus DELEGATION batch, activated
+//     together when the election floor reaches 0.5.0 (consensusversion.V0_5_0):
+//     (a) per-delegator consensus stake/unstake (DelegatedStakeActive) — a per-edge
+//     delegation balance (asset "delegation", composite owner "from::to") records who
+//     staked onto which node, so a delegator (not the node operator) can always
+//     reclaim their own delegated bond and the operator can never touch it; a one-time
+//     backfill reconstructs edges from historical stake records so pre-activation
+//     stakes become reclaimable. The node's aggregate hive_consensus still feeds
+//     election weight + pendulum bond unchanged. Below the line the legacy
+//     hive_consensus-holder unstake path runs byte-identically, so old and new
+//     binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 4
+	currentConsensus    uint64 = 5
 	currentNonConsensus uint64 = 0
 )
 

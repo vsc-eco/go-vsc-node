@@ -91,9 +91,48 @@ func TestV0_4_0Gates(t *testing.T) {
 		}
 	}
 
+	// v0.4.0 features stay active at/above the later 0.5.0 line (MeetsConsensusMin
+	// is monotone), so a 0.5.0-running binary still honors the safety batch.
+	if !MinMembersGuardActive(V0_5_0) || !UnstakeHbdDirectionFixActive(V0_5_0) {
+		t.Errorf("v0.4.0 gates must remain active at the 0.5.0 line")
+	}
+}
+
+// TestV0_5_0Gates pins the v0.5.0 consensus-delegation batch activation: every
+// v0.5.0 feature is inert at/below 0.4.0 and active at/above 0.5.0, keyed off the
+// single V0_5_0 line. non_consensus is ignored.
+func TestV0_5_0Gates(t *testing.T) {
+	below := []Version{
+		{Major: 0, Consensus: 0},
+		{Major: 0, Consensus: 4},
+		{Major: 0, Consensus: 4, NonConsensus: 9}, // 0.4.x is still below the line
+	}
+	atOrAbove := []Version{
+		{Major: 0, Consensus: 5},
+		{Major: 0, Consensus: 5, NonConsensus: 7}, // non_consensus ignored
+		{Major: 0, Consensus: 9},
+	}
+
+	for _, v := range below {
+		if Version0_5_0Active(v) {
+			t.Errorf("Version0_5_0Active(%s) = true, want false (below the line)", v.Format())
+		}
+		if DelegatedStakeActive(v) {
+			t.Errorf("DelegatedStakeActive(%s) = true, want false", v.Format())
+		}
+	}
+	for _, v := range atOrAbove {
+		if !Version0_5_0Active(v) {
+			t.Errorf("Version0_5_0Active(%s) = false, want true (at/above the line)", v.Format())
+		}
+		if !DelegatedStakeActive(v) {
+			t.Errorf("DelegatedStakeActive(%s) = false, want true", v.Format())
+		}
+	}
+
 	// The shipped binary must run the version it implements, so the floor can rise.
-	if RunningVersion().Cmp(V0_4_0) != 0 {
-		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.4.0 gates)",
-			RunningVersion().Format(), V0_4_0.Format())
+	if RunningVersion().Cmp(V0_5_0) != 0 {
+		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.5.0 gates)",
+			RunningVersion().Format(), V0_5_0.Format())
 	}
 }
