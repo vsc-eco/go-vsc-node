@@ -138,6 +138,57 @@ func TestConsensusUnstakeLegacyUnchanged(t *testing.T) {
 	assert.Equal(t, "insufficient balance", over.Msg)
 }
 
+// CONSENSUS-CRITICAL regression guard. The oplog — including OpLogEvent.Params —
+// is CBOR-encoded into the L2 oplog block CID (block-producer MakeOplog) that
+// every node must agree on. The LEGACY (pre-0.2.0, Delegated=false)
+// consensus_stake/unstake oplog Params MUST stay byte-identical to the original,
+// or a node on the new binary forks from an old node on ANY block with a
+// stake/unstake BEFORE 0.2.0 activates. Originals: consensus_stake had NO Params;
+// consensus_unstake had ONLY {epoch}.
+func TestLegacyConsensusOplogParamsUnchanged(t *testing.T) {
+	const acct = "hive:node1"
+	balDb := newMockBalanceDb(map[string][]ledgerDb.BalanceRecord{
+		acct: {{Account: acct, BlockHeight: 0, Hive: 100000, HIVE_CONSENSUS: 100000}},
+	})
+	newLs := func() ledgerSystem.LedgerSystem {
+		return ledgerSystem.New(balDb, newMockLedgerDb(), nil, newMockActionsDb(), nil)
+	}
+
+	// Legacy consensus_stake -> NO oplog Params.
+	ls := newLs()
+	st := ls.NewEmptyState()
+	sess := ls.NewEmptySession(st, 1)
+	res := sess.ConsensusStake(ledgerSystem.ConsensusParams{Id: "s1", From: acct, To: acct, Amount: 1000, BlockHeight: 1, Delegated: false})
+	assert.True(t, res.Ok, res.Msg)
+	sess.Done()
+	if assert.Len(t, st.Oplog, 1) {
+		assert.Nil(t, st.Oplog[0].Params, "legacy consensus_stake must carry NO oplog Params (consensus CID)")
+	}
+
+	// Legacy consensus_unstake -> ONLY {epoch}.
+	ls2 := newLs()
+	st2 := ls2.NewEmptyState()
+	sess2 := ls2.NewEmptySession(st2, 1)
+	res2 := sess2.ConsensusUnstake(ledgerSystem.ConsensusParams{Id: "u1", From: acct, To: acct, Amount: 1000, BlockHeight: 1, ElectionEpoch: 7, Delegated: false})
+	assert.True(t, res2.Ok, res2.Msg)
+	sess2.Done()
+	if assert.Len(t, st2.Oplog, 1) {
+		assert.Equal(t, map[string]interface{}{"epoch": uint64(7)}, st2.Oplog[0].Params,
+			"legacy consensus_unstake must carry ONLY {epoch}")
+	}
+
+	// Sanity: the DELEGATED path DOES stamp the flag so the 0.2.0 gate engages.
+	ls3 := newLs()
+	st3 := ls3.NewEmptyState()
+	sess3 := ls3.NewEmptySession(st3, 1)
+	sess3.ConsensusStake(ledgerSystem.ConsensusParams{Id: "s2", From: acct, To: "hive:node2", Amount: 1000, BlockHeight: 1, Delegated: true})
+	sess3.Done()
+	if assert.Len(t, st3.Oplog, 1) {
+		d, _ := st3.Oplog[0].Params["delegated"].(bool)
+		assert.True(t, d, "delegated consensus_stake must stamp delegated=true")
+	}
+}
+
 // One-time activation backfill: a pre-0.2.0 delegation (no edge rows, only the
 // legacy consensus_stake #in/#out pair) becomes reclaimable after the migration
 // runs — and the migration is idempotent (a second run is a no-op).

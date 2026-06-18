@@ -1895,8 +1895,18 @@ func (se *StateEngine) ExecuteBatch() {
 	// consensus_unstake in this very slot already sees its edge. Stamped at
 	// lastBlockBh so the edge rows are visible to every tx in the slot
 	// (tx.BlockHeight > lastBlockBh). No-op (single indexed lookup) once migrated.
-	if se.LedgerSystem != nil && se.delegatedStakeActive(se.slotStatus.SlotHeight) {
-		se.LedgerSystem.MigrateDelegationEdgesOnce(lastBlockBh)
+	//
+	// The gate uses the FAIL-STOP election read (same as the consensus_stake/
+	// unstake handlers) — NOT delegatedStakeActive/ActiveConsensusVersion, which
+	// returns a zero version on a transient election-DB error. A non-fail-stop
+	// gate could let one node skip the migration for a slot while peers run it,
+	// then reject a delegated unstake the peers accept → fork. Fail-stop blocks
+	// until the DB recovers so every node decides identically.
+	if se.LedgerSystem != nil {
+		if elec, found := se.GetElectionInfoOrBlock(se.slotStatus.SlotHeight); found &&
+			DelegatedStakeActiveForElection(elec) {
+			se.LedgerSystem.MigrateDelegationEdgesOnce(lastBlockBh)
+		}
 	}
 
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)

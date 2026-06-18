@@ -273,7 +273,7 @@ func (ledgerSession *ledgerSession) ConsensusStake(params ConsensusParams) Ledge
 		}
 	}
 
-	ledgerSession.AppendOplog(OpLogEvent{
+	stakeEvent := OpLogEvent{
 		Id:          params.Id,
 		From:        params.From,
 		To:          params.To,
@@ -282,11 +282,15 @@ func (ledgerSession *ledgerSession) ConsensusStake(params ConsensusParams) Ledge
 		Amount: params.Amount,
 		Asset:  "hive",
 		Type:   "consensus_stake",
-
-		Params: map[string]interface{}{
-			"delegated": params.Delegated,
-		},
-	})
+	}
+	// CONSENSUS-CRITICAL: the oplog (incl. Params) is CBOR-encoded into the L2
+	// oplog block CID (block-producer MakeOplog), so Params must be byte-identical
+	// to pre-0.2.0 on the legacy path or old/new nodes fork. Legacy consensus_stake
+	// carried NO Params — only stamp the delegated flag when actually delegated.
+	if params.Delegated {
+		stakeEvent.Params = map[string]interface{}{"delegated": true}
+	}
+	ledgerSession.AppendOplog(stakeEvent)
 
 	return LedgerResult{
 		Ok:  true,
@@ -331,6 +335,14 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		}
 	}
 
+	// CONSENSUS-CRITICAL (see ConsensusStake): keep the legacy oplog Params
+	// byte-identical. Legacy consensus_unstake carried ONLY {epoch}; the
+	// delegated/released keys are added solely on the delegated path (0.2.0+).
+	unstakeParams := map[string]interface{}{"epoch": params.ElectionEpoch}
+	if params.Delegated {
+		unstakeParams["delegated"] = true
+		unstakeParams["released"] = released
+	}
 	ledgerSession.AppendOplog(OpLogEvent{
 		Id:          params.Id,
 		To:          params.To,
@@ -341,11 +353,7 @@ func (ledgerSession *ledgerSession) ConsensusUnstake(params ConsensusParams) Led
 		Asset:  "hive",
 		Type:   "consensus_unstake",
 
-		Params: map[string]interface{}{
-			"epoch":     params.ElectionEpoch,
-			"delegated": params.Delegated,
-			"released":  released,
-		},
+		Params: unstakeParams,
 	})
 
 	return LedgerResult{
