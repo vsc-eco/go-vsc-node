@@ -20,6 +20,11 @@ type Ledger interface {
 	// rather than double-credits. Account-keyed rows (id contains '#') are
 	// preserved. See ledger-system.ClaimHBDInterest.
 	DeleteLegacyInterestRecords(recordBlockHeight uint64, owners []string) error
+	// GetLedgerRecordsByType returns ALL ledger records (every account) whose
+	// type is in `types`, up to and including toBlock, sorted deterministically
+	// (block_height, then id). Used by the one-time consensus-0.5.0 delegation
+	// backfill to reconstruct edges from the full stake/unstake history.
+	GetLedgerRecordsByType(types []string, toBlock uint64) ([]LedgerRecord, error)
 }
 
 type Balances interface {
