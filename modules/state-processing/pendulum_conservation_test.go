@@ -7,7 +7,6 @@ import (
 	"vsc-node/lib/intmath"
 	"vsc-node/lib/test_utils"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
-	pendulum "vsc-node/modules/incentive-pendulum"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	pendulumwasm "vsc-node/modules/incentive-pendulum/wasm"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -99,11 +98,7 @@ func TestPendulumAccrualHBDConservation(t *testing.T) {
 	a := pendulumwasm.New(
 		&stubGeometryForConservation{out: balancedConservationGeometry()},
 		func() []string { return []string{contractID} },
-		pendulumwasm.Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
-			NetworkShareNum: 1,
-			NetworkShareDen: 4,
-		},
+		pendulumwasm.DefaultConfig(),
 	)
 
 	const swapBh = uint64(100)
@@ -177,17 +172,15 @@ func TestPendulumAccrualFailsWhenContractUnderfunded(t *testing.T) {
 	a := pendulumwasm.New(
 		&stubGeometryForConservation{out: balancedConservationGeometry()},
 		func() []string { return []string{contractID} },
-		pendulumwasm.Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
-			NetworkShareNum: 1,
-			NetworkShareDen: 4,
-		},
+		pendulumwasm.DefaultConfig(),
 	)
 
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hive",
 		AssetOut: "hbd",
-		X:        10_000,
+		// Large swap so the (now CLP-scaled) node accrual still robustly exceeds
+		// the contract's tiny seeded HBD balance and the transfer guard fires.
+		X:        200_000,
 		XReserve: 1_000_000,
 		YReserve: 1_000_000,
 	}

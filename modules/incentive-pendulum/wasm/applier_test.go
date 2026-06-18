@@ -1,8 +1,10 @@
 package pendulumwasm
 
 import (
+	"math/big"
 	"testing"
 
+	"vsc-node/lib/intmath"
 	pendulum "vsc-node/modules/incentive-pendulum"
 	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 	wasm_context "vsc-node/modules/wasm/context"
@@ -56,11 +58,7 @@ func newApplier(t *testing.T, geo pendulumoracle.GeometryOutputs, whitelist []st
 	a := New(
 		&stubGeometry{out: geo},
 		func() []string { return whitelist },
-		Config{
-			Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
-			NetworkShareNum: 1,
-			NetworkShareDen: 4,
-		},
+		DefaultConfig(),
 	)
 	return a, &recordingAccrual{}
 }
@@ -303,13 +301,14 @@ func TestReserveConservationHBDIn(t *testing.T) {
 	}
 }
 
-// TestStabilizerMultiplierAppliesToFullFee pins the policy decision from
-// review-and-plan.md issue #7: m rides on (baseProtocol + baseCLP), not
-// protocol alone. The load-bearing assertion is that the extra fee charged
-// when m > 1 is dominated by the CLP leg — under the prior "m on protocol
-// only" code, the delta would be ~baseProtocol·(m−1) (single-digit base
-// units in this scenario), nowhere near baseCLP·(m−1).
-func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
+// TestStabilizerMultiplierRidesProtocolLegOnly pins the post-incident policy
+// (it reverses review-and-plan.md issue #7): the stabilizer multiplier m rides
+// the flat protocol leg ONLY. The CLP (slip) leg is scaled by cfg.CLPScaleBps and
+// is independent of m, so a high m can no longer double the price-impact-sized
+// CLP fee. Load-bearing assertion: the extra fee when m climbs 1.0→1.4 is just
+// baseProtocol·(m−1) (a couple base units), NOT the baseCLP·(m−1) blowup (~39
+// units here) the old "m on full fee" code charged.
+func TestStabilizerMultiplierRidesProtocolLegOnly(t *testing.T) {
 	args := wasm_context.PendulumSwapFeeArgs{
 		AssetIn:  "hbd", // HBD-in raises s; with s ≥ s_eq, this exacerbates → push=1.0.
 		AssetOut: "hive",
@@ -318,7 +317,7 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 		YReserve: 1_000_000,
 	}
 
-	// Baseline: s = 1.0 (s_eq) → m = 1.0 → totalFee == baseCLP + baseProtocol.
+	// Baseline: s = 1.0 (s_eq) → m = 1.0.
 	aBase, accBase := newApplier(t, balancedGeometry(), []string{"contract:pool-1"})
 	resBase := aBase.ApplySwapFees("contract:pool-1", "tx-1", 100, args, accBase.fn)
 	if resBase.IsErr() {
@@ -346,32 +345,178 @@ func TestStabilizerMultiplierAppliesToFullFee(t *testing.T) {
 		t.Fatalf("expected m == 1.4 at s=1.2, r=1%%, got %d bps", outHigh.MultiplierBps)
 	}
 
-	// Reserves identical in both runs → grossOut, baseCLP, baseProtocol all
-	// identical. Any difference in userOutput is the extra fee charged by m.
-	extraFee := outBase.UserOutput - outHigh.UserOutput
-	if extraFee <= 0 {
-		t.Fatalf("expected user output to drop with m>1, got base=%d high=%d", outBase.UserOutput, outHigh.UserOutput)
-	}
-
-	// Hand-computed at args + s=0.7:
+	// Reserves identical → grossOut, baseCLP, baseProtocol identical. Any drop in
+	// userOutput is the extra fee m adds. With m on the protocol leg only:
 	//   grossOut       = floor(10000·1_000_000 / 1_010_000) = 9900
-	//   baseCLP        = floor(10000² · 1_000_000 / 1_010_000²) = 98
 	//   baseProtocol   = floor(9900 · 8 / 10000) = 7
-	//   chargedCLP     = floor(98 · 14000 / 10000) = 137 → surplusCLP = 39
-	//   chargedProtocol= floor(7 · 14000 / 10000) = 9   → surplusProtocol = 2
-	// Total surplus under "m on full fee" = 41.
-	// Under prior "m on protocol only" the surplus would have been just 2.
-	wantExtraFee := int64(41)
-	if extraFee != wantExtraFee {
-		t.Fatalf("extra fee from m=1.4 = %d, want %d (m must ride on full fee, not protocol only)", extraFee, wantExtraFee)
+	//   chargedProtocol(1.0) = 7 ; chargedProtocol(1.4) = floor(7·14000/10000) = 9
+	//   extraFee = 9 − 7 = 2   (the CLP leg is m-independent, identical in both)
+	// Under the OLD "m on full fee" policy this would have been ~41 (baseCLP·0.4).
+	extraFee := outBase.UserOutput - outHigh.UserOutput
+	if extraFee != 2 {
+		t.Fatalf("extra fee from m=1.4 = %d, want 2 (m must ride the protocol leg only)", extraFee)
+	}
+	// Guard against regression back to the m-on-CLP blowup: baseCLP here is ~98,
+	// so m leaking onto it would push extraFee into the tens.
+	const protocolOnlyBound = 5
+	if extraFee > protocolOnlyBound {
+		t.Fatalf("extra fee %d > %d — m is leaking onto the CLP leg", extraFee, protocolOnlyBound)
+	}
+}
+
+// incidentGeometry reproduces the 2026-06 incident snapshot: s ≈ 1.82, far above
+// the s_eq = 1.0 target, which pins the stabilizer multiplier m at its 2× cap.
+func incidentGeometry() pendulumoracle.GeometryOutputs {
+	return pendulumoracle.GeometryOutputs{
+		OK:   true,
+		V:    1_820_000,
+		P:    910_000,
+		E:    1_000_000,
+		T:    1_000_000,
+		SBps: 18_217, // 1.8217
+	}
+}
+
+// incidentArgs reconstructs the overcharged swap (80.861 HBD in → ~1511 HIVE out)
+// from its logged slip x/(x+X) ≈ 3.16%.
+func incidentArgs() wasm_context.PendulumSwapFeeArgs {
+	return wasm_context.PendulumSwapFeeArgs{
+		AssetIn:  "hbd",
+		AssetOut: "hive",
+		X:        80_861,
+		XReserve: 2_474_000,
+		YReserve: 47_755_000,
+	}
+}
+
+// incidentBaseFees recomputes grossOut, baseCLP and baseProtocol with the same
+// integer ops the applier uses, so the regression tests can reason about the
+// pre-/post-fix fee without re-deriving the whole pipeline.
+func incidentBaseFees() (grossOut, baseCLP, baseProtocol *big.Int) {
+	a := incidentArgs()
+	x := big.NewInt(a.X)
+	xPlusX := big.NewInt(a.X + a.XReserve)
+	y := big.NewInt(a.YReserve)
+	grossOut = intmath.MulDivFloor(x, y, xPlusX)
+	x2 := new(big.Int).Mul(x, x)
+	denom2 := new(big.Int).Mul(xPlusX, xPlusX)
+	baseCLP = intmath.MulDivFloor(x2, y, denom2)
+	baseProtocol = intmath.MulDivFloor(grossOut, big.NewInt(8), big.NewInt(pendulum.BpsScale))
+	return
+}
+
+// TestCLPScaleTamesLargeSwap is the regression test for the 2026-06 overcharge.
+// On the real incident swap (m pinned at 2×), the default CLPScaleBps = 1/16 must
+// keep the total fee in the ~0.36% band instead of the ~6.5% the old "full CLP ×
+// m" code charged — an order-of-magnitude reduction — while staying under the 1%
+// clamp.
+func TestCLPScaleTamesLargeSwap(t *testing.T) {
+	a, acc := newApplier(t, incidentGeometry(), []string{"contract:pool-1"})
+	res := a.ApplySwapFees("contract:pool-1", "tx-incident", 100, incidentArgs(), acc.fn)
+	if res.IsErr() {
+		t.Fatalf("incident swap failed: %v", res)
+	}
+	out := res.Unwrap()
+
+	// Sanity: this is the worst case the incident hit — m at the 2× cap.
+	if out.MultiplierBps != pendulum.BpsScale*2 {
+		t.Fatalf("expected m pinned at 2× cap, got %d bps", out.MultiplierBps)
 	}
 
-	// Sanity: the CLP leg alone contributes far more than the protocol leg —
-	// i.e., even if integer rounding shifts the exact value, the delta cannot
-	// collapse back to the "protocol-only" regime.
-	const protocolOnlyBound = 5 // generous upper bound on (chargedProtocol − baseProtocol)
-	if extraFee <= protocolOnlyBound {
-		t.Fatalf("extra fee %d ≤ protocol-only bound %d — CLP leg is not being multiplied", extraFee, protocolOnlyBound)
+	grossOut, baseCLP, baseProtocol := incidentBaseFees()
+	newFee := new(big.Int).Sub(grossOut, big.NewInt(out.UserOutput))
+
+	// Bounded under the 1% clamp.
+	feeCap := intmath.MulDivFloor(grossOut, big.NewInt(100), big.NewInt(pendulum.BpsScale))
+	if newFee.Cmp(feeCap) > 0 {
+		t.Fatalf("new fee %s exceeds 1%% clamp %s", newFee, feeCap)
+	}
+
+	// Pinned to the k=1/16 band: 0.30%–0.60% of grossOut (the model said 0.36%).
+	// Lower bound proves the CLP leg still contributes (k≠0); upper bound proves
+	// the overcharge is gone.
+	lo := intmath.MulDivFloor(grossOut, big.NewInt(30), big.NewInt(pendulum.BpsScale))
+	hi := intmath.MulDivFloor(grossOut, big.NewInt(60), big.NewInt(pendulum.BpsScale))
+	if newFee.Cmp(lo) < 0 || newFee.Cmp(hi) > 0 {
+		t.Fatalf("new fee %s outside the [%s, %s] (0.30–0.60%%) k=1/16 band", newFee, lo, hi)
+	}
+
+	// At least 10× cheaper than the old policy (baseCLP·m + baseProtocol·m).
+	m := big.NewInt(int64(out.MultiplierBps))
+	oldFee := new(big.Int).Add(
+		intmath.MulDivFloor(baseCLP, m, big.NewInt(pendulum.BpsScale)),
+		intmath.MulDivFloor(baseProtocol, m, big.NewInt(pendulum.BpsScale)),
+	)
+	if new(big.Int).Mul(newFee, big.NewInt(10)).Cmp(oldFee) >= 0 {
+		t.Fatalf("new fee %s not ≥10× below old fee %s", newFee, oldFee)
+	}
+}
+
+// TestMaxFeeClampBinds proves the backstop: even if CLPScaleBps is misconfigured
+// all the way back to full slip (k=1), the clamp trims the CLP leg so the total
+// fee lands exactly on grossOut·MaxFeeBps/10000, and the network/pendulum split
+// still conserves against that capped total.
+func TestMaxFeeClampBinds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CLPScaleBps = pendulum.BpsScale // 1.0 → full slip, reproduces the overcharge pre-clamp
+	a := New(&stubGeometry{out: incidentGeometry()}, func() []string { return []string{"contract:pool-1"} }, cfg)
+	acc := &recordingAccrual{}
+
+	res := a.ApplySwapFees("contract:pool-1", "tx-clamp", 100, incidentArgs(), acc.fn)
+	if res.IsErr() {
+		t.Fatalf("clamped swap failed: %v", res)
+	}
+	out := res.Unwrap()
+
+	grossOut, _, _ := incidentBaseFees()
+	feeCap := intmath.MulDivFloor(grossOut, big.NewInt(int64(cfg.MaxFeeBps)), big.NewInt(pendulum.BpsScale))
+	newFee := new(big.Int).Sub(grossOut, big.NewInt(out.UserOutput))
+	if newFee.Cmp(feeCap) != 0 {
+		t.Fatalf("clamp did not bind exactly: fee %s, cap %s", newFee, feeCap)
+	}
+
+	// Conservation against the capped total: lp + node + network == total fee.
+	split := big.NewInt(out.LpShareOutput + out.NodeShareOutput + out.NetworkCreditOutput)
+	if split.Cmp(feeCap) != 0 {
+		t.Fatalf("splits %s do not conserve to capped fee %s", split, feeCap)
+	}
+}
+
+// TestActivationHeightGate proves the rollout gate: below cfg.ActivationHeight
+// the applier charges the legacy (overcharged) fee, and at/after it charges the
+// bounded fix. Same incident swap and geometry — only the block height differs.
+func TestActivationHeightGate(t *testing.T) {
+	const H = 107_396_400
+	cfg := DefaultConfig()
+	cfg.ActivationHeight = H
+	mk := func() *Applier {
+		return New(&stubGeometry{out: incidentGeometry()}, func() []string { return []string{"contract:pool-1"} }, cfg)
+	}
+	grossOut, _, _ := incidentBaseFees()
+	fee := func(bh uint64, tx string) *big.Int {
+		res := mk().ApplySwapFees("contract:pool-1", tx, bh, incidentArgs(), (&recordingAccrual{}).fn)
+		if res.IsErr() {
+			t.Fatalf("swap at height %d failed: %v", bh, res)
+		}
+		return new(big.Int).Sub(grossOut, big.NewInt(res.Unwrap().UserOutput))
+	}
+
+	preFee := fee(H-1, "tx-pre") // one block before activation → legacy overcharge
+	atFee := fee(H, "tx-at")     // activation block → bounded fix
+
+	// Pre-activation must be in the overcharge regime (>5% of grossOut here).
+	overchargeBar := intmath.MulDivFloor(grossOut, big.NewInt(500), big.NewInt(pendulum.BpsScale))
+	if preFee.Cmp(overchargeBar) < 0 {
+		t.Fatalf("pre-activation fee %s below the >5%% overcharge regime — gate not holding legacy math", preFee)
+	}
+	// Activation must cut the fee by at least 10×.
+	if new(big.Int).Mul(atFee, big.NewInt(10)).Cmp(preFee) >= 0 {
+		t.Fatalf("activation did not cut the fee ≥10×: pre=%s at=%s", preFee, atFee)
+	}
+	// And the post-activation fee must obey the 1% clamp.
+	feeCap := intmath.MulDivFloor(grossOut, big.NewInt(100), big.NewInt(pendulum.BpsScale))
+	if atFee.Cmp(feeCap) > 0 {
+		t.Fatalf("post-activation fee %s exceeds 1%% clamp %s", atFee, feeCap)
 	}
 }
 

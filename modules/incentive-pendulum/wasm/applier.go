@@ -43,15 +43,36 @@ type Config struct {
 	// means PDF behavior (no floor); leaving as a Config knob so we can dial
 	// it without code change once the team picks a value.
 	MinFractionBps int
+	// CLPScaleBps scales the CLP (slip) fee leg: chargedCLP =
+	// baseCLP·CLPScaleBps/10000. The stabilizer multiplier m does NOT ride this
+	// leg — m applies to the protocol leg only. baseCLP is the THORChain-style
+	// slip fee (≈ the swap's own price impact), so charging it in full and then
+	// ×m overcharged large swaps ~2× their slippage (the 2026-06 incident).
+	// 625 = 1/16 tames it; 0 drops the CLP leg entirely (protocol-fee-only).
+	CLPScaleBps int64
+	// MaxFeeBps hard-caps the total fee at grossOut·MaxFeeBps/10000; any excess
+	// is trimmed from the CLP leg (the protocol tier is preserved). 0 disables
+	// the clamp. Backstop so a misconfigured CLPScaleBps cannot reproduce the
+	// overcharge.
+	MaxFeeBps int64
+	// ActivationHeight gates the CLPScaleBps + MaxFeeBps fix on a Hive L1 block
+	// height. Below it the applier reproduces the pre-fix fee math bit-for-bit
+	// so witnesses can upgrade across a rollout window without diverging; at/
+	// after it the bounded fee is active. 0 = always active (no gate) — the
+	// testnet/devnet default. Mainnet sets params.PENDULUM_FEE_FIX_HEIGHT.
+	ActivationHeight uint64
 }
 
-// DefaultConfig returns the v1 testnet defaults: PDF stabilizer, 25% network
-// share, no LP floor. Override per-network via SystemConfig.
+// DefaultConfig returns the production defaults: PDF stabilizer, 25% network
+// share, no LP floor, the CLP slip leg scaled to 1/16 with m off it, and a 1%
+// total-fee clamp. Override per-network via SystemConfig.
 func DefaultConfig() Config {
 	return Config{
 		Stabilizer:      pendulum.DefaultStabilizerParamsBps(),
 		NetworkShareNum: 1,
 		NetworkShareDen: 4,
+		CLPScaleBps:     625, // 1/16
+		MaxFeeBps:       100, // 1.0% total-fee backstop
 	}
 }
 
@@ -177,10 +198,17 @@ func (a *Applier) ApplySwapFees(
 		big.NewInt(pendulum.BpsScale),
 	)
 
-	// 4. Stabilizer multiplier on both fee legs. PDF §5: total fee is
-	// (baseProtocol + baseCLP) · m; the surplus on each leg funds the
-	// rebalancing incentive and flows through the same 25%/75%
-	// network/pendulum split as the base fee.
+	// 4. Fee legs. The protocol leg is the flat tier and carries the stabilizer
+	// multiplier m. The CLP (slip) leg is scaled by cfg.CLPScaleBps and is
+	// deliberately NOT multiplied by m.
+	//
+	//   baseCLP = x²·Y/(x+X)² is the THORChain-style slip fee, which is
+	//   algebraically ≈ the swap's own price impact (CLP/impact = X/(X+x) ≈ 1).
+	//   The user already pays that impact through the curve, so charging the
+	//   full slip on top — and doubling it with m — overcharged large swaps
+	//   quadratically (≈2× price impact at the m cap; the 2026-06 incident).
+	//   cfg.CLPScaleBps (default 625 = 1/16) tames it to a small,
+	//   slip-proportional surcharge; CLPScaleBps == 0 drops the leg entirely.
 	//
 	// "Exacerbates" is derived from snapshot s and the swap direction — the
 	// SDK has all inputs, so accepting a contract-supplied hint would be a
@@ -201,19 +229,50 @@ func (a *Applier) ApplySwapFees(
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
-	chargedCLP := pendulum.ApplyMultiplierBps(baseCLP, multiplierBps)
 	chargedProtocol := pendulum.ApplyMultiplierBps(baseProtocol, multiplierBps)
 
-	// 5. Total fees per type, all output units. m rides on both legs;
-	// totalX == chargedX == baseX·m (with a floor of baseX so a degenerate
-	// m < 1 cannot subtract from the base fee).
-	totalCLP := chargedCLP
-	if totalCLP.Cmp(baseCLP) < 0 {
-		totalCLP = baseCLP
-	}
+	// 5. Total fees per type, all output units. The protocol leg always carries
+	// m and floors at baseProtocol so a degenerate m < 1 cannot subtract from it.
 	totalProtocol := chargedProtocol
 	if totalProtocol.Cmp(baseProtocol) < 0 {
 		totalProtocol = baseProtocol
+	}
+
+	// feeFixActive gates the 2026-06 overcharge fix on cfg.ActivationHeight — a
+	// Hive L1 block height (0 = always active, the testnet/devnet default).
+	// Before the height the applier reproduces the deployed pre-fix CLP math
+	// bit-for-bit so witnesses upgrading across the rollout window stay in
+	// consensus; at/after it the bounded fee takes effect for everyone atomically.
+	feeFixActive := a.cfg.ActivationHeight == 0 || blockHeight >= a.cfg.ActivationHeight
+
+	var totalCLP *big.Int
+	if feeFixActive {
+		// Fixed: CLP scaled by cfg.CLPScaleBps, m-independent, and no baseCLP
+		// floor (a floor here would defeat the k scaling).
+		totalCLP = pendulum.ApplyMultiplierBps(baseCLP, a.cfg.CLPScaleBps)
+	} else {
+		// Legacy (pre-fix): m rides the CLP leg, floored at baseCLP. This is the
+		// overcharge — baseCLP ≈ the swap's price impact, then doubled by m.
+		totalCLP = pendulum.ApplyMultiplierBps(baseCLP, multiplierBps)
+		if totalCLP.Cmp(baseCLP) < 0 {
+			totalCLP = baseCLP
+		}
+	}
+
+	// 5b. Safety clamp (fix only): bound the total fee to grossOut·MaxFeeBps/
+	// 10000, trimming the CLP leg (protocol tier preserved) before the splits so
+	// every downstream share derives from the capped legs and conservation still
+	// holds. Skipped pre-activation to stay bit-identical to the deployed path.
+	// 0 disables the clamp.
+	if feeFixActive && a.cfg.MaxFeeBps > 0 {
+		feeCap := intmath.MulDivFloor(grossOut, big.NewInt(a.cfg.MaxFeeBps), big.NewInt(pendulum.BpsScale))
+		if new(big.Int).Add(totalCLP, totalProtocol).Cmp(feeCap) > 0 {
+			maxCLP := new(big.Int).Sub(feeCap, totalProtocol)
+			if maxCLP.Sign() < 0 {
+				maxCLP = new(big.Int)
+			}
+			totalCLP = maxCLP
+		}
 	}
 
 	// 6. User pays both fees out of grossOut.

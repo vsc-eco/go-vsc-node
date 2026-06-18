@@ -2549,6 +2549,13 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		},
 		&pendulumCommitteeBondReader{se: se},
 	)
+	// On mainnet the 2026-06 swap-fee overcharge fix is gated to a coordinated
+	// activation height so witnesses can upgrade across the rollout window
+	// without diverging; testnet/devnet run the fix immediately (height 0).
+	pendulumCfg := pendulumwasm.DefaultConfig()
+	if sconf.OnMainnet() {
+		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
+	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
 			computer:          se.pendulumGeometry,
@@ -2558,7 +2565,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 			effectiveStakeDen: 3,
 		},
 		func() []string { return sconf.PendulumPoolWhitelist() },
-		pendulumwasm.DefaultConfig(),
+		pendulumCfg,
 	)
 
 	return se
