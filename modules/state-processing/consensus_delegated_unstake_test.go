@@ -138,6 +138,45 @@ func TestConsensusUnstakeLegacyUnchanged(t *testing.T) {
 	assert.Equal(t, "insufficient balance", over.Msg)
 }
 
+// One-time activation backfill: a pre-0.2.0 delegation (no edge rows, only the
+// legacy consensus_stake #in/#out pair) becomes reclaimable after the migration
+// runs — and the migration is idempotent (a second run is a no-op).
+func TestMigrateDelegationEdgesOnce(t *testing.T) {
+	const userA = "hive:usera"
+	const opB = "hive:operatorb"
+
+	ledgerMock := newMockLedgerDb()
+	if err := ledgerMock.StoreLedger(
+		ledgerDb.LedgerRecord{Id: "tx1#in", Owner: userA, Amount: -10000, Asset: "hive", Type: "consensus_stake", BlockHeight: 5},
+		ledgerDb.LedgerRecord{Id: "tx1#out", Owner: opB, Amount: 10000, Asset: "hive_consensus", Type: "consensus_stake", BlockHeight: 5},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	ls := ledgerSystem.New(newMockBalanceDb(nil), ledgerMock, nil, newMockActionsDb(), nil)
+
+	// Before migration: the edge is invisible (userA could not unstake).
+	pre := ls.NewEmptySession(ls.NewEmptyState(), 1)
+	assert.Equal(t, int64(0), pre.GetBalance(ledgerSystem.DelegationEdgeKey(userA, opB), 100, ledgerSystem.AssetDelegation),
+		"no edge before migration")
+
+	// Run the activation backfill at height 100.
+	assert.Equal(t, 1, ls.MigrateDelegationEdgesOnce(100), "one edge backfilled")
+
+	// After migration: edge + node gross total are readable → unstake would work.
+	post := ls.NewEmptySession(ls.NewEmptyState(), 1)
+	assert.Equal(t, int64(10000), post.GetBalance(ledgerSystem.DelegationEdgeKey(userA, opB), 100, ledgerSystem.AssetDelegation),
+		"userA->opB edge reclaimable after migration")
+	assert.Equal(t, int64(10000), post.GetBalance(opB, 100, ledgerSystem.AssetDelegationTotal),
+		"node gross total seeded")
+
+	// Idempotent: second run is a no-op (marker present), edge not doubled.
+	assert.Equal(t, 0, ls.MigrateDelegationEdgesOnce(101), "already migrated → no-op")
+	again := ls.NewEmptySession(ls.NewEmptyState(), 1)
+	assert.Equal(t, int64(10000), again.GetBalance(ledgerSystem.DelegationEdgeKey(userA, opB), 101, ledgerSystem.AssetDelegation),
+		"edge unchanged after second (no-op) run")
+}
+
 // Pro-rata slashing (the team's chosen policy): every delegator to a slashed
 // node loses the SAME fraction, independent of unstake order. Verified via the
 // balance effects of an unstake (released HIVE = the hive_consensus debit).

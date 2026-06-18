@@ -111,6 +111,7 @@ func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashCo
 }
 
 func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
+func (m *mockLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int  { return 0 }
 
 func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
 	_ = p

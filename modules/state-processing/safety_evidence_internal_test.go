@@ -44,6 +44,7 @@ func (s *stubLedgerSystem) PendulumDistribute(toAccount string, amount int64, tx
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
 func (s *stubLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {}
+func (s *stubLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int  { return 0 }
 func (s *stubLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }

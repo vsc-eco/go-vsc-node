@@ -219,6 +219,11 @@ type LedgerSystem interface {
 	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
 	SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult
 	FinalizeMaturedSafetySlashBurns(blockHeight uint64)
+	// MigrateDelegationEdgesOnce backfills per-delegator consensus-stake edges
+	// from history exactly once (idempotent via a persisted marker), at the
+	// consensus-0.2.0 activation. Caller gates on delegatedStakeActive. Returns
+	// the number of edges seeded (0 if already migrated / no history).
+	MigrateDelegationEdgesOnce(blockHeight uint64) int
 	// CancelPendingSafetySlashBurn cancels a pending burn slice before maturity.
 	// Idempotent: if the (TxID, EvidenceKind) row is missing, finalized, or
 	// already cancelled, returns Ok=false with a descriptive Msg but does not

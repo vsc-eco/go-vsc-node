@@ -129,6 +129,76 @@ func splitDelegationEdgeKey(key string) (from, to string) {
 	return parts[0], parts[1]
 }
 
+// Delegation-migration marker: a single ledger row written when the one-time
+// backfill completes. Its presence means "already migrated" — also true for a
+// node restored from a post-activation state snapshot, so the migration is
+// correctly skipped there.
+const (
+	delegationMigrationAccount  = "system:delegation_migration"
+	delegationMigrationAsset    = "delegation_migration"
+	delegationMigrationMarkerID = "delegation_migration_done"
+)
+
+// MigrateDelegationEdgesOnce backfills per-delegator delegation edges from the
+// full consensus stake/unstake history, exactly once, at consensus-0.2.0
+// activation. The caller MUST gate on delegatedStakeActive(blockHeight) and run
+// it BEFORE the slot's transactions execute (so a delegated unstake in the
+// activation slot sees its edge). Idempotent: a persisted marker short-circuits
+// re-runs, and even without it BackfillDelegationEdges ignores already-seeded
+// AssetDelegation/Total rows and StoreLedger upserts by deterministic Id, so a
+// crash mid-store re-converges. Deterministic: same canonical ledger -> same
+// edges on every node. Returns the number of edges seeded.
+func (ls *ledgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int {
+	if ls.LedgerDb == nil {
+		return 0
+	}
+	// Already migrated? (marker present, or restored from a post-activation snapshot)
+	if marker, _ := ls.LedgerDb.GetLedgerRange(
+		delegationMigrationAccount, 0, blockHeight, delegationMigrationAsset,
+	); marker != nil && len(*marker) > 0 {
+		return 0
+	}
+
+	records, err := ls.LedgerDb.GetLedgerRecordsByType(
+		[]string{"consensus_stake", "consensus_unstake"}, blockHeight)
+	if err != nil {
+		return 0 // transient read failure — retried next slot (marker still absent)
+	}
+
+	edges := BackfillDelegationEdges(records, blockHeight)
+
+	seeded := 0
+	out := make([]ledgerDb.LedgerRecord, 0, len(edges)+1)
+	for _, e := range edges {
+		if e.Asset == AssetDelegation {
+			seeded++ // count per-edge rows only (not the per-node total rows)
+		}
+		out = append(out, ledgerDb.LedgerRecord{
+			Id:          e.Id,
+			Owner:       e.Owner,
+			Amount:      e.Amount,
+			Asset:       e.Asset,
+			Type:        e.Type,
+			BlockHeight: e.BlockHeight,
+		})
+	}
+	// Marker row (Amount = activation height, for audit). Written in the same
+	// StoreLedger so it lands with the edges.
+	out = append(out, ledgerDb.LedgerRecord{
+		Id:          delegationMigrationMarkerID,
+		Owner:       delegationMigrationAccount,
+		Amount:      int64(blockHeight),
+		Asset:       delegationMigrationAsset,
+		Type:        delegationMigrationAsset,
+		BlockHeight: blockHeight,
+	})
+
+	if err := ls.LedgerDb.StoreLedger(out...); err != nil {
+		return 0 // store failed — marker absent, retried next slot
+	}
+	return seeded
+}
+
 // splitLedgerBaseId strips a single trailing "#segment" (e.g. "#in", "#out",
 // "#edge") from a ledger record id, returning the base id and the segment
 // (without the "#"). Ids may carry an idCache ":N" suffix on the base, which is

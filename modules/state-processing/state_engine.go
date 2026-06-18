@@ -1888,6 +1888,17 @@ func (se *StateEngine) ExecuteBatch() {
 	// instead of recreating the ledger session for every Hive transaction,
 	// we reuse one session for the whole slot so balance checks see prior ops
 	se.LedgerState.BlockHeight = lastBlockBh
+
+	// Consensus 0.2.0: the first slot whose chain-active version is >= 0.2.0
+	// backfills per-delegator stake edges from history, exactly once (idempotent
+	// via a persisted marker). Runs BEFORE the session/txs below so a delegated
+	// consensus_unstake in this very slot already sees its edge. Stamped at
+	// lastBlockBh so the edge rows are visible to every tx in the slot
+	// (tx.BlockHeight > lastBlockBh). No-op (single indexed lookup) once migrated.
+	if se.LedgerSystem != nil && se.delegatedStakeActive(se.slotStatus.SlotHeight) {
+		se.LedgerSystem.MigrateDelegationEdgesOnce(lastBlockBh)
+	}
+
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
 	for idx, tx := range se.TxBatch {

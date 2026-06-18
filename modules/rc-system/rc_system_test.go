@@ -118,6 +118,8 @@ func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(
 	return ledgerSystem.LedgerResult{Ok: false}
 }
 
+func (m *mockLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int { return 0 }
+
 // ── CalculateFrozenBal tests ──
 
 func TestCalculateFrozenBal_NoDecay(t *testing.T) {
