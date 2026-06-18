@@ -2,6 +2,7 @@ package test_utils
 
 import (
 	"slices"
+	"sort"
 	"strings"
 	"vsc-node/modules/aggregate"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -148,6 +149,30 @@ func (m *MockLedgerDb) GetDistinctAccountsRange(startBlock, endBlock uint64) ([]
 		}
 	}
 
+	return results, nil
+}
+
+func (m *MockLedgerDb) GetLedgerRecordsByType(types []string, toBlock uint64) ([]ledgerDb.LedgerRecord, error) {
+	results := make([]ledgerDb.LedgerRecord, 0)
+	for _, records := range m.LedgerRecords {
+		for _, record := range records {
+			if record.BlockHeight > toBlock {
+				continue
+			}
+			for _, t := range types {
+				if record.Type == t {
+					results = append(results, record)
+					break
+				}
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].BlockHeight != results[j].BlockHeight {
+			return results[i].BlockHeight < results[j].BlockHeight
+		}
+		return results[i].Id < results[j].Id
+	})
 	return results, nil
 }
 

@@ -124,6 +124,8 @@ func (m *mockLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) led
 
 func (m *mockLedgerSystem) ReserveAvailable() int64 { return 0 }
 
+func (m *mockLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int { return 0 }
+
 // ── CalculateFrozenBal tests ──
 
 func TestCalculateFrozenBal_NoDecay(t *testing.T) {
