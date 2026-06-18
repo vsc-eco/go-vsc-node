@@ -73,6 +73,16 @@ var MINIMUM_RC_LIMIT uint64 = 50
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
 var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
+
+// PENDULUM_FEE_FIX_HEIGHT is the mainnet activation height (Hive L1 block) for
+// the 2026-06 pendulum swap-fee overcharge fix (CLP-leg scaling + total-fee
+// clamp in incentive-pendulum/wasm). Below this height the applier reproduces
+// the pre-fix fee math bit-for-bit so witnesses can upgrade across the rollout
+// window without diverging; at/after it every witness switches to the bounded
+// fee atomically. ~6h after the 2026-06-18 deploy decision (head ≈107,389,200 +
+// 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
+// devnet run the fix immediately (Config.ActivationHeight 0).
+var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
