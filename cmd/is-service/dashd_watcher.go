@@ -105,7 +105,12 @@ func (c *DashdRPCClient) call(ctx context.Context, method string, params []any, 
 		return err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	// Audit L3 (LOW): bound the response body to prevent an
+	// unbounded-ReadAll slow-loris / OOM. 32 MiB comfortably exceeds
+	// any legitimate dashd JSON-RPC response (largest is getblock at
+	// ~megabytes for an oversized block).
+	const maxDashdRespBytes = 32 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxDashdRespBytes))
 	if err != nil {
 		return err
 	}

@@ -357,7 +357,7 @@ func (s *AddressSignerVaultTransit) Sign(callerCtx context.Context, depositAddre
 		return "", fmt.Errorf("calling vault transit/sign: %w", err)
 	}
 	defer resp.Body.Close()
-	rawBody, _ := io.ReadAll(resp.Body)
+	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // audit L3: bound Vault response
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Audit OPS-R15-04 (R15) + R16-OPS-vault-sign-401-no-token-
 		// source-identity (R16, MED): tag the status class so on-call
@@ -446,7 +446,7 @@ func (s *AddressSignerVaultTransit) fetchLatestPublicKey(ctx context.Context) (s
 		return "", 0, fmt.Errorf("calling vault transit/keys: %w", err)
 	}
 	defer resp.Body.Close()
-	rawBody, _ := io.ReadAll(resp.Body)
+	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // audit L3: bound Vault response
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", 0, fmt.Errorf("vault transit/keys returned %d: %s", resp.StatusCode, string(rawBody))
 	}
