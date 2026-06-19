@@ -779,20 +779,50 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// Audit M14 part A (5.0 — DEVNET-PROVEN IDOR): the previous
+	// response unconditionally included sess.SessionToken. The path
+	// `/session/{sid}/status` has no caller-binding (a polling client
+	// proves only that it knows sid, which is itself low-entropy in
+	// the current scheme — sids were observed accepting 2-char
+	// values). An attacker who guesses or harvests a sid (e.g. via
+	// browser history of a victim's prior tab) could fetch the
+	// SessionToken on the ON_CHAIN transition and impersonate the
+	// authenticated session.
+	//
+	// Mitigation: require a caller-proof header in addition to the
+	// path sid before returning the SessionToken field. The
+	// addressSignature returned by /session/start is bound to
+	// (depositAddress || instruction) and is known only to the
+	// originating client. Treat it as the per-session bearer secret.
+	// /status without the header still works (state-machine polling
+	// is the legitimate use) — only the SessionToken field is hidden.
+	clientToken := r.Header.Get("X-Session-Auth")
+	allowToken := clientToken != "" && constantTimeEqual(clientToken, sess.AddressSignature)
 	resp := SessionStatusResponse{
 		Sid:           sess.Sid,
 		State:         string(sess.State),
 		DashTxId:      sess.DashTxId,
 		SenderAddress: sess.SenderAddress,
-		SessionToken:  sess.SessionToken,
 		L2TxId:        sess.L2TxId,
 		ForwardError:  sess.ForwardError,
 		ExpiresAt:     sess.ExpiresAt.Format(time.RFC3339),
+	}
+	if allowToken {
+		resp.SessionToken = sess.SessionToken
 	}
 	if sess.OnChainAt != nil {
 		resp.ForwardedAt = sess.OnChainAt.Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// constantTimeEqual is a small wrapper around crypto/subtle's
+// ConstantTimeCompare so the M14 auth check doesn't leak timing.
+func constantTimeEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 func (s *Server) handleSessionCancel(w http.ResponseWriter, r *http.Request) {

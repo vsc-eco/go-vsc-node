@@ -71,7 +71,18 @@ func (b *Bot) HandleUnmap() {
 				continue
 			}
 			height, _ := b.LastBlock()
-			b.stateDB().MarkTransactionSent(ctx, tx.TxId, height)
+			// Audit FD9-1 (MED 5.5): the previous code discarded the
+			// MarkTransactionSent return value. If the DB write fails
+			// AFTER the vault spend is already broadcast, the record
+			// stayed `Pending` → confirmSpend never fired + the bot
+			// re-broadcast the tx forever → vault UTXO stranded.
+			// Surface the error loudly so the operator knows manual
+			// promotion is required (the on-chain tx is fine; only
+			// the local bookkeeping is stuck).
+			if err := b.stateDB().MarkTransactionSent(ctx, tx.TxId, height); err != nil {
+				b.L.Error("MarkTransactionSent failed AFTER vault broadcast — UTXO will be stranded until DB record is promoted to Sent manually",
+					"err", err, "txId", tx.TxId, "height", height)
+			}
 		}
 	}
 }
@@ -266,6 +277,26 @@ func (b *Bot) CheckSignagures(
 	return fullySignedTxs, nil
 }
 
+// attachSignatures builds the final spend transaction by placing each
+// input's TSS signature into a legacy P2SH scriptSig (BIP16 spend).
+//
+// Audit FD4-C1 (CVSS 9.1 LAUNCH-BLOCKING): the previous implementation
+// placed the signature in tx.TxIn[i].Witness and encoded with
+// wire.WitnessEncoding, matching BTC's segwit P2WSH spend. But Dash
+// deposit addresses are plain legacy P2SH (dash-mapping-contract/
+// contract/mapping/utils.go:32-37 — "Dash never activated SegWit so
+// we MUST use P2SH"). btcd's txscript.Engine rejected every withdrawal
+// as "signature script for witness nested p2sh is not canonical".
+// Compound failure with HandleUnmap burning the balance + deleting
+// UTXOs BEFORE the bot produced the (rejected) tx → permanent loss
+// on every withdrawal.
+//
+// Fix: build a legacy scriptSig of `<sig+sighash> <branchSelector>
+// <redeemScript>` via txscript.NewScriptBuilder, assign to
+// tx.TxIn[i].SignatureScript, and encode WITHOUT witness data.
+// inputData.WitnessScript carries the legacy redeem script after
+// contract-side FD4-C1 fix (msgp wire tag `ws` preserved for
+// backward-compat; semantic redefined).
 func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 	var tx wire.MsgTx
 	tx.Deserialize(bytes.NewReader(signedData.RawTx))
@@ -280,19 +311,34 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 		if inputData.IsBackup {
 			branchSelector = []byte{} // backup key path (OP_ELSE)
 		}
-		witness := wire.TxWitness{
-			signature[:],
-			branchSelector,
-			inputData.WitnessScript,
-		}
 
-		tx.TxIn[inputData.Index].Witness = witness
+		// Legacy P2SH scriptSig: pushdata <sig+sighash>, <branchSelector>,
+		// <redeemScript>. The redeemScript trailing-push is what BIP16
+		// signals to the verifier to take the HASH160 of and compare
+		// against the scriptPubKey's redeem-hash slot.
+		builder := txscript.NewScriptBuilder()
+		builder.AddData(signature)
+		if len(branchSelector) == 0 {
+			builder.AddOp(txscript.OP_0)
+		} else {
+			builder.AddData(branchSelector)
+		}
+		builder.AddData(inputData.WitnessScript)
+		scriptSig, err := builder.Script()
+		if err != nil {
+			return nil, err
+		}
+		tx.TxIn[inputData.Index].SignatureScript = scriptSig
+		// Explicitly clear any witness data — defense-in-depth against
+		// a future caller that pre-populates Witness for some other
+		// reason.
+		tx.TxIn[inputData.Index].Witness = nil
 	}
 
 	var buf bytes.Buffer
-	// serialize is almost the same but with a different protocol version. Not sure if that
-	// actually changes the result
-	if err := tx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
+	// Audit FD4-C1: serialize WITHOUT witness encoding for legacy P2SH.
+	// Serialize() uses the legacy (BIP141-free) wire format.
+	if err := tx.Serialize(&buf); err != nil {
 		return nil, err
 	}
 

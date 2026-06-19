@@ -804,15 +804,26 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 		return false, nil, fmt.Errorf("no public keys to verify")
 	}
 
-	// aggregate the pub keys
-	// agg all the pub keys at once
-	pubKey, _ := bls.AggregatePubkeys(includedPubKeys)
-	// aggWorks := aggPub.Aggregate(includedPubKeys, true)
-	// aggPubKey := aggPub.ToAffine()
+	// Aggregate the pub keys.
+	//
+	// Audit H4 (CVSS 7.5 — DEVNET-PROVEN panic): the previous
+	// `pubKey, _ := bls.AggregatePubkeys(...)` discarded the error
+	// path. The underlying protolambda/bls12-381-util library
+	// returns `(nil, "cannot add zero pubkey")` when any member's
+	// pubkey is the G1 identity point (a structurally-valid 48-byte
+	// compressed point that deserializes OK but represents the
+	// neutral element). The discarded nil then nil-derefs inside
+	// bls.Verify's pairing engine via a recovered panic in
+	// BlsCircuit.Verify's outer call site — a single on-chain
+	// validator-set entry with the identity pubkey halts consensus
+	// on every node. Sibling sdk.go:890 already checks the error
+	// (SAFE). Restore the matching check here.
+	pubKey, err := bls.AggregatePubkeys(includedPubKeys)
+	if err != nil {
+		return false, nil, fmt.Errorf("AggregatePubkeys failed: %w", err)
+	}
 
 	// verify the aggregated sig
 	verified := bls.Verify(pubKey, b.msg.Bytes(), b.aggSigs)
-	// verified := b.aggSigs.FastAggregateVerify(true, includedPubKeys, b.msg.Bytes(), nil)
-
 	return verified, includedDIDs, nil
 }
