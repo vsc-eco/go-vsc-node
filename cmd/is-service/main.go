@@ -134,6 +134,14 @@ func main() {
 			"pubkey", pubHex)
 		signer = s
 	case args.addressSignerSecret != "":
+		// Audit M4 (MED 6.0): the HMAC stub is dev-only per spec §5.7 —
+		// the frontend can't verify HMAC without sharing the symmetric
+		// secret. Refuse to start on mainnet, mirroring the
+		// -signerVaultToken default-rejection pattern (args.go:149).
+		if args.network == "mainnet" {
+			slog.Error("address signer: HMAC stub (-addressSignerSecret) is DEV-ONLY and refused on -network=mainnet; use -signerVaultAddr or -addressSignerEd25519KeyFile (§5.7)")
+			os.Exit(1)
+		}
 		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -signerVaultAddr (Vault Transit) or -addressSignerEd25519KeyFile per §5.7)")
 		signer = NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 	default:

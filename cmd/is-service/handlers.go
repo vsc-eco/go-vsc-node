@@ -646,6 +646,25 @@ func (s *Server) handleSessionStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Audit M14 part B: enforce a minimum-entropy floor on
+	// client-supplied sids. The devnet IDOR PoC accepted a
+	// 2-char sid `"aa"`; on a public mainnet that's
+	// brute-forceable. Reject anything below 16 hex chars
+	// (~64 bits) — well above any IS-service legitimate use
+	// (server-generated sids are 32-hex). hasReservedRune still
+	// runs below for control/delimiter checks.
+	const minSidLen = 16
+	const maxSidLen = 128 // L5: bound the upper end too
+	if len(sid) < minSidLen {
+		writeError(w, http.StatusBadRequest,
+			"sid too short — must be at least 16 chars (use the empty sid to let the server generate one)")
+		return
+	}
+	if len(sid) > maxSidLen {
+		writeError(w, http.StatusBadRequest,
+			"sid too long — must be at most 128 chars")
+		return
+	}
 	// Round-3 audit R3-005: the existence check is done atomically by
 	// PutNew below (TOCTOU between Get and Put let two concurrent same-
 	// sid requests silently clobber each other). No pre-check needed.

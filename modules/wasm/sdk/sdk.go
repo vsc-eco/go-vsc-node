@@ -828,9 +828,16 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			if ok {
 				outResult = "true"
 			}
+			// Audit M23 (MED 5.0): the previous flat 5×CYCLE_GAS_PER_RC
+			// charge under-priced large-message verifies — hash-to-curve
+			// is linear in len(msg). Charge a small per-byte component
+			// on top of the base. Anchor: 5 base + 1/16 per byte (a
+			// 1KB msg burns ~5+64 = 69 cycles equivalent, still cheap
+			// but proportional to work done).
+			gas := params.CYCLE_GAS_PER_RC * uint(5+(len(msg)+15)/16)
 			return result.Ok(SdkResultStruct{
 				Result: outResult,
-				Gas:    params.CYCLE_GAS_PER_RC * 5,
+				Gas:    gas,
 			})
 		},
 		// bls_verify_aggregate verifies an aggregated BLS signature against
@@ -901,10 +908,18 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			// Per-pubkey hash + curve add cost is roughly half a keccak each;
 			// the pairing dominates total cost regardless of N up to small
 			// quorum sizes (~17 for testnet, similar for mainnet).
+			//
+			// Audit M23 (MED 5.0): add a per-byte component on top of
+			// the pairing + per-pubkey cost. The hash-to-curve step
+			// inside the verify is linear in len(msg); without the
+			// per-byte term a contract that passes a 1MB message
+			// pays the same as a 32-byte one. Same 1/16 per byte
+			// anchor as bls_verify.
 			perPubkeyGas := uint(params.CYCLE_GAS_PER_RC / 2)
+			perMsgByteGas := uint(params.CYCLE_GAS_PER_RC / 16)
 			return result.Ok(SdkResultStruct{
 				Result: outResult,
-				Gas:    params.CYCLE_GAS_PER_RC*10 + perPubkeyGas*uint(len(pubkeys)),
+				Gas:    params.CYCLE_GAS_PER_RC*10 + perPubkeyGas*uint(len(pubkeys)) + perMsgByteGas*uint(len(msg)),
 			})
 		},
 	},
