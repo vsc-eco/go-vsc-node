@@ -354,6 +354,18 @@ func main() {
 		slog.Info("ValidatorSetForEpoch hook NOT wired — log-only submitter (no L2 RC at risk)")
 	}
 
+	// Audit C2 / H1 / FD3-1: re-use the dashd client the watcher
+	// already constructed to build the SPV inclusion proof the
+	// contract's fast-path mapInstantSendV2 now requires. The
+	// orchestrator falls into a recoverable failure path when the
+	// proof is unavailable (tx still in mempool, RPC down) — the
+	// contract REJECTS bundles without a valid proof, so passing
+	// nil here would just produce contract-side failures instead
+	// of clear orchestrator-side ones.
+	var dashdClient *DashdRPCClient
+	if dashd != nil {
+		dashdClient = dashd.RpcClient()
+	}
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions:             sessions,
 		Collector:            collector,
@@ -363,6 +375,7 @@ func main() {
 		ValidatorSetForEpoch: validatorSetForEpoch,
 		EpochFor:             epochFor,
 		ValidatorSetSource:   args.l2GqlURL,
+		DashdClient:          dashdClient,
 	})
 
 	// /healthz probe — surfaces LIVE libp2p connected-peer count + mesh

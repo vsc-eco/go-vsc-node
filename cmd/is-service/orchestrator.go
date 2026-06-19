@@ -108,6 +108,19 @@ type Orchestrator struct {
 	// via /healthz. Round-4 audit R4-007 — the existing
 	// per-event slog lines are not aggregable.
 	counters orchestratorCounters
+	// spvFetcher builds the SPV inclusion proof the contract's
+	// mapInstantSendV2 requires (audit C2 / H1 / FD3-1). Default
+	// production impl is the dashd JSON-RPC client. Tests pass a
+	// stub that returns canned proof bytes.
+	spvFetcher spvProofFetcher
+}
+
+// spvProofFetcher abstracts the SPV proof source so the orchestrator
+// can be unit-tested without a live dashd. The production impl
+// (DashdRPCClient.BuildSpvProof) walks the block's tx list and builds
+// the Merkle proof; the test fake returns canned values.
+type spvProofFetcher interface {
+	BuildSpvProof(ctx context.Context, txid string) (*SpvProof, error)
 }
 
 // orchestratorCounters aggregates per-event tallies for /healthz.
@@ -193,6 +206,18 @@ type OrchestratorConfig struct {
 	// roster-divergence slog.Error so operators know which upstream
 	// to investigate. Round-6 audit R6-OP-01.
 	ValidatorSetSource string
+	// DashdClient is the production SPV proof source. When wired, the
+	// orchestrator builds the audit-C2 inclusion proof from dashd's
+	// getrawtransaction + getblock + Merkle proof. Mutually exclusive
+	// with SpvFetcher (use one or the other).
+	DashdClient *DashdRPCClient
+	// SpvFetcher overrides the default DashdClient-based proof source.
+	// Used by unit tests to inject canned proofs. When nil, the
+	// orchestrator falls back to DashdClient. If both are nil, the
+	// orchestrator skips the SPV step entirely — submission will
+	// fail at the contract, which is the intended behavior for any
+	// production deploy that forgot to set -dashdRPC.
+	SpvFetcher spvProofFetcher
 }
 
 func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
@@ -221,7 +246,21 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		epochFor:             cfg.EpochFor,
 		validatorSetForEpoch: cfg.ValidatorSetForEpoch,
 		validatorSetSource:   cfg.ValidatorSetSource,
+		spvFetcher:           resolveSpvFetcher(cfg.SpvFetcher, cfg.DashdClient),
 	}
+}
+
+// resolveSpvFetcher picks the orchestrator's SPV source: explicit
+// SpvFetcher wins, then DashdClient, then nil (tests get fakeSpvFetcher
+// from their own config).
+func resolveSpvFetcher(explicit spvProofFetcher, dashd *DashdRPCClient) spvProofFetcher {
+	if explicit != nil {
+		return explicit
+	}
+	if dashd != nil {
+		return dashd
+	}
+	return nil
 }
 
 // Drive runs the full ATTESTING → ON_CHAIN flow for a single session in
@@ -479,13 +518,40 @@ func (o *Orchestrator) Drive(ctx context.Context, sid, txid, rawTxHex string) {
 		return
 	}
 
+	// Audit C2 + H1 + FD3-1: fetch the SPV inclusion proof before
+	// assembling the bundle. The contract REJECTS submissions without
+	// a valid proof — the credit fires only after the tx is proven
+	// included in a confirmed block. Failing to fetch the proof (tx
+	// still in mempool, dashd RPC down) is a transient error; the
+	// session moves to a recoverable terminal state.
+	//
+	// If no spvFetcher is wired (cfg.DashdClient + cfg.SpvFetcher both
+	// nil), the orchestrator submits an empty-proof bundle — the
+	// contract will reject. Tests that bypass the contract pass a
+	// fake fetcher with canned values.
+	var spvBlockHeight uint32
+	var spvMerkleProofHex string
+	var spvTxIndex uint32
+	if o.spvFetcher != nil {
+		spv, err := o.spvFetcher.BuildSpvProof(ctx, txid)
+		if err != nil {
+			o.fail(sid, fmt.Sprintf("SPV proof fetch failed (likely tx not yet confirmed): %v", err))
+			return
+		}
+		spvBlockHeight = spv.BlockHeight
+		spvMerkleProofHex = spv.MerkleProofHex
+		spvTxIndex = spv.TxIndex
+	}
 	payload := MapInstantSendPayload{
 		Body: MapInstantSendBody{
-			RawTxHex:     rawTxHex,
-			Instruction:  sess.Instruction,
-			Epoch:        req.Epoch,
-			Attestations: atts,
-			ChainId:      req.ChainId,
+			RawTxHex:       rawTxHex,
+			Instruction:    sess.Instruction,
+			Epoch:          req.Epoch,
+			Attestations:   atts,
+			ChainId:        req.ChainId,
+			BlockHeight:    spvBlockHeight,
+			MerkleProofHex: spvMerkleProofHex,
+			TxIndex:        spvTxIndex,
 		},
 		Agg: MapInstantSendAgg{
 			AggSigHex: aggSigHex,
