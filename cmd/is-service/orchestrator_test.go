@@ -238,7 +238,13 @@ func TestOrchestrator_ReconcileTimeoutIncrementsCounter(t *testing.T) {
 	assert.Equal(t, int64(1), counters.ReconcileTimeouts,
 		"ReconcileTimeouts must increment when status stays UNKNOWN")
 	sess, _ := store.Get("sid-reconcile-timeout")
-	assert.Equal(t, StateForwardFailed, sess.State)
+	// Audit M8: reconcile-timeout while last status was non-FAILED is
+	// SLOW_PATH_PENDING (recoverable), not FORWARD_FAILED. The tx may
+	// still confirm and the contract's slow-path mined-block proof
+	// will credit; frontend should show "still being mined" rather
+	// than "deposit lost."
+	assert.Equal(t, StateSlowPathPending, sess.State,
+		"reconcile-timeout with non-FAILED last status must be SLOW_PATH_PENDING per audit M8")
 }
 
 // Round-6 audit R6-TEST-05: pin the R5-ADV-01 roster-divergence

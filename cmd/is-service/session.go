@@ -26,15 +26,13 @@ const (
 	StateL2Submitted        SessionState = "L2_SUBMITTED"
 	StateOnChain            SessionState = "ON_CHAIN"
 	StateAttestationTimeout SessionState = "ATTESTATION_TIMEOUT"
-	// StateSlowPathPending is reserved for the spec's mined-block-
-	// proof fallback (§5.2). The slow-path flow is NOT wired into the
-	// orchestrator yet — Drive never transitions into this state.
-	// TODO(slow-path-workstream): implement the fallback that walks a
-	// session from AttestationTimeout into SlowPathPending and then to
-	// OnChain or ForwardFailed via the slow-path mined-block proof.
-	// Round-5 audit R5-TEST-01 noted the dead branch; left in place
-	// because it's a stable wire-protocol value the contract already
-	// accepts.
+	// StateSlowPathPending: the L2 submission landed in the mempool +
+	// reconciliation timed out without a terminal status. The tx may
+	// still confirm and credit via the contract's slow-path mined-block
+	// proof. Audit M8: orchestrator.pending() routes here (vs
+	// ForwardFailed) so the frontend can show "still being mined" and a
+	// recovery scanner can re-poll. Session.L2TxId + Session.ForwardError
+	// carry the human-readable hint.
 	StateSlowPathPending SessionState = "SLOW_PATH_PENDING"
 	StateForwardFailed   SessionState = "FORWARD_FAILED"
 	StateExpired         SessionState = "EXPIRED"
