@@ -714,13 +714,34 @@ func (o *Orchestrator) reconcileL2(ctx context.Context, sid, dashTxID, chainID, 
 		slog.Debug("L2 status not yet terminal",
 			"sid", sid, "l2TxId", l2TxID, "status", status, "attempt", attempt+1)
 	}
-	// Deadline elapsed without terminal status. Don't mint the token.
-	// Mark as forward-failed so frontend doesn't see a stuck session.
-	// The L2 tx may still land eventually — an operator can recover
-	// manually by inspecting Session.L2TxId in /healthz / /status.
+	// Deadline elapsed without terminal status. Audit M8: this case is
+	// NOT the same as a genuine FORWARD_FAILED — the L2 tx is still in
+	// the mempool (last seen status was INCLUDED / UNKNOWN, NOT FAILED).
+	// Transition to SLOW_PATH_PENDING with the L2 txid recorded so the
+	// frontend can show "your tx is being mined; check back later" and
+	// a recovery scanner can re-poll to mint the SessionToken once the
+	// L2 tx confirms. The contract's slow-path mined-block proof will
+	// also still credit if the L2 tx eventually lands but the IS-
+	// service is gone by then.
 	o.counters.ReconcileTimeouts.Add(1)
-	o.fail(sid, fmt.Sprintf("L2 reconcile timed out (l2TxId=%s); inspect chain state to recover", l2TxID))
+	o.pending(sid, fmt.Sprintf("L2 reconcile timed out (l2TxId=%s); tx may still confirm", l2TxID))
 	return false
+}
+
+// pending transitions the session to SLOW_PATH_PENDING (audit M8).
+// Distinct from o.fail which routes to FORWARD_FAILED — pending is for
+// "submission succeeded; awaiting confirmation that may still arrive,"
+// fail is for "submission is dead." A recovery scanner can poll
+// SLOW_PATH_PENDING sessions for the L2 tx terminal state and promote
+// to ON_CHAIN or FORWARD_FAILED as appropriate.
+func (o *Orchestrator) pending(sid, reason string) {
+	slog.Info("orchestrator: session entered slow-path-pending", "sid", sid, "reason", reason)
+	o.sessions.MutateState(sid, func(s *Session) {
+		if !s.State.IsTerminal() {
+			s.State = StateSlowPathPending
+			s.ForwardError = reason // re-use ForwardError as the human-readable hint surface; /status already serializes it
+		}
+	})
 }
 
 func (o *Orchestrator) fail(sid, reason string) {
