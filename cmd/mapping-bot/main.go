@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"vsc-node/cmd/mapping-bot/chain"
@@ -123,8 +125,30 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, bot)
 
+	// Audit FD9-2 (LOW 3.5): trap SIGINT/SIGTERM so a deploy-time
+	// restart finishes the in-flight PostTx → MarkSent window cleanly
+	// instead of stranding a vault UTXO (same fund-stranding class as
+	// FD9-1's discarded MarkSent return). The shutdown channel
+	// short-circuits the main loop's next iteration; the deferred
+	// db.Close + cancel() above run on return.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	shutdownCh := make(chan struct{})
+	go func() {
+		sig := <-sigCh
+		bot.L.Info("mapping-bot received shutdown signal — draining in-flight work", "signal", sig.String())
+		close(shutdownCh)
+	}()
+
 	var wg sync.WaitGroup
 	for {
+		select {
+		case <-shutdownCh:
+			bot.L.Info("mapping-bot exiting main loop after shutdown signal")
+			wg.Wait()
+			return
+		default:
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		// Periodic cleanup (every 24h)
@@ -137,6 +161,16 @@ func main() {
 			_, err = db.State.DeleteOldSentTransactions(ctx, 7*24*time.Hour)
 			if err != nil {
 				bot.L.Error("error deleting old sent transactions", "err", err)
+			}
+			// Audit FD9-4 (LOW 2.5): also drain stuck-Pending rows.
+			// Without this, a Pending tx whose vault spend never landed
+			// (e.g. FD9-1's MarkTransactionSent failure, or a node
+			// restart during the broadcast window per FD9-2) loops
+			// forever through re-broadcast attempts + grows the DB.
+			// 7d is the same horizon DeleteOldSentTransactions uses.
+			_, err = db.State.DeleteOldPendingTransactions(ctx, 7*24*time.Hour)
+			if err != nil {
+				bot.L.Error("error deleting old pending transactions", "err", err)
 			}
 			lastClear = time.Now()
 		}
