@@ -46,8 +46,11 @@ const (
 // TryCatchICCVersion is the minimum chain-active consensus version at which the
 // try/catch inter-contract-call semantics (ICCallOptions.Try) take effect. Below
 // it a Try call behaves exactly like a legacy call (a reverting callee traps the
-// caller), so activation is fully coordinated by the election version floor.
-var TryCatchICCVersion = Version{Major: 0, Consensus: 2, NonConsensus: 0}
+// caller), so activation is fully coordinated by the election version floor. It
+// is part of the v0.2.0 batch, so it is the same line as V0_2_0 (see
+// feature_gates.go) — kept as its own named var so the try/catch gate reads by
+// FEATURE at its call site.
+var TryCatchICCVersion = V0_2_0
 
 // ParseComponent parses a numeric version-component string, defaulting to 0 when
 // empty/invalid. Retained for the announcement payload helper; the running version itself

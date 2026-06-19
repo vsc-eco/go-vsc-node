@@ -22,6 +22,7 @@ import (
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	contract_session "vsc-node/modules/contract/session"
@@ -912,7 +913,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// Gated like the timelock itself: a no-op before rollout (no
 					// pending updates exist), and historical replay sees no such
 					// op, so reindex stays byte-identical. No fee.
-					if !se.sconf.OnMainnet() || se.sconf.ConsensusParams().ContractUpdateTimelockActive(txSelf.BlockHeight) {
+					if !se.sconf.OnMainnet() || consensusversion.ContractUpdateTimelockActive(se.ActiveConsensusVersion(txSelf.BlockHeight)) {
 						for idx, auth := range txSelf.RequiredAuths {
 							txSelf.RequiredAuths[idx] = "hive:" + auth
 						}

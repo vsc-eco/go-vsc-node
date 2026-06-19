@@ -21,6 +21,7 @@ import (
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -518,13 +519,15 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	// weight == threshold and posting carries vsc.dao + vsc.network.
 	//
 	// *** HIGHEST-RISK once active ***: with no vsc.dao backstop, a committee that
-	// wedges below threshold has no on-chain recovery. Do NOT pin Version0_2_0Height
-	// on mainnet until CP-1 (floor-advance readiness, gateway/TSS handover ordering,
-	// the floor guard) is devnet-proven under heavy churn.
+	// wedges below threshold has no on-chain recovery. Do NOT raise the consensus
+	// floor to 0.2.0 on mainnet until CP-1 (floor-advance readiness, gateway/TSS
+	// handover ordering, the floor guard) is devnet-proven under heavy churn.
 	//
-	// Determinism (Constraint 3): decentralizeOwner is a pure function of bh + the
-	// compile-time param, so every cosigner builds the identical account_update.
-	decentralizeOwner := ms.sconf.ConsensusParams().GatewayDecentralizationActive(bh)
+	// Determinism (Constraint 3): decentralizeOwner is a pure function of the
+	// chain-active consensus version at bh (ResultVersion of the election at bh,
+	// already loaded above) + the compile-time line, so every cosigner builds the
+	// identical account_update.
+	decentralizeOwner := consensusversion.GatewayDecentralizationActive(elections.ResultVersion(electionResult))
 
 	var eb [2]interface{}
 	eb[0] = "vsc.network"

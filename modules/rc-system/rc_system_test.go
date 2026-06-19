@@ -17,13 +17,21 @@ type mockLedgerSession struct {
 func (m *mockLedgerSession) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	return m.balances[account+":"+asset]
 }
-func (m *mockLedgerSession) ExecuteTransfer(op ledgerSystem.OpLogEvent, opts ...ledgerSystem.TransferOptions) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSession) ExecuteTransfer(
+	op ledgerSystem.OpLogEvent,
+	opts ...ledgerSystem.TransferOptions,
+) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
 func (m *mockLedgerSession) Withdraw(w ledgerSystem.WithdrawParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSession) Stake(s ledgerSystem.StakeOp, opts ...ledgerSystem.TransferOptions) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSession) Stake(
+	s ledgerSystem.StakeOp,
+	opts ...ledgerSystem.TransferOptions,
+) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
 func (m *mockLedgerSession) Unstake(s ledgerSystem.StakeOp) ledgerSystem.LedgerResult {
@@ -35,8 +43,8 @@ func (m *mockLedgerSession) ConsensusStake(c ledgerSystem.ConsensusParams) ledge
 func (m *mockLedgerSession) ConsensusUnstake(c ledgerSystem.ConsensusParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSession) Done() []string   { return nil }
-func (m *mockLedgerSession) Revert()          {}
+func (m *mockLedgerSession) Done() []string { return nil }
+func (m *mockLedgerSession) Revert()        {}
 
 // Savepoint/RestoreSavepoint are no-ops here: the RC-system tests don't exercise
 // nested ledger rollback (try/catch inter-contract calls); the mock only needs
@@ -53,37 +61,59 @@ type mockLedgerSystem struct {
 func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	return m.balances[account+":"+asset]
 }
-func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {}
+func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
+}
 func (m *mockLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
 }
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
 func (m *mockLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
 }
 func (m *mockLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
-func (m *mockLedgerSystem) PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSystem) PendulumDistribute(
+	toAccount string,
+	amount int64,
+	txID string,
+	blockHeight uint64,
+) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
+
+func (m *mockLedgerSystem) NewEmptySession(
+	state *ledgerSystem.LedgerState,
+	startHeight uint64,
+) ledgerSystem.LedgerSession {
 	return nil
 }
 func (m *mockLedgerSystem) NewEmptyState() *ledgerSystem.LedgerState { return nil }
-func (m *mockLedgerSystem) PendulumAccrue(account, asset string, amount int64, txID string, blockHeight uint64) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSystem) PendulumAccrue(
+	account, asset string,
+	amount int64,
+	txID string,
+	blockHeight uint64,
+) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashConsensusParams) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSystem) SafetySlashConsensusBond(
+	p ledgerSystem.SafetySlashConsensusParams,
+) ledgerSystem.LedgerResult {
 	_ = p
 	return ledgerSystem.LedgerResult{Ok: false}
 }
 func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
-func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(
+	p ledgerSystem.CancelPendingSafetySlashBurnParams,
+) ledgerSystem.LedgerResult {
 	_ = p
 	return ledgerSystem.LedgerResult{Ok: false}
 }
-func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.ReverseSafetySlashConsensusDebitParams) ledgerSystem.LedgerResult {
-	_ = p
-	return ledgerSystem.LedgerResult{Ok: false}
-}
-func (m *mockLedgerSystem) EnqueueRestitutionClaim(p ledgerSystem.EnqueueRestitutionClaimParams) ledgerSystem.LedgerResult {
+
+func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(
+	p ledgerSystem.ReverseSafetySlashConsensusDebitParams,
+) ledgerSystem.LedgerResult {
 	_ = p
 	return ledgerSystem.LedgerResult{Ok: false}
 }

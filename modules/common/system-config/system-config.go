@@ -209,11 +209,14 @@ func MainnetConfig() SystemConfig {
 			ConsensusVersionFloorConsensus: 1,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
-			// v0.2.0 release activation gate (see ConsensusParams.Version0_2_0Height).
-			// Gates the contract-update timelock and every other consensus change
-			// shipping in v0.2.0. 0 == unpinned/inert. PIN to a future mainnet height
-			// (strictly above the chain head at deploy) before the v0.2.0 rollout.
-			Version0_2_0Height: 0,
+			// v0.2.0 release activation: the contract-update timelock, gateway-key
+			// strict admission, gateway dao-removal, try/catch ICC and the pendulum
+			// LP-floor all gate on the CHAIN-ACTIVE CONSENSUS VERSION reaching 0.2.0
+			// (consensusversion.V0_2_0), driven by the floor below — NOT a dedicated
+			// height. The floor is currently 0.1.0 (epoch 1623), so the whole v0.2.0
+			// batch is inert. To roll out: raise ConsensusVersionFloorConsensus to 2
+			// at a future epoch boundary (CP-1 devnet-proven first — see the gateway
+			// dao-removal note in modules/gateway/multisig.go).
 			// Bond inclusion window (CP-2): 86,400 Hive blocks = 3 days @ 3s.
 			// Activation height 0 = INERT (no behavior change) until an operator
 			// pins a future epoch-boundary height (>=3d lead) for rollout.
@@ -285,20 +288,25 @@ func TestnetConfig() SystemConfig {
 			// Set to a future testnet height before rollout (same reindex-
 			// divergence rule as mainnet). 0 = disabled until then.
 			EvmAddressChecksumHeight: 3467200,
-			// v0.2.0 release activation gate. Testnet has persistent history, so
-			// PIN a future testnet height (above chain head) before rollout — not 1.
-			// 0 = inert until then.
+			// v0.2.0 release activation: now driven by the chain-active consensus
+			// version reaching 0.2.0 (the ConsensusVersionFloor* below), NOT a
+			// dedicated height. The floor is 0.2.0 from epoch 662, so the whole
+			// v0.2.0 batch is in force on testnet today (head is well past epoch 662).
 			//
-			// FIX(election-stall 2026-06-11): the prior 323_250 was BELOW the testnet
-			// head (~3.84M), so the H-6 gateway-PoP gate (+ contract-update timelock)
-			// went active the instant nodes ran the binary — against witness records
-			// the upgrade never backfilled with gateway_key_pop → the epoch-662
-			// election formed with member_count=0 and the chain stopped rotating
-			// committees. Re-pinned ~8h above the head (3_842_080 @ 2026-06-11) so every
-			// witness re-announces (its record gains gateway_key_pop) before the gate
-			// activates. protocol_version was already stored by the old indexer, so the
-			// 0.2.0 floor at ConsensusVersionFloorEpoch=662 already passes.
-			Version0_2_0Height: 3_852_000,
+			// The election-build gate (WitnessKeyStrictActive) keys on the PRIOR
+			// election's version, so it stays dormant for epoch 662 (prev = epoch 661
+			// = 0.1.0) and bites from epoch 663 — automatically giving witnesses a
+			// full epoch to re-announce gateway_key_pop, the same protection the old
+			// 3_852_000 height was hand-positioned to provide (FIX election-stall
+			// 2026-06-11), now without a magic number.
+			//
+			// REINDEX NOTE: testnet already activated v0.2.0 via the old 3_852_000
+			// height. The version gate re-derives activation from the floor, which
+			// differs from the height in the historical gap [epoch-662 anchor,
+			// 3_852_000] — a reindex from genesis can diverge there if any
+			// contract-update / gateway-rotation landed in that window. Forward
+			// operation is unaffected (both say "active" now); confirm before relying
+			// on a full-genesis testnet reindex.
 			// Bond inclusion window (CP-2): 7,200 blocks (~6h) for faster testnet
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
@@ -360,9 +368,16 @@ func DevnetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
-			// Ephemeral network (fresh per run): pin at 1 so v0.2.0 behavior is
-			// active from genesis and exercised by devnet/regression tests.
-			Version0_2_0Height: 1,
+			// Ephemeral network (fresh per run): pin the consensus-version floor to
+			// 0.2.0 from epoch 1 so the whole v0.2.0 batch is active from genesis and
+			// exercised by devnet/regression tests. Replaces the old
+			// Version0_2_0Height=1; this is the same floor pin the try/catch and
+			// LP-floor devnet tests already use (and pass with). No reindex concern —
+			// devnet is fresh per run and every node runs the current 0.2.0 binary,
+			// so the floor never excludes a witness.
+			ConsensusVersionFloorEpoch:     1,
+			ConsensusVersionFloorMajor:     0,
+			ConsensusVersionFloorConsensus: 2,
 			// Bond inclusion window (CP-2): tiny 80-block window for fast devnet
 			// tests. Activation 0 = inert; devnet test harness pins a low height
 			// to exercise the gate.
@@ -380,7 +395,8 @@ func DevnetConfig() SystemConfig {
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 400,
 			// Principal safety slashing ACTIVE from genesis on this ephemeral net
-			// (matches Version0_2_0Height=1) so the devnet double-sign integration
+			// (its own height, matching the 0.2.0 floor pin above) so the devnet
+			// double-sign integration
 			// test (tests/devnet/malicious_doublesign_test.go) can observe a real
 			// bond slash. Honest nodes never equivocate / propose invalid blocks,
 			// so no slash fires in normal runs; internal unit tests still pin their
@@ -414,10 +430,15 @@ func MocknetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
-			// Ephemeral network: pin at 1 so the in-process e2e harness runs with
-			// v0.2.0 behavior active from genesis.
-			Version0_2_0Height:            1,
-			BondInclusionWindowBlocks:     80,
+			// Mocknet leaves the consensus-version floor UNPINNED (no 0.2.0 floor).
+			// The in-process e2e harness wires v0.2.0 features it exercises directly
+			// (e.g. ContractTest.TryCatchActive → WithTryCatch), not via the chain
+			// version, and mocknet disables the contract-update timelock
+			// (contractUpdateTimelockBlocks: 0). Pinning the floor here would also
+			// make the version-floor filter exclude the version-less witness fixtures
+			// several election-proposer unit tests build. (Replaces the old
+			// Version0_2_0Height=1.)
+			BondInclusionWindowBlocks: 80,
 			BondInclusionActivationHeight: 0,
 			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
