@@ -420,9 +420,24 @@ func (r *requestRateLimiter) allow(peerID string) bool {
 		b.count++
 		return true
 	}
+	// Audit M19 (5.0): the previous code only ever ADDED entries to
+	// the state map; old peers with windows long elapsed were never
+	// reclaimed. At 10k tracked peers the limiter fails closed for
+	// EVERY new peer — a DoS surface. Reap expired entries before
+	// hitting the cap. This is cheap (linear scan of <=10k entries
+	// every allow() call ONLY when cap is hit) so it doesn't burn
+	// hot-path cycles in steady-state.
 	if len(r.state) >= r.maxPeers {
-		// Memory cap — refuse to track new peer, fail-closed for them.
-		return false
+		threshold := now.Add(-r.window)
+		for id, b := range r.state {
+			if b.windowAt.Before(threshold) {
+				delete(r.state, id)
+			}
+		}
+		if len(r.state) >= r.maxPeers {
+			// Still at cap after reaping — refuse to track new peer.
+			return false
+		}
 	}
 	r.state[peerID] = &requestBucket{count: 1, windowAt: now}
 	return true

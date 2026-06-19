@@ -167,20 +167,43 @@ func (c *attestationCollector) Collect(
 			if !ok {
 				return out
 			}
-			if _, dup := seen[resp.ValidatorDID]; dup {
-				continue
-			}
-			seen[resp.ValidatorDID] = struct{}{}
-			out = append(out, resp)
-			countsTowardThreshold := true
-			if verifier != nil {
-				countsTowardThreshold = verifier(resp)
-			}
-			if countsTowardThreshold {
+			// Audit M20 (4.5 — DEVNET-PROVEN): when a verifier is
+			// supplied, the previous code took the dedup slot on
+			// first-arrival regardless of signature validity. A
+			// forged bad-sig response that arrived first claimed the
+			// slot for a real validator's DID; the genuine response
+			// was then dropped at the dup check → verifiedCount
+			// stayed at 0 even though the validator did sign.
+			//
+			// Fix: the dedup slot is reserved for VERIFIED responses
+			// when a verifier is active. Unverified responses are
+			// still appended to `out` so the caller can surface them
+			// in diagnostics. The no-verifier path keeps the original
+			// dedup-on-DID behavior (TestCollector_DedupesByValidatorDID).
+			if verifier == nil {
+				if _, dup := seen[resp.ValidatorDID]; dup {
+					continue
+				}
+				seen[resp.ValidatorDID] = struct{}{}
+				out = append(out, resp)
 				verifiedCount++
 				if verifiedCount >= threshold {
 					return out
 				}
+				continue
+			}
+			// verifier != nil branch — diagnostic-friendly:
+			out = append(out, resp)
+			if !verifier(resp) {
+				continue
+			}
+			if _, dup := seen[resp.ValidatorDID]; dup {
+				continue
+			}
+			seen[resp.ValidatorDID] = struct{}{}
+			verifiedCount++
+			if verifiedCount >= threshold {
+				return out
 			}
 		case <-deadline.C:
 			return out

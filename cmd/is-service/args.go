@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 )
 
 // validateOperatorURL enforces that operator-supplied URL flags
@@ -77,12 +78,14 @@ type args struct {
 	dashdRPCURL          string
 	dashdRPCUser         string
 	dashdRPCPassword     string
+	dashdRPCPasswordFile string // audit M15: file alt
 	// L2 submitter — when l2GqlURL + l2PrivKeyHex are both set, the IS
 	// service will actually post mapInstantSendV2 transactions instead
 	// of using the log-only stub. The submitter's derived DID needs to
 	// be HBD-funded for RC.
 	l2GqlURL              string
 	l2PrivKeyHex          string
+	l2PrivKeyFile         string // audit M15: file alt for l2PrivKey
 	l2DashMappingContract string
 	l2RcLimit             int64
 	// libp2p broadcaster — when p2pBootstrapPeers is set, the IS
@@ -164,7 +167,12 @@ func parseArgs() (args, error) {
 		"dashd JSON-RPC URL for IS-lock observation (optional; e.g. http://vsc-dashd-testnet:9998). "+
 			"When unset, IS_OBSERVED transitions must be driven externally.")
 	fs.StringVar(&a.dashdRPCUser, "dashdRPCUser", "vsc-node-user", "dashd RPC username")
-	fs.StringVar(&a.dashdRPCPassword, "dashdRPCPassword", "vsc-node-pass", "dashd RPC password")
+	fs.StringVar(&a.dashdRPCPassword, "dashdRPCPassword", "vsc-node-pass",
+		"dashd RPC password (DEV/TEST default; production should use "+
+			"-dashdRPCPasswordFile per audit M15 to keep the secret out of /proc/cmdline + journal)")
+	fs.StringVar(&a.dashdRPCPasswordFile, "dashdRPCPasswordFile", "",
+		"Path to a file containing the dashd RPC password (audit M15 file alt for "+
+			"-dashdRPCPassword; preferred for production). Whitespace is trimmed.")
 
 	fs.StringVar(&a.l2GqlURL, "l2GqlURL", "",
 		"VSC GraphQL endpoint for L2 mapInstantSendV2 submission "+
@@ -172,7 +180,12 @@ func parseArgs() (args, error) {
 			"with the log-only submitter (no on-chain effect).")
 	fs.StringVar(&a.l2PrivKeyHex, "l2PrivKey", "",
 		"L2 signing private key (hex-encoded secp256k1). The derived did:pkh:eip155 "+
-			"needs HBD to pay per-tx RC. Required to enable real L2 submission.")
+			"needs HBD to pay per-tx RC. Required to enable real L2 submission. "+
+			"DEV/TEST inline form; production should use -l2PrivKeyFile per audit M15.")
+	fs.StringVar(&a.l2PrivKeyFile, "l2PrivKeyFile", "",
+		"Path to a file containing the L2 signing private key (audit M15 file alt for "+
+			"-l2PrivKey; preferred for production). File permissions are NOT checked "+
+			"but operators should set 0o600. Whitespace is trimmed.")
 	fs.StringVar(&a.l2DashMappingContract, "l2DashMappingContract", "",
 		"dash-mapping-contract id (vsc1...) for the chain we're submitting to. "+
 			"Required when l2GqlURL+l2PrivKey are set.")
@@ -334,5 +347,38 @@ func parseArgs() (args, error) {
 	if err := validateOperatorURL("-l2GqlURL", a.l2GqlURL); err != nil {
 		return a, err
 	}
+
+	// Audit M15: resolve file-based secret alternatives. Each file
+	// is read once at startup, trimmed of whitespace, and treated as
+	// the secret's inline equivalent. The file-form is preferred for
+	// production because the secret doesn't appear in /proc/cmdline,
+	// `ps`, or journald argv captures.
+	if a.dashdRPCPasswordFile != "" {
+		if a.dashdRPCPassword != "" && a.dashdRPCPassword != "vsc-node-pass" {
+			return a, fmt.Errorf("-dashdRPCPassword and -dashdRPCPasswordFile are mutually exclusive")
+		}
+		b, err := os.ReadFile(a.dashdRPCPasswordFile)
+		if err != nil {
+			return a, fmt.Errorf("could not read -dashdRPCPasswordFile: %w", err)
+		}
+		a.dashdRPCPassword = strings.TrimSpace(string(b))
+		if a.dashdRPCPassword == "" {
+			return a, fmt.Errorf("-dashdRPCPasswordFile is empty")
+		}
+	}
+	if a.l2PrivKeyFile != "" {
+		if a.l2PrivKeyHex != "" {
+			return a, fmt.Errorf("-l2PrivKey and -l2PrivKeyFile are mutually exclusive")
+		}
+		b, err := os.ReadFile(a.l2PrivKeyFile)
+		if err != nil {
+			return a, fmt.Errorf("could not read -l2PrivKeyFile: %w", err)
+		}
+		a.l2PrivKeyHex = strings.TrimSpace(string(b))
+		if a.l2PrivKeyHex == "" {
+			return a, fmt.Errorf("-l2PrivKeyFile is empty")
+		}
+	}
+
 	return a, nil
 }

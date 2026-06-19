@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,7 +105,12 @@ func (c *DashdRPCClient) call(ctx context.Context, method string, params []any, 
 		return err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	// Audit L3 (LOW): bound the response body to prevent an
+	// unbounded-ReadAll slow-loris / OOM. 32 MiB comfortably exceeds
+	// any legitimate dashd JSON-RPC response (largest is getblock at
+	// ~megabytes for an oversized block).
+	const maxDashdRespBytes = 32 << 20
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxDashdRespBytes))
 	if err != nil {
 		return err
 	}
@@ -127,6 +134,12 @@ type RawTransactionResult struct {
 	TxID        string `json:"txid"`
 	Hex         string `json:"hex"`
 	InstantLock bool   `json:"instantlock"`
+	// Blockhash + Confirmations are populated once the tx lands in a
+	// block; absent on mempool-only txs. The SPV-proof-fetcher
+	// requires Blockhash to fetch the block's tx list + build the
+	// Merkle proof (audit C2).
+	Blockhash     string `json:"blockhash,omitempty"`
+	Confirmations uint32 `json:"confirmations,omitempty"`
 	// Vout carries the output set so the watcher can pre-match watched
 	// addresses BEFORE firing onObserved. Without this filter every
 	// session-watching the watcher would mass-transition on every
@@ -196,6 +209,136 @@ func (c *DashdRPCClient) GetRawMempool(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
+// BlockVerboseResult is the projection of dashd's getblock(verbose=1)
+// response we consume to build SPV proofs.
+type BlockVerboseResult struct {
+	Hash   string   `json:"hash"`
+	Height uint32   `json:"height"`
+	Tx     []string `json:"tx"`
+}
+
+// GetBlock fetches a block's metadata + tx list (getblock <hash> 1).
+// Used by BuildSpvProof to find the tx's index in the block and to
+// collect the sibling hashes for the Merkle proof.
+func (c *DashdRPCClient) GetBlock(ctx context.Context, blockhash string) (*BlockVerboseResult, error) {
+	var b BlockVerboseResult
+	if err := c.call(ctx, "getblock", []any{blockhash, 1}, &b); err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+// SpvProof carries the inclusion proof for a confirmed Dash tx, in the
+// wire format the dash-mapping-contract's mapInstantSendV2 expects.
+type SpvProof struct {
+	BlockHeight    uint32
+	TxIndex        uint32
+	MerkleProofHex string
+}
+
+// BuildSpvProof fetches `txid`'s containing block from dashd, computes
+// the Merkle proof path, and returns it in the wire format the
+// contract's mapInstantSendV2 expects. Audit C2 (CRIT 9.1): the fast
+// path requires this proof before crediting.
+//
+// Implementation: txid → getrawtransaction → blockhash → getblock →
+// txid list → tx's position in the block + sibling hash chain.
+//
+// The proof bytes are concatenated 32-byte sibling hashes (Dash uses
+// the standard double-SHA256 Merkle tree, same as Bitcoin), formatted
+// as hex. The contract's verifyMerkleProof walks the sibling list +
+// the tx position to reconstruct the merkle root.
+func (c *DashdRPCClient) BuildSpvProof(ctx context.Context, txid string) (*SpvProof, error) {
+	rtx, err := c.GetRawTransaction(ctx, txid)
+	if err != nil {
+		return nil, fmt.Errorf("getrawtransaction(%s): %w", txid, err)
+	}
+	if rtx.Blockhash == "" {
+		return nil, fmt.Errorf("tx %s has no blockhash (mempool-only; await confirmation)", txid)
+	}
+	block, err := c.GetBlock(ctx, rtx.Blockhash)
+	if err != nil {
+		return nil, fmt.Errorf("getblock(%s): %w", rtx.Blockhash, err)
+	}
+	var txIndex uint32
+	found := false
+	for i, t := range block.Tx {
+		if t == txid {
+			txIndex = uint32(i)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("tx %s not found in block %s tx list", txid, rtx.Blockhash)
+	}
+	proofHex, err := buildMerkleProofHex(block.Tx, txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("build merkle proof: %w", err)
+	}
+	return &SpvProof{
+		BlockHeight:    block.Height,
+		TxIndex:        txIndex,
+		MerkleProofHex: proofHex,
+	}, nil
+}
+
+// buildMerkleProofHex walks the bitcoin/dash Merkle tree built from
+// the block's tx list and returns the sibling-hash chain for `index`
+// as hex (each sibling is 32 bytes, concatenated).
+//
+// Dashd's tx-id list is in big-endian display order (the reverse of
+// the raw double-SHA256 bytes that go into the Merkle hashes). We
+// reverse each txid into wire-order, build the tree of doubleHash
+// combinations, and emit the sibling-hash list in the order the
+// contract walks (least-significant level first, mirroring its
+// verifyMerkleProof).
+func buildMerkleProofHex(txList []string, index uint32) (string, error) {
+	if int(index) >= len(txList) {
+		return "", fmt.Errorf("txIndex %d out of range (len=%d)", index, len(txList))
+	}
+	hashes := make([][32]byte, len(txList))
+	for i, t := range txList {
+		b, err := hex.DecodeString(t)
+		if err != nil || len(b) != 32 {
+			return "", fmt.Errorf("invalid txid %s", t)
+		}
+		// Reverse bytes (display → wire).
+		var h [32]byte
+		for k := 0; k < 32; k++ {
+			h[k] = b[31-k]
+		}
+		hashes[i] = h
+	}
+	var proof []byte
+	pos := int(index)
+	for len(hashes) > 1 {
+		if len(hashes)%2 == 1 {
+			hashes = append(hashes, hashes[len(hashes)-1]) // bitcoin's odd-leaf convention
+		}
+		var siblingIdx int
+		if pos%2 == 0 {
+			siblingIdx = pos + 1
+		} else {
+			siblingIdx = pos - 1
+		}
+		proof = append(proof, hashes[siblingIdx][:]...)
+		// Combine pairs into the next level.
+		next := make([][32]byte, len(hashes)/2)
+		for i := 0; i < len(hashes); i += 2 {
+			var combined [64]byte
+			copy(combined[:32], hashes[i][:])
+			copy(combined[32:], hashes[i+1][:])
+			h := sha256.Sum256(combined[:])
+			h = sha256.Sum256(h[:])
+			next[i/2] = h
+		}
+		hashes = next
+		pos /= 2
+	}
+	return hex.EncodeToString(proof), nil
+}
+
 // ===== watcher =====
 
 // DashdWatcher polls dashd for IS-lock observations on a set of
@@ -242,6 +385,12 @@ func NewDashdWatcher(client *DashdRPCClient) *DashdWatcher {
 		pollInterval: 2 * time.Second,
 	}
 }
+
+// RpcClient exposes the underlying dashd RPC handle so other consumers
+// (notably the orchestrator's SPV proof fetcher per audit C2) can
+// share the same connection + retry config without each constructing
+// their own client.
+func (w *DashdWatcher) RpcClient() *DashdRPCClient { return w.client }
 
 // SetBypassISLockCheck toggles the test-only IS-lock bypass. See the
 // `bypassISLockCheck` field comment. Should only be called from main

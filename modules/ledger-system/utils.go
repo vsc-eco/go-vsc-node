@@ -11,6 +11,39 @@ var assetTypes = slices.Concat(transferableAssetTypes, []string{"hive_consensus"
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
 const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
 
+// VSC_CONTRACT_REGEX matches the base58 contract-id shape (vsc1...).
+// Used by audit L6's `to=contract:<id>` deposit-memo validation.
+const VSC_CONTRACT_REGEX = `^vsc1[1-9A-HJ-NP-Za-km-z]{32,40}$`
+
+// isValidContractID returns true if `id` matches the vsc1...
+// contract-id shape. Used to validate `to=contract:<id>` deposit
+// memos before passing them through to the ledger — a malformed
+// id would otherwise silently strand HBD with no contract to
+// receive it.
+func isValidContractID(id string) bool {
+	if len(id) < 36 || len(id) > 44 {
+		return false
+	}
+	if id[:4] != "vsc1" {
+		return false
+	}
+	// Base58 alphabet check (Bitcoin's: no 0, O, I, l).
+	for i := 4; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= '1' && c <= '9':
+		case c >= 'A' && c <= 'H':
+		case c >= 'J' && c <= 'N':
+		case c >= 'P' && c <= 'Z':
+		case c >= 'a' && c <= 'k':
+		case c >= 'm' && c <= 'z':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 const HBD_INSTANT_FEE = int64(1) // 1% or 100 bps
 const HBD_INSTANT_MIN = int64(1) // 0.001 HBD
 const HBD_FEE_RECEIVER = "vsc.dao"

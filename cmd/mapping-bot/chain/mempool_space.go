@@ -174,12 +174,22 @@ func (m *MempoolSpaceClient) GetTxDetails(txid string) (TxConfirmationDetails, e
 	if err := json.NewDecoder(txidsResp.Body).Decode(&txids); err != nil {
 		return TxConfirmationDetails{}, fmt.Errorf("error decoding block txids: %w", err)
 	}
+	// Audit FD9-3 (LOW 3.2): the previous default-to-0 silently used
+	// the coinbase position when the tx wasn't found in the block —
+	// the resulting Merkle proof was wrong → confirmSpend failed
+	// on-chain → manual retry required. Return a proper not-found
+	// error so the caller can retry or surface it loudly.
 	txIndex := uint32(0)
+	found := false
 	for i, id := range txids {
 		if id == txid {
 			txIndex = uint32(i)
+			found = true
 			break
 		}
+	}
+	if !found {
+		return TxConfirmationDetails{}, fmt.Errorf("tx %s reported as confirmed at height %d but missing from block %s txid list — refusing to fall back to txIndex=0 (would produce an invalid Merkle proof)", txid, status.BlockHeight, status.BlockHash)
 	}
 
 	return TxConfirmationDetails{

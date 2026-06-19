@@ -272,7 +272,10 @@ func (c *dashdRPCClient) call(ctx context.Context, method string, params []any, 
 		return err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	// Audit L3 (LOW): bound the dashd RPC response to prevent
+	// unbounded-ReadAll slow-loris / OOM. 32 MiB covers any legitimate
+	// dashd response.
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	var r rpcResponse
 	if err := json.Unmarshal(raw, &r); err != nil {
 		return fmt.Errorf("rpc response not JSON: %w (raw=%s)", err, string(raw))

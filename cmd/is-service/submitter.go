@@ -54,12 +54,21 @@ func IsL2TerminalSuccess(status string) bool {
 // type in dash-mapping-contract/contract/mapping/forwarder_integration.go).
 // Field names + JSON tags MUST stay byte-for-byte aligned. Drift here is
 // the audit's `payload-schema-mismatch-is-vs-contract` finding.
+//
+// Audit C2 + H1 + FD3-1: the BlockHeight/MerkleProofHex/TxIndex triplet
+// is now REQUIRED — the contract performs SPV verify before crediting,
+// uses the proven txid:vout as the canonical idempotency marker, and
+// registers the UTXO + bumps Supply on success. Without these fields
+// the contract rejects with "fast-path SPV verify failed".
 type MapInstantSendBody struct {
-	RawTxHex     string                      `json:"raw_tx_hex"`
-	Instruction  string                      `json:"instruction"`
-	Epoch        uint64                      `json:"epoch"`
-	Attestations []MapInstantSendAttestation `json:"attestations"`
-	ChainId      string                      `json:"chain_id"`
+	RawTxHex       string                      `json:"raw_tx_hex"`
+	Instruction    string                      `json:"instruction"`
+	Epoch          uint64                      `json:"epoch"`
+	Attestations   []MapInstantSendAttestation `json:"attestations"`
+	ChainId        string                      `json:"chain_id"`
+	BlockHeight    uint32                      `json:"block_height"`
+	MerkleProofHex string                      `json:"merkle_proof_hex"`
+	TxIndex        uint32                      `json:"tx_index"`
 }
 
 // MapInstantSendAttestation mirrors the contract's ValidatorAttestation.

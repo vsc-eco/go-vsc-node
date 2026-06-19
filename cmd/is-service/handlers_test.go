@@ -97,9 +97,9 @@ func TestSessionStart_Auth_ClientSuppliedSid(t *testing.T) {
 
 func TestSessionStart_Auth_DuplicateSidRejected(t *testing.T) {
 	srv := newTestServer(t)
-	first := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth", Sid: "same"})
+	first := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth", Sid: "same-sid-padded-to-meet-min-entropy"})
 	require.Equal(t, http.StatusCreated, first.Code)
-	second := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth", Sid: "same"})
+	second := doRequest(t, srv, "POST", "/session/start", SessionStartRequest{Op: "auth", Sid: "same-sid-padded-to-meet-min-entropy"})
 	assert.Equal(t, http.StatusConflict, second.Code,
 		"second session with same sid must conflict; body=%s", second.Body.String())
 }

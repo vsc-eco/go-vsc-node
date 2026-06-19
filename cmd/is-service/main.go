@@ -134,6 +134,14 @@ func main() {
 			"pubkey", pubHex)
 		signer = s
 	case args.addressSignerSecret != "":
+		// Audit M4 (MED 6.0): the HMAC stub is dev-only per spec §5.7 —
+		// the frontend can't verify HMAC without sharing the symmetric
+		// secret. Refuse to start on mainnet, mirroring the
+		// -signerVaultToken default-rejection pattern (args.go:149).
+		if args.network == "mainnet" {
+			slog.Error("address signer: HMAC stub (-addressSignerSecret) is DEV-ONLY and refused on -network=mainnet; use -signerVaultAddr or -addressSignerEd25519KeyFile (§5.7)")
+			os.Exit(1)
+		}
 		slog.Warn("address signer: HMAC stub (DEV/TEST ONLY — production must use -signerVaultAddr (Vault Transit) or -addressSignerEd25519KeyFile per §5.7)")
 		signer = NewAddressSignerHMAC([]byte(args.addressSignerSecret))
 	default:
@@ -346,6 +354,18 @@ func main() {
 		slog.Info("ValidatorSetForEpoch hook NOT wired — log-only submitter (no L2 RC at risk)")
 	}
 
+	// Audit C2 / H1 / FD3-1: re-use the dashd client the watcher
+	// already constructed to build the SPV inclusion proof the
+	// contract's fast-path mapInstantSendV2 now requires. The
+	// orchestrator falls into a recoverable failure path when the
+	// proof is unavailable (tx still in mempool, RPC down) — the
+	// contract REJECTS bundles without a valid proof, so passing
+	// nil here would just produce contract-side failures instead
+	// of clear orchestrator-side ones.
+	var dashdClient *DashdRPCClient
+	if dashd != nil {
+		dashdClient = dashd.RpcClient()
+	}
 	orch := NewOrchestrator(OrchestratorConfig{
 		Sessions:             sessions,
 		Collector:            collector,
@@ -355,6 +375,7 @@ func main() {
 		ValidatorSetForEpoch: validatorSetForEpoch,
 		EpochFor:             epochFor,
 		ValidatorSetSource:   args.l2GqlURL,
+		DashdClient:          dashdClient,
 	})
 
 	// /healthz probe — surfaces LIVE libp2p connected-peer count + mesh
