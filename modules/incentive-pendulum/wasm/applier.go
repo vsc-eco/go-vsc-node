@@ -385,10 +385,30 @@ func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
 	}
 }
 
-// splitFractionsBps returns (f_node, f_node_protocol) as basis points. fNode
+// splitFractionsBps returns (f_node, f_node_protocol) as basis points.
+//
+// Audit PEND-1 (HIGH 7.5 — CODE-PROVEN): the previous denominator mixed
+// HIVE-denominated T with HBD³ terms (T·V² + P·E·(cE−V)), producing
+// LP under-payment of +718 bps at devnet's price 0.0625 and +2916 bps
+// at 0.30 (test t = 1 makes the bug invisible; any HIVE price ≠ 1
+// exposed it). The audit's corrected form is HBD-denominated:
+//
+//	denom = E·((3/2)V² + P(cE − V))
+//	stake_node = (3/2)·V²·E
+//	f_node = stake_node / denom = (3/2)V² / ((3/2)V² + P(cE−V))
+//	       = 3V² / (3V² + 2P(cE − V))      (multiply through by 2)
+//
+// T and E cancel out — only V, E (in cE), and P remain. T is kept on
+// the function signature for caller compat but no longer participates
+// in the calc.
+//
+// fNode
 // applies to the CLP pot; fNodeProtocol applies to the protocol+surplus pot
 // with §9 redirect cliffs at the safe-band edges (pendulum.RedirectLo/HiBps).
 func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
+	_ = T // audit PEND-1: T no longer participates (cancels out under HBD-denominated stake)
+	_ = E // audit PEND-1: E also cancels (the corrected form is unit-homogeneous in V and P)
+
 	scale := big.NewInt(pendulum.BpsScale)
 
 	cE := pendulum.CliffTimesE(E)
@@ -397,19 +417,24 @@ func splitFractionsBps(T, V, E, P *big.Int, sBps int64) (int64, int64) {
 		return pendulum.BpsScale, pendulum.BpsScale
 	}
 
-	// denom = T·V² + P·E·(c·E − V)
-	tvSquared := new(big.Int).Mul(V, V)
-	tvSquared.Mul(tvSquared, T)
+	// Audit PEND-1: HBD-denominated stake formula.
+	//   numer = 3·V²
+	//   denom = 3·V² + 2·P·(cE − V)
+	//   f_node = numer · scale / denom (in bps)
+	three := big.NewInt(3)
+	two := big.NewInt(2)
+	vSquared := new(big.Int).Mul(V, V)
+	numer := new(big.Int).Mul(three, vSquared) // 3·V²
 	cEMinusV := new(big.Int).Sub(cE, V)
-	peTerm := new(big.Int).Mul(P, E)
-	peTerm.Mul(peTerm, cEMinusV)
-	denom := new(big.Int).Add(tvSquared, peTerm)
+	pTerm := new(big.Int).Mul(two, P)
+	pTerm.Mul(pTerm, cEMinusV) // 2·P·(cE − V)
+	denom := new(big.Int).Add(numer, pTerm)
 	if denom.Sign() == 0 {
 		return pendulum.BpsScale, pendulum.BpsScale
 	}
 
-	// f_node = T·V² / denom in bps.
-	fNodeBig := intmath.MulDivFloor(tvSquared, scale, denom)
+	// f_node = 3V² / (3V² + 2P(cE − V)) in bps.
+	fNodeBig := intmath.MulDivFloor(numer, scale, denom)
 	if !fNodeBig.IsInt64() {
 		return pendulum.BpsScale, pendulum.BpsScale
 	}
