@@ -441,9 +441,14 @@ func (e *electionProposer) GenerateFullElection(
 	)
 
 	// Strict consensus + gateway key admission (audit H-6), gated on the v0.2.0
-	// activation (Version0_2_0Height, via WitnessKeyStrictActive). Below it (and
-	// on every network where v0.2.0 is unpinned) this is skipped entirely — the
-	// legacy warn-only-PoP, no-dedup behaviour is unchanged. At/after it:
+	// activation via WitnessKeyStrictActive — keyed on the chain-active consensus
+	// version carried in from the PRIOR ratified election (prevVersion), NOT a
+	// height. Resolving from prevVersion keeps this gate out of the version-rise
+	// readiness loop (no circular dependency with the floor advance below) and
+	// gives the network one full epoch after the floor crosses 0.2.0 for witnesses
+	// to (re-)announce a valid PoP before the gate bites. Below 0.2.0 (and on every
+	// network whose floor has not reached it) this is skipped entirely — the legacy
+	// warn-only-PoP, no-dedup behaviour is unchanged. At/after it:
 	//   (a) EXCLUDE any witness whose consensus BLS key fails proof-of-possession
 	//       — a rogue key the announcer does not hold the secret for (admitted
 	//       today because the announce check is warn-only) can never reach the
@@ -455,7 +460,7 @@ func (e *electionProposer) GenerateFullElection(
 	// Pure functions of the on-chain witness records ⇒ identical committee/CID on
 	// every node and signer (Constraint 3). The members loop below still skips an
 	// unparseable consensus key as a final safety net.
-	if e.sconf.ConsensusParams().WitnessKeyStrictActive(blockHeight) {
+	if consensusversion.WitnessKeyStrictActive(prevVersion) {
 		seenConsensusKeys := make(map[string]string, len(witnessList))
 		seenGatewayKeys := make(map[string]string, len(witnessList))
 		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {

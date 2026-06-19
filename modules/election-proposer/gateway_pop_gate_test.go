@@ -6,28 +6,12 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/consensusversion"
-	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/witnesses"
 
 	ethBls "github.com/protolambda/bls12-381-util"
 	"github.com/vsc-eco/hivego"
 )
-
-// v020Sconf wraps a base SystemConfig and pins Version0_2_0Height, which all the
-// v0.2.0-keyed resolvers (including WitnessKeyStrictActive) delegate to. height 0
-// disables the v0.2.0 batch — e.g. the H-6 strict-key gate — regardless of the
-// base network's value; a positive height activates it for blocks >= it.
-type v020Sconf struct {
-	systemconfig.SystemConfig
-	height uint64
-}
-
-func (s v020Sconf) ConsensusParams() params.ConsensusParams {
-	cp := s.SystemConfig.ConsensusParams() // returned by value
-	cp.Version0_2_0Height = s.height
-	return cp
-}
 
 // h6Witness builds a witness with a VALID consensus BLS key + PoP (so it always
 // passes the consensus arm of the H-6 gate). withGatewayPoP toggles whether it
@@ -65,6 +49,10 @@ func h6Witness(t *testing.T, account string, seedByte byte, withGatewayPoP bool)
 	return witnesses.Witness{
 		Account: account,
 		Enabled: true,
+		// Announce consensus version 0.2.0 so the witness survives the election
+		// version-floor filter when the gate is driven by a 0.2.0 prevVersion (the
+		// floor and the H-6 gate now share that version input).
+		ProtocolVersion: 2,
 		DidKeys: []witnesses.PostingJsonKeys{
 			{CryptoType: "bls", Type: "consensus", Key: string(did), PoP: consPoP},
 		},
@@ -91,12 +79,15 @@ func TestH6GatewayPoPGate(t *testing.T) {
 		ct.DataLayer,
 		nil,
 		nil,
-		v020Sconf{SystemConfig: systemconfig.MocknetConfig(), height: 1}, // H-6 gate ON
+		systemconfig.MocknetConfig(),
 		nil,
 		nil,
 	)
 
-	_, data, err := ep.GenerateFullElection([]witnesses.Witness{good, noPoP}, 0, consensusversion.Version{}, 100)
+	// prevVersion = 0.2.0 drives WitnessKeyStrictActive ON (the gate keys on the
+	// prior election's version, not a height). The test witnesses announce 0.2.0
+	// so they survive the version-floor filter and reach the H-6 gate.
+	_, data, err := ep.GenerateFullElection([]witnesses.Witness{good, noPoP}, 0, consensusversion.V0_2_0, 100)
 	if err != nil {
 		t.Fatalf("GenerateFullElection: %v", err)
 	}

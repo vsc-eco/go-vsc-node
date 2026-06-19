@@ -11,29 +11,37 @@ import (
 
 // TestGatewayDecentralization_Version020Gate proves the A3-2 fix at runtime: the
 // removal of the vsc.dao account-auth backstop from the gateway wallet is now
-// gated on the v0.2.0 activation (Version0_2_0Active), not unconditional. One run
-// proves BOTH paths:
+// gated on the v0.2.0 activation (GatewayDecentralizationActive), not
+// unconditional. One run proves BOTH paths:
 //
-//   - Version0_2_0Height is pinned to 200. Gateway key rotations BELOW block 200
-//     are INERT → they retain vsc.dao in the owner authority (exactly base
-//     937ae771). Rotations AT/AFTER 200 are ACTIVE → they drop vsc.dao (committee
-//     keys only).
+//   - The consensus-version FLOOR is pinned to 0.2.0 at epoch v020FloorEpoch
+//     (≈ block v020Height, since ElectionInterval=20). Gateway key rotations
+//     while the chain-active version is BELOW 0.2.0 (before that epoch) are INERT
+//     → they retain vsc.dao in the owner authority (exactly base 937ae771).
+//     Rotations once the version is 0.2.0 are ACTIVE → they drop vsc.dao
+//     (committee keys only).
 //
 // devnet-setup creates vsc.gateway with AccountAuths=[] (no vsc.dao). So:
 //
-//	Phase 1 (inert, blocks 40–180): the first rotation RE-ADDS vsc.dao to the
-//	  owner auth → we poll the on-chain account until vsc.dao APPEARS. That
-//	  proves the inert path restores the backstop (the default below the v0.2.0
-//	  height — deploying the binary does NOT decentralize custody).
-//	Phase 2 (active, past block 200): a rotation drops vsc.dao → we poll until
-//	  it DISAPPEARS. That proves the pinned height actually removes the backstop.
+//	Phase 1 (inert, before the floor epoch): the first rotation RE-ADDS vsc.dao
+//	  to the owner auth → we poll the on-chain account until vsc.dao APPEARS.
+//	  That proves the inert path restores the backstop (the default before the
+//	  floor reaches 0.2.0 — deploying the binary does NOT decentralize custody).
+//	Phase 2 (active, after the floor epoch): a rotation drops vsc.dao → we poll
+//	  until it DISAPPEARS. That proves crossing the 0.2.0 floor removes the
+//	  backstop.
 //
-// NOTE: gateway decentralization was folded into the coordinated v0.2.0 batch
-// (was the standalone Cp4GatewayDecentralizationHeight). This pins
-// Version0_2_0Height (devnet default is 1 = active from genesis) to 200, so ALL
-// v0.2.0 behavior is inert below block 200 in this run — a valid pre-v0.2.0 chain
-// state. The test only exercises gateway rotation + vsc.dao presence, which does
-// not depend on other v0.2.0 features.
+// NOTE: gateway decentralization is part of the coordinated v0.2.0 batch, which
+// now activates on the CHAIN-ACTIVE CONSENSUS VERSION reaching 0.2.0 (not a
+// height). This pins the version floor to 0.2.0 at epoch v020FloorEpoch
+// (overriding the devnet default of epoch 1) so ALL v0.2.0 behavior is inert
+// before that epoch in this run — a valid pre-v0.2.0 chain state. The test only
+// exercises gateway rotation + vsc.dao presence, which does not depend on other
+// v0.2.0 features.
+//
+// CAVEAT: the epoch↔block boundary (v020FloorEpoch ≈ v020Height/ElectionInterval)
+// is approximate and was not re-run on docker after the height→version gate
+// migration — re-validate on a devnet run if the phase-1/phase-2 boundary drifts.
 //
 // Needs 8 nodes: the gateway floor is `len(gatewayKeys) < 8` → a 7-node devnet
 // never rotates (rotation is skipped), so the account_update would never land.
@@ -43,16 +51,24 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 	}
 	requireDocker(t)
 
-	const v020Height = 200
+	const (
+		v020Height     = 200 // approximate block boundary used for phase pacing
+		electionEvery  = 20
+		v020FloorEpoch = v020Height / electionEvery // ≈ epoch the floor reaches 0.2.0
+	)
 
 	cfg := regressionConfig()
 	cfg.Nodes = 8 // ≥8 gateway keys so keyRotation actually rotates
 	cp := cfg.SysConfigOverrides.ConsensusParams
-	cp.ElectionInterval = 20
-	// Gateway vsc.dao-backstop removal is gated on the v0.2.0 activation. Pin it
-	// to 200 (overriding the devnet default of 1) to exercise both sides of the
-	// gate within one run.
-	cp.Version0_2_0Height = v020Height
+	cp.ElectionInterval = electionEvery
+	// Gateway vsc.dao-backstop removal is gated on the chain-active consensus
+	// version reaching 0.2.0. Pin the version floor to 0.2.0 at epoch
+	// v020FloorEpoch (overriding the devnet default of epoch 1) so the chain runs
+	// pre-0.2.0 first, then crosses into 0.2.0 mid-run — exercising both sides of
+	// the gate within one run.
+	cp.ConsensusVersionFloorEpoch = v020FloorEpoch
+	cp.ConsensusVersionFloorMajor = 0
+	cp.ConsensusVersionFloorConsensus = 2
 	// The bond gate is irrelevant to gateway decentralization; leave it inert.
 	cp.BondInclusionActivationHeight = 0
 	if cfg.MagiEnv == nil {
@@ -72,7 +88,7 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Stop() })
 
-	t.Logf("starting 8-node devnet, Version0_2_0Height=%d, gateway rotation every 20 blocks...", v020Height)
+	t.Logf("starting 8-node devnet, 0.2.0 floor at epoch %d (≈block %d), gateway rotation every 20 blocks...", v020FloorEpoch, v020Height)
 	if err := d.Start(ctx); err != nil {
 		dumpDiagnostics(t, d, ctx)
 		t.Fatalf("starting devnet: %v", err)
@@ -111,7 +127,7 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 		t.Fatalf("vsc.dao was NOT removed from the gateway owner auth after block %d (current %d) — the v0.2.0 active path failed: %v", v020Height, bh, err)
 	}
 	bhP2, _, _ := d.LocalNodeInfo(ctx, 1)
-	t.Logf("PROVEN (Phase 2 / active): vsc.dao REMOVED from the gateway owner auth by a rotation at ~block %d (≥%d) — pinning Version0_2_0Height decentralizes custody", bhP2, v020Height)
+	t.Logf("PROVEN (Phase 2 / active): vsc.dao REMOVED from the gateway owner auth by a rotation at ~block %d (≥%d) — crossing the 0.2.0 consensus floor decentralizes custody", bhP2, v020Height)
 	t.Log("Gateway decentralization v0.2.0-gate PROVEN both ways on devnet: inert (block<200) retains vsc.dao; active (block≥200) removes it.")
 }
 

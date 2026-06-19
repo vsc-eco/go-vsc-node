@@ -136,8 +136,10 @@ var CONTRACT_UPDATE_TIMELOCK_BLOCKS uint64 = 57_600
 // Mocknet uses 0 (disabled) so the in-process e2e harness keeps its immediate-
 // update mechanics.
 //
-// The MAINNET rollout gate height lives in ConsensusParams.Version0_2_0Height
-// (set per-network in system-config), alongside the other rollout heights.
+// The timelock's ACTIVATION (vs. its duration here) is gated on the chain-active
+// consensus version reaching 0.2.0 (consensusversion.ContractUpdateTimelockActive),
+// driven per-network by the ConsensusVersionFloor* in system-config — not a
+// dedicated height.
 var CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET uint64 = 30
 
 // review2 LOW #70/#110: contract-call payloads were only UTF-8 checked,
@@ -197,26 +199,19 @@ type ConsensusParams struct {
 	// activation height for a deploy.
 	EvmAddressChecksumHeight uint64 `json:"evmAddressChecksumHeight,omitempty"`
 
-	// Version0_2_0Height is the single activation height for the v0.2.0 release
-	// batch — one named "fork" (Ethereum ChainConfig style) that every
-	// consensus-affecting change shipping in v0.2.0 keys off via Version0_2_0Active,
-	// instead of minting a separate gate per change that all carry the same value.
-	//
-	// The contract-update timelock is the first rule on it: on mainnet a
-	// vsc.update_contract at BlockHeight >= this value is queued behind the network
-	// timelock (ContractUpdateTimelockBlocks); earlier updates stay immediate so a
-	// full reindex reproduces historical state byte-for-byte. 0 == not scheduled
-	// (every v0.2.0 rule inert; updates immediate).
-	//
-	// MUST be a height STRICTLY ABOVE the current chain head when this binary is
-	// deployed — a value at/below an already-processed block is a consensus footgun
-	// (live nodes ran pre-v0.2.0 behavior over those blocks; a reindex would apply
-	// the new behavior and diverge). CONSENSUS-CRITICAL DEPLOY CONSTRAINT: every
-	// witness must run a binary carrying this height BEFORE Hive reaches it, or
-	// upgraded and not-yet-upgraded nodes disagree across the gap. If the rollout
-	// slips past this height, bump it before deploying. Ephemeral networks
-	// (devnet/mocknet) may pin it at 1 to exercise v0.2.0 behavior from genesis.
-	Version0_2_0Height uint64 `json:"version0_2_0Height,omitempty"`
+	// NOTE: the v0.2.0 release batch is no longer gated by a dedicated activation
+	// HEIGHT. Every consensus-affecting change shipping in v0.2.0 now gates on the
+	// CHAIN-ACTIVE CONSENSUS VERSION reaching 0.2.0 (consensusversion.V0_2_0 and
+	// the WitnessKeyStrictActive / ContractUpdateTimelockActive /
+	// GatewayDecentralizationActive resolvers in
+	// modules/common/consensusversion/feature_gates.go), the same mechanism
+	// try/catch and the pendulum LP-floor already use. Per-network rollout is
+	// therefore driven by the consensus-version floor below
+	// (ConsensusVersionFloor{Epoch,Major,Consensus} / a vsc.propose_consensus_version),
+	// which only rises once a stake-supermajority is attested running 0.2.0 — so
+	// the old "pin a height strictly above head or fork across the gap" footgun is
+	// gone. To roll out v0.2.0: raise ConsensusVersionFloorConsensus to 2 at a
+	// future epoch boundary (mainnet); ephemeral nets pin the floor low.
 
 	// RecoveryMultisigAccounts are Hive account names (no hive: prefix) authorized to post
 	// vsc.recovery_suspend and vsc.recovery_require_version.
@@ -260,8 +255,8 @@ type ConsensusParams struct {
 	// blockHeight >= this value apply the maturity gate; below it — and when 0 —
 	// the legacy raw HIVE_CONSENSUS read is used (so 0 = inert / no behavior
 	// change, the safe default until an operator pins a deploy height). Kept as
-	// its OWN height (NOT folded into Version0_2_0Height) because the window must
-	// activate only after a committee has formed — see BondInclusionActive. MUST
+	// its OWN height (NOT folded into the v0.2.0 version line) because the window
+	// must activate only after a committee has formed — see BondInclusionActive. MUST
 	// be a fixed network-wide constant set STRICTLY ABOVE the current head, on an
 	// epoch boundary, with >=3d lead, identical on every node (reindex or not):
 	// a height at/below an already-processed block diverges live vs reindex —
@@ -308,15 +303,15 @@ type ConsensusParams struct {
 	// SafetySlashConsensusBond). At blockHeight >= this value the detectors debit
 	// the bond; below it — and when 0 — they still run and log but never touch the
 	// ledger (0 = inert, the safe default). Kept as its OWN height (NOT folded into
-	// Version0_2_0Height) because principal slashing is on a more cautious maturity
-	// timeline than the rest of v0.2.0 and must be stageable independently.
+	// the v0.2.0 version line) because principal slashing is on a more cautious
+	// maturity timeline than the rest of v0.2.0 and must be stageable independently.
 	//
 	// CONSENSUS-CRITICAL: the slash changes ledger state, so this MUST be a fixed
 	// network-wide constant set STRICTLY ABOVE the current chain head before
 	// deploy, identical on every node (reindex or not). A height at/below an
 	// already-processed block is a consensus footgun — live nodes ran the
 	// no-slash path over those blocks; a reindex with this binary would slash them
-	// and diverge — exactly like EvmAddressChecksumHeight / Version0_2_0Height.
+	// and diverge — exactly like EvmAddressChecksumHeight.
 	// Every witness must run a binary carrying this height BEFORE Hive reaches it.
 	// Ephemeral networks may pin it low to exercise the active path.
 	SafetySlashActivationHeight uint64 `json:"safetySlashActivationHeight,omitempty"`
@@ -337,13 +332,13 @@ func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
 	return cp.EvmAddressChecksumHeight != 0 && blockHeight >= cp.EvmAddressChecksumHeight
 }
 
-// Version0_2_0Active reports whether the v0.2.0 release batch is in force at
-// blockHeight. Every consensus-affecting change shipping in v0.2.0 gates on this
-// single predicate so the network has one coordinated activation rather than a
-// gate per change. Zero height means the batch is not yet scheduled (inert).
-func (cp ConsensusParams) Version0_2_0Active(blockHeight uint64) bool {
-	return cp.Version0_2_0Height != 0 && blockHeight >= cp.Version0_2_0Height
-}
+// NOTE: the v0.2.0 batch resolvers (Version0_2_0Active / WitnessKeyStrictActive /
+// ContractUpdateTimelockActive / GatewayDecentralizationActive) moved to
+// modules/common/consensusversion/feature_gates.go and now take the chain-active
+// consensus version (resolved from the on-chain election) instead of a block
+// height — see V0_2_0 there. SafetySlashActive and BondInclusionActive keep their
+// OWN heights below because they must be stageable independently of the v0.2.0
+// version line (see each predicate's note).
 
 // SafetySlashActive reports whether verifiable-fault principal (HIVE_CONSENSUS
 // bond) slashing is in force at blockHeight. Call sites gate the ledger debit on
@@ -355,49 +350,18 @@ func (cp ConsensusParams) SafetySlashActive(blockHeight uint64) bool {
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate
-// applies to an election generated at blockHeight. Unlike the other v0.2.0
-// changes, the bond window keeps its OWN activation height (not folded into
-// Version0_2_0Height): it must activate only AFTER a committee has formed and
-// witnesses have a full window of stake history — activating it at genesis (where
-// devnet/mocknet pin Version0_2_0Height=1) would leave fresh stake unmatured. So
-// activationHeight==0 disables it entirely (legacy raw HIVE_CONSENSUS read);
-// otherwise it applies at blockHeight >= activationHeight. NOTE: the window length
-// W (BondInclusionWindowBlocks) being 0 also disables the maturity requirement
-// even when active — handled inside maturedConsensusStake — so callers gate on
-// this predicate AND pass W through.
+// applies to an election generated at blockHeight. Unlike the version-gated
+// v0.2.0 batch, the bond window keeps its OWN activation height: it must activate
+// only AFTER a committee has formed and witnesses have a full window of stake
+// history — activating it the instant the floor reaches 0.2.0 (which ephemeral
+// nets pin low) would leave fresh stake unmatured. So activationHeight==0 disables
+// it entirely (legacy raw HIVE_CONSENSUS read); otherwise it applies at
+// blockHeight >= activationHeight. NOTE: the window length W
+// (BondInclusionWindowBlocks) being 0 also disables the maturity requirement even
+// when active — handled inside maturedConsensusStake — so callers gate on this
+// predicate AND pass W through.
 func (cp ConsensusParams) BondInclusionActive(blockHeight uint64) bool {
 	return cp.BondInclusionActivationHeight != 0 && blockHeight >= cp.BondInclusionActivationHeight
-}
-
-// WitnessKeyStrictActive reports whether the election build should strictly
-// enforce consensus + gateway key admission at blockHeight (audit H-6): exclude
-// any witness whose consensus BLS key or gateway secp256k1 key fails its
-// proof-of-possession, and dedupe the committee by each key (keeping the
-// account-lexicographically-first witness on a collision).
-//
-// This ships in the v0.2.0 batch, so it is keyed to the single Version0_2_0Height
-// rather than a dedicated height — but kept as its own named resolver so the
-// election gate reads by FEATURE, and so distinct v0.2.0-era features stay
-// legible at their call sites even though they share one activation height. See
-// the (also v0.2.0-keyed) Version0_2_0Active.
-func (cp ConsensusParams) WitnessKeyStrictActive(blockHeight uint64) bool {
-	return cp.Version0_2_0Active(blockHeight)
-}
-
-// ContractUpdateTimelockActive reports whether the contract-update timelock (and
-// its cancel_contract_update op) is in force at blockHeight. Ships in the v0.2.0
-// batch, so keyed to the single Version0_2_0Height but kept as its own named
-// resolver so the state engine reads by FEATURE.
-func (cp ConsensusParams) ContractUpdateTimelockActive(blockHeight uint64) bool {
-	return cp.Version0_2_0Active(blockHeight)
-}
-
-// GatewayDecentralizationActive reports whether a gateway key rotation at
-// blockHeight should REMOVE the vsc.dao owner-authority backstop (audit A3-2).
-// Ships in the v0.2.0 batch, so keyed to the single Version0_2_0Height but kept
-// as its own named resolver so the gateway rotation reads by FEATURE.
-func (cp ConsensusParams) GatewayDecentralizationActive(blockHeight uint64) bool {
-	return cp.Version0_2_0Active(blockHeight)
 }
 
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this

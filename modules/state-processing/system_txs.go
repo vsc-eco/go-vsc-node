@@ -9,6 +9,7 @@ import (
 	"vsc-node/lib/dids"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -370,7 +371,7 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 		// Queue the whole update behind the network timelock. Until this height
 		// the previously-active version (existing) keeps running; ContractById
 		// ignores this row while activation_height > the query height.
-		ActivationHeight: se.contractUpdateActivationHeight(tx.Self.BlockHeight),
+		ActivationHeight: se.contractUpdateActivationHeight(tx.Self.BlockHeight, se.ActiveConsensusVersion(tx.Self.BlockHeight)),
 	}
 	if tx.Owner != "" {
 		// update owner
@@ -426,18 +427,21 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 
 // contractUpdateActivationHeight returns the height at which an update submitted
 // at submitHeight becomes the active code. It is submitHeight (immediate) when
-// the network has no timelock, or — on mainnet — while the rollout gate is unset
-// or unreached, so a full reindex reproduces historical state byte-for-byte.
-// Otherwise it is submitHeight + the network's (non-overridable) timelock.
-func (se *StateEngine) contractUpdateActivationHeight(submitHeight uint64) uint64 {
+// the network has no timelock, or — on mainnet — while the chain-active consensus
+// version has not reached 0.2.0, so a full reindex reproduces historical state
+// byte-for-byte. Otherwise it is submitHeight + the network's (non-overridable)
+// timelock. `active` is the chain-active consensus version at submitHeight,
+// resolved by the caller (se.ActiveConsensusVersion) and passed in so this policy
+// stays a pure function of (network, submitHeight, version).
+func (se *StateEngine) contractUpdateActivationHeight(submitHeight uint64, active consensusversion.Version) uint64 {
 	blocks := se.sconf.ContractUpdateTimelockBlocks()
 	if blocks == 0 {
 		return submitHeight
 	}
 	if se.sconf.OnMainnet() {
-		// Pre-v0.2.0 (or unpinned gate): updates stay immediate so a full reindex
+		// Pre-v0.2.0 (floor below 0.2.0): updates stay immediate so a full reindex
 		// reproduces historical state byte-for-byte.
-		if !se.sconf.ConsensusParams().ContractUpdateTimelockActive(submitHeight) {
+		if !consensusversion.ContractUpdateTimelockActive(active) {
 			return submitHeight
 		}
 	}
