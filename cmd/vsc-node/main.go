@@ -240,8 +240,22 @@ func main() {
 
 	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
+	tssKeysDir := path.Join(args.dataDir, "tss-keys")
+	flatDb, err := flatfs.CreateOrOpen(tssKeysDir, flatfs.Prefix(1), false)
 	if err != nil {
+		panic(err)
+	}
+	// M58-O6: the TSS keystore holds the node's threshold-signature share
+	// material (per key id / epoch). go-ds-flatfs creates this directory with
+	// os.MkdirAll(path, 0755) (flatfs.go) and writes shard files at 0666, both
+	// subject only to umask — so a misconfigured umask, an `cp` without -p, or a
+	// `tar --no-same-permissions` extract leaves the directory world-readable,
+	// letting any adjacent local user enumerate the TSS key ids and epochs.
+	// Mirror the owner-only treatment the identity config already gets (GV-H7 /
+	// review2 CRITICAL #5 in modules/config/config.go) by forcing the keystore
+	// directory to 0700 regardless of umask. flatfs created/opened it above, so
+	// the chmod is unconditional and idempotent.
+	if err := os.Chmod(tssKeysDir, 0700); err != nil {
 		panic(err)
 	}
 

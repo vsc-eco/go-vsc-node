@@ -21,7 +21,7 @@ func (d *Devnet) fundAccounts() error {
 			hivego.TransferOperation{
 				From:   "initminer",
 				To:     witnessName,
-				Amount: "100.000 TBD",
+				Amount: "100000.000 TBD",
 				Memo:   "devnet funding",
 			},
 			hivego.TransferOperation{

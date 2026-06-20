@@ -22,8 +22,8 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 		return witnessReplaceBlock(c, msg.SessionID, &request)
 	}
 
-	// Parse the session ID to get symbol, start, end blocks
-	chainSymbol, _, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
+	// Parse the session ID to get symbol, hive height, start, end blocks
+	chainSymbol, hiveBlockHeight, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
@@ -66,6 +66,18 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 
 	if len(blocks) == 0 {
 		return nil, fmt.Errorf("no blocks returned for %s %d-%d", chainSymbol, startBlock, endBlock)
+	}
+
+	// MED #114 (m39 F-INJ-A12): independently verify the Ethereum header
+	// parent-hash chain before signing — the witness must not endorse a batch
+	// whose headers don't actually chain. Gated on the SAME deterministic Hive
+	// block height the producer uses (Version0_2_0Active), so producer and
+	// witness make the identical decision and pre-activation behavior is
+	// byte-identical. No-op for non-ETH chains and never rejects canonical data.
+	if c.sconf.ConsensusParams().Version0_2_0Active(hiveBlockHeight) {
+		if err := verifyEthHeaderChain(blocks, ""); err != nil {
+			return nil, fmt.Errorf("refusing to witness %s %d-%d: %w", chainSymbol, startBlock, endBlock, err)
+		}
 	}
 
 	// Build the exact same transaction payload the producer built

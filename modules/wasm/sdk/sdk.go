@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -51,6 +52,39 @@ var onMainnet bool
 // before any contract execution, passing sysConfig.OnMainnet().
 func Init(mainnet bool) {
 	onMainnet = mainnet
+}
+
+// sdkErrorDeterminismActive reports whether the v0.2.0 deterministic SDK
+// error-surfacing gate is in force for the call carried by ctx. It reads the
+// per-call, height-addressable flag the state engine set on the execution
+// context (>= consensusversion.SdkErrorDeterminismVersion). The lookup uses a
+// comma-ok type assertion so it can NEVER panic — important because it is read
+// from inside a panic-recovery path; if the context lacks a valid exec value
+// (e.g. an early panic, or a read-path with no exec ctx) it returns false,
+// yielding the byte-identical legacy behaviour.
+func sdkErrorDeterminismActive(ctx context.Context) bool {
+	eCtx, ok := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+	if !ok || eCtx == nil {
+		return false
+	}
+	return eCtx.SdkErrorDeterminismActive()
+}
+
+// deterministicPanicDetail renders a recovered panic value into a stable,
+// node-independent string. Go errors and plain strings are reproduced verbatim;
+// any other type collapses to its concrete type name only, dropping the "%v"
+// value rendering that can leak pointer addresses / goroutine ids and fork
+// consensus. Used only on the gated (post-activation) path; the legacy path
+// keeps fmt.Errorf("%v", r).
+func deterministicPanicDetail(r any) string {
+	switch v := r.(type) {
+	case error:
+		return v.Error()
+	case string:
+		return v
+	default:
+		return fmt.Sprintf("%T", v)
+	}
 }
 
 func init() {
@@ -231,11 +265,25 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 						return func() (ret SdkResult) {
 							defer func() {
 								if r := recover(); r != nil {
+									// MED-92 (F-M34-02): gate the panic-detail
+									// rendering on the v0.2.0 consensus version.
+									// Legacy (gate off) keeps the exact pre-fix
+									// "%v" string so the live consensus path is
+									// byte-identical; the gated path strips
+									// non-deterministic content (pointer
+									// addresses / goroutine ids) that would
+									// otherwise fork the result CID per node.
+									var detail error
+									if sdkErrorDeterminismActive(ctx) {
+										detail = fmt.Errorf("%s", deterministicPanicDetail(r))
+									} else {
+										detail = fmt.Errorf("%v", r)
+									}
 									ret = result.Err[SdkResultStruct](
 										errors.Join(
 											fmt.Errorf(contracts.SDK_ERROR),
 											fmt.Errorf("SYSTEM_CALL_PANIC"),
-											fmt.Errorf("%v", r),
+											detail,
 										),
 									)
 								}
@@ -472,6 +520,47 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				func(r string) SdkResultStruct { return SdkResultStruct{Result: r, Gas: session.End()} },
 			)
 		},
+		// read_ex — MED-119 (m39 F-INJ-G2) fix. The original contracts.read
+		// collapses "key missing" and "key present but empty value" to the same
+		// empty string, so a cross-contract reader (e.g. the ZK verifier
+		// blocklist reading another contract's "b-{height}" key) cannot tell a
+		// stale / never-written entry from an intentional empty one. This
+		// sibling preserves contracts.read BYTE-FOR-BYTE (all deployed contracts
+		// and their CIDs are unaffected) and is purely ADDITIVE: it introduces a
+		// NEW import name, so it cannot change the behaviour of any contract that
+		// does not import it — exactly like the tss_v2 versioned namespace and
+		// sp1_verify_groth16_ex above. Because it is additive (never reached by
+		// old contracts) it needs no height gate: a contract gets this behaviour
+		// from the first block it is deployed against, deterministically on every
+		// node.
+		//
+		// It returns a JSON object {"exists":bool,"value":string}. The `exists`
+		// bit comes from ContractStateGetEx, which surfaces the state store's
+		// deterministic nil-vs-non-nil result (nil => key truly absent; an empty
+		// stored value => non-nil empty slice => exists=true). That distinction
+		// is computed from the merkle-backed databin and is therefore identical
+		// across nodes at any given height. Gas is charged identically to
+		// contracts.read (same IOSession + doIO sequence in ContractStateGetEx).
+		"read_ex": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
+			contractId, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			key, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			session := eCtx.IOSession()
+			valRes, exists := eCtx.ContractStateGetEx(contractId, key)
+			return result.Map(
+				valRes,
+				func(r string) SdkResultStruct {
+					payload, _ := json.Marshal(map[string]any{"exists": exists, "value": r})
+					return SdkResultStruct{Result: string(payload), Gas: session.End()}
+				},
+			)
+		},
 		"call": func(ctx context.Context, arg1 any, arg2 any, arg3 any, arg4 any) SdkResult {
 			eCtx := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue)
 			contractId, ok := arg1.(string)
@@ -660,6 +749,97 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			addr := ethCrypto.Keccak256(pubkey[1:])[12:]
 			return result.Ok(SdkResultStruct{Result: hexEncode(addr), Gas: params.CYCLE_GAS_PER_RC})
 		},
+		// ecrecover_strict — CRIT #11 / DS-F1 site 4 REJECT path. Identical
+		// parse to "ecrecover" (arg1=hashHex 32B, arg2=sigHex 65B r||s||v),
+		// but REJECTS non-canonical (high-S) signatures: if S > N/2 it returns
+		// SDK_ERROR instead of recovering. Backs the contract's
+		// crypto.ecrecover_strict import (EcrecoverStrict) used at SYSTEM
+		// signature sites (confirmSpend vault-bind, drop-proof) where a
+		// malleable sig must NEVER be accepted.
+		"ecrecover_strict": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+			hashHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sigHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			hash, err := hexDecode(hashHex)
+			if err != nil || len(hash) != 32 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("hash must be 32 bytes hex")),
+				)
+			}
+			sig, err := hexDecode(sigHex)
+			if err != nil || len(sig) != 65 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("sig must be 65 bytes hex (r+s+v)")),
+				)
+			}
+			// S is sig[32:64] (r||s||v layout). Reject the high-S malleability
+			// twin: any S > N/2 is non-canonical.
+			s := new(big.Int).SetBytes(sig[32:64])
+			if s.Cmp(secp256k1HalfOrderN) > 0 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("high-S signature rejected")),
+				)
+			}
+			pubkey, err := ethCrypto.Ecrecover(hash, sig)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ecrecover failed: %w", err)),
+				)
+			}
+			addr := ethCrypto.Keccak256(pubkey[1:])[12:]
+			return result.Ok(SdkResultStruct{Result: hexEncode(addr), Gas: params.CYCLE_GAS_PER_RC})
+		},
+		// ecrecover_canonical — CRIT #11 / DS-F1 site 4 NORMALIZE path.
+		// Identical parse to "ecrecover", but ACCEPTS both low- and high-S by
+		// canonicalizing a high-S sig before recovery: S = N - S and flip the
+		// recovery id (v ^= 1). Backs the contract's crypto.ecrecover_canonical
+		// import (EcrecoverCanonical) used at USER signature sites (ETH deposit
+		// verify) where legacy wallets may legitimately emit high-S.
+		"ecrecover_canonical": func(ctx context.Context, arg1 any, arg2 any) SdkResult {
+			hashHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sigHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			hash, err := hexDecode(hashHex)
+			if err != nil || len(hash) != 32 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("hash must be 32 bytes hex")),
+				)
+			}
+			sig, err := hexDecode(sigHex)
+			if err != nil || len(sig) != 65 {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("sig must be 65 bytes hex (r+s+v)")),
+				)
+			}
+			// Normalize a high-S sig to its canonical low-S twin: S' = N - S,
+			// and flip the recovery id so recovery still yields the same key.
+			s := new(big.Int).SetBytes(sig[32:64])
+			if s.Cmp(secp256k1HalfOrderN) > 0 {
+				normS := new(big.Int).Sub(secp256k1OrderN, s)
+				normBytes := make([]byte, 32)
+				normS.FillBytes(normBytes)
+				copy(sig[32:64], normBytes)
+				sig[64] ^= 1
+			}
+			pubkey, err := ethCrypto.Ecrecover(hash, sig)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("ecrecover failed: %w", err)),
+				)
+			}
+			addr := ethCrypto.Keccak256(pubkey[1:])[12:]
+			return result.Ok(SdkResultStruct{Result: hexEncode(addr), Gas: params.CYCLE_GAS_PER_RC})
+		},
 		"rlp_decode": func(ctx context.Context, arg1 any) SdkResult {
 			hexData, ok := arg1.(string)
 			if !ok {
@@ -738,6 +918,92 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 			}
 			return result.Ok(SdkResultStruct{Result: "true", Gas: params.CYCLE_GAS_PER_RC * 10})
 		},
+		// sp1_verify_groth16_ex — MED-37 (A3/F3) fix. The original
+		// sp1_verify_groth16 collapses every verifier error to "false", so an
+		// honest contract cannot distinguish a malformed-input rejection from a
+		// genuine pairing-check failure (it also masks the CPU-amplification
+		// surface tracked separately as a CRIT). This sibling preserves the
+		// existing function BYTE-FOR-BYTE (so all deployed contracts and their
+		// CIDs are completely unaffected) and is purely ADDITIVE: it introduces
+		// a NEW import name, so it cannot change the behaviour of any contract
+		// that does not import it — exactly like the tss_v2 versioned namespace.
+		// Because it is additive (never reached by old contracts) it needs no
+		// height gate: a contract gets this behaviour from the first block it is
+		// deployed against, deterministically on every node.
+		//
+		// It returns a JSON object {"ok":bool,"error":string}. On success
+		// ok=true, error="". On failure ok=false and error carries the
+		// deterministic verifier detail — Sp1VerifyGroth16's errors all wrap a
+		// fixed sentinel with input-derived (lengths) / fixed-string content
+		// (no pointer addresses / goroutine ids), so the string is identical
+		// across nodes and consensus-safe. The detail is carried in the Result
+		// string (a SUCCESSFUL host call), NOT in WasmResultStruct.Error, because
+		// a non-nil Error makes the runtime treat the host call as a TRAP
+		// (runtime_ipc/wasm.go:419-428) rather than a normal return.
+		"sp1_verify_groth16_ex": func(ctx context.Context, arg1 any, arg2 any, arg3 any, arg4 any, arg5 any) SdkResult {
+			proofHex, ok := arg1.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			publicInputsHex, ok := arg2.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			sp1VkeyHashHex, ok := arg3.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			groth16VkHex, ok := arg4.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			vkRootHex, ok := arg5.(string)
+			if !ok {
+				return ErrInvalidArgument
+			}
+			proof, err := hexDecode(proofHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid proof hex")),
+				)
+			}
+			publicInputs, err := hexDecode(publicInputsHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid public inputs hex")),
+				)
+			}
+			vkeyHash, err := hexDecode(sp1VkeyHashHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vkey hash hex")),
+				)
+			}
+			groth16Vk, err := hexDecode(groth16VkHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid groth16 vk hex")),
+				)
+			}
+			vkRoot, err := hexDecode(vkRootHex)
+			if err != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vk root hex")),
+				)
+			}
+			verifyErr := Sp1VerifyGroth16(proof, publicInputs, vkeyHash, groth16Vk, vkRoot)
+			out := map[string]any{"ok": verifyErr == nil, "error": ""}
+			if verifyErr != nil {
+				out["error"] = verifyErr.Error()
+			}
+			payload, mErr := json.Marshal(out)
+			if mErr != nil {
+				return result.Err[SdkResultStruct](
+					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("SERIALIZATION_ERROR"), mErr),
+				)
+			}
+			return result.Ok(SdkResultStruct{Result: string(payload), Gas: params.CYCLE_GAS_PER_RC * 10})
+		},
 	},
 }
 
@@ -756,6 +1022,17 @@ func hexEncode(b []byte) string {
 const (
 	keccak256GasPerByte = params.CYCLE_GAS_PER_RC / 256
 	rlpDecodeGasPerByte = params.CYCLE_GAS_PER_RC / 128
+)
+
+// secp256k1OrderN / secp256k1HalfOrderN are the secp256k1 group order and its
+// half, taken from the SAME curve the rest of the node uses
+// (ethCrypto.S256() wraps decred secp256k1.S256(), identical to the
+// modules/gateway/utils.go halfOrderN source) — NOT a hand-defined value.
+// Used by crypto.ecrecover_strict (REJECT high-S) and crypto.ecrecover_canonical
+// (NORMALIZE high-S → low-S) to detect non-canonical (malleable) S components.
+var (
+	secp256k1OrderN     = ethCrypto.S256().Params().N
+	secp256k1HalfOrderN = new(big.Int).Rsh(secp256k1OrderN, 1)
 )
 
 // rlpMaxDecodeDepth bounds recursion to prevent stack exhaustion. Ethereum

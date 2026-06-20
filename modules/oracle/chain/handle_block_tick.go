@@ -116,23 +116,23 @@ func (o *ChainOracle) processChainRelay(
 	// submissions when the mempool hasn't cleared.
 	// Expires after 2 minutes to avoid deadlocks if the tx failed on-chain.
 	if !chainStatus.replaceBlock {
-		if lastEnd, ok := o.lastSubmittedEnd[chainStatus.symbol]; ok && startHeight <= lastEnd {
-			submittedAt := o.lastSubmittedAt[chainStatus.symbol]
+		// MED #109: read the dedup tracker through loadDedup so a persistent
+		// backend (when wired) survives restarts. With no backend this is the
+		// previous in-memory-only read — byte-identical behavior.
+		if lastEnd, submittedAt, ok := o.loadDedup(chainStatus.symbol); ok && startHeight <= lastEnd {
 			expired := time.Since(submittedAt) > 2*time.Minute
 
 			contractHeight, err := o.getContractBlockHeight(chainStatus.contractId)
 			if err == nil && contractHeight >= lastEnd {
 				// Contract caught up — clear the tracker
-				delete(o.lastSubmittedEnd, chainStatus.symbol)
-				delete(o.lastSubmittedAt, chainStatus.symbol)
+				o.clearDedup(chainStatus.symbol)
 			} else if expired {
 				// Timeout — previous tx likely failed, allow retry
 				o.logger.Info("dedup tracker expired, allowing retry",
 					"symbol", chainStatus.symbol,
 					"lastSubmittedEnd", lastEnd,
 				)
-				delete(o.lastSubmittedEnd, chainStatus.symbol)
-				delete(o.lastSubmittedAt, chainStatus.symbol)
+				o.clearDedup(chainStatus.symbol)
 			} else {
 				o.logger.Debug("skipping overlapping range (previous tx still pending)",
 					"symbol", chainStatus.symbol,
@@ -176,6 +176,23 @@ func (o *ChainOracle) processChainRelay(
 	// Build the transaction payload
 	var payloadJson []byte
 	if !chainStatus.replaceBlock {
+		// MED #114 (m39 F-INJ-A12): on the v0.2.0 consensus path, reject an
+		// Ethereum batch whose headers do not form an unbroken parent-hash
+		// chain before signing/relaying it. Gated on the deterministic Hive
+		// block height (Version0_2_0Active) so producer and witness make the
+		// identical decision and pre-activation behavior stays byte-identical.
+		// On canonical finalized headers this never rejects, so the relay
+		// payload is unchanged once active. verifyEthHeaderChain is a no-op for
+		// non-ETH chains.
+		if o.sconf.ConsensusParams().Version0_2_0Active(signal.BlockHeight) {
+			if err := verifyEthHeaderChain(chainStatus.chainData, ""); err != nil {
+				o.logger.Error("rejecting chain relay: header chain verification failed",
+					"symbol", chainStatus.symbol, "err", err,
+				)
+				return
+			}
+		}
+
 		txPayload, err := makeTransactionPayload(chainStatus.chainData)
 		if err != nil {
 			o.logger.Error("failed to make transaction payload",
@@ -529,8 +546,9 @@ func (o *ChainOracle) processChainRelay(
 
 	// Track the end height to prevent overlapping submissions
 	if !chainStatus.replaceBlock {
-		o.lastSubmittedEnd[chainStatus.symbol] = endHeight
-		o.lastSubmittedAt[chainStatus.symbol] = time.Now()
+		// MED #109: persist through storeDedup so the dedup window survives a
+		// restart when a backend is wired (no-op persistence when nil).
+		o.storeDedup(chainStatus.symbol, endHeight, time.Now())
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
+	wasm_runtime     "vsc-node/modules/wasm/runtime"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
 
 	"vsc-node/modules/db/vsc/contracts"
@@ -134,6 +135,13 @@ func (t TxVscCallContract) ExecuteTx(
 	// ensure entrypoint contract is appended to outputs regardless of state access or logs
 	callSession.GetContractSession(t.ContractId)
 
+	// MED #130 (m57 F-WB-3): decide the WASM `_initialize` hard-fail gate once from
+	// the chain-active consensus version (deterministic, height-addressable). Used
+	// for both the execution context (so nested contracts.call inherit it) and the
+	// host wasmCtx below, so a contract whose `_initialize` traps aborts the call
+	// instead of running a silently-uninitialised handler — only at/after the floor.
+	initGuardActive := se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.WasmInitGuardVersion)
+
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,
 		ContractOwner:        info.Owner,
@@ -157,6 +165,14 @@ func (t TxVscCallContract) ExecuteTx(
 		contract_execution_context.WithTryCatch(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
+		// Gate deterministic SDK error-surfacing on the chain-active consensus
+		// version (deterministic, height-addressable) so the new error rendering
+		// activates only at a coordinated version floor — same pattern as
+		// WithTryCatch above.
+		contract_execution_context.WithSdkErrorDeterminism(
+			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.SdkErrorDeterminismVersion),
+		),
+		contract_execution_context.WithInitGuard(initGuardActive),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -172,10 +188,35 @@ func (t TxVscCallContract) ExecuteTx(
 	json.Unmarshal([]byte(t.Payload), &payload)
 
 	wasmCtx := context.WithValue(
-		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
-		wasm_context.WasmExecCodeCtxKey,
-		hex.EncodeToString(code),
+		context.WithValue(
+			context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+			wasm_context.WasmExecCodeCtxKey,
+			hex.EncodeToString(code),
+		),
+		// MED #130 (m57 F-WB-3): hand the host the same chain-active gate decided
+		// above (deterministic, height-addressable) so the abort-on-failed-init
+		// semantics activate only at a coordinated version floor — byte-identical
+		// to the legacy silent-no-op below it.
+		wasm_context.WasmInitGuardCtxKey,
+		initGuardActive,
 	)
+
+	// CD-1 (LOW, round-4): IsSupportedAt is already enforced at create/update
+	// time (system_txs.go:185,395), so a legitimately-registered contract always
+	// carries a supported runtime.  However, a document inserted DIRECTLY into
+	// MongoDB (bypassing tx validation) with an invalid runtime string would reach
+	// wasm_runtime.Execute's default branch at wasm.go:618 and panic — halting
+	// every node that processes the call, non-deterministically (whichever block
+	// this tx appears in).
+	//
+	// Adding a consensus-gated IsSupportedAt check here makes the CALL path
+	// self-contained: an invalid runtime produces a DETERMINISTIC tx-level
+	// failure (identical on all nodes, rc charged, no halt) rather than relying
+	// on the create/update gate as the sole defence.  Both inputs are on-chain /
+	// height-addressable so all nodes at the same height return the same bool.
+	if !wasm_runtime.IsSupportedAt(info.Runtime.String(), se.ActiveConsensusVersion(t.Self.BlockHeight)) {
+		return errorToTxResult(fmt.Errorf("contract has unsupported runtime %q", info.Runtime.String()), 100)
+	}
 
 	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
 

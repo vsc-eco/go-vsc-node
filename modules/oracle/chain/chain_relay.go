@@ -149,6 +149,17 @@ type ChainOracle struct {
 	txCrafter         *transactionpool.TransactionCrafter
 	txPool            *transactionpool.TransactionPool
 	nonceDb           nonces.Nonces
+	// dedupStore optionally persists the producer-side dedup tracker
+	// (lastSubmittedEnd / lastSubmittedAt) across process restarts. MED #109
+	// (m36/m38 CHAOS-S-CLOCK-1 / M38-MED-2): with only the in-memory maps below,
+	// a restart wipes the 2-minute dedup window, so a node that becomes producer
+	// before its previous addBlocks tx lands on-chain re-submits the same range
+	// (RC + mempool waste). When a backend is wired, loadDedup repopulates the
+	// in-memory maps on the first tick after restart, closing the window.
+	//
+	// nil = persistence disabled: behavior is byte-identical to the pre-fix
+	// in-memory-only tracker. See SetDedupStore for the coordinated wiring TODO.
+	dedupStore relayDedupStore
 	// lastSubmittedEnd tracks the end height of the last submitted block range
 	// per chain symbol. Any new submission whose start height <= this value
 	// is skipped until the contract state catches up, preventing overlapping
@@ -188,6 +199,93 @@ func (c *ChainOracle) clearWitnessed(key string) {
 	c.recentlyWitnessedMu.Lock()
 	delete(c.recentlyWitnessed, key)
 	c.recentlyWitnessedMu.Unlock()
+}
+
+// relayDedupStore is the persistence backend for the producer-side relay dedup
+// tracker (MED #109). It is a tiny key/value contract — one record per chain
+// symbol — deliberately decoupled from the rest of the oracle so a MongoDB
+// (or any) implementation can be wired through the constructor without further
+// changes inside modules/oracle/chain.
+//
+// Implementations MUST be safe for concurrent use; ChainOracle only ever calls
+// them from the single block-tick goroutine today, but the contract keeps the
+// door open for the witness path.
+type relayDedupStore interface {
+	// GetDedup returns the last submitted end height and submission time for a
+	// symbol. found=false means no record exists yet (fresh / never submitted).
+	GetDedup(symbol string) (endHeight uint64, at time.Time, found bool, err error)
+	// SetDedup upserts the dedup record for a symbol.
+	SetDedup(symbol string, endHeight uint64, at time.Time) error
+	// DeleteDedup removes the dedup record for a symbol (contract caught up or
+	// the dedup window expired).
+	DeleteDedup(symbol string) error
+}
+
+// SetDedupStore wires a persistent dedup backend after construction.
+//
+// TODO(coordination, MED #109): construct a MongoDB-backed relayDedupStore in
+// modules/oracle/oracle.go (oracle.New) — it already holds the *vsc.VscDb needed
+// to create a collection, exactly like nonces.New(d) — and call
+// chainOracle.SetDedupStore(store) there. That single coordinated edit (outside
+// this package's scope) activates cross-restart dedup. Until then the store is
+// nil and the tracker degrades to the previous in-memory-only behavior with NO
+// change in deterministic relay output: the dedup tracker is producer-local and
+// off-consensus (witnesses never read it), so persisting it changes only how
+// often a freshly-restarted producer redundantly re-broadcasts an already-
+// pending range — never any signed payload, CID, or on-chain result.
+func (c *ChainOracle) SetDedupStore(store relayDedupStore) {
+	c.dedupStore = store
+}
+
+// loadDedup returns the dedup tracker for a symbol, preferring the persistent
+// store (so a restart sees the pre-restart window) and falling back to the
+// in-memory maps when no backend is wired or the store read fails. It also
+// repopulates the in-memory cache from persistence so subsequent reads this
+// session are cheap.
+func (c *ChainOracle) loadDedup(symbol string) (endHeight uint64, at time.Time, found bool) {
+	if c.dedupStore != nil {
+		end, t, ok, err := c.dedupStore.GetDedup(symbol)
+		if err == nil {
+			if ok {
+				c.lastSubmittedEnd[symbol] = end
+				c.lastSubmittedAt[symbol] = t
+			}
+			return end, t, ok
+		}
+		// Persistence read failed — fall through to the in-memory cache so
+		// dedup still works for the current process lifetime.
+		c.logger.Debug("dedup store read failed, using in-memory tracker",
+			"symbol", symbol, "err", err)
+	}
+	end, ok := c.lastSubmittedEnd[symbol]
+	return end, c.lastSubmittedAt[symbol], ok
+}
+
+// storeDedup records a submission in both the in-memory cache and the
+// persistent store (if wired). A persistence write failure is logged but not
+// fatal — the in-memory tracker still dedups for this process lifetime.
+func (c *ChainOracle) storeDedup(symbol string, endHeight uint64, at time.Time) {
+	c.lastSubmittedEnd[symbol] = endHeight
+	c.lastSubmittedAt[symbol] = at
+	if c.dedupStore != nil {
+		if err := c.dedupStore.SetDedup(symbol, endHeight, at); err != nil {
+			c.logger.Warn("failed to persist relay dedup tracker",
+				"symbol", symbol, "endHeight", endHeight, "err", err)
+		}
+	}
+}
+
+// clearDedup drops the dedup tracker for a symbol from both the in-memory cache
+// and the persistent store (if wired).
+func (c *ChainOracle) clearDedup(symbol string) {
+	delete(c.lastSubmittedEnd, symbol)
+	delete(c.lastSubmittedAt, symbol)
+	if c.dedupStore != nil {
+		if err := c.dedupStore.DeleteDedup(symbol); err != nil {
+			c.logger.Debug("failed to delete persisted relay dedup tracker",
+				"symbol", symbol, "err", err)
+		}
+	}
 }
 
 func New(

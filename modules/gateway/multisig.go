@@ -21,7 +21,6 @@ import (
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
-	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -69,10 +68,34 @@ type MultiSig struct {
 	// "fatal error: concurrent map writes".
 	msgMu sync.Mutex
 
-	bh uint64
+	// bh is the latest L1 block height seen by BlockTick. It is read by the
+	// pubsub dispatch goroutine (p2p.go HandleMessage) and by waitCheckBh while
+	// BlockTick concurrently writes it, so every access MUST go through the
+	// loadBh/storeBh helpers below — an unsynchronized read/write here is a data
+	// race (audit MED M38-MED-4 / #112). bhMu guards it.
+	//
+	// The field is left a plain uint64 (rather than an atomic.Uint64) on purpose:
+	// the existing tests construct MultiSig with struct literals (e.g.
+	// review2_bh_underflow_test.go `&MultiSig{bh: 5}`), which an atomic type would
+	// break, and a zero-value sync.Mutex is valid so the literal still compiles.
+	bhMu sync.Mutex
+	bh   uint64
 
-	electionPeerIDs   atomic.Pointer[map[string]bool]
-	lastElectionEpoch uint64
+	electionPeerIDs atomic.Pointer[map[string]bool]
+	// MED-55 removed the `election.Epoch != lastElectionEpoch` rebuild guard
+	// (the allow-set is now rebuilt every ACTION_INTERVAL), so the
+	// lastElectionEpoch tracking field it fed has no remaining reader and was
+	// dropped (fix-round-2 R2-6a).
+}
+
+// storeBh records the latest block height seen by BlockTick (MED #112).
+func (ms *MultiSig) storeBh(bh uint64) { ms.bhMu.Lock(); ms.bh = bh; ms.bhMu.Unlock() }
+
+// loadBh returns the latest block height seen by BlockTick (MED #112).
+func (ms *MultiSig) loadBh() uint64 {
+	ms.bhMu.Lock()
+	defer ms.bhMu.Unlock()
+	return ms.bh
 }
 
 func (ms *MultiSig) Init() error {
@@ -164,6 +187,64 @@ func enforceMainnetIntervals(onMainnet bool) {
 	}
 }
 
+// assertIntervalDivisibility panics if the active rotation/action/sync intervals
+// violate the strict ordering and divisibility the MED-56 co-fire deferral
+// relies on (fix-round-2 R2-6c, tightened in fix-round-3 C-RV).
+//
+// The BlockTick scheduler requires STRICT ordering — not merely divisibility:
+//
+//   ACTION_INTERVAL < ROTATION_INTERVAL < SYNC_INTERVAL
+//
+// with ROTATION_INTERVAL % ACTION_INTERVAL == 0 and
+//      SYNC_INTERVAL % ROTATION_INTERVAL == 0.
+//
+// Why strict ordering matters (C-RV):
+//
+//   If ACTION_INTERVAL == ROTATION_INTERVAL the deferred-actions path
+//   (bh%ACTION_INTERVAL == 0 && !isRotationBlock) is NEVER true — every
+//   action tick is also a rotation tick — so actions are permanently starved
+//   and the MED-56 co-fire race is re-introduced (the rotation ships with
+//   stale signatures from the old key-auth set). The divisibility check
+//   alone does not catch this: 20%20==0 passes divisibility but breaks the
+//   deferral invariant.
+//
+//   If ROTATION_INTERVAL >= SYNC_INTERVAL (equal or inverted) the fr_sync
+//   re-targeting (bh%SYNC_INTERVAL == ACTION_INTERVAL) either lands on the
+//   same block class as the rotation or the divisibility check below becomes
+//   meaningless, reintroducing the sync co-fire leg.
+//
+// Mainnet already enforces the canonical values via enforceMainnetIntervals.
+// A devnet that sets equal intervals would SILENTLY starve actions; fail loud
+// at construction instead. ACTION_INTERVAL > 0 is guaranteed: the defaults are
+// non-zero and init() only applies env overrides when n > 0.
+func assertIntervalDivisibility() {
+	if ACTION_INTERVAL == 0 || ROTATION_INTERVAL == 0 || SYNC_INTERVAL == 0 {
+		panic(fmt.Sprintf("gateway: zero interval (rotation=%d action=%d sync=%d)",
+			ROTATION_INTERVAL, ACTION_INTERVAL, SYNC_INTERVAL))
+	}
+	// Strict ordering: ACTION_INTERVAL < ROTATION_INTERVAL < SYNC_INTERVAL.
+	// Equal intervals re-introduce the MED-56 co-fire or action starvation.
+	if ACTION_INTERVAL >= ROTATION_INTERVAL {
+		panic(fmt.Sprintf("gateway: ACTION_INTERVAL (%d) must be strictly less than ROTATION_INTERVAL (%d) — equal values starve actions (MED-56 co-fire deferral)",
+			ACTION_INTERVAL, ROTATION_INTERVAL))
+	}
+	if ROTATION_INTERVAL >= SYNC_INTERVAL {
+		panic(fmt.Sprintf("gateway: ROTATION_INTERVAL (%d) must be strictly less than SYNC_INTERVAL (%d) — equal values re-introduce sync co-fire (MED-56 co-fire deferral)",
+			ROTATION_INTERVAL, SYNC_INTERVAL))
+	}
+	// Divisibility: both strict-ordering checks above implicitly guarantee the
+	// non-zero denominators, but we also verify the modular relationship the
+	// BlockTick bh%INTERVAL==ACTION_INTERVAL re-targeting relies on.
+	if ROTATION_INTERVAL%ACTION_INTERVAL != 0 {
+		panic(fmt.Sprintf("gateway: ROTATION_INTERVAL (%d) must be a multiple of ACTION_INTERVAL (%d) — see MED-56 co-fire deferral",
+			ROTATION_INTERVAL, ACTION_INTERVAL))
+	}
+	if SYNC_INTERVAL%ROTATION_INTERVAL != 0 {
+		panic(fmt.Sprintf("gateway: SYNC_INTERVAL (%d) must be a multiple of ROTATION_INTERVAL (%d) — see MED-56 co-fire deferral",
+			SYNC_INTERVAL, ROTATION_INTERVAL))
+	}
+}
+
 // Devnet-only env-var overrides so e2e tests can drive rotation/action
 // ticks on the order of seconds instead of an hour. Honoured only when
 // set to a positive value; production binaries leave the defaults alone.
@@ -187,7 +268,7 @@ func init() {
 }
 
 func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
-	ms.bh = bh
+	ms.storeBh(bh)
 	if headHeight == nil {
 		return
 	}
@@ -198,9 +279,20 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 		return
 	}
 
+	// MED #55 (M26-K5-M1): rebuild the gossip ingress allow-set on every
+	// ACTION_INTERVAL tick, not only when the on-chain election epoch changes.
+	// electionPeerIDs is keyed by libp2p PeerId. A witness that rotates its
+	// libp2p identity mid-epoch updates its witnessDb PeerId without advancing
+	// the epoch, so the old `election.Epoch != ms.lastElectionEpoch` guard left
+	// every other node's allow-set holding that witness's STALE PeerId until the
+	// next epoch (~1 h on mainnet) — self-excluding the rotated witness from
+	// sign_request validation. Rebuilding each ACTION_INTERVAL (~1 min) picks up
+	// the new PeerId within one interval of the witnessDb resync. This map is a
+	// per-node ingress filter only (read solely in p2p.go ValidateMessage); it
+	// feeds no commitment/CID, so the per-node DB-read cost is the only effect.
 	if ms.electionPeerIDs.Load() == nil || bh%ACTION_INTERVAL == 0 {
 		election, err := ms.electionDb.GetElectionByHeight(bh)
-		if err == nil && election.Epoch != ms.lastElectionEpoch {
+		if err == nil {
 			peerIDs := make(map[string]bool, len(election.Members))
 			for _, member := range election.Members {
 				w, _ := ms.witnessDb.GetWitnessAtHeight(member.Account, &bh)
@@ -208,8 +300,21 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 					peerIDs[w.PeerId] = true
 				}
 			}
-			ms.electionPeerIDs.Store(&peerIDs)
-			ms.lastElectionEpoch = election.Epoch
+			// fix-round-2 R2-6b: only swap in the freshly-built allow-set when it
+			// resolved at least one PeerId. A transient witnessDb sync gap (the
+			// GetWitnessAtHeight reads above all returning nil for one tick) would
+			// otherwise Store an EMPTY map, which p2p.go ValidateMessage treats as
+			// "no one is allowed" — self-DoSing this node's sign_request ingress
+			// until the next non-empty rebuild. Keeping the previous non-nil map on
+			// an empty rebuild is strictly safer: the stale set is a superset/peer
+			// of the live committee far more often than it is a blank, and the
+			// rebuild retries every ACTION_INTERVAL. (election membership is
+			// on-chain/deterministic, but this map is a per-node ingress filter
+			// only — it feeds no commitment/CID — so retaining the prior set is not
+			// consensus-affecting.)
+			if len(peerIDs) > 0 {
+				ms.electionPeerIDs.Store(&peerIDs)
+			}
 		}
 	}
 
@@ -230,16 +335,63 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 			return
 		}
 
-		if bh%ROTATION_INTERVAL == 0 {
-			log.Debug("running key rotation", "bh", bh)
-			go ms.TickKeyRotation(bh)
-		}
-		if bh%ACTION_INTERVAL == 0 {
-			log.Debug("running actions", "bh", bh)
-			go ms.TickActions(bh)
-		}
-		if bh%SYNC_INTERVAL == 0 {
-			go ms.TickSyncFr(bh)
+		// MED M26-K6-M3 (#56): ROTATION_INTERVAL is a multiple of ACTION_INTERVAL
+		// (1200 % 20 == 0) and SYNC_INTERVAL is a multiple of ROTATION_INTERVAL
+		// (7200 % 1200 == 0), so on a rotation block the actions/sync spend can
+		// co-fire with the rotation. If the rotation's account_update (which
+		// changes the gateway owner/active key_auths set) lands on L1 BEFORE the
+		// actions/sync tx — whose signatures were collected against the OLD auth
+		// set — that tx fails "missing required authority": for actions the
+		// carried withdrawal is debited on L2 but never settled on L1 (stuck
+		// funds); for fr_sync the internal HBD rebalance silently fails.
+		//
+		// The fix runs the rotation ALONE on its block and DEFERS the co-firing
+		// spends to the next non-rotation tick — it does NOT drop them:
+		//   - actions defer to the next ACTION tick. executeActions is pure and
+		//     re-reads GetPendingActions (status stays "pending"), so the batch is
+		//     re-selected one tick later against the now-stable post-rotation auth.
+		//   - fr_sync re-targets the action tick exactly ACTION_INTERVAL after the
+		//     sync block (bh%SYNC_INTERVAL == ACTION_INTERVAL), which is never a
+		//     rotation block (SYNC%ROT==0 so SYNC+ACTION % ROT == ACTION != 0).
+		//     syncBalance still requires bh%ACTION_INTERVAL==0 and its own
+		//     freshness guard (balRecord.BlockHeight > bh-SYNC_INTERVAL) keeps the
+		//     cadence at exactly SYNC_INTERVAL, so running it ACTION_INTERVAL late
+		//     is harmless and never double-syncs.
+		//
+		// This is leader-only scheduling OFF the deterministic L2 consensus path
+		// (the state engine ingests the resulting L1 vsc.actions / vsc.fr_sync
+		// header by CONTENT, not by predicting which block the leader ran it on),
+		// but per the repo convention every gateway behaviour change still gates
+		// on the coordinated v0.2.0 height — the SAME gate decentralizeOwner uses
+		// (GatewayDecentralizationActive == Version0_2_0Active) — so the LEGACY
+		// schedule below stays byte-identical until activation and no node runs a
+		// mixed schedule within one activation regime.
+		if ms.sconf.ConsensusParams().Version0_2_0Active(bh) {
+			isRotationBlock := bh%ROTATION_INTERVAL == 0
+			if isRotationBlock {
+				log.Debug("running key rotation", "bh", bh)
+				go ms.TickKeyRotation(bh)
+			}
+			if bh%ACTION_INTERVAL == 0 && !isRotationBlock {
+				log.Debug("running actions", "bh", bh)
+				go ms.TickActions(bh)
+			}
+			if bh%SYNC_INTERVAL == ACTION_INTERVAL {
+				go ms.TickSyncFr(bh)
+			}
+		} else {
+			// LEGACY deterministic schedule — byte-identical to base 937ae771.
+			if bh%ROTATION_INTERVAL == 0 {
+				log.Debug("running key rotation", "bh", bh)
+				go ms.TickKeyRotation(bh)
+			}
+			if bh%ACTION_INTERVAL == 0 {
+				log.Debug("running actions", "bh", bh)
+				go ms.TickActions(bh)
+			}
+			if bh%SYNC_INTERVAL == 0 {
+				go ms.TickSyncFr(bh)
+			}
 		}
 	}
 }
@@ -279,7 +431,14 @@ func (ms *MultiSig) TickKeyRotation(bh uint64) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// MED M29-F3 (#105): the rotation sig-collection window was 5s while
+	// actions/sync use 30s. 5s is too tight to collect a 2/3 stake supermajority
+	// from up to MAX_GATEWAY_KEYS cross-continent witnesses; a missed rotation
+	// leaves the stale key set in place for a full ROTATION_INTERVAL (~1h). Match
+	// the 30s the other two paths use. This is local liveness only (it bounds how
+	// long THIS leader waits before broadcasting); it never changes the signed tx
+	// bytes or any on-chain commitment, so it is off the consensus path.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	signatures, weight, err := ms.waitForSigs(ctx, signPkg.Tx, signPkg.TxId)
 	ms.deleteMsgChan(signPkg.TxId)
@@ -519,15 +678,13 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	// weight == threshold and posting carries vsc.dao + vsc.network.
 	//
 	// *** HIGHEST-RISK once active ***: with no vsc.dao backstop, a committee that
-	// wedges below threshold has no on-chain recovery. Do NOT raise the consensus
-	// floor to 0.2.0 on mainnet until CP-1 (floor-advance readiness, gateway/TSS
-	// handover ordering, the floor guard) is devnet-proven under heavy churn.
+	// wedges below threshold has no on-chain recovery. Do NOT pin Version0_2_0Height
+	// on mainnet until CP-1 (floor-advance readiness, gateway/TSS handover ordering,
+	// the floor guard) is devnet-proven under heavy churn.
 	//
-	// Determinism (Constraint 3): decentralizeOwner is a pure function of the
-	// chain-active consensus version at bh (ResultVersion of the election at bh,
-	// already loaded above) + the compile-time line, so every cosigner builds the
-	// identical account_update.
-	decentralizeOwner := consensusversion.GatewayDecentralizationActive(elections.ResultVersion(electionResult))
+	// Determinism (Constraint 3): decentralizeOwner is a pure function of bh + the
+	// compile-time param, so every cosigner builds the identical account_update.
+	decentralizeOwner := ms.sconf.ConsensusParams().GatewayDecentralizationActive(bh)
 
 	var eb [2]interface{}
 	eb[0] = "vsc.network"
@@ -984,6 +1141,11 @@ func (ms *MultiSig) waitForSigs(
 	type collectResult struct {
 		sigs   []string
 		weight uint64
+		// signers is the set of committee pubkeys whose signature was counted.
+		// Carried back so the timeout path can name the MISSING committee members
+		// (MED M29-F4 / #81 per-signer telemetry) without re-running pubkey
+		// recovery — the collector goroutine already recovered them.
+		signers map[string]struct{}
 	}
 	// Buffered so the collector can always hand back its result and exit, even
 	// if the parent already returned via ctx timeout — no goroutine leak.
@@ -1003,7 +1165,7 @@ func (ms *MultiSig) waitForSigs(
 			select {
 			case <-ctx.Done():
 				// Timed out / cancelled: hand back what we have and exit.
-				resCh <- collectResult{sigs, signedWeight}
+				resCh <- collectResult{sigs, signedWeight, signedByPubKey}
 				return
 			case msg := <-ch:
 				if msg == nil {
@@ -1025,6 +1187,16 @@ func (ms *MultiSig) waitForSigs(
 								signedByPubKey[pubKey] = struct{}{}
 								sigs = append(sigs, sigRes.Sig)
 								signedWeight = signedWeight + uint64(weights[idx])
+								// MED M29-F4 (#81): emit per-signer telemetry so a
+								// defender can detect slow-burn signer compromise (a
+								// key that stops signing, or one signing for an
+								// account it shouldn't). Aggregate-only logging hid
+								// which committee keys actually participated. Logging
+								// only; off consensus path.
+								log.Verbose("waitForSigs: counted signer",
+									"txId", hivetxId, "pubKey", pubKey,
+									"weight", weights[idx], "cumWeight", signedWeight,
+									"threshold", threshold)
 							}
 						}
 					}
@@ -1032,7 +1204,7 @@ func (ms *MultiSig) waitForSigs(
 			}
 		}
 
-		resCh <- collectResult{sigs, signedWeight}
+		resCh <- collectResult{sigs, signedWeight, signedByPubKey}
 	}()
 
 	// sigs/signedWeight are owned exclusively by the collector goroutine and
@@ -1041,10 +1213,24 @@ func (ms *MultiSig) waitForSigs(
 	select {
 	case <-ctx.Done():
 		res := <-resCh
-		log.Verbose("waitForSigs: collect timeout", "weight", res.weight)
+		// MED M29-F4 (#81): on a failed collection, name the committee keys that
+		// did NOT sign so a defender can see WHICH signers went dark (slow-burn
+		// compromise / partial outage) rather than only the aggregate shortfall.
+		missing := make([]string, 0, len(publicList))
+		for _, pk := range publicList {
+			if _, signed := res.signers[pk]; !signed {
+				missing = append(missing, pk)
+			}
+		}
+		log.Warn("waitForSigs: collect timeout below threshold",
+			"txId", hivetxId, "weight", res.weight, "threshold", threshold,
+			"signed", len(res.signers), "committee", len(publicList),
+			"missingSigners", missing)
 		return res.sigs, res.weight, nil
 	case res := <-resCh:
-		log.Verbose("waitForSigs: collected needed sigs", "weight", res.weight)
+		log.Verbose("waitForSigs: collected needed sigs",
+			"txId", hivetxId, "weight", res.weight, "threshold", threshold,
+			"signed", len(res.signers))
 		return res.sigs, res.weight, nil
 	}
 }
@@ -1054,27 +1240,34 @@ func (ms *MultiSig) waitCheckBh(INTERVAL uint64, blockHeight uint64) error {
 		return errors.New("invalid interval")
 	}
 
-	if blockHeight > ms.bh {
+	// MED M38-MED-4 (#112): read ms.bh through loadBh (BlockTick writes it
+	// concurrently — the previous bare field reads were a data race) and replace
+	// the tight 20×1s time.Sleep busy-wait with a select/ticker that can exit
+	// promptly on the deadline. Local liveness only; off the consensus path.
+	curBh := ms.loadBh()
+	if blockHeight > curBh {
 		//if too far into future!
-		if blockHeight-10 > ms.bh {
+		if blockHeight-10 > curBh {
 			return nil
 		}
 
-		var clear bool
-		for i := 0; i < 20; i++ {
-			if ms.bh == blockHeight {
-				clear = true
-				break
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		deadline := time.After(20 * time.Second)
+		for {
+			if ms.loadBh() == blockHeight {
+				return nil
 			}
-			time.Sleep(time.Second)
-		}
-		if !clear {
-			return errors.New("timeout waiting for block height")
+			select {
+			case <-deadline:
+				return errors.New("timeout waiting for block height")
+			case <-ticker.C:
+			}
 		}
 		// review2 LOW #113: ms.bh-10 underflows to ~1.8e19 when the node
 		// is below block 10, rejecting every early block as "too far into
 		// past". blockHeight+10 < ms.bh is the same check without underflow.
-	} else if blockHeight+10 < ms.bh {
+	} else if blockHeight+10 < curBh {
 		return errors.New("too far into past")
 	}
 
@@ -1124,6 +1317,11 @@ func New(
 	// C11-c: a mainnet node must use the canonical consensus intervals,
 	// regardless of any VSC_GATEWAY_*_INTERVAL env value.
 	enforceMainnetIntervals(sconf.OnMainnet())
+	// fix-round-2 R2-6c: after env overrides + mainnet enforcement, fail loud if
+	// the active intervals violate the divisibility the MED-56 co-fire deferral
+	// depends on (a misconfigured devnet would otherwise silently reintroduce the
+	// rotation/spend race). Mainnet is already safe via enforceMainnetIntervals.
+	assertIntervalDivisibility()
 	return &MultiSig{
 		witnessDb:     witnessDb,
 		electionDb:    electionDb,

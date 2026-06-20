@@ -57,6 +57,21 @@ type contractExecutionContext struct {
 	// across binaries. Set once per tx by the state engine and propagated into
 	// nested calls.
 	tryCatchActive bool
+
+	// sdkErrorDeterminismActive gates the v0.2.0 deterministic SDK
+	// error-surfacing behaviour (>= SdkErrorDeterminismVersion). False => SDK
+	// host functions render errors exactly as the pre-fix code did (byte-
+	// identical legacy output). Set once per tx by the state engine from the
+	// chain-active consensus version and propagated into nested calls, so it is
+	// height-addressable and identical across nodes — mirrors tryCatchActive.
+	sdkErrorDeterminismActive bool
+
+	// initGuardActive gates the WASM host's `_initialize` hard-fail (MED #130 /
+	// m57 F-WB-3) on the chain-active consensus version (>= WasmInitGuardVersion).
+	// False => a trapping `_initialize` is ignored and the (uninitialised) handler
+	// runs as before, keeping pre-activation behaviour identical across binaries.
+	// Set once per tx by the state engine and propagated into nested calls.
+	initGuardActive bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -161,6 +176,29 @@ func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 // coordinated version floor.
 func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
+}
+
+// WithSdkErrorDeterminism enables the v0.2.0 deterministic SDK error-surfacing
+// behaviour. The state engine sets this from the chain-active consensus version
+// (>= consensusversion.SdkErrorDeterminismVersion) so it only activates at a
+// coordinated version floor; when false the SDK host functions emit byte-
+// identical legacy output.
+func WithSdkErrorDeterminism(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.sdkErrorDeterminismActive = active }
+}
+
+// SdkErrorDeterminismActive implements wasm_context.ExecContextValue. It exposes
+// the per-call, height-addressable gate to the SDK host functions.
+func (ctx *contractExecutionContext) SdkErrorDeterminismActive() bool {
+	return ctx.sdkErrorDeterminismActive
+}
+
+// WithInitGuard enables the WASM host's `_initialize` hard-fail (MED #130). The
+// state engine sets this from the chain-active consensus version so the abort-on-
+// failed-init semantics only activate at a coordinated version floor. It is
+// propagated into nested contracts.call contexts unchanged.
+func WithInitGuard(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.initGuardActive = active }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -574,6 +612,32 @@ func (ctx *contractExecutionContext) ContractStateGet(contractId string, key str
 	return result.Ok(resStr)
 }
 
+// ContractStateGetEx is the presence-disambiguating sibling of ContractStateGet
+// (MED-119). ContractStateGet collapses both "key absent" and "key present with
+// an empty value" to result.Ok("") — a cross-contract reader (e.g. the ZK
+// verifier blocklist read of another contract's "b-{height}" key) cannot tell a
+// stale/missing entry from an intentional empty one. This sibling returns the
+// same value string PLUS an `exists` flag derived from the same nil-vs-non-nil
+// distinction the state store already computes deterministically from the
+// merkle-backed databin (StateStore.Get returns nil only when the key is truly
+// absent; an empty stored value comes back as a non-nil empty slice). The
+// existence bit is therefore height-deterministic and identical across nodes.
+//
+// Gas is charged byte-for-byte identically to ContractStateGet (same doIO calls
+// in the same order) so the only observable difference for a contract that opts
+// in via contracts.read_ex is the extra `exists` field — and existing contracts,
+// which import only contracts.read, are completely unaffected.
+func (ctx *contractExecutionContext) ContractStateGetEx(contractId string, key string) (result.Result[string], bool) {
+	ctx.doIO(len(key))
+	res := ctx.callSession.GetStateStore(contractId).Get(key)
+	if res == nil {
+		return result.Ok(""), false
+	}
+	resStr := string(res)
+	ctx.doIO(len(resStr))
+	return result.Ok(resStr), true
+}
+
 // tryOutcome encodes the structured result a try/catch inter-contract call hands
 // back to the caller (instead of trapping). The caller's SDK decodes the "ok"
 // field to branch. gas is what the callee actually consumed — charged either way,
@@ -653,15 +717,29 @@ func (ctx *contractExecutionContext) ContractCall(
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
 				WithPendulumApplier(ctx.pendulumApplier),
-				WithTryCatch(ctx.tryCatchActive))
+				WithTryCatch(ctx.tryCatchActive),
+				// Propagate the v0.2.0 SDK error-determinism gate into the nested
+				// context so a contract reached via contracts.call evaluates it
+				// identically to the entrypoint (height-addressable, same on all
+				// nodes) — mirrors the tryCatchActive propagation above.
+				WithSdkErrorDeterminism(ctx.sdkErrorDeterminismActive),
+				WithInitGuard(ctx.initGuardActive))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
 
 			wasmCtx := context.WithValue(
-				context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
-				wasm_context.WasmExecCodeCtxKey,
-				hex.EncodeToString(ct.Code),
+				context.WithValue(
+					context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+					wasm_context.WasmExecCodeCtxKey,
+					hex.EncodeToString(ct.Code),
+				),
+				// MED #130 (m57 F-WB-3): propagate the chain-active `_initialize`
+				// hard-fail gate into the nested call so a callee with a trapping
+				// `_initialize` aborts (post-activation) instead of silently
+				// no-opping, matching the top-level entry semantics.
+				wasm_context.WasmInitGuardCtxKey,
+				ctx.initGuardActive,
 			)
 			// try/catch (ICCallOptions.Try): snapshot state + ledger just before
 			// the callee runs, so a revert can be unwound without disturbing the

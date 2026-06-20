@@ -305,9 +305,35 @@ func requestBlockFromPeer(btcdClient *rpcclient.Client, blockHash *chainhash.Has
 	return err
 }
 
+// prunedRecoveryBudget bounds the TOTAL wall-clock time fetchPrunedBlocks may
+// spend polling for pruned blocks across ALL peers. MED #111 (m38 M38-MED-3):
+// the previous nested loop (3 peers x 10 iterations x 1s) could block the oracle
+// witness goroutine for up to 90s in the hot path, piling up behind the
+// ChainOracle tick. This single shared budget is the genuine upper bound on how
+// long recovery can stall — the total never exceeds it regardless of how many
+// peers we cycle through. The block data returned to the caller is unchanged;
+// only the worst-case stall shrinks (90s -> 20s).
+const prunedRecoveryBudget = 20 * time.Second
+
+// prunedRecoveryPollInterval is how often we re-poll btcd for the requested
+// blocks after issuing getblockfrompeer.
+const prunedRecoveryPollInterval = 1 * time.Second
+
+// prunedRecoveryPerPeerPolls is the number of poll intervals to give a single
+// peer before moving on to the next one. This preserves recovery success for
+// slow / large-block deliveries (each peer gets a fair patience window, not a
+// single 1s poll) while the shared prunedRecoveryBudget still caps the total.
+// 7 polls x 1s = up to 7s per peer; 3 peers would want 21s but the 20s budget
+// is the hard ceiling, so a genuinely slow peer set gives up at the budget.
+const prunedRecoveryPerPeerPolls = 7
+
 // fetchPrunedBlocks requests multiple pruned blocks from peers in batch, then
-// polls until all arrive. Tries up to 3 archive (NODE_NETWORK) peers, falling
-// back if one times out. The provided context controls cancellation on shutdown.
+// polls until all arrive. Tries up to 3 archive (NODE_NETWORK) peers, giving each
+// a bounded patience window before falling back to the next. The provided context
+// controls cancellation on shutdown; a hard prunedRecoveryBudget bounds the total
+// time spent so a slow/uncooperative peer set can't stall the oracle hot path
+// (MED #111). The set of blocks returned to the caller is unchanged — only the
+// upper bound on how long recovery may block is reduced.
 func fetchPrunedBlocks(ctx context.Context, btcdClient *rpcclient.Client, blockHashes []*chainhash.Hash) error {
 	if len(blockHashes) == 0 {
 		return nil
@@ -328,6 +354,11 @@ func fetchPrunedBlocks(ctx context.Context, btcdClient *rpcclient.Client, blockH
 		maxPeers = 3
 	}
 
+	// Bound the entire recovery (across all peers) to a single time budget,
+	// derived from ctx so shutdown still cancels promptly.
+	budgetCtx, cancel := context.WithTimeout(ctx, prunedRecoveryBudget)
+	defer cancel()
+
 	for p := 0; p < maxPeers; p++ {
 		// Request all remaining blocks from this peer.
 		for _, hash := range blockHashes {
@@ -336,12 +367,24 @@ func fetchPrunedBlocks(ctx context.Context, btcdClient *rpcclient.Client, blockH
 			}
 		}
 
-		// Poll until all blocks arrive (up to 10s per peer attempt).
-		for i := 0; i < 10; i++ {
+		// Poll this peer up to prunedRecoveryPerPeerPolls times, but never past
+		// the shared budget. The budget (not the per-peer count) is the true
+		// upper bound: the total stall across all peers can never exceed
+		// prunedRecoveryBudget, while each peer still gets a fair patience
+		// window so a slow-but-honest peer is not abandoned after a single poll.
+		for i := 0; i < prunedRecoveryPerPeerPolls; i++ {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(1 * time.Second):
+			case <-budgetCtx.Done():
+				// Budget or parent context expired. Surface a real shutdown
+				// (parent ctx) distinctly; otherwise the shared budget is
+				// exhausted and we give up entirely.
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				btcLogger.Warn("giving up on pruned block recovery (budget exhausted)",
+					"remaining", len(blockHashes), "peersAttempted", p+1, "budget", prunedRecoveryBudget)
+				return fmt.Errorf("%d blocks still unavailable after %s recovery budget", len(blockHashes), prunedRecoveryBudget)
+			case <-time.After(prunedRecoveryPollInterval):
 			}
 			remaining := make([]*chainhash.Hash, 0)
 			for _, hash := range blockHashes {
@@ -359,6 +402,8 @@ func fetchPrunedBlocks(ctx context.Context, btcdClient *rpcclient.Client, blockH
 			}
 			blockHashes = remaining
 		}
+		// This peer did not deliver all remaining blocks within its patience
+		// window; fall back to the next peer (re-issuing the request above).
 	}
 	btcLogger.Warn("giving up on pruned block recovery", "remaining", len(blockHashes), "peersAttempted", maxPeers)
 	return fmt.Errorf("%d blocks still unavailable after trying %d peers", len(blockHashes), maxPeers)

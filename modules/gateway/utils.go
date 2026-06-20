@@ -103,8 +103,33 @@ func GatewayKeyFromBlsSeed(blsSeed string) (*hivego.KeyPair, error) {
 	if err != nil {
 		return nil, err
 	}
-	salt := []byte("gateway_key")
-	gatewayKey := sha256.Sum256(append(blsPrivSeed, salt...))
+	// MED M26-K1-M2 (#54): scrub the transient secret material from the heap
+	// before returning. getSigningKp re-derives on every rotation tick, so these
+	// buffers (the raw BLS private seed and the derived gateway private key)
+	// otherwise pile up on the heap and can survive into a core dump / swap page /
+	// heap snapshot taken during a renew/retire window. This is the gateway-side
+	// companion to the TSS-module zeroize and is pure defense-in-depth: it never
+	// changes the returned key bytes.
+	//
+	// Capturing the appended buffer is required because append() may allocate a
+	// NEW backing array (cap exceeded) that ALSO holds a copy of blsPrivSeed;
+	// wiping only blsPrivSeed would leave that second copy live. KeyPairFromBytes
+	// copies the input into a fresh big.Int (secp256k1.PrivKeyFromBytes →
+	// big.Int.SetBytes), so the returned KeyPair does not alias gatewayKey — the
+	// wipe below is byte-safe and behaviour-neutral.
+	seedAndSalt := append(blsPrivSeed, []byte("gateway_key")...)
+	gatewayKey := sha256.Sum256(seedAndSalt)
+	defer func() {
+		for i := range blsPrivSeed {
+			blsPrivSeed[i] = 0
+		}
+		for i := range seedAndSalt {
+			seedAndSalt[i] = 0
+		}
+		for i := range gatewayKey {
+			gatewayKey[i] = 0
+		}
+	}()
 
 	kp := hivego.KeyPairFromBytes(gatewayKey[:])
 	return kp, nil

@@ -133,6 +133,17 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 		return false, fmt.Errorf("failed to decode signature: %v", err)
 	}
 
+	// audit N6-H4: EthDID.Verify is a crypto primitive reached on a
+	// permissionless path (OffchainTransaction.Verify -> VerifySignatures ->
+	// VerifyMany). An attacker-supplied signature shorter than 65 bytes made the
+	// sigBytes[64] access below panic (index out of range). Reject malformed
+	// lengths up front like every other DID verifier in this package
+	// (btc.go:120/129, bls.go:167, gateway_pop.go:89). A valid secp256k1
+	// recoverable signature is always exactly 65 bytes, so no valid sig changes.
+	if len(sigBytes) != 65 {
+		return false, fmt.Errorf("invalid signature length for DID %s: got %d, want 65", d.String(), len(sigBytes))
+	}
+
 	if sigBytes[64] != 0 && sigBytes[64] != 1 {
 		sigBytes[64] -= 27
 	}

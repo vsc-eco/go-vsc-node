@@ -63,11 +63,21 @@ func (c *ChainOracle) Handle(peerID peer.ID, p2pMsg p2p.Msg) (p2p.Msg, error) {
 	case signatureResponse:
 		// Producer: route signature to the waiting channel
 		if err := receiveSignature(c, &msg); err != nil {
-			// Not an error — may not have an active session for this
-			c.logger.Debug("failed to receive signature",
-				"sessionID", msg.SessionID,
-				"err", err,
-			)
+			// MED #113 (m38 M38-HIGH-4): a full channel means we are
+			// DROPPING a valid witness signature under load — surface it at
+			// Warn so "not enough signatures" failures are diagnosable rather
+			// than silent. errInvalidSession is benign (no active session for
+			// this response) and stays at Debug.
+			if errors.Is(err, errChannelFull) {
+				c.logger.Warn("dropped witness signature: signature channel full",
+					"sessionID", msg.SessionID,
+				)
+			} else {
+				c.logger.Debug("failed to receive signature",
+					"sessionID", msg.SessionID,
+					"err", err,
+				)
+			}
 		}
 
 	default:

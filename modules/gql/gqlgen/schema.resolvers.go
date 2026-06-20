@@ -19,6 +19,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -859,6 +860,10 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 		var pendulumOracle map[string]interface{}
 		var ctxOpts []contract_execution_context.Option
+		// MED #130 (m57 F-WB-3): mirror the on-chain `_initialize` hard-fail gate on
+		// the simulate path so a simulated call sees the same success/failure as
+		// execution at this height. Defaults to legacy (off) when no StateEngine.
+		var initGuardActive bool
 		if r.StateEngine != nil {
 			pendulumOracle = r.StateEngine.PendulumOracleEnv()
 			// Wire the pendulum swap-fee applier so simulated swaps on
@@ -870,6 +875,30 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
 			}
+			initGuardActive = r.StateEngine.ActiveConsensusVersion(blockHeight).
+				MeetsConsensusMin(consensusversion.WasmInitGuardVersion)
+			ctxOpts = append(ctxOpts, contract_execution_context.WithInitGuard(initGuardActive))
+			// fix-round-2 R2-5: also thread the deterministic SDK error-surfacing
+			// gate so a simulated call renders errors the SAME way execution does
+			// at this height. The on-chain path (state-processing/transactions.go)
+			// sets BOTH WithInitGuard and WithSdkErrorDeterminism; simulate only set
+			// the former, so above SdkErrorDeterminismVersion a simulate could show
+			// a different error string/outcome than the real execution. Same
+			// height-addressable consensus gate, mirroring transactions.go exactly.
+			ctxOpts = append(ctxOpts, contract_execution_context.WithSdkErrorDeterminism(
+				r.StateEngine.ActiveConsensusVersion(blockHeight).
+					MeetsConsensusMin(consensusversion.SdkErrorDeterminismVersion),
+			))
+			// fix-round-3 C-RV: add the missing WithTryCatch gate (the fourth
+			// option the on-chain path sets — transactions.go:164-166). Without
+			// this, a simulated ICC that uses Try semantics shows a different
+			// outcome than real execution above TryCatchICCVersion: simulate
+			// ignores Try (legacy fail-open), on-chain respects it. Same
+			// height-addressable consensus gate, mirroring transactions.go exactly.
+			ctxOpts = append(ctxOpts, contract_execution_context.WithTryCatch(
+				r.StateEngine.ActiveConsensusVersion(blockHeight).
+					MeetsConsensusMin(consensusversion.TryCatchICCVersion),
+			))
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
@@ -899,9 +928,15 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 		}
 
 		wasmCtx := context.WithValue(
-			context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
-			wasm_context.WasmExecCodeCtxKey,
-			hex.EncodeToString(code),
+			context.WithValue(
+				context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
+				wasm_context.WasmExecCodeCtxKey,
+				hex.EncodeToString(code),
+			),
+			// MED #130 (m57 F-WB-3): hand the host the same gate decided above so the
+			// simulate path's success/failure matches on-chain execution at this height.
+			wasm_context.WasmInitGuardCtxKey,
+			initGuardActive,
 		)
 
 		w := wasm_runtime_ipc.New()

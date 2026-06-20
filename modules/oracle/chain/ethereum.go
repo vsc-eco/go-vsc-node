@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"time"
 	systemconfig "vsc-node/modules/common/system-config"
 
@@ -245,6 +246,69 @@ func (e *ethereumRelayer) ChainData(_ context.Context, startHeight uint64, count
 	}
 
 	return blocks, nil
+}
+
+// verifyEthHeaderChain asserts that a fetched batch of Ethereum headers forms an
+// unbroken parent-hash chain: every block's ParentHash equals the prior block's
+// Hash, and (when prevHash is non-empty) the first block links to the contract's
+// stored tip. This is the defence-in-depth check the audit (m39 F-INJ-A12 / MED
+// #114) found missing on the BLS-oracle relay path — the ZK path already verifies
+// the parent-hash chain (sp1-helios operator), but the oracle relay trusted the
+// RPC's "finalized" tag without confirming the headers actually chain.
+//
+// On a canonical finalized chain this check ALWAYS passes (consecutive finalized
+// headers chain by definition), so it returns nil and changes no relay bytes; it
+// only rejects an RPC that serves a broken / spliced header sequence. Callers MUST
+// gate invocation on the v0.2.0 consensus activation height so that, before
+// activation, both producer and witness skip the check and remain byte-identical
+// with pre-upgrade nodes (the gate is keyed to the deterministic Hive block height
+// shared by producer and witness, so all nodes make the same decision).
+//
+// prevHash is the L1 hash (0x-prefixed, lowercase) of the block immediately
+// before blocks[0]; pass "" to skip the link-to-tip check (e.g. when the prior
+// tip is not available to the caller). Non-ETH blocks are ignored (returns nil)
+// since only ETH carries an explicit parent-hash field here.
+func verifyEthHeaderChain(blocks []chainBlock, prevHash string) error {
+	var prev *ethChainData
+	for i, b := range blocks {
+		eth, ok := b.(*ethChainData)
+		if !ok {
+			// Not an Ethereum batch — nothing to chain-check here.
+			return nil
+		}
+		// C-F5 (fix-round-3): guard against a typed-nil header. A typed nil
+		// satisfies the *ethChainData type assertion (ok==true) but dereferencing
+		// eth.ParentHash or eth.Hash would panic. This can occur if a caller
+		// inserts a nil *ethChainData into the chainBlock slice — defensive guard.
+		if eth == nil {
+			return fmt.Errorf("eth header chain: nil header at index %d", i)
+		}
+		if i == 0 {
+			if prevHash != "" && !strings.EqualFold(eth.ParentHash, prevHash) {
+				return fmt.Errorf(
+					"eth header chain break at height %d: parent_hash %s does not link to prior tip %s",
+					eth.Height, eth.ParentHash, prevHash,
+				)
+			}
+		} else {
+			// prev is guaranteed non-nil here: it was set to a non-nil eth in the
+			// prior iteration (any nil eth is caught above and returns early).
+			if !strings.EqualFold(eth.ParentHash, prev.Hash) {
+				return fmt.Errorf(
+					"eth header chain break at height %d: parent_hash %s != prior block hash %s",
+					eth.Height, eth.ParentHash, prev.Hash,
+				)
+			}
+			if eth.Height != prev.Height+1 {
+				return fmt.Errorf(
+					"eth header chain gap: block %d follows %d (non-contiguous heights)",
+					eth.Height, prev.Height,
+				)
+			}
+		}
+		prev = eth
+	}
+	return nil
 }
 
 // BlockHeight implements chainBlock.

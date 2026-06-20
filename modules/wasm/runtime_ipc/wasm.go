@@ -606,11 +606,32 @@ func (w *Wasm) Execute(
 		}
 	}
 
-	wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
+	// MED #130 (m57 F-WB-3): the host runs the contract's `_initialize` export
+	// exactly once per fresh VM here. Previously its result was discarded and the
+	// action handler was dispatched unconditionally. On a TinyGo (Go runtime)
+	// contract whose `_initialize` traps (out-of-gas via the cost limit, abort, or
+	// a panic in a global constructor), the module init-flag stays 0; the handler
+	// then short-circuits its own body (br_if 0) and returns a benign value, so the
+	// call reports SUCCESS while doing nothing — a silent no-op the caller paid RC
+	// for. Capture the result and, once the chain-active version floor is reached,
+	// abort the call instead of running a half-initialised handler.
+	initResultRes := wasm_runtime.Execute(runtime, wasm_runtime.RuntimeAction[result.Result[[]any]]{
 		Go: func() result.Result[[]any] {
 			return resultWrap(vm.ExecuteRegistered("contract", "_initialize"))
 		},
 	})
+	// AssemblyScript supplies no Go action above, so wasm_runtime.Execute returns
+	// the zero-value result.Result (IsOk, err==nil) for AS contracts — the guard
+	// only ever trips for the Go runtime, where `_initialize` actually ran.
+	initGuardActive, _ := ctx.Value(wasm_context.WasmInitGuardCtxKey).(bool)
+	if initGuardActive && initResultRes.IsErr() {
+		errStr := fmt.Errorf("contract _initialize failed: %w", initResultRes.UnwrapErr()).Error()
+		return wasm_types.WasmResultStruct{
+			Error:     &errStr,
+			ErrorCode: contracts.WASM_INIT_ERROR,
+			Gas:       vm.GetStatistics().GetTotalCost() + importGm.GetGasUsed(),
+		}
+	}
 
 	argsAlloc := allocString(runtime, vm, nil, args)
 

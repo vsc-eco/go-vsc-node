@@ -25,32 +25,59 @@ import (
 //   - 0.1.0 — pendulum settlement rollout. The Consensus 0→1 bump is what lets the floor
 //     rise to exclude pre-pendulum (0.0.0) nodes from the committee and TSS once a
 //     vsc.propose_consensus_version activates (see docs/consensus-upgrades.md).
-//   - 0.2.0 — the Consensus 1→2 bump gates TWO independent consensus changes, both
-//     activated together when the election floor reaches 0.2.0:
-//     (a) try/catch inter-contract calls (ICCallOptions.Try): a caught revert returns a
-//     structured outcome + rolls back to a savepoint instead of trapping. Until the
-//     floor reaches 0.2.0 the Try flag is IGNORED and a reverting callee traps as
-//     before. See TryCatchICCVersion.
-//     (b) pendulum LP minimum-floor (B12): the swap-fee split caps the node fraction at
-//     BpsScale − MinFractionBps (including on the under-secured cliff), so liquidity
-//     providers always retain a minimum share of every pot. Gated on this line via
-//     pendulum.LPFloorActivation.
-//     Until 0.2.0 is chain-active both behaviors are inert and splits/call semantics stay
-//     byte-identical to 0.1.0, so old and new binaries interoperate until activation.
+//   - 0.2.0 — try/catch inter-contract calls (ICCallOptions.Try). The Consensus 1→2 bump
+//     gates the new contracts.call semantics (a caught revert returns a structured
+//     outcome + rolls back to a savepoint instead of trapping). Until the floor reaches
+//     0.2.0 the Try flag is IGNORED and a reverting callee traps as before, so old and
+//     new binaries stay byte-identical pre-activation. See TryCatchICCVersion.
+	//   - 0.3.0 — WASM _initialize hard-fail (MED #130 / m57 F-WB-3). Below this floor the
+	//     host discards the result of the contract's `_initialize` export and dispatches the
+	//     action handler anyway; on a TinyGo (Go runtime) contract whose `_initialize` traps,
+	//     the module init-flag stays 0 and the handler silently no-ops (br_if over its body)
+	//     yet the call reports success. The 2→3 bump makes the host ABORT the call with
+	//     WASM_INIT_ERROR when `_initialize` traps, instead of running a half-initialised
+	//     handler. See WasmInitGuardVersion.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 2
+	currentConsensus    uint64 = 3
 	currentNonConsensus uint64 = 0
 )
 
 // TryCatchICCVersion is the minimum chain-active consensus version at which the
 // try/catch inter-contract-call semantics (ICCallOptions.Try) take effect. Below
 // it a Try call behaves exactly like a legacy call (a reverting callee traps the
-// caller), so activation is fully coordinated by the election version floor. It
-// is part of the v0.2.0 batch, so it is the same line as V0_2_0 (see
-// feature_gates.go) — kept as its own named var so the try/catch gate reads by
-// FEATURE at its call site.
-var TryCatchICCVersion = V0_2_0
+// caller), so activation is fully coordinated by the election version floor.
+var TryCatchICCVersion = Version{Major: 0, Consensus: 2, NonConsensus: 0}
+
+// SdkErrorDeterminismVersion is the minimum chain-active consensus version at
+// which the deterministic system.call panic-detail rendering takes effect. It
+// ships in the v0.2.0 batch (Consensus 1->2), so it is keyed to the same {0,2,0}
+// triple as TryCatchICCVersion, but is kept as its OWN named gate so the two
+// v0.2.0-era features stay independently traceable (matching the per-feature
+// gate convention in ConsensusParams).
+//
+// Below it, system.call renders a recovered panic value with
+// fmt.Errorf("%v", r) (legacy) — which can leak per-node pointer addresses /
+// goroutine ids and so fork the result CID. At/after it, the recovered panic
+// value is rendered deterministically (errors/strings verbatim, any other type
+// as its concrete type name only). Because that string flows into the contract
+// result -> state diff -> CID, the switch is consensus-affecting and MUST be
+// coordinated by the election version floor, exactly like TryCatchICCVersion.
+//
+// (The related sp1_verify_groth16 error-class fix — MED-37 — and the
+// contracts.read presence-disambiguation fix — MED-119 — are NOT gated here:
+// each ships as an additive sibling host function (sp1_verify_groth16_ex /
+// contracts.read_ex) that changes no existing contract's behaviour and so needs
+// no height gate.)
+var SdkErrorDeterminismVersion = Version{Major: 0, Consensus: 2, NonConsensus: 0}
+
+// WasmInitGuardVersion is the minimum chain-active consensus version at which the
+// WASM host aborts a contract call whose `_initialize` export trapped (MED #130 /
+// m57 F-WB-3). Below it the host preserves the legacy behaviour — the `_initialize`
+// result is discarded and the action handler runs even with an uninitialised module
+// (a silent no-op on TinyGo contracts) — so old and new binaries stay byte-identical
+// pre-activation. Activation is coordinated solely by the election version floor.
+var WasmInitGuardVersion = Version{Major: 0, Consensus: 3, NonConsensus: 0}
 
 // ParseComponent parses a numeric version-component string, defaulting to 0 when
 // empty/invalid. Retained for the announcement payload helper; the running version itself
@@ -79,8 +106,8 @@ func RunningVersion() Version {
 
 // Version is the canonical on-chain / wire representation.
 type Version struct {
-	Major        uint64 `json:"major"         bson:"version_major,omitempty"`
-	Consensus    uint64 `json:"consensus"     bson:"version_consensus,omitempty"`
+	Major         uint64 `json:"major" bson:"version_major,omitempty"`
+	Consensus     uint64 `json:"consensus" bson:"version_consensus,omitempty"`
 	NonConsensus uint64 `json:"non_consensus" bson:"version_non_consensus,omitempty"`
 }
 
@@ -149,3 +176,4 @@ func MaxComponentwise(a, b Version) Version {
 	}
 	return out
 }
+

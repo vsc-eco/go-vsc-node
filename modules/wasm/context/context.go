@@ -11,6 +11,17 @@ type contextKey string
 const WasmExecCtxKey = contextKey("exec")
 const WasmExecCodeCtxKey = contextKey("exec-code")
 
+// WasmInitGuardCtxKey carries a bool into Wasm.Execute that activates the
+// `_initialize` hard-fail guard (MED #130 / m57 F-WB-3). The value is the
+// chain-active gate decided by the caller (state engine / inter-contract call)
+// from ActiveConsensusVersion(blockHeight).MeetsConsensusMin(
+// consensusversion.WasmInitGuardVersion). When true, a trapping `_initialize`
+// aborts the call with WASM_INIT_ERROR instead of dispatching a handler over an
+// uninitialised module. When the key is absent or false (read-only paths that do
+// not set it, and every block below the version floor) the host keeps the legacy
+// behaviour, so pre-activation execution is byte-identical across binaries.
+const WasmInitGuardCtxKey = contextKey("init-guard")
+
 type IOSession interface {
 	End() uint
 }
@@ -94,6 +105,24 @@ type PendulumApplier interface {
 type ExecContextValue interface {
 	ContractCall(contractId string, method string, payload string, options string) wasm_types.WasmResult
 	ContractStateGet(contractId string, key string) result.Result[string]
+	// ContractStateGetEx is the presence-disambiguating sibling of
+	// ContractStateGet (MED-119). It returns the same value string plus an
+	// `exists` bool that is true iff the key is actually present in the target
+	// contract's state (an empty stored value => value="" with exists=true; a
+	// missing key => value="" with exists=false). The existence bit is derived
+	// from the state store's deterministic nil-vs-non-nil result, so every node
+	// computes it identically at a given height. Used by the additive
+	// contracts.read_ex host function; existing contracts (which call only
+	// contracts.read) are unaffected.
+	ContractStateGetEx(contractId string, key string) (result.Result[string], bool)
+	// SdkErrorDeterminismActive reports whether the v0.2.0 deterministic
+	// SDK error-surfacing behaviour is in force for the block this call runs
+	// against. It is set once per tx by the state engine from the chain-active
+	// consensus version (>= consensusversion.SdkErrorDeterminismVersion) and
+	// propagated into nested inter-contract calls, so every node evaluates it
+	// identically at a given height. SDK host functions gate their consensus-
+	// affecting error rendering on this; false => byte-identical legacy output.
+	SdkErrorDeterminismActive() bool
 	DeleteEphemState(key string) result.Result[struct{}]
 	DeleteState(key string) result.Result[struct{}]
 	EnvVar(key string) result.Result[string]

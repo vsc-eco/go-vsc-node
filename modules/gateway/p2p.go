@@ -33,23 +33,59 @@ type p2pSpec struct {
 	ms *MultiSig
 }
 
-// ValidateMessage rejects sign_request messages from peers not in the current
-// election. Prevents unauthenticated peers from triggering expensive signing
-// work on every witness (finding S7).
+// ValidateMessage is the gossipsub topic validator (registered in
+// modules/p2p/pubsub.go RegisterTopicValidator). Returning false means the
+// message is NEITHER relayed onward through the mesh NOR dispatched to
+// HandleMessage on this node, so this is the ingress chokepoint for the
+// /gateway/v1 topic. Only the two protocol message types are admitted:
+//
+//   - sign_request  — gated by current-election peer.ID. The leader publishes
+//     it; a peer not in electionPeerIDs cannot trigger expensive signing work
+//     on every witness (finding S7). The allow-set is now rebuilt every
+//     ACTION_INTERVAL (multisig.go BlockTick) so a leader whose libp2p identity
+//     rotated mid-epoch is admitted within ~1 min, not the next epoch (MED #55).
+//
+//   - sign_response — admitted unconditionally so gossip can relay a cosigner's
+//     response toward the leader through intermediate (non-leader) nodes. It is
+//     deliberately NOT peer.ID-gated: gating it by peer.ID would drop the
+//     response of any witness whose libp2p identity rotated ahead of the
+//     witness-DB resync (MED #55 / M26-K5-M1), self-excluding that witness from
+//     the multisig. The security boundary for a sign_response is downstream and
+//     identity-rotation-independent: waitForSigs (multisig.go) recovers the
+//     secp256k1 signer pubkey from the signature over the real tx hash, requires
+//     it to be in the committee publicList, and dedups per pubkey — so a forged
+//     or outsider response is rejected there, and the collector channel is a
+//     16-deep non-blocking buffer that drops on overflow (bounds the flood,
+//     MED #3 / #6). A sign_response flood cannot be dropped at THIS validator
+//     without either re-introducing MED #55 (peer.ID gate) or breaking mesh
+//     relay (a leader-only TxId gate), so it is bounded here, not closed here.
+//
+// Any other (unknown or zero-value Type:"") message is rejected outright. The
+// previous code returned true for everything that was not a sign_request, which
+// let a malformed/zero-value message (Type=="", see MED #110) and arbitrary
+// junk types propagate through the mesh.
 func (s p2pSpec) ValidateMessage(ctx context.Context, from peer.ID, msg *pubsub.Message, parsedMsg p2pMessage) bool {
-	if parsedMsg.Type == "sign_request" {
+	switch parsedMsg.Type {
+	case "sign_request":
 		allowed := s.ms.electionPeerIDs.Load()
 		if allowed == nil {
 			return false
 		}
 		return (*allowed)[from.String()]
+	case "sign_response":
+		// Relay-safe, identity-rotation-safe. Authenticated downstream by
+		// recovered secp256k1 pubkey in waitForSigs, not by peer.ID.
+		return true
+	default:
+		return false
 	}
-	return true
 }
 
 func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage, send libp2p.SendFunc[p2pMessage]) error {
 	if msg.Type == "sign_request" {
-		if s.ms.bh == 0 {
+		// MED M38-MED-4 (#112): ms.bh is written by BlockTick concurrently, so
+		// read it through loadBh — a bare field read here raced.
+		if s.ms.loadBh() == 0 {
 			return nil
 		}
 		if msg.Op == "key_rotation" {
@@ -227,10 +263,16 @@ func (p2pSpec) HandleRawMessage(ctx context.Context, rawMsg *pubsub.Message, sen
 	return nil
 }
 
+// ParseMessage decodes the wire bytes. The json.Unmarshal error is now
+// propagated (MED #110 / M38-MED-1): the topic validator in
+// modules/p2p/pubsub.go treats a ParseMessage error as an invalid message and
+// drops it (no relay, no dispatch), and the dispatch goroutine likewise returns
+// on the error. Swallowing it turned malformed input into a zero-value
+// p2pMessage{Type:""} that previously sailed through ValidateMessage.
 func (p2pSpec) ParseMessage(data []byte) (p2pMessage, error) {
 	res := p2pMessage{}
-	json.Unmarshal(data, &res)
-	return res, nil
+	err := json.Unmarshal(data, &res)
+	return res, err
 }
 
 func (p2pSpec) SerializeMessage(msg p2pMessage) []byte {
