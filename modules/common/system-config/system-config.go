@@ -204,9 +204,9 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
 			ElectionInterval:               params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch:           1406,
-			ConsensusVersionFloorEpoch:     1623,
+			ConsensusVersionFloorEpoch:     1698,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 1,
+			ConsensusVersionFloorConsensus: 2,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
 			// v0.2.0 release activation: the contract-update timelock, gateway-key
@@ -221,7 +221,7 @@ func MainnetConfig() SystemConfig {
 			// Activation height 0 = INERT (no behavior change) until an operator
 			// pins a future epoch-boundary height (>=3d lead) for rollout.
 			BondInclusionWindowBlocks:     86_400,
-			BondInclusionActivationHeight: 0,
+			BondInclusionActivationHeight: 107454300,
 			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
@@ -238,7 +238,7 @@ func MainnetConfig() SystemConfig {
 			// (strictly above chain head, every witness upgraded first) before
 			// turning slashing on — same reindex/upgrade-window footgun as the
 			// other height gates. Stage AFTER the v0.2.0 batch has soaked.
-			SafetySlashActivationHeight: 0,
+			SafetySlashActivationHeight: 107454300,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -438,7 +438,7 @@ func MocknetConfig() SystemConfig {
 			// make the version-floor filter exclude the version-less witness fixtures
 			// several election-proposer unit tests build. (Replaces the old
 			// Version0_2_0Height=1.)
-			BondInclusionWindowBlocks: 80,
+			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
 			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
