@@ -196,7 +196,8 @@ func (c *contracts) FindActiveContracts(contractId *string, code *string, head u
 			{Key: "doc", Value: bson.M{"$first": "$$ROOT"}},
 		}}},
 		{{Key: "$replaceRoot", Value: bson.M{"newRoot": "$doc"}}},
-		{{Key: "$sort", Value: bson.D{{Key: "id", Value: 1}}}},
+		// Output order: newest-deployed contract first (descending deployment height).
+		{{Key: "$sort", Value: bson.D{{Key: "creation_height", Value: -1}, {Key: "id", Value: 1}}}},
 	}
 	if offset > 0 {
 		pipe = append(pipe, bson.D{{Key: "$skip", Value: offset}})
