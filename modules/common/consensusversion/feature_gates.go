@@ -56,7 +56,14 @@ func Version0_2_0Active(active Version) bool {
 // which is exactly the safety the prior dedicated height was hand-positioned to
 // provide.
 func WitnessKeyStrictActive(active Version) bool {
-	return Version0_2_0Active(active)
+	// TEMPORARILY DISABLED (2026-06-22) — emergency liveness fix. The H-6 strict
+	// PoP gate starved the mainnet committee below the floor at epoch 1699,
+	// halting elections (1698 was the last election produced). Returning false
+	// reverts to the pre-0.2.0 warn-only key behavior so the committee re-fills
+	// and elections resume. RE-ENABLE (restore the line below) once witnesses
+	// have re-announced valid consensus + gateway-key PoPs.
+	return false
+	// return Version0_2_0Active(active)
 }
 
 // ContractUpdateTimelockActive reports whether the contract-update timelock (and
