@@ -12,6 +12,7 @@ import (
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
@@ -116,6 +117,13 @@ func main() {
 		})
 		idConf.SetUsername(witnessName)
 		idConf.SetActiveKey(args.wif)
+		// Consensus 0.2.0: nodes must opt in to receive third-party consensus
+		// delegation (default is Deactivated). Devnet nodes announce "custom" so
+		// the delegation stake/unstake paths are exercisable; "custom" keeps
+		// pendulum rewards at the node account, so reward-distribution devnet
+		// tests stay byte-identical to the pre-feature behaviour (only "share"
+		// splits to delegators). Use delegationmode.Share to exercise the split.
+		idConf.SetDelegationMode(delegationmode.Custom)
 
 		// Devnet integration-test hook (gated): when DEVNET_DETERMINISTIC_BLS=1,
 		// override the randomly-generated BLS seed with a DETERMINISTIC per-witness

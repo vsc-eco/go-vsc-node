@@ -253,6 +253,11 @@ type LedgerSystem interface {
 	// consensus-0.5.0 activation. Caller gates on delegatedStakeActive. Returns
 	// the number of edges seeded (0 if already migrated / no history).
 	MigrateDelegationEdgesOnce(blockHeight uint64) int
+	// AllDelegationEdges returns every node's positive consensus-delegation
+	// edges as of blockHeight: node -> (delegator -> net HIVE delegated), both
+	// in "hive:" form, from a single deterministic ledger scan. ok=false on a
+	// transient read error. Drives the share-mode pendulum reward split.
+	AllDelegationEdges(blockHeight uint64) (map[string]map[string]int64, bool)
 	// CancelPendingSafetySlashBurn cancels a pending burn slice before maturity.
 	// Idempotent: if the (TxID, EvidenceKind) row is missing, finalized, or
 	// already cancelled, returns Ok=false with a descriptive Msg but does not
