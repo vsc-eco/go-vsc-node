@@ -76,6 +76,10 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 	}
 
 	// userA delegates 5.000 HIVE of consensus stake to operatorB (from != to).
+	// Consensus 0.5.0 requires the target node to opt in to delegation; devnet
+	// nodes announce delegationmode.Custom (set in devnet-setup), so operatorB
+	// accepts this third-party stake. (A Deactivated node would reject it with
+	// "node does not accept delegations".)
 	t.Logf("userA=%s delegates 5.000 consensus stake to operatorB=%s", userAFull, operatorBFull)
 	if _, err := d.ConsensusStake(A, B, "5.000"); err != nil {
 		t.Fatalf("delegated stake A->B: %v", err)

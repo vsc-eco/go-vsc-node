@@ -29,11 +29,11 @@ type Distribution struct {
 // distribution math; the underlying ledger HIVE_CONSENSUS balance is NOT
 // debited (that would be true slashing — out of scope).
 type RewardReductionApplied struct {
-	Account          string
-	Bps              int
-	OriginalBond     int64
-	ReductionAmount  int64
-	EffectiveBond    int64
+	Account         string
+	Bps             int
+	OriginalBond    int64
+	ReductionAmount int64
+	EffectiveBond   int64
 }
 
 func CalculateSplitPreviewFixed(r int64, t int64, effectiveNumerator int64, effectiveDenominator int64, v int64, p int64) SplitPreview {
@@ -124,6 +124,91 @@ func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distrib
 		})
 	}
 
+	return out
+}
+
+// ExpandShareDistributions rewrites node-level distributions into per-recipient
+// distributions for nodes that share their pendulum rewards with delegators
+// (delegationmode.Share). Consensus 0.3.0+.
+//
+// For a node present in shareDelegations, its HBD amount is split across the
+// node's stake edges pro-rata by stake using integer floor division
+// (intmath.MulDivFloorI64). The rounding remainder (amount − Σ floors) is
+// credited to the node operator account, so each node's TOTAL payout is
+// preserved EXACTLY — TotalDistributedHBD and ResidualHBD are therefore
+// identical to the node-level result, and the settlement's conservation
+// invariant is untouched. Nodes absent from shareDelegations (Custom,
+// Deactivated, or non-committee) pass through unchanged: the operator keeps the
+// whole amount.
+//
+// The operator's own self-stake is just another edge (node -> node), so the
+// operator earns strictly in proportion to their own stake — no separate
+// commission. Results are merged by recipient account (a delegator across
+// several share nodes, or an operator who also delegates elsewhere, collapses
+// to a single entry — which both avoids duplicate ledger ids at apply time and
+// keeps the post-sort order byte-stable) and sorted lexicographically.
+//
+// Deterministic: edge maps are iterated in sorted account order and all
+// arithmetic is integer, so two honest nodes produce a byte-identical result.
+func ExpandShareDistributions(dists []Distribution, shareDelegations map[string]map[string]int64) []Distribution {
+	merged := make(map[string]int64)
+	add := func(acct string, amt int64) {
+		if amt != 0 {
+			merged[acct] += amt
+		}
+	}
+
+	for _, d := range dists {
+		edges := shareDelegations[d.Account]
+		if d.Amount <= 0 || len(edges) == 0 {
+			// Non-share node (or nothing to split): operator keeps it.
+			add(d.Account, d.Amount)
+			continue
+		}
+
+		// Denominator = Σ positive edge stakes; collect delegators for a
+		// deterministic (sorted) split order.
+		total := int64(0)
+		delegators := make([]string, 0, len(edges))
+		for dlg, st := range edges {
+			if st > 0 {
+				total += st
+				delegators = append(delegators, dlg)
+			}
+		}
+		if total <= 0 {
+			add(d.Account, d.Amount)
+			continue
+		}
+		sort.Strings(delegators)
+
+		distributed := int64(0)
+		for _, dlg := range delegators {
+			share, ok := intmath.MulDivFloorI64(d.Amount, edges[dlg], total)
+			if !ok || share <= 0 {
+				continue
+			}
+			add(dlg, share)
+			distributed += share
+		}
+		// Floor remainder → operator (the node account), preserving the node's
+		// exact total. distributed ≤ d.Amount, so the remainder is ≥ 0.
+		add(d.Account, d.Amount-distributed)
+	}
+
+	accounts := make([]string, 0, len(merged))
+	for a := range merged {
+		accounts = append(accounts, a)
+	}
+	sort.Strings(accounts)
+
+	out := make([]Distribution, 0, len(accounts))
+	for _, a := range accounts {
+		if merged[a] <= 0 {
+			continue
+		}
+		out = append(out, Distribution{Account: a, Amount: merged[a]})
+	}
 	return out
 }
 
