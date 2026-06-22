@@ -227,7 +227,7 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		// OpType allow-list while keeping the same result.
 		base = balRecord.HIVE_CONSENSUS
 	case AssetDelegation, AssetDelegationTotal:
-		// Virtual delegation balances (consensus 0.2.0+):
+		// Virtual delegation balances (consensus 0.3.0+):
 		//   AssetDelegation      — `account` is DelegationEdgeKey(from,to); net of
 		//                          consensus_stake/unstake on that edge.
 		//   AssetDelegationTotal — `account` is the node; gross sum of edges to it,

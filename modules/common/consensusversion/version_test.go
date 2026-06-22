@@ -44,7 +44,7 @@ func TestMaxComponentwise(t *testing.T) {
 // pinned current triple. Update this pin in the SAME commit that bumps the constants in
 // version.go.
 func TestRunningVersionIsSourcePinned(t *testing.T) {
-	want := Version{Major: 0, Consensus: 2, NonConsensus: 0}
+	want := Version{Major: 0, Consensus: 3, NonConsensus: 0}
 	if got := RunningVersion(); got != want {
 		t.Fatalf("running version = %+v, want %+v (source constants in version.go)", got, want)
 	}

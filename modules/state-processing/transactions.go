@@ -13,6 +13,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -725,9 +726,26 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	// Consensus 0.2.0 gate: record a per-delegator edge so the delegator (not the
+	// Consensus 0.3.0 gate: record a per-delegator edge so the delegator (not the
 	// node) can reclaim this stake. Pre-activation (or pre-genesis) → legacy path.
 	stakeElec, stakeElecFound := se.GetElectionInfoOrBlock(tx.Self.BlockHeight)
+	delegated := stakeElecFound && DelegatedStakeActiveForElection(stakeElec)
+
+	// Consensus 0.3.0: a node must opt in to receive third-party delegation.
+	// When `from != to` (someone other than the operator staking to this node),
+	// the target node's published mode must allow delegation; a Deactivated node
+	// (the default until the operator announces otherwise) rejects it. The
+	// operator's own self-stake (from == to) is always allowed, and unstaking an
+	// existing delegation is never gated (see TxConsensusUnstake). Pre-0.3.0 the
+	// mode is inert and this check is skipped.
+	if delegated && tx.From != tx.To &&
+		!delegationmode.AllowsDelegation(se.NodeDelegationMode(tx.To, tx.Self.BlockHeight)) {
+		return TxResult{
+			Success: false,
+			Ret:     "node does not accept delegations",
+			RcUsed:  100,
+		}
+	}
 
 	params := ledgerSystem.ConsensusParams{
 		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
@@ -736,7 +754,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		Amount:      amount,
 		BlockHeight: tx.Self.BlockHeight,
 		Type:        "stake",
-		Delegated:   stakeElecFound && DelegatedStakeActiveForElection(stakeElec),
+		Delegated:   delegated,
 	}
 
 	ledgerResult := ledgerSession.ConsensusStake(params)
@@ -855,7 +873,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
 		ElectionEpoch: electionResult.Epoch + 5,
-		// Consensus 0.2.0 gate (reuses the election already read above for the
+		// Consensus 0.3.0 gate (reuses the election already read above for the
 		// lock epoch): authorize against the signer's delegation edge + debit the
 		// node bond + return HIVE to the delegator. Pre-activation → legacy path.
 		Delegated: DelegatedStakeActiveForElection(electionResult),

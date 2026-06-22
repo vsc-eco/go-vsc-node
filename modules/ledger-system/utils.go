@@ -10,14 +10,14 @@ var transferableAssetTypes = []string{"hive", "hbd", "hbd_savings"}
 // AssetDelegation is a virtual (non-transferable) per-edge balance: the net HIVE a
 // delegator has consensus-staked to a specific node, keyed by a composite owner
 // (see DelegationEdgeKey). It reuses the normal balance machinery (GetBalance /
-// snapshot / in-session cache); it is NOT a real spendable asset. Consensus 0.2.0+.
+// snapshot / in-session cache); it is NOT a real spendable asset. Consensus 0.3.0+.
 const AssetDelegation = "delegation"
 
 // AssetDelegationTotal is the gross sum of all delegation edges to a node, keyed
 // by the node account. It moves with stake/unstake but is NEVER reduced by a
 // slash (unlike the node's hive_consensus bond), so bond/total is the node's
 // post-slash solvency ratio used to share a slash loss pro-rata across every
-// delegator equally (see slashAdjustedRelease). Consensus 0.2.0+.
+// delegator equally (see slashAdjustedRelease). Consensus 0.3.0+.
 const AssetDelegationTotal = "delegation_total"
 
 // delegationEdgeSep separates from/to in a delegation edge owner key. A single ":"
@@ -307,7 +307,7 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 					BlockHeight: endBlock,
 				})
 			} else {
-				// Legacy era (< 0.2.0): unchanged — debit the signer's own bond,
+				// Legacy era (< 0.3.0): unchanged — debit the signer's own bond,
 				// release returns to v.To.
 				ledgerRecords = append(ledgerRecords, LedgerUpdate{
 					Id:          v.Id + "#in",

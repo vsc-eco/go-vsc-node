@@ -32,6 +32,15 @@ type ComposeInputs struct {
 	// computed over the closed epoch, keyed in "hive:account" form. Produced
 	// by rewards.ComputeReductionsForEpoch from on-chain L2 evidence.
 	ReductionsByAccount map[string]int
+	// ShareDelegations holds, for each committee node running
+	// delegationmode.Share at SlotHeight, that node's stake edges:
+	// node -> (delegator -> net HIVE staked), both in "hive:account" form.
+	// Nodes absent here keep their reward at the node account (Custom /
+	// Deactivated / legacy). Consensus 0.3.0+; nil pre-activation, which makes
+	// ComposeRecord byte-identical to the node-level result. Must be derived
+	// deterministically (StateEngine.PendulumShareDelegations at SlotHeight) on
+	// both the producer and every re-deriving node.
+	ShareDelegations map[string]map[string]int64
 }
 
 // ComposeRecord builds the deterministic SettlementRecord for the closing
@@ -121,6 +130,15 @@ func ComposeRecord(in ComposeInputs) (*SettlementRecord, error) {
 	nodeShare := in.BucketBalanceHBD
 
 	dists := ComputeNodeDistributions(nodeShare, effectiveBonds)
+
+	// Consensus 0.3.0: expand each share-mode node's slice into per-delegator
+	// payouts (pro-rata by stake); Custom / Deactivated / legacy nodes pass
+	// through unchanged. Each node's total is preserved exactly (rounding
+	// remainder → operator), so totalDistributed and residual are identical to
+	// the node-level result and the conservation invariant is unchanged. With
+	// no share nodes (ShareDelegations nil/empty) this is a no-op and the record
+	// is byte-identical to pre-0.3.0.
+	dists = ExpandShareDistributions(dists, in.ShareDelegations)
 
 	distPayload := make([]DistributionEntry, 0, len(dists))
 	totalDistributed := int64(0)

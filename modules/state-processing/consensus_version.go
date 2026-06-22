@@ -75,18 +75,22 @@ func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversi
 }
 
 // delegatedStakeMinVersion is the consensus version at which per-delegator
-// consensus stake/unstake activates.
-var delegatedStakeMinVersion = consensusversion.Version{Major: 0, Consensus: 2}
+// consensus stake/unstake (+ delegator pendulum rewards and operator opt-in
+// delegation modes) activates. It is the v0.3.0 line — a SEPARATE version from
+// the already-shipped 0.2.0 batch (ICC + LP floor) so delegation rolls out on
+// its own coordinated floor rise rather than retroactively joining 0.2.0's
+// fixed mainnet activation heights.
+var delegatedStakeMinVersion = consensusversion.V0_3_0
 
 // delegatedStakeActive reports whether per-delegator consensus stake/unstake
-// semantics are in force at this height (chain-adopted consensus >= 0.2.0).
+// semantics are in force at this height (chain-adopted consensus >= 0.3.0).
 // Below it, the legacy hive_consensus-holder unstake path runs byte-identically.
 // Sourced from ActiveConsensusVersion (on-chain election) so every node agrees.
 func (se *StateEngine) delegatedStakeActive(blockHeight uint64) bool {
 	return se.ActiveConsensusVersion(blockHeight).AtLeast(delegatedStakeMinVersion)
 }
 
-// DelegatedStakeActiveForElection is the same 0.2.0 gate evaluated against an
+// DelegatedStakeActiveForElection is the same 0.3.0 gate evaluated against an
 // already-read election, for the consensus_stake/unstake tx handlers which hold
 // an ElectionResult from the StateEngine interface's fail-stop election read.
 func DelegatedStakeActiveForElection(elec elections.ElectionResult) bool {

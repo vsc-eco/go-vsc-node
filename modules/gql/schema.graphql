@@ -336,6 +336,14 @@ type Witness {
   version_id: String
   """Public key used for the P2P multisig gateway."""
   gateway_key: String
+  """
+  Operator's announced consensus-delegation policy (consensus 0.3.0+):
+  `deactivated` (no third-party delegation), `share` (pendulum rewards split
+  pro-rata to delegators), or `custom` (delegation allowed, rewards settled
+  off-chain). Empty/null for witnesses that announced before this field; treat
+  empty as `deactivated`. Use `getNodeDelegationMode` for the normalized value.
+  """
+  delegation_mode: String
 }
 
 """
@@ -856,7 +864,7 @@ type SimulateContractCallResult {
 }
 
 """
-A delegator's consensus stake on a single (from -> to) edge. Consensus 0.2.0+.
+A delegator's consensus stake on a single (from -> to) edge. Consensus 0.3.0+.
 """
 type ConsensusDelegation {
   """Delegator account."""
@@ -925,7 +933,7 @@ type Query {
   ): BalanceRecord
 
   """
-  Consensus stake `from` has delegated to node `to`. Consensus 0.2.0+.
+  Consensus stake `from` has delegated to node `to`. Consensus 0.3.0+.
   `delegated` is the gross amount staked on this edge; `claimable` is what
   unstaking it would return now — equal to `delegated` unless the node has been
   slashed, in which case it is reduced pro-rata (every delegator to that node is
@@ -939,6 +947,21 @@ type Query {
     """Block height to query at. Defaults to the latest block."""
     height: Uint64
   ): ConsensusDelegation
+
+  """
+  The consensus-delegation mode node `account` has opted into, as of `height`
+  (consensus 0.3.0+). Returns the normalized policy — one of `deactivated`,
+  `share`, or `custom` — always defaulting to `deactivated` when the node has
+  not announced a mode (delegation is strict opt-in). `deactivated` rejects
+  third-party delegation; `share` splits pendulum rewards pro-rata to
+  delegators; `custom` allows delegation with off-chain reward settlement.
+  """
+  getNodeDelegationMode(
+    """Node (witness) account whose mode to read, with or without the `hive:` prefix."""
+    account: String!
+    """Block height to query at. Defaults to the latest announcement."""
+    height: Uint64
+  ): String
 
   """
   Get the resource credit balance for an account, optionally at a specific block height. RCs regenerate over time based on staked balance.

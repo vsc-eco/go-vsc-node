@@ -28,10 +28,10 @@ func (d *Devnet) consensusDelegation(ctx context.Context, node int, from, to str
 }
 
 // TestConsensusDelegatedStakeDevnet runs the per-delegator stake/unstake feature
-// on a real multi-node devnet with consensus 0.2.0 pinned active. userA (witness
+// on a real multi-node devnet with consensus 0.3.0 pinned active. userA (witness
 // 1) delegates consensus stake to operatorB (witness 2); the per-edge delegation
 // must appear on every node, and userA's undelegate must drain it — proving the
-// gated 0.2.0 path works end-to-end and deterministically across nodes.
+// gated 0.3.0 path works end-to-end and deterministically across nodes.
 func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping devnet integration test in short mode")
@@ -42,10 +42,11 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 	if cfg.SysConfigOverrides.ConsensusParams == nil {
 		cfg.SysConfigOverrides.ConsensusParams = &params.ConsensusParams{}
 	}
-	// Pin consensus 0.2.0 from epoch 1 so the delegation path is live. NOTE:
-	// FloorEpoch must be NON-ZERO — PinnedVersionFloor treats 0 as "no floor".
+	// Pin consensus 0.3.0 from epoch 1 so the delegation path is live (delegation
+	// activates at the v0.3.0 floor, separate from the 0.2.0 ICC/LP-floor batch).
+	// NOTE: FloorEpoch must be NON-ZERO — PinnedVersionFloor treats 0 as "no floor".
 	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorMajor = 0
-	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 2
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 3
 	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
 
 	d, ctx := startDevnetNoKey(t, cfg, 20*time.Minute)
@@ -75,12 +76,16 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 	}
 
 	// userA delegates 5.000 HIVE of consensus stake to operatorB (from != to).
+	// Consensus 0.3.0 requires the target node to opt in to delegation; devnet
+	// nodes announce delegationmode.Custom (set in devnet-setup), so operatorB
+	// accepts this third-party stake. (A Deactivated node would reject it with
+	// "node does not accept delegations".)
 	t.Logf("userA=%s delegates 5.000 consensus stake to operatorB=%s", userAFull, operatorBFull)
 	if _, err := d.ConsensusStake(A, B, "5.000"); err != nil {
 		t.Fatalf("delegated stake A->B: %v", err)
 	}
 
-	// Poll until the per-edge delegation appears (stake processed AND 0.2.0 active).
+	// Poll until the per-edge delegation appears (stake processed AND 0.3.0 active).
 	var edgeOK bool
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -95,7 +100,7 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 		if bal, err := d.GetAccountBalance(ctx, 1, operatorBFull); err == nil && bal != nil {
 			hc = bal.HiveConsensus
 		}
-		t.Fatalf("edge never reached 5000; operatorB hive_consensus=%d (>0 => 0.2.0 inactive; 0 => stake did not process)", hc)
+		t.Fatalf("edge never reached 5000; operatorB hive_consensus=%d (>0 => 0.3.0 inactive; 0 => stake did not process)", hc)
 	}
 
 	// Deterministic across the whole network: the edge is 5000 on EVERY node.

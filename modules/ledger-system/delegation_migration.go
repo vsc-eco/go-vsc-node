@@ -8,17 +8,17 @@ import (
 )
 
 // BackfillDelegationEdges derives the per-edge delegation ledger records to seed
-// at the consensus 0.2.0 activation height, from the full history of consensus
-// stake/unstake records. This is what makes pre-0.2.0 stakes reclaimable by the
+// at the consensus 0.3.0 activation height, from the full history of consensus
+// stake/unstake records. This is what makes pre-0.3.0 stakes reclaimable by the
 // delegator who made them.
 //
-// Why pairing is needed: before 0.2.0 the (from -> to) link is not stored on any
+// Why pairing is needed: before 0.3.0 the (from -> to) link is not stored on any
 // single record — LedgerUpdate/LedgerRecord has no destination field. A stake
 // emits a "#in" row (Owner = from, -amount, hive) and a "#out" row (Owner = to,
 // +amount, hive_consensus) sharing one base id. We recover (from, to, amount) by
 // pairing those two rows on their base id (id with the trailing "#..." stripped).
 //
-// Legacy unstakes (< 0.2.0) were only ever issued by the bond holder (from == to
+// Legacy unstakes (< 0.3.0) were only ever issued by the bond holder (from == to
 // == node), so they reduce that node's self-edge.
 //
 // Determinism: the input is canonical ledger state (identical on every node) and
@@ -140,7 +140,7 @@ const (
 )
 
 // MigrateDelegationEdgesOnce backfills per-delegator delegation edges from the
-// full consensus stake/unstake history, exactly once, at consensus-0.2.0
+// full consensus stake/unstake history, exactly once, at consensus-0.3.0
 // activation. The caller MUST gate on delegatedStakeActive(blockHeight) and run
 // it BEFORE the slot's transactions execute (so a delegated unstake in the
 // activation slot sees its edge). Idempotent: a persisted marker short-circuits

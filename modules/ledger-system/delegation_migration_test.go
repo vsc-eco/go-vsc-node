@@ -13,7 +13,7 @@ func TestBackfillDelegationEdges(t *testing.T) {
 	const userC = "hive:userc"
 	const opB = "hive:operatorb"
 
-	// Historical records (pre-0.2.0): each stake is an #in/#out pair sharing a
+	// Historical records (pre-0.3.0): each stake is an #in/#out pair sharing a
 	// base id; a legacy unstake is a lone #in on the node's own bond.
 	records := []ledgerDb.LedgerRecord{
 		// userA delegated 10.000 to operatorB

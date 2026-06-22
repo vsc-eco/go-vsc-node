@@ -1085,6 +1085,17 @@ func (e *electionProposer) GenerateFullElection(
 			)
 		}
 
+		// Consensus 0.3.0: per-delegator reward split for share-mode nodes.
+		// Read at the SAME blockHeight as the bonds so every signer's re-derive
+		// (against rec.SnapshotRangeTo == blockHeight) sees identical edges. A
+		// transient read failure aborts the election attempt rather than
+		// composing a settlement against a partial delegation view.
+		shareDelegations, sdOk := e.se.PendulumShareDelegations(settlementMembers, blockHeight)
+		if !sdOk {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: share-delegation read unavailable")
+		}
+
 		rec, composeErr := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
 			Epoch:               previousEpoch,
 			PrevEpoch:           prevSettled,
@@ -1093,6 +1104,7 @@ func (e *electionProposer) GenerateFullElection(
 			CommitteeBonds:      bonds,
 			BucketBalanceHBD:    bucket,
 			ReductionsByAccount: reductions,
+			ShareDelegations:    shareDelegations,
 		})
 		if composeErr != nil {
 			return elections.ElectionHeader{}, elections.ElectionData{},

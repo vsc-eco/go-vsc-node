@@ -20,6 +20,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -428,6 +429,33 @@ func (r *queryResolver) GetConsensusDelegation(ctx context.Context, from string,
 		Delegated: model.Int64(delegated),
 		Claimable: model.Int64(claimable),
 	}, nil
+}
+
+// GetNodeDelegationMode is the resolver for the getNodeDelegationMode field. It
+// returns the node operator's normalized consensus-delegation mode, always
+// defaulting to delegationmode.Deactivated when the node has not announced one
+// (delegation is strict opt-in). Mirrors how the consensus layer reads the mode
+// at stake time and at settlement.
+func (r *queryResolver) GetNodeDelegationMode(ctx context.Context, account string, height *model.Uint64) (*string, error) {
+	if account == "" {
+		return nil, fmt.Errorf("account cannot be empty")
+	}
+	// Witness records are keyed by the bare Hive account name; tolerate the
+	// "hive:" form used elsewhere in the API.
+	acct := strings.TrimPrefix(account, "hive:")
+
+	// nil height → latest announcement; otherwise pin to the requested height.
+	var bh *uint64
+	if height != nil {
+		h := ParseHeight(height)
+		bh = &h
+	}
+
+	mode := delegationmode.Default
+	if w, err := r.Witnesses.GetWitnessAtHeight(acct, bh); err == nil && w != nil {
+		mode = delegationmode.Normalize(w.DelegationMode)
+	}
+	return &mode, nil
 }
 
 // GetAccountRc is the resolver for the getAccountRC field.

@@ -1,27 +1,33 @@
 package witnesses
 
 type Witness struct {
-	Account          string            `json:"account" bson:"account"`
-	Height           uint64            `json:"height" bson:"height"`
-	DidKeys          []PostingJsonKeys `json:"did_keys" bson:"did_keys"`
-	Enabled          bool              `json:"enabled" bson:"enabled"`
-	GitCommit        string            `json:"git_commit" bson:"git_commit"`
-	NetId            string            `json:"net_id" bson:"net_id"`
-	PeerId           string            `json:"peer_id" bson:"peer_id"`
+	Account   string            `json:"account" bson:"account"`
+	Height    uint64            `json:"height" bson:"height"`
+	DidKeys   []PostingJsonKeys `json:"did_keys" bson:"did_keys"`
+	Enabled   bool              `json:"enabled" bson:"enabled"`
+	GitCommit string            `json:"git_commit" bson:"git_commit"`
+	NetId     string            `json:"net_id" bson:"net_id"`
+	PeerId    string            `json:"peer_id" bson:"peer_id"`
 	// VersionMajor with ProtocolVersion (consensus) and VersionNonConsensus form major.consensus.non_consensus.
 	VersionMajor        uint64 `json:"version_major" bson:"version_major,omitempty"`
 	ProtocolVersion     uint64 `json:"protocol_version" bson:"protocol_version"`
 	VersionNonConsensus uint64 `json:"version_non_consensus" bson:"version_non_consensus,omitempty"`
-	Ts               string            `json:"ts" bson:"ts"`
-	TxId             string            `json:"tx_id" bson:"tx_id"`
-	VersionId        string            `json:"version_id" bson:"version_id"`
-	GatewayKey       string            `json:"gateway_key" bson:"gateway_key"`
-	GatewayActiveKey string            `json:"gateway_active_key" bson:"gateway_active_key"`
+	Ts                  string `json:"ts" bson:"ts"`
+	TxId                string `json:"tx_id" bson:"tx_id"`
+	VersionId           string `json:"version_id" bson:"version_id"`
+	GatewayKey          string `json:"gateway_key" bson:"gateway_key"`
+	GatewayActiveKey    string `json:"gateway_active_key" bson:"gateway_active_key"`
 	// GatewayKeyPoP is a hex secp256k1 proof-of-possession for GatewayKey, bound
 	// to the announcing account (audit H-6, gateway companion to the consensus
 	// key's PoP). Empty for witnesses that announced before gateway-PoP support.
 	GatewayKeyPoP string   `json:"gateway_key_pop" bson:"gateway_key_pop,omitempty"`
 	PeerAddrs     []string `json:"peer_addrs" bson:"peer_addrs"`
+	// DelegationMode is the operator's announced consensus-delegation policy
+	// (delegationmode.{Deactivated,Share,Custom}). Empty for witnesses that
+	// announced before this field existed; callers normalize empty → Deactivated.
+	// Consensus 0.3.0+ reads this to gate delegation acceptance and reward
+	// sharing. omitempty keeps pre-0.3.0 records byte-identical.
+	DelegationMode string `json:"delegation_mode,omitempty" bson:"delegation_mode,omitempty"`
 }
 
 type PostingJsonMetadata struct {
@@ -50,7 +56,7 @@ type PostingJsonMetadataVscNode struct {
 	ProtocolVersion uint64   `json:"protocol_version"`
 	// Non-consensus component; may differ across nodes without excluding them from committee.
 	VersionNonConsensus uint64 `json:"version_non_consensus"`
-	Witness         struct {
+	Witness             struct {
 		Enabled bool `json:"enabled"`
 		// Plugins     []string `json:"plugins"`
 		// DelayNotch  int      `json:"delay_notch"`
@@ -59,6 +65,9 @@ type PostingJsonMetadataVscNode struct {
 	GatewayKey       string `json:"gateway_key"`
 	GatewayActiveKey string `json:"gateway_active_key"`
 	GatewayKeyPoP    string `json:"gateway_key_pop"`
+	// DelegationMode mirrors the announced operator delegation policy
+	// (delegationmode.{Deactivated,Share,Custom}); empty when not announced.
+	DelegationMode string `json:"delegation_mode"`
 }
 
 type SetWitnessUpdateType struct {

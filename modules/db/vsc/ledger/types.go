@@ -16,7 +16,7 @@ type Ledger interface {
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
 	// GetLedgerRecordsByType returns ALL ledger records (every account) whose
 	// type is in `types`, up to and including toBlock, sorted deterministically
-	// (block_height, then id). Used by the one-time consensus-0.2.0 delegation
+	// (block_height, then id). Used by the one-time consensus-0.3.0 delegation
 	// backfill to reconstruct edges from the full stake/unstake history.
 	GetLedgerRecordsByType(types []string, toBlock uint64) ([]LedgerRecord, error)
 }

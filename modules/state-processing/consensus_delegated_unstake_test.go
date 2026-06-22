@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Consensus 0.2.0 delegated stake/unstake — core invariant test (ledger layer,
+// Consensus 0.3.0 delegated stake/unstake — core invariant test (ledger layer,
 // gate forced via ConsensusParams.Delegated so the mechanics are exercised
-// without standing up an election at version 0.2.0).
+// without standing up an election at version 0.3.0).
 //
 // Scenario: userA delegates consensus stake to operatorB. Required properties:
 //  1. userA -> operatorB stake succeeds and records the per-edge delegation.
@@ -100,7 +100,7 @@ func TestConsensusDelegatedUnstakeEntitlement(t *testing.T) {
 	assert.False(t, again.Ok, "edge is drained; further unstake must be rejected")
 }
 
-// Legacy path (Delegated=false) must be byte-identical to pre-0.2.0: unstake
+// Legacy path (Delegated=false) must be byte-identical to pre-0.3.0: unstake
 // authorizes against the signer's own hive_consensus, not a delegation edge.
 func TestConsensusUnstakeLegacyUnchanged(t *testing.T) {
 	const node = "hive:selfstaker"
@@ -140,10 +140,10 @@ func TestConsensusUnstakeLegacyUnchanged(t *testing.T) {
 
 // CONSENSUS-CRITICAL regression guard. The oplog — including OpLogEvent.Params —
 // is CBOR-encoded into the L2 oplog block CID (block-producer MakeOplog) that
-// every node must agree on. The LEGACY (pre-0.2.0, Delegated=false)
+// every node must agree on. The LEGACY (pre-0.3.0, Delegated=false)
 // consensus_stake/unstake oplog Params MUST stay byte-identical to the original,
 // or a node on the new binary forks from an old node on ANY block with a
-// stake/unstake BEFORE 0.2.0 activates. Originals: consensus_stake had NO Params;
+// stake/unstake BEFORE 0.3.0 activates. Originals: consensus_stake had NO Params;
 // consensus_unstake had ONLY {epoch}.
 func TestLegacyConsensusOplogParamsUnchanged(t *testing.T) {
 	const acct = "hive:node1"
@@ -177,7 +177,7 @@ func TestLegacyConsensusOplogParamsUnchanged(t *testing.T) {
 			"legacy consensus_unstake must carry ONLY {epoch}")
 	}
 
-	// Sanity: the DELEGATED path DOES stamp the flag so the 0.2.0 gate engages.
+	// Sanity: the DELEGATED path DOES stamp the flag so the 0.3.0 gate engages.
 	ls3 := newLs()
 	st3 := ls3.NewEmptyState()
 	sess3 := ls3.NewEmptySession(st3, 1)
@@ -189,7 +189,7 @@ func TestLegacyConsensusOplogParamsUnchanged(t *testing.T) {
 	}
 }
 
-// One-time activation backfill: a pre-0.2.0 delegation (no edge rows, only the
+// One-time activation backfill: a pre-0.3.0 delegation (no edge rows, only the
 // legacy consensus_stake #in/#out pair) becomes reclaimable after the migration
 // runs — and the migration is idempotent (a second run is a no-op).
 func TestMigrateDelegationEdgesOnce(t *testing.T) {
