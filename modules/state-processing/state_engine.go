@@ -1537,15 +1537,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	//Detects new slot and executes batch if so
 	if se.slotStatus.SlotHeight != slotInfo.StartHeight {
 		//Updates balances index before next batch can execute
-		vscBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
-		if err != nil && err != mongo.ErrNoDocuments {
-			log.Error("GetBlockByHeight failed, falling back to full-range balance scan",
-				"slotHeight", se.slotStatus.SlotHeight, "err", err)
-		}
-
 		startBlock := uint64(0)
-		if vscBlock != nil {
-			startBlock = uint64(vscBlock.EndBlock)
+		if se.slotStatus.SlotHeight > 0 {
+			vscBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight - 1)
+			if err != nil && err != mongo.ErrNoDocuments {
+				log.Error("GetBlockByHeight failed, falling back to full-range balance scan",
+					"slotHeight", se.slotStatus.SlotHeight, "err", err)
+			}
+			if vscBlock != nil {
+				startBlock = uint64(vscBlock.EndBlock)
+			}
 		}
 
 		se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
