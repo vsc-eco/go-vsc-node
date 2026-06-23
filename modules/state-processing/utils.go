@@ -463,9 +463,7 @@ func (mc *MockCreator) ingestTx(tx hive_blocks.Tx, txId ...string) TxConfirmatio
 }
 
 func (mc *MockCreator) ingestVp(v hivego.VirtualOp) {
-	// mc.Mr.mutex.Lock()
 	mc.Mr.VMempool = append(mc.Mr.VMempool, v)
-	// mc.Mr.mutex.Unlock()
 }
 
 func (mc *MockCreator) hashTx(bbytes []byte) string {
@@ -530,16 +528,12 @@ func copyJsonToType(src map[string]interface{}, dest interface{}) error {
 
 type Buffer struct {
 	c chan byte
-	// *io.PipeReader
-	// *io.PipeWriter
 }
 
 func NewBuffer() *Buffer {
 	return &Buffer{
 		c: make(chan byte, 8*1024*1024),
 	} // TODO by making the buffer size very large, the test will no longer be flaky. Does this indicate a likely problem in production?
-	// r, w := io.Pipe()
-	// return &Buffer{r, w}
 }
 
 func (b *Buffer) Read(p []byte) (n int, err error) {
