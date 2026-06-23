@@ -42,7 +42,8 @@ func (m *MockHiveDbs) FetchStoredBlocks(startBlock uint64, endBlock uint64) ([]h
 }
 
 func (m *MockHiveDbs) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block hive_blocks.HiveBlock, heightHead *uint64) error) (context.CancelFunc, <-chan error) {
-	return nil, nil
+	errCh := make(chan error)
+	return func() {}, errCh
 }
 
 func (m *MockHiveDbs) GetHighestBlock() (uint64, error) {
