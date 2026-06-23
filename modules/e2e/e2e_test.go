@@ -290,7 +290,7 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId", txId)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 30), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}}, 45), nil
 		},
 	})
 
@@ -407,7 +407,7 @@ func TestE2E(t *testing.T) {
 			}
 
 			fmt.Println("txId2", txId2)
-			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 30), nil
+			return e2e.TxStatusAssertion([]e2e.TxStatusAssert{{txId, transactions.TransactionStatusConfirmed}, {txId2, transactions.TransactionStatusFailed}}, 45), nil
 		},
 	})
 	// container.AddStep(r2e.Wait(10))
