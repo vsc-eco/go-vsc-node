@@ -271,7 +271,7 @@ func (se *StateEngine) applySafetySlashReverse(
 			"slashed_account", rec.SlashedAccount)
 		return
 	}
-	slashAmt := -slashRow.Amount
+	slashAmt := slashRow.Amount
 	if slashAmt <= 0 {
 		log.Warn("safety slash reverse: slash row has non-positive abs amount; dropping",
 			"slash_tx_id", rec.SlashTxID, "abs_amt", slashAmt)

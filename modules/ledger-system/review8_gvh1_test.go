@@ -50,8 +50,8 @@ func TestReview8_GVH1_GetBalanceFailStopsNotPanics(t *testing.T) {
 		BalanceDb:       &test_utils.MockBalanceDb{BalanceRecords: make(map[string][]ledgerDb.BalanceRecord)},
 	}
 	_ = mock.StoreLedger(
-		ledgerDb.LedgerRecord{Id: "d", Owner: "hive:acct", Amount: 100000, Asset: "hbd", Type: "deposit", BlockHeight: 10},
-		ledgerDb.LedgerRecord{Id: "u", Owner: "hive:acct", Amount: 40000, Asset: "hbd", Type: "unstake", BlockHeight: 20},
+		ledgerDb.LedgerRecord{Id: "d", To: "hive:acct", Amount: 100000, Asset: "hbd", Type: "deposit", BlockHeight: 10},
+		ledgerDb.LedgerRecord{Id: "u", To: "hive:acct", Amount: 40000, Asset: "hbd", Type: "unstake", BlockHeight: 20},
 	)
 
 	defer func() {

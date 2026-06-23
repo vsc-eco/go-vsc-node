@@ -1005,7 +1005,7 @@ func TestUpdateBalances_PromotesPendingSlashBurn(t *testing.T) {
 
 	te.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
 		Id:          "deposit_alice_updbal_slash",
-		Owner:       "hive:alice",
+		To:       "hive:alice",
 		Amount:      1,
 		Asset:       "hbd",
 		Type:        "deposit",

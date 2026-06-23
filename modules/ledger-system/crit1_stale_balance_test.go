@@ -26,10 +26,10 @@ func newCrit1State(user string) *LedgerState {
 		}},
 		LedgerDb: &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledger_db.LedgerRecord{
 			user: {
-				{Id: "d1", Owner: user, Amount: 100000, Asset: "hbd", Type: "deposit", BlockHeight: 10},
-				{Id: "t1#in", Owner: user, Amount: -40000, Asset: "hbd", Type: "transfer", BlockHeight: 20},
-				{Id: "w1#in", Owner: user, Amount: -10000, Asset: "hbd", Type: "withdraw", BlockHeight: 30},
-				{Id: "t2#out", Owner: user, Amount: 5000, Asset: "hbd", Type: "transfer", BlockHeight: 40},
+				{Id: "d1", To: user, Amount: 100000, Asset: "hbd", Type: "deposit", BlockHeight: 10},
+				{Id: "t1#in", From: user, Amount: 40000, Asset: "hbd", Type: "transfer", BlockHeight: 20},
+				{Id: "w1#in", From: user, Amount: 10000, Asset: "hbd", Type: "withdraw", BlockHeight: 30},
+				{Id: "t2#out", To: user, Amount: 5000, Asset: "hbd", Type: "transfer", BlockHeight: 40},
 			},
 		}},
 	}
@@ -66,9 +66,9 @@ func TestCrit1_MetaRowsExcluded(t *testing.T) {
 		}},
 		LedgerDb: &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledger_db.LedgerRecord{
 			user: {
-				{Id: "hd", Owner: user, Amount: 100000, Asset: "hive", Type: "deposit", BlockHeight: 10},
+				{Id: "hd", To: user, Amount: 100000, Asset: "hive", Type: "deposit", BlockHeight: 10},
 				// A protocol meta row carrying tk=hive that must NOT count.
-				{Id: "burn", Owner: user, Amount: -100000, Asset: "hive", Type: LedgerTypeSafetySlashHiveBurn, BlockHeight: 20},
+				{Id: "burn", From: user, Amount: 100000, Asset: "hive", Type: LedgerTypeSafetySlashHiveBurn, BlockHeight: 20},
 			},
 		}},
 	}

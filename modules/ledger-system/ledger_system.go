@@ -658,7 +658,7 @@ func (ls *ledgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64)
 	}
 	total := int64(0)
 	for _, rec := range *records {
-		total += rec.Amount
+		total += rec.DeltaFor(bucket)
 	}
 	return total
 }

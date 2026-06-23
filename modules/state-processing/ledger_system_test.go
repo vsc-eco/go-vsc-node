@@ -58,42 +58,42 @@ func TestDepositEvmChecksumNormalization(t *testing.T) {
 		memo           string
 		checksumHeight uint64
 		blockHeight    uint64
-		wantOwner      string
+		wantTo         string
 	}{
 		{
 			name:           "disabled keeps verbatim casing",
 			memo:           "to=" + lower,
 			checksumHeight: 0,
 			blockHeight:    1000,
-			wantOwner:      "did:pkh:eip155:1:" + lower,
+			wantTo:      "did:pkh:eip155:1:" + lower,
 		},
 		{
 			name:           "below activation height keeps verbatim casing",
 			memo:           "to=" + lower,
 			checksumHeight: 2000,
 			blockHeight:    1000,
-			wantOwner:      "did:pkh:eip155:1:" + lower,
+			wantTo:      "did:pkh:eip155:1:" + lower,
 		},
 		{
 			name:           "at activation height normalizes to checksum",
 			memo:           "to=" + lower,
 			checksumHeight: 1000,
 			blockHeight:    1000,
-			wantOwner:      "did:pkh:eip155:1:" + checksummed,
+			wantTo:      "did:pkh:eip155:1:" + checksummed,
 		},
 		{
 			name:           "full did memo is also normalized when active",
 			memo:           "to=did:pkh:eip155:1:" + lower,
 			checksumHeight: 1000,
 			blockHeight:    1500,
-			wantOwner:      "did:pkh:eip155:1:" + checksummed,
+			wantTo:      "did:pkh:eip155:1:" + checksummed,
 		},
 		{
 			name:           "hive owner is untouched by normalization",
 			memo:           "to=vaultec",
 			checksumHeight: 1000,
 			blockHeight:    1500,
-			wantOwner:      "hive:vaultec",
+			wantTo:      "hive:vaultec",
 		},
 	}
 
@@ -119,7 +119,7 @@ func TestDepositEvmChecksumNormalization(t *testing.T) {
 				OpIdx:       0,
 				BlockHeight: tc.blockHeight,
 			})
-			assert.Equal(t, tc.wantOwner, dest)
+			assert.Equal(t, tc.wantTo, dest)
 		})
 	}
 }
@@ -909,7 +909,7 @@ func seedPendulumBucket(t *testing.T, lDb ledgerDb.Ledger, txID string, amount i
 		BlockHeight: blockHeight,
 		Amount:      amount,
 		Asset:       "hbd",
-		Owner:       ledgerSystem.PendulumNodesHBDBucket,
+		To:       ledgerSystem.PendulumNodesHBDBucket,
 		Type:        "transfer",
 	})
 }
@@ -936,7 +936,7 @@ func TestPendulumLedgerOps(t *testing.T) {
 		require.NoError(t, err)
 		var foundDebit bool
 		for _, rec := range *bucketRecs {
-			if rec.Type == "pendulum_distribute" && rec.Amount == -3 {
+			if rec.Type == "pendulum_distribute" && rec.Amount == 3 && rec.From == ledgerSystem.PendulumNodesHBDBucket {
 				foundDebit = true
 			}
 		}

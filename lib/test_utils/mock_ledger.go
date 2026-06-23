@@ -59,40 +59,69 @@ type MockLedgerDb struct {
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
 }
 
-// StoreLedger upserts by Id within the per-owner slice — matching the
+// StoreLedger upserts by Id within the per-account slice — matching the
 // production Mongo semantics where every consensus-relevant ledger write is
 // keyed on a deterministic Id and a duplicate Id replaces (not appends) the
 // existing row. This lets idempotency-by-design code (cancel/reverse, slash
 // detectors) be exercised by mock-backed tests without false-positive
 // double-counts.
+//
+// Records are stored in a single map entry keyed by their primary account:
+// To when non-empty (matching the old Owner semantics), otherwise From.
+// Lookups that need to match on the alternate field scan across all entries.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
 	for _, record := range ledgerRecords {
-		upsertRecord := func(key string) {
-			existing := m.LedgerRecords[key]
-			// Records with empty Id fall through to append (legacy flow).
-			if record.Id != "" {
-				for i := range existing {
-					if existing[i].Id == record.Id {
-						existing[i] = record
-						m.LedgerRecords[key] = existing
-						return
-					}
+		key := record.To
+		if key == "" {
+			key = record.From
+		}
+		if key == "" {
+			continue
+		}
+		existing := m.LedgerRecords[key]
+		if record.Id != "" {
+			replaced := false
+			for i := range existing {
+				if existing[i].Id == record.Id {
+					existing[i] = record
+					replaced = true
+					break
 				}
 			}
-			m.LedgerRecords[key] = append(existing, record)
+			if replaced {
+				m.LedgerRecords[key] = existing
+				continue
+			}
 		}
-		if record.From != "" {
-			upsertRecord(record.From)
-		}
-		if record.To != "" && record.To != record.From {
-			upsertRecord(record.To)
-		}
+		m.LedgerRecords[key] = append(existing, record)
 	}
 	return nil
 }
 
+// ledgerRecordsFor returns all mock records visible to account through either
+// the From or To field, mimicking the MongoDB $or query.
+func (m *MockLedgerDb) ledgerRecordsFor(account string) []ledgerDb.LedgerRecord {
+	out := make([]ledgerDb.LedgerRecord, 0)
+	// Direct match on the primary key (the To side, or From when To is empty).
+	if das, ok := m.LedgerRecords[account]; ok {
+		out = append(out, das...)
+	}
+	// Also scan every other key for records where account is the From side.
+	for key, records := range m.LedgerRecords {
+		if key == account {
+			continue // already included above
+		}
+		for _, r := range records {
+			if r.From == account {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
 func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]ledgerDb.LedgerRecord, error) {
-	das := m.LedgerRecords[account]
+	das := m.ledgerRecordsFor(account)
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range das {
 		if record.BlockHeight >= blockHeight && record.Asset == asset {
@@ -106,7 +135,7 @@ func (m *MockLedgerDb) GetLedgerAfterHeight(account string, blockHeight uint64, 
 }
 
 func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, asset string, options ...ledgerDb.LedgerOptions) (*[]ledgerDb.LedgerRecord, error) {
-	das := m.LedgerRecords[account]
+	das := m.ledgerRecordsFor(account)
 	opTypes := make([]string, 0)
 	filteredResults := make([]ledgerDb.LedgerRecord, 0)
 	for _, options := range options {
