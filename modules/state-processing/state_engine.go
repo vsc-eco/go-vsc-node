@@ -617,16 +617,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// DA payload — never the witness DB — so a divergent witness record
 					// cannot split state ingestion; the only residual effect is on what a
 					// node would propose/sign.
-					if witnessAnnounceHasRogueBlsKey(rawJson, acct) {
-						se.warnSync(
-							blockInfo.BlockHeight,
-							"witness announce REJECTED: consensus BLS key failed proof-of-possession (rogue-key guard)",
-							"account",
-							acct,
-							"txId",
-							tx.TransactionID,
-						)
-						continue
+					//
+					// PoP is only enforced once the chain-active consensus version
+					// reaches 0.2.0. Before that line, witnesses were not required to
+					// include PoPs — retroactively rejecting pre-0.2.0 announces during
+					// reindex would drop valid historical witnesses from the set.
+					if consensusversion.Version0_2_0Active(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+						if witnessAnnounceHasRogueBlsKey(rawJson, acct) {
+							se.warnSync(
+								blockInfo.BlockHeight,
+								"witness announce REJECTED: consensus BLS key failed proof-of-possession (rogue-key guard)",
+								"account",
+								acct,
+								"txId",
+								tx.TransactionID,
+							)
+							continue
+						}
 					}
 					inputData := witnesses.SetWitnessUpdateType{
 						Account:  acct,
