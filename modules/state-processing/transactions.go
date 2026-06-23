@@ -715,7 +715,11 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
+	asset := tx.Asset
+	if asset == "" {
+		asset = "hive"
+	}
+	amount, err := common.ParseAssetAmount(tx.Amount, asset)
 
 	if err != nil {
 		return TxResult{
@@ -814,7 +818,11 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	amount, err := common.ParseAssetAmount(tx.Amount, tx.Asset)
+	asset := tx.Asset
+	if asset == "" {
+		asset = "hive"
+	}
+	amount, err := common.ParseAssetAmount(tx.Amount, asset)
 
 	if err != nil {
 		return TxResult{
