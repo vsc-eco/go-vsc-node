@@ -4,6 +4,7 @@ import (
 	"testing"
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/aggregate"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -13,20 +14,29 @@ import (
 )
 
 func TestElectionMinimum(t *testing.T) {
-	//Yes it won't fail
-	// GV-H3: the decay floor is now ceil(2N/3) (the BFT-safe quorum), not the old
-	// floor(N/2+1) bare majority. The threshold no longer drops over time, so the
-	// stale/decayed cases below now equal their fresh 2/3 value.
-	val := elections.MinimalRequiredElectionVotes(0)
+	// 0.2.0+ path: fixed 2/3 quorum (no decay).
+	v020 := consensusversion.V0_2_0
+	val := elections.MinimalRequiredElectionVotes(0, 0, v020)
 	assert.Equal(t, uint64(0), val)
-	val = elections.MinimalRequiredElectionVotes(8)
-	assert.Equal(t, uint64(6), val) // GV-H3: ceil(2*8/3)=6
-	val = elections.MinimalRequiredElectionVotes(9)
-	assert.Equal(t, uint64(6), val) // GV-H3: ceil(2*9/3)=6
-	val = elections.MinimalRequiredElectionVotes(100)
-	assert.Equal(t, uint64(67), val) // GV-H3: ceil(2*100/3)=67
-	val = elections.MinimalRequiredElectionVotes(101)
-	assert.Equal(t, uint64(68), val) // GV-H3: ceil(2*101/3)=68
+	val = elections.MinimalRequiredElectionVotes(0, 8, v020)
+	assert.Equal(t, uint64(6), val) // ceil(2*8/3)=6
+	val = elections.MinimalRequiredElectionVotes(0, 9, v020)
+	assert.Equal(t, uint64(6), val) // ceil(2*9/3)=6
+	val = elections.MinimalRequiredElectionVotes(0, 100, v020)
+	assert.Equal(t, uint64(67), val) // ceil(2*100/3)=67
+	val = elections.MinimalRequiredElectionVotes(0, 101, v020)
+	assert.Equal(t, uint64(68), val) // ceil(2*101/3)=68
+
+	// Pre-0.2.0 path: decay to bare majority over time.
+	v010 := consensusversion.Version{Major: 0, Consensus: 1, NonConsensus: 0}
+	// Fresh (< 1 hour): 2/3
+	val = elections.MinimalRequiredElectionVotes(0, 100, v010)
+	assert.Equal(t, uint64(67), val) // ceil(2*100/3)=67
+	// Fully stale (≥ 2 weeks): bare majority
+	val = elections.MinimalRequiredElectionVotes(403200, 100, v010)
+	assert.Equal(t, uint64(51), val) // floor(100/2+1)=51
+	val = elections.MinimalRequiredElectionVotes(403200, 8, v010)
+	assert.Equal(t, uint64(5), val) // floor(8/2+1)=5
 }
 
 func TestGetElectionByHeight(t *testing.T) {
