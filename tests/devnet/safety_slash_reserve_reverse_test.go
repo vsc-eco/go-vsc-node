@@ -333,7 +333,7 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 		reserveRows = findLedgerTXs(t, d.GQLEndpoint(1), reserveAcct, nil)
 		reserveCredit = 0
 		for _, r := range reserveRows {
-			if r.Owner == reserveAcct && r.Asset == "hive" && r.Amount > 0 {
+			if r.To == reserveAcct && r.Asset == "hive" && r.Amount > 0 {
 				reserveCredit += r.Amount
 			}
 		}
@@ -359,7 +359,7 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 	// op-types are reserve-family (not the old burn op).
 	sawReserveType := false
 	for _, r := range reserveRows {
-		if r.Owner != reserveAcct || r.Amount <= 0 {
+		if r.To != reserveAcct || r.Amount <= 0 {
 			continue
 		}
 		switch r.Type {
@@ -406,7 +406,7 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 		rows := findLedgerTXs(t, d.GQLEndpoint(n), reserveAcct, nil)
 		var c int64
 		for _, r := range rows {
-			if r.Owner == reserveAcct && r.Asset == "hive" && r.Amount > 0 {
+			if r.To == reserveAcct && r.Asset == "hive" && r.Amount > 0 {
 				c += r.Amount
 			}
 		}

@@ -1023,12 +1023,12 @@ func TestSafetySlashConsensusBond_DebitsBondAndBurnsWithoutDAO(t *testing.T) {
 			}
 			if r.Type == ledgerSystem.LedgerTypeSafetySlashReserve {
 				burnAmt += r.Amount
-				assert.Equal(t, params.ProtocolSlashReserveAccount, r.Owner)
+				assert.Equal(t, params.ProtocolSlashReserveAccount, r.To)
 			}
 			assert.NotEqual(t, "safety_slash_hive_credit", r.Type)
 		}
 	}
-	require.Equal(t, int64(-100_000), debitAmt)
+	require.Equal(t, int64(100_000), debitAmt)
 	require.Equal(t, int64(100_000), burnAmt)
 }
 
@@ -1060,7 +1060,7 @@ func TestSafetySlashConsensusBond_DelayedBurnFinalizes(t *testing.T) {
 			switch r.Type {
 			case ledgerSystem.LedgerTypeSafetySlashHiveBurnPending:
 				pendingAmt += r.Amount
-				assert.Equal(t, params.ProtocolSlashPendingBurnAccount, r.Owner)
+				assert.Equal(t, params.ProtocolSlashPendingBurnAccount, r.To)
 				assert.Equal(t, "250", r.From)
 			case ledgerSystem.LedgerTypeSafetySlashReserve:
 				finalBurn += r.Amount
@@ -1335,7 +1335,7 @@ func lDbPendingSlashBalance(t *testing.T, lDb *test_utils.MockLedgerDb) int64 {
 	total := int64(0)
 	for _, recs := range lDb.LedgerRecords {
 		for _, r := range recs {
-			if r.Owner == params.ProtocolSlashPendingBurnAccount && r.Asset == "hive" {
+			if r.To == params.ProtocolSlashPendingBurnAccount && r.Asset == "hive" {
 				total += r.Amount
 			}
 		}

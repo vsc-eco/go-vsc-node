@@ -1025,7 +1025,7 @@ func countLedgerByTypeOwner(l *test_utils.MockLedgerDb, typ, owner string) int {
 	n := 0
 	for _, recs := range l.LedgerRecords {
 		for _, r := range recs {
-			if r.Type == typ && r.Owner == owner {
+			if r.Type == typ && r.To == owner {
 				n++
 			}
 		}

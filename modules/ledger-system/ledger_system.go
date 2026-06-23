@@ -86,9 +86,9 @@ func (ls *ledgerSystem) PendulumDistribute(
 			Id:          txID + "#distribute_debit#" + toAccount,
 			TxId:        txID,
 			BlockHeight: blockHeight,
-			Amount:      -amount,
+			Amount:      amount,
 			Asset:       "hbd",
-			Owner:       PendulumNodesHBDBucket,
+			From:        PendulumNodesHBDBucket,
 			Type:        "pendulum_distribute",
 		},
 		ledger_db.LedgerRecord{
@@ -97,7 +97,7 @@ func (ls *ledgerSystem) PendulumDistribute(
 			BlockHeight: blockHeight,
 			Amount:      amount,
 			Asset:       "hbd",
-			Owner:       toAccount,
+			To:          toAccount,
 			Type:        "pendulum_distribute",
 		},
 	); err != nil {
@@ -264,9 +264,9 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			Id:          baseID + "#consensus_debit#" + acct,
 			TxId:        p.TxID,
 			BlockHeight: p.BlockHeight,
-			Amount:      -slashAmt,
+			Amount:      slashAmt,
 			Asset:       "hive_consensus",
-			Owner:       acct,
+			From:        acct,
 			Type:        LedgerTypeSafetySlashConsensus,
 		},
 	}
@@ -281,7 +281,7 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 				BlockHeight: p.BlockHeight,
 				Amount:      burnAmt,
 				Asset:       "hive",
-				Owner:       params.ProtocolSlashReserveAccount,
+				To:          params.ProtocolSlashReserveAccount,
 				Type:        LedgerTypeSafetySlashReserve,
 			})
 		} else {
@@ -299,7 +299,7 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 				BlockHeight: p.BlockHeight,
 				Amount:      burnAmt,
 				Asset:       "hive",
-				Owner:       params.ProtocolSlashPendingBurnAccount,
+				To:          params.ProtocolSlashPendingBurnAccount,
 				From:        strconv.FormatUint(maturity, 10),
 				Type:        LedgerTypeSafetySlashHiveBurnPending,
 			})
@@ -366,7 +366,7 @@ func (ls *ledgerSystem) writeSafetySlashFinalizeCursor(blockHeight, scanFrom uin
 		BlockHeight: blockHeight,
 		Amount:      0,
 		Asset:       "hive",
-		Owner:       params.ProtocolSlashFinalizeCursorAccount,
+		To:          params.ProtocolSlashFinalizeCursorAccount,
 		From:        strconv.FormatUint(scanFrom, 10),
 		Type:        LedgerTypeSafetySlashBurnFinalizeCursor,
 	})
@@ -441,7 +441,7 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				BlockHeight: blockHeight,
 				Amount:      -rec.Amount,
 				Asset:       "hive",
-				Owner:       pendingAcct,
+				To:       pendingAcct,
 				From:        rec.From,
 				Type:        LedgerTypeSafetySlashHiveBurnPendingRelease,
 			},
@@ -455,7 +455,7 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				BlockHeight: blockHeight,
 				Amount:      rec.Amount,
 				Asset:       "hive",
-				Owner:       params.ProtocolSlashReserveAccount,
+				To:       params.ProtocolSlashReserveAccount,
 				Type:        LedgerTypeSafetySlashReserve,
 			},
 			ledger_db.LedgerRecord{
@@ -464,7 +464,7 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 				BlockHeight: blockHeight,
 				Amount:      0,
 				Asset:       "hive",
-				Owner:       pendingAcct,
+				To:       pendingAcct,
 				From:        rec.From,
 				Type:        LedgerTypeSafetySlashHiveBurnPendingFinalized,
 			},
@@ -582,7 +582,7 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 			BlockHeight: p.BlockHeight,
 			Amount:      -pendingRec.Amount,
 			Asset:       "hive",
-			Owner:       pendingAcct,
+			To:       pendingAcct,
 			From:        pendingRec.From,
 			Type:        LedgerTypeSafetySlashHiveBurnPendingRelease,
 		},
@@ -594,7 +594,7 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 			BlockHeight: p.BlockHeight,
 			Amount:      0,
 			Asset:       "hive",
-			Owner:       pendingAcct,
+			To:       pendingAcct,
 			From:        pendingRec.From,
 			Type:        LedgerTypeSafetySlashHiveBurnPendingFinalized,
 		},
@@ -606,7 +606,7 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 			BlockHeight: p.BlockHeight,
 			Amount:      0,
 			Asset:       "hive",
-			Owner:       pendingAcct,
+			To:       pendingAcct,
 			From:        pendingRec.From,
 			Type:        LedgerTypeSafetySlashHiveBurnPendingCancelled,
 		},
@@ -650,13 +650,13 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 		BlockHeight: p.BlockHeight,
 		Amount:      p.Amount,
 		Asset:       "hive_consensus",
-		Owner:       acct,
+		To:       acct,
 		Type:        LedgerTypeSafetySlashConsensusReverse,
 	})
 	return LedgerResult{Ok: true, Msg: "reverse credit recorded"}
 }
 
-// PendulumBucketBalance sums every ledger record whose Owner == bucket and
+// PendulumBucketBalance sums every ledger record whose To == bucket and
 // Asset == hbd. The bucket is credited via paired LedgerSession.ExecuteTransfer
 // records (type=transfer) at swap time and debited via PendulumDistribute
 // records (type=pendulum_distribute) at settlement time.
