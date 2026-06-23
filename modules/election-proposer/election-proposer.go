@@ -1393,7 +1393,15 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 			totalWeight += electionResult.Weights[i]
 		}
 
-		voteMajority := elections.MinimalRequiredElectionVotes(totalWeight)
+		blocksSinceLastElection := anchorBh
+		if !firstElection {
+			blocksSinceLastElection = anchorBh - electionResult.BlockHeight
+		}
+		var activeVersion consensusversion.Version
+		if !firstElection {
+			activeVersion = elections.ResultVersion(electionResult)
+		}
+		voteMajority := elections.MinimalRequiredElectionVotes(blocksSinceLastElection, totalWeight, activeVersion)
 
 		if (votedWeight >= voteMajority) || firstElection {
 			// Send out Election to Hive

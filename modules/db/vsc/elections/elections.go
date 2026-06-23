@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -228,12 +229,29 @@ func MinimumSigningScore(lastElectionHeight int64, memberCount int64) {
 
 }
 
+const MIN_BLOCKS_SINCE_LAST_ELECTION = 1200   // 1 hour
+const MAX_BLOCKS_SINCE_LAST_ELECTION = 403200 // 2 weeks
+
 // MinimalRequiredElectionVotes returns the vote-weight threshold to finalize an
-// election: the BFT-safe 2/3 quorum of the electorate's weight, fixed with no
-// time-based decay. GV-H3: an earlier design decayed this floor to a bare
-// majority (floor(W/2 + 1)) over the MAX_BLOCKS_SINCE_LAST_ELECTION window
-func MinimalRequiredElectionVotes(memberCountOfLastElection uint64) uint64 {
-	return (2*memberCountOfLastElection + 2) / 3
+// election. For elections under consensus version 0.2.0+, the threshold is the
+// fixed BFT-safe 2/3 quorum. For pre-0.2.0 elections, the threshold decays from
+// 2/3 down to a bare majority (floor(W/2+1)) over the MAX_BLOCKS_SINCE_LAST_ELECTION
+// window, matching the legacy behavior that was in force when those elections were
+// proposed (GV-H3 retroactive compatibility).
+func MinimalRequiredElectionVotes(blocksSinceLastElection, memberCountOfLastElection uint64, activeVersion consensusversion.Version) uint64 {
+	if consensusversion.Version0_2_0Active(activeVersion) {
+		return (2*memberCountOfLastElection + 2) / 3
+	}
+	// Pre-0.2.0: legacy decay to bare majority (GV-H3 retroactive compatibility).
+	if blocksSinceLastElection < MIN_BLOCKS_SINCE_LAST_ELECTION {
+		return uint64(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
+	}
+	minMembers := int(math.Floor(float64(memberCountOfLastElection)/2 + 1))
+	maxMembers := int(math.Ceil(float64(memberCountOfLastElection) * 2.0 / 3.0))
+	cappedBlocks := math.Min(float64(blocksSinceLastElection), float64(MAX_BLOCKS_SINCE_LAST_ELECTION))
+	drift := (float64(MAX_BLOCKS_SINCE_LAST_ELECTION) - cappedBlocks) / float64(MAX_BLOCKS_SINCE_LAST_ELECTION)
+	mappedValue := float64(minMembers) + (float64(maxMembers)-float64(minMembers))*drift
+	return uint64(math.Round(mappedValue))
 }
 
 // MinimalRequiredConsensusVersionVotes is a fixed 2/3 stake threshold for adopting a proposed
