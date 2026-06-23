@@ -34,6 +34,7 @@ import (
 	p2pInterface "vsc-node/modules/p2p"
 	stateEngine "vsc-node/modules/state-processing"
 	transactionpool "vsc-node/modules/transaction-pool"
+	"vsc-node/lib/test_utils"
 	"vsc-node/modules/tss"
 
 	data_availability "vsc-node/modules/data-availability/server"
@@ -57,7 +58,7 @@ type Node struct {
 
 	announcementsManager *announcements.AnnouncementsManager
 
-	MockHiveBlocks   *MockHiveDbs
+	MockHiveBlocks   *test_utils.MockHiveBlockDb
 	electionDb       elections.Elections
 	contractsDb      contracts.Contracts
 	balanceDb        ledger_db.Balances
@@ -115,7 +116,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	db := db.New(dbConf)
 	vscDb := vsc.New(db, dbConf)
-	hiveBlocks := &MockHiveDbs{}
+	hiveBlocks := &test_utils.MockHiveBlockDb{}
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
