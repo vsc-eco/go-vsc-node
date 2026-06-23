@@ -61,21 +61,38 @@ type TxStatusAssert struct {
 
 func TxStatusAssertion(txns []TxStatusAssert, waitTimeSec uint) EvaluateFunc {
 	return func(ctx StepCtx) error {
-		time.Sleep(time.Duration(waitTimeSec) * time.Second)
+		deadline := time.After(time.Duration(waitTimeSec) * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
 
 		runner := ctx.Container.Runner()
 
-		for _, txn := range txns {
-			getTransaction := runner.TxDb.GetTransaction(txn.TxId)
-			if getTransaction == nil {
-				return errors.New("non-existent transaction")
+		for {
+			allGood := true
+			var lastErr error
+			for _, txn := range txns {
+				getTransaction := runner.TxDb.GetTransaction(txn.TxId)
+				if getTransaction == nil {
+					allGood = false
+					lastErr = errors.New("non-existent transaction")
+					break
+				}
+				tx := *getTransaction
+				if tx.Status != txn.ExpectedStatus {
+					allGood = false
+					lastErr = fmt.Errorf("incorrect status should be %s status is: %s", txn.ExpectedStatus, tx.Status)
+					break
+				}
 			}
-			tx := *getTransaction
-			if tx.Status != txn.ExpectedStatus {
-				return fmt.Errorf("incorrect status should be %s status is: %s", txn.ExpectedStatus, tx.Status)
+			if allGood {
+				return nil
+			}
+
+			select {
+			case <-deadline:
+				return lastErr
+			case <-ticker.C:
 			}
 		}
-
-		return nil
 	}
 }
