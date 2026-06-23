@@ -101,8 +101,9 @@ func (c *E2EContainer) initClient() {
 	for _, peerStr := range peerAddrs {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
 		ctx := context.Background()
-		ctx, _ = context.WithTimeout(ctx, 5*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		client.P2PService.Connect(ctx, *peerId)
+		cancel()
 	}
 
 	c.client = client
@@ -196,7 +197,7 @@ func (c *E2EContainer) Start(t *testing.T) error {
 	c.mockReader.ProcessFunction = func(block hive_blocks.HiveBlock, headHeight *uint64) {
 		fmt.Printf("ProcessFunction: block %d, txs=%d\n", block.BlockNumber, len(block.Transactions))
 		for _, node := range c.runningNodes {
-			node.MockHiveBlocks.HighestBlock = block.BlockNumber
+			node.MockHiveBlocks.HeadHeight = block.BlockNumber
 		}
 		for _, node := range c.runningNodes {
 			node.HiveConsumer.ProcessBlock(block, headHeight)
@@ -217,8 +218,9 @@ func (c *E2EContainer) Start(t *testing.T) error {
 			for _, peerStr := range peerAddrs {
 				peerId, _ := peer.AddrInfoFromString(peerStr)
 				ctx := context.Background()
-				ctx, _ = context.WithTimeout(ctx, 5*time.Second)
+				ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				node.P2P.Connect(ctx, *peerId)
+				cancel()
 			}
 		}
 	}()

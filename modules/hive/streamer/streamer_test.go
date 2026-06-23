@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/hive/streamer"
@@ -20,7 +19,6 @@ import (
 
 	rand "math/rand/v2"
 
-	"github.com/chebyrash/promise"
 	"github.com/stretchr/testify/assert"
 	"github.com/vsc-eco/hivego"
 )
@@ -72,152 +70,6 @@ func seedBlockData(t *testing.T, hiveBlocks hive_blocks.HiveBlocks, n uint64) {
 		// store block
 		assert.NoError(t, hiveBlocks.StoreBlocks(n, block))
 	}
-}
-
-// ==== mock hive block db ====
-
-type MockHiveBlockDb struct {
-	Blocks             []hive_blocks.HiveBlock
-	LastProcessedBlock uint64
-	HeadHeight         uint64
-	Metadata           hive_blocks.Document
-}
-
-// GetMetadata implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetMetadata() (hive_blocks.Document, error) {
-	return m.Metadata, nil
-}
-
-// SetMetadata implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) SetMetadata(doc hive_blocks.Document) error {
-	m.Metadata = doc
-	return nil
-}
-
-// GetBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetBlock(blockNum uint64) (hive_blocks.HiveBlock, error) {
-	for _, block := range m.Blocks {
-		if block.BlockNumber == blockNum {
-			return block, nil
-		}
-	}
-
-	return hive_blocks.HiveBlock{}, fmt.Errorf("block not found")
-}
-
-// ListenToBlockUpdates implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) ListenToBlockUpdates(
-	ctx context.Context,
-	startBlock uint64,
-	listener func(block hive_blocks.HiveBlock, headHeight *uint64) error,
-) (context.CancelFunc, <-chan error) {
-	ctx, cancel := context.WithCancel(ctx)
-	errChan := make(chan error)
-	if m.Blocks == nil {
-		return cancel, errChan
-	}
-
-	go func() {
-		for _, block := range m.Blocks {
-			if block.BlockNumber >= startBlock {
-				select {
-				case <-ctx.Done():
-					break
-				default:
-					err := listener(block, &m.HeadHeight)
-					if err != nil {
-						errChan <- err
-						break
-					}
-				}
-			}
-		}
-	}()
-
-	return cancel, errChan
-}
-
-var _ hive_blocks.HiveBlocks = &MockHiveBlockDb{}
-
-// ClearBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) ClearBlocks() error {
-	m.Blocks = nil
-	m.LastProcessedBlock = 0
-	return nil
-}
-
-// FetchStoredBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) FetchStoredBlocks(startBlock, endBlock uint64) ([]hive_blocks.HiveBlock, error) {
-	if m.Blocks == nil {
-		return []hive_blocks.HiveBlock{}, nil
-	}
-
-	startIndex := len(m.Blocks)
-	endIndex := len(m.Blocks)
-	for i, block := range m.Blocks {
-		if block.BlockNumber == startBlock {
-			startIndex = i
-		}
-		if block.BlockNumber == endBlock {
-			endIndex = i
-			break
-		}
-	}
-
-	return m.Blocks[startIndex : endIndex+1], nil
-}
-
-// GetHighestBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetHighestBlock() (uint64, error) {
-	if m.Blocks == nil {
-		return 0, nil
-	}
-
-	// we assume our highest is 0 if we have nothing yet
-	if len(m.Blocks) <= 0 {
-		return 0, nil
-	}
-
-	return m.Blocks[len(m.Blocks)-1].BlockNumber, nil
-}
-
-// GetLastProcessedBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) GetLastProcessedBlock() (uint64, error) {
-	if m.Blocks == nil {
-		return 0, nil
-	}
-
-	return m.LastProcessedBlock, nil
-}
-
-// StoreBlocks implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) StoreBlocks(headBlock uint64, blocks ...hive_blocks.HiveBlock) error {
-	m.Blocks = append(m.Blocks, blocks...)
-	m.HeadHeight = headBlock
-	return nil
-}
-
-// StoreLastProcessedBlock implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) StoreLastProcessedBlock(blockNumber uint64) error {
-	m.LastProcessedBlock = blockNumber
-	return nil
-}
-
-// Init implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) Init() error {
-	return nil
-}
-
-// Start implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) Start() *promise.Promise[any] {
-	return utils.PromiseResolve[any](nil)
-}
-
-// Stop implements hive_blocks.HiveBlocks.
-func (m *MockHiveBlockDb) Stop() error {
-	m.Blocks = nil
-	m.LastProcessedBlock = 0
-	return nil
 }
 
 // ===== mock hive block client service =====
@@ -280,7 +132,7 @@ func (m *MockBlockClient) FetchVirtualOps(
 
 func TestFetchStoreBlocks(t *testing.T) {
 	// hive mocks db
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	startBlock := uint64(0)
 	blockClient := &MockBlockClient{}
@@ -318,7 +170,7 @@ func TestFetchStoreBlocks(t *testing.T) {
 func TestStartBlock(t *testing.T) {
 
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -332,12 +184,12 @@ func TestStartBlock(t *testing.T) {
 	assert.NoError(t, s.Init())
 
 	// should be the value we input
-	assert.Equal(t, 99, s.StartBlock())
+	assert.Equal(t, uint64(99), s.StartBlock())
 }
 
 func TestIntensePolling(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 	seenBlocks := make(map[uint64]int)
@@ -364,7 +216,7 @@ func TestIntensePolling(t *testing.T) {
 
 func TestStreamFilter(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// filter everything!
@@ -399,7 +251,7 @@ func TestStreamFilter(t *testing.T) {
 func TestPersistingBlocksStored(t *testing.T) {
 
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	// start at 0
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
@@ -433,7 +285,7 @@ func TestPersistingBlocksStored(t *testing.T) {
 
 func TestPersistingBlocksProcessed(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	// start at default
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
@@ -490,7 +342,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 func TestBlockProcessing(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -512,7 +364,7 @@ func TestBlockProcessing(t *testing.T) {
 
 // func TestStreamReaderPauseResumeStop(t *testing.T) {
 // 	// hive blocks
-// 	mockHiveBlocks := &MockHiveBlockDb{}
+// 	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 // 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -562,7 +414,7 @@ func TestBlockProcessing(t *testing.T) {
 
 func TestStreamPauseResumeStop(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -612,7 +464,7 @@ func TestStreamPauseResumeStop(t *testing.T) {
 
 func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -648,7 +500,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 
 func TestFilterOrdering(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	filter1SeenBlocks := 0
 	filter2SeenBlocks := 0
@@ -682,7 +534,7 @@ func TestFilterOrdering(t *testing.T) {
 func TestBlockLag(t *testing.T) {
 
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	streamer.AcceptableBlockLag = 5
 	streamer.DefaultBlockStart = dummyBlockHead - 3
@@ -726,7 +578,7 @@ func TestBlockLag(t *testing.T) {
 
 func TestClearingStoredBlocks(t *testing.T) {
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -763,7 +615,7 @@ func TestClearingStoredBlocks(t *testing.T) {
 }
 
 func TestClearingLastProcessedBlock(t *testing.T) {
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -795,7 +647,7 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 func TestHeadBlock(t *testing.T) {
 
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -808,7 +660,7 @@ func TestHeadBlock(t *testing.T) {
 	err = json.Unmarshal(dynData, &headBlock)
 	assert.NoError(t, err)
 
-	headBlockNum := int(headBlock["head_block_number"].(float64))
+	headBlockNum := uint64(headBlock["head_block_number"].(float64))
 
 	s := streamer.NewStreamer(mockClient, mockHiveBlocks, nil, nil, nil)
 
@@ -816,13 +668,15 @@ func TestHeadBlock(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	assert.Equal(t, headBlockNum, s.HeadHeight())
+	actual := s.HeadHeight()
+	assert.GreaterOrEqual(t, actual, headBlockNum, "head height should be at least the dummy block head")
+	assert.LessOrEqual(t, actual, headBlockNum+1, "head height may be head+1 due to 3s ticker increment in trackHeadHeight")
 }
 
 func TestDbStoredBlockIntegrity(t *testing.T) {
 
 	// hive blocks
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
@@ -865,7 +719,7 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 
 func TestNestedArrayStructure(t *testing.T) {
 
-	mockHiveBlocks := &MockHiveBlockDb{}
+	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	// clear existing data
 	assert.NoError(t, mockHiveBlocks.ClearBlocks())

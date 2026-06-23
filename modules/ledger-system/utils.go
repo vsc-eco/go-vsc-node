@@ -195,26 +195,6 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 			})
 		}
 	}
-	// assets := []string{"hbd", "hive", "hbd_savings"}
-
-	// fmt.Println("Affected Accounts", affectedAccounts)
-	// //Cleanup!
-	// for k := range affectedAccounts {
-	// 	ledgerBalances := map[string]int64{}
-	// 	for _, asset := range assets {
-	// 		//As of block X or below
-	// 		bal := ls.GetBalance(k, endBlock, asset)
-	// 		fmt.Println("bal", bal)
-	// 		ledgerBalances[asset] = bal
-
-	// 		// LedgerUpdates, _ := ls.LedgerDb.GetLedgerRange(k, startHeight, endBlock, asset)
-
-	// 		// for _, v := range *LedgerUpdates {
-	// 		// 	ledgerBalances[asset] += v.Amount
-	// 		// }
-	// 	}
-	// 	ls.BalanceDb.UpdateBalanceRecord(k, endBlock, ledgerBalances)
-	// }
 
 	accounts := make([]string, 0)
 	for k := range affectedAccounts {
