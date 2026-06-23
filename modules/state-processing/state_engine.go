@@ -963,7 +963,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			// savings). Flag it loudly for manual refund instead of silently
 			// stranding it — the prior handler was dead code (see
 			// isUnsupportedGatewaySavingsDeposit).
-			if toStr, _ := op.Value["to"].(string); isUnsupportedGatewaySavingsDeposit(op.Type, toStr) {
+			if toStr, _ := op.Value["to"].(string); isUnsupportedGatewaySavingsDeposit(op.Type, op.Value["from"].(string), toStr) {
 				fromStr, _ := op.Value["from"].(string)
 				log.Warn(
 					"review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
@@ -1640,8 +1640,8 @@ func witnessAnnounceHasRogueBlsKey(meta witnesses.PostingJsonMetadata, account s
 // branch, so unreachable for a transfer_to_savings op), which silently stranded
 // the funds with no L2 credit and no audit trail. The caller flags these for
 // manual refund instead of dropping them silently.
-func isUnsupportedGatewaySavingsDeposit(opType, to string) bool {
-	return opType == "transfer_to_savings" && to == params.GATEWAY_WALLET
+func isUnsupportedGatewaySavingsDeposit(opType, from, to string) bool {
+	return opType == "transfer_to_savings" && from != params.GATEWAY_WALLET && to == params.GATEWAY_WALLET
 }
 
 // executeTxSafely runs a transaction handler with panic recovery so that a
