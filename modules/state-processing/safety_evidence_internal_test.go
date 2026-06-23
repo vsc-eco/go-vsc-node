@@ -35,7 +35,7 @@ func (s *stubLedgerSystem) GetBalance(account string, blockHeight uint64, asset 
 }
 func (s *stubLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 }
-func (s *stubLedgerSystem) IndexActions(actionUpdate map[string]interface{}, extraInfo ledgerSystem.ExtraInfo) {
+func (s *stubLedgerSystem) IndexActions(actionUpdate ledgerSystem.ActionUpdate, extraInfo ledgerSystem.ExtraInfo) {
 }
 func (s *stubLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
 func (s *stubLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {

@@ -181,6 +181,12 @@ type ExtraInfo struct {
 	ActionId    string
 }
 
+// ActionUpdate represents the JSON payload for vsc.actions consensus operations.
+type ActionUpdate struct {
+	Ops        []string `json:"ops"`
+	ClearedOps string   `json:"cleared_ops"`
+}
+
 type LedgerSession interface {
 	GetBalance(account string, blockHeight uint64, asset string) int64
 	ExecuteTransfer(OpLogEvent OpLogEvent, options ...TransferOptions) LedgerResult
@@ -200,7 +206,7 @@ type LedgerSession interface {
 type LedgerSystem interface {
 	GetBalance(account string, blockHeight uint64, asset string) int64
 	ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string)
-	IndexActions(actionUpdate map[string]interface{}, extraInfo ExtraInfo)
+	IndexActions(actionUpdate ActionUpdate, extraInfo ExtraInfo)
 	Deposit(deposit Deposit) string
 	IngestOplog(oplog []OpLogEvent, options OplogInjestOptions)
 	// PendulumDistribute drains the pendulum:nodes:hbd bucket into a recipient
