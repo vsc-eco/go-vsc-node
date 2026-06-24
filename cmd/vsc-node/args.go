@@ -13,7 +13,6 @@ type args struct {
 	network string
 	dataDir string
 
-	disableTss    bool
 	forceReindex  bool
 	logLevel      string
 	sysconfigPath string
@@ -29,7 +28,6 @@ func ParseArgs() (args, error) {
 	isInit := flag.Bool("init", false, "Initialize the node (run init instead of run)")
 	network := flag.String("network", "mainnet", "Name of the network (mainnet or testnet)")
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
-	disableTss := flag.Bool("disable-tss", false, "Disable TSS plugin (testnet only)")
 	forceReindex := flag.Bool("force-reindex", false, "Force a database reindex on startup (wipes derived state and replays from genesis)")
 	logLevel := flag.String("log-level", "info", "Log level spec: error|warn|info|debug|verbose|trace or comma-separated with module overrides (e.g. error,tss=verbose,bp=info)")
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
@@ -41,7 +39,6 @@ func ParseArgs() (args, error) {
 		*isInit,
 		*network,
 		*dataDir,
-		*disableTss,
 		*forceReindex,
 		*logLevel,
 		*sysconfigPath,

@@ -56,6 +56,13 @@ func (ac *identityConfigStruct) SetBlsPrivKeySeed(seedHex string) error {
 	})
 }
 
+// HasPrivateKey returns true when the Hive active key has been configured
+// (not empty and not the default sentinel placeholder).
+func (ac *identityConfigStruct) HasPrivateKey() bool {
+	key := ac.Get().HiveActiveKey
+	return key != "" && key != "ADD_YOUR_PRIVATE_WIF"
+}
+
 func (ac *identityConfigStruct) HiveActiveKeyPair() (*hivego.KeyPair, error) {
 	wif := ac.Get().HiveActiveKey
 	return hivego.KeyPairFromWif(wif)
