@@ -115,8 +115,8 @@ func TestBlamedAccountsFromBitSet(t *testing.T) {
 }
 
 // safetySlashSconf wraps a base SystemConfig so a test can pin the principal-
-// slash activation height (ConsensusParams.SafetySlashActivationHeight) without a
-// JSON override loader — mirroring timelockHeightSconf for the timelock gate.
+// slash schedule (ConsensusParams.SafetySlashWindows) without a JSON override
+// loader — mirroring timelockHeightSconf for the timelock gate.
 type safetySlashSconf struct {
 	systemconfig.SystemConfig
 	cp params.ConsensusParams
@@ -127,7 +127,13 @@ func (s *safetySlashSconf) ConsensusParams() params.ConsensusParams { return s.c
 func mocknetWithSafetySlashHeight(h uint64) systemconfig.SystemConfig {
 	base := systemconfig.MocknetConfig()
 	cp := base.ConsensusParams()
-	cp.SafetySlashActivationHeight = h
+	// Mirror the old scalar gate: 0 = inert (no windows); otherwise a single
+	// open-ended window active from h onward.
+	if h == 0 {
+		cp.SafetySlashWindows = nil
+	} else {
+		cp.SafetySlashWindows = []params.HeightWindow{{Start: h}}
+	}
 	return &safetySlashSconf{SystemConfig: base, cp: cp}
 }
 

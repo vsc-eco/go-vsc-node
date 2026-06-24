@@ -298,23 +298,41 @@ type ConsensusParams struct {
 	// re-mature. 0 == disabled. Only consulted when the bond gate is active.
 	BondInclusionEstablishedGraceBlocks uint64 `json:"bondInclusionEstablishedGraceBlocks,omitempty"`
 
-	// SafetySlashActivationHeight gates verifiable-fault PRINCIPAL slashing (the
-	// HIVE_CONSENSUS bond debit in slashForEvidenceIfPolicyAllows →
-	// SafetySlashConsensusBond). At blockHeight >= this value the detectors debit
-	// the bond; below it — and when 0 — they still run and log but never touch the
-	// ledger (0 = inert, the safe default). Kept as its OWN height (NOT folded into
-	// the v0.2.0 version line) because principal slashing is on a more cautious
-	// maturity timeline than the rest of v0.2.0 and must be stageable independently.
+	// SafetySlashWindows is the schedule of half-open [Start, End) block-height
+	// ranges over which verifiable-fault PRINCIPAL slashing (the HIVE_CONSENSUS
+	// bond debit in slashForEvidenceIfPolicyAllows → SafetySlashConsensusBond) is
+	// IN FORCE. Outside every window the detectors still run and log but never
+	// touch the ledger. Semantics (see SafetySlashActive):
+	//   - empty / nil → slashing is never active (inert; the safe default).
+	//   - End == 0    → open-ended: active from Start onward. Only the FINAL
+	//                   window may be open-ended.
+	//   - End != 0    → active for Start <= h < End (End exclusive).
+	// An on→off→on cycle is expressed by closing the current window (set its End)
+	// and APPENDING a new one — never by editing an existing entry. Kept as its OWN
+	// per-network schedule (NOT folded into the v0.2.0 version line) because
+	// principal slashing is on a more cautious maturity timeline than the rest of
+	// v0.2.0 and must be stageable independently.
 	//
-	// CONSENSUS-CRITICAL: the slash changes ledger state, so this MUST be a fixed
-	// network-wide constant set STRICTLY ABOVE the current chain head before
-	// deploy, identical on every node (reindex or not). A height at/below an
-	// already-processed block is a consensus footgun — live nodes ran the
-	// no-slash path over those blocks; a reindex with this binary would slash them
-	// and diverge — exactly like EvmAddressChecksumHeight.
-	// Every witness must run a binary carrying this height BEFORE Hive reaches it.
-	// Ephemeral networks may pin it low to exercise the active path.
-	SafetySlashActivationHeight uint64 `json:"safetySlashActivationHeight,omitempty"`
+	// CONSENSUS-CRITICAL: the slash changes ledger state, so every boundary MUST be
+	// a fixed network-wide constant, identical on every node (reindex or not). Any
+	// boundary at or below current chain head is FROZEN history — live nodes already
+	// ran each past block's slash/no-slash path, so a reindex on a binary that moved
+	// a past boundary would debit (or skip) different bonds and diverge, exactly
+	// like EvmAddressChecksumHeight. Only ever APPEND a window, or set the End of the
+	// final still-future window, STRICTLY ABOVE chain head, with every witness
+	// upgraded BEFORE Hive reaches it. A malformed schedule (overlapping, out of
+	// order, or mid-list open-ended) is rejected by ValidSafetySlashWindows, which
+	// is asserted against every shipped config in tests.
+	SafetySlashWindows []HeightWindow `json:"safetySlashWindows,omitempty"`
+}
+
+// HeightWindow is a half-open [Start, End) range of L1 block heights. End == 0
+// means open-ended (no upper bound). Used by SafetySlashWindows to schedule
+// on/off cycles of a consensus rule; see ValidSafetySlashWindows for the
+// well-formedness invariant a schedule of these must satisfy.
+type HeightWindow struct {
+	Start uint64 `json:"start"`
+	End   uint64 `json:"end,omitempty"`
 }
 
 // ───── Named activation predicates (Ethereum ChainConfig style) ─────
@@ -341,12 +359,47 @@ func (cp ConsensusParams) EvmAddressChecksumActive(blockHeight uint64) bool {
 // version line (see each predicate's note).
 
 // SafetySlashActive reports whether verifiable-fault principal (HIVE_CONSENSUS
-// bond) slashing is in force at blockHeight. Call sites gate the ledger debit on
-// this instead of reading a compile-time constant, so activation is a per-network
-// height pinned above chain head (see SafetySlashActivationHeight). Zero height
-// means slashing is inert (detectors still run and log; no bond is debited).
+// bond) slashing is in force at blockHeight — true iff blockHeight falls within
+// one of the configured SafetySlashWindows. An empty schedule is never active; a
+// final window with End == 0 is active from its Start onward. Call sites gate the
+// ledger debit on this so the decision is a pure function of (schedule, height)
+// and replays identically on every node. Assumes a well-formed schedule
+// (ValidSafetySlashWindows); the lookup itself tolerates any slice but a
+// malformed schedule's meaning is only defined once it passes validation.
 func (cp ConsensusParams) SafetySlashActive(blockHeight uint64) bool {
-	return cp.SafetySlashActivationHeight != 0 && blockHeight >= cp.SafetySlashActivationHeight
+	for _, w := range cp.SafetySlashWindows {
+		if blockHeight >= w.Start && (w.End == 0 || blockHeight < w.End) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidSafetySlashWindows reports an error if the SafetySlashWindows schedule is
+// malformed. Well-formed means a sorted list of disjoint half-open [Start, End)
+// intervals in which every window is non-empty (Start < End) and only the FINAL
+// window may be open-ended (End == 0). An empty schedule is valid (slashing never
+// active). Because the slash debit is replay-derived, a malformed schedule would
+// diverge nodes, so this is asserted against every shipped network config in
+// tests — a bad constant fails the build rather than forking the chain at runtime.
+func (cp ConsensusParams) ValidSafetySlashWindows() error {
+	ws := cp.SafetySlashWindows
+	for i, w := range ws {
+		last := i == len(ws)-1
+		if w.End == 0 {
+			if !last {
+				return fmt.Errorf("safety slash window %d {start:%d}: only the final window may be open-ended (End == 0)", i, w.Start)
+			}
+			continue // open-ended final window: nothing after it to order against
+		}
+		if w.End <= w.Start {
+			return fmt.Errorf("safety slash window %d: End (%d) must be greater than Start (%d)", i, w.End, w.Start)
+		}
+		if !last && w.End > ws[i+1].Start {
+			return fmt.Errorf("safety slash windows %d and %d overlap or are out of order: End %d > next Start %d", i, i+1, w.End, ws[i+1].Start)
+		}
+	}
+	return nil
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate

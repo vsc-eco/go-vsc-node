@@ -233,12 +233,20 @@ func MainnetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 403_200,
-			// Principal (HIVE_CONSENSUS bond) safety slashing. 0 = INERT
-			// (detectors log but never debit). PIN a future mainnet height
-			// (strictly above chain head, every witness upgraded first) before
-			// turning slashing on — same reindex/upgrade-window footgun as the
-			// other height gates. Stage AFTER the v0.2.0 batch has soaked.
-			SafetySlashActivationHeight: 107454300,
+			// Principal (HIVE_CONSENSUS bond) safety slashing schedule — a list of
+			// [Start, End) height windows in which slashing debits the bond (see
+			// params.SafetySlashActive). Empty = never; a final window with End == 0
+			// is open-ended. Activated at 107454300 alongside the v0.2.0 batch.
+			//
+			// TO DISABLE (emergency wrongful-slash stop): close this window by
+			// setting End to a height H STRICTLY ABOVE current chain head, with every
+			// witness upgraded before Hive reaches H, e.g. {Start: 107454300, End: H}.
+			// TO REACTIVATE later (committee stable): APPEND a new open-ended window
+			// above head — never edit the closed one, its bounds are frozen history:
+			//   {Start: 107454300, End: H}, {Start: R, End: 0}  // R > H, above head.
+			SafetySlashWindows: []params.HeightWindow{
+				{Start: 107454300, End: 107565100},
+			},
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -322,10 +330,13 @@ func TestnetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 33_600,
-			// Principal (HIVE_CONSENSUS bond) safety slashing. 0 = INERT until
-			// pinned. Set a future testnet height (above chain head) to soak
-			// slashing before mainnet — same above-head rule as mainnet.
-			SafetySlashActivationHeight: 3_870_000,
+			// Principal (HIVE_CONSENSUS bond) safety slashing schedule (see
+			// params.SafetySlashActive). Active from 3_870_000 onward to soak
+			// slashing before mainnet. Same above-head / frozen-past rules as
+			// mainnet apply when closing or appending windows.
+			SafetySlashWindows: []params.HeightWindow{
+				{Start: 3_870_000, End: 0},
+			},
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -395,13 +406,15 @@ func DevnetConfig() SystemConfig {
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 400,
 			// Principal safety slashing ACTIVE from genesis on this ephemeral net
-			// (its own height, matching the 0.2.0 floor pin above) so the devnet
+			// (its own schedule, matching the 0.2.0 floor pin above) so the devnet
 			// double-sign integration
 			// test (tests/devnet/malicious_doublesign_test.go) can observe a real
 			// bond slash. Honest nodes never equivocate / propose invalid blocks,
 			// so no slash fires in normal runs; internal unit tests still pin their
-			// own height via an sconf override.
-			SafetySlashActivationHeight: 1,
+			// own schedule via an sconf override.
+			SafetySlashWindows: []params.HeightWindow{
+				{Start: 1, End: 0},
+			},
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -451,9 +464,9 @@ func MocknetConfig() SystemConfig {
 			// it drops out. Only meaningful when the bond gate is active. (mainnet
 			// 403,200 ≈ 2 weeks @ 3s.)
 			BondInclusionEstablishedGraceBlocks: 400,
-			// Principal safety slashing. 0 = INERT; the in-process e2e harness
-			// and internal unit tests pin their own height via an sconf override.
-			SafetySlashActivationHeight: 0,
+			// Principal safety slashing. Empty = INERT; the in-process e2e harness
+			// and internal unit tests pin their own schedule via an sconf override.
+			SafetySlashWindows: nil,
 		},
 		tssParams: params.MocknetTssParams,
 	}
