@@ -17,6 +17,7 @@ import (
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	governance_db "vsc-node/modules/db/vsc/governance"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
@@ -133,6 +134,7 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssRequests := tss_db.NewRequests(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
+	governanceDb := governance_db.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 
@@ -181,6 +183,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		governanceDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		wasm,
@@ -285,6 +288,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssKeys,
 		tssRequests,
+		governanceDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		dataAvailability,

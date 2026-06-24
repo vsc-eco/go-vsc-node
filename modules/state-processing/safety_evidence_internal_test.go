@@ -50,6 +50,9 @@ func (s *stubLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPen
 func (s *stubLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.ReverseSafetySlashConsensusDebitParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
+func (s *stubLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) ledgerSystem.LedgerResult {
+	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
+}
 func (s *stubLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
 func (s *stubLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return nil
@@ -643,3 +646,26 @@ func TestSeedProposalsFromStoredBlock_RebuildsCurrentSlot(t *testing.T) {
 // affected the earlier DAO_WALLET (prefixed) comparison cannot recur. A full
 // ProcessBlock entry-point test (custom_json from the gateway → sink enqueue;
 // non-gateway → reject) is a devnet integration item.
+
+// TestSafetySlashBurnDelayHeightGate verifies the production slash path resolves
+// the pending-burn window through the height gate: 3 days for a slash below the
+// 7-day activation height, 7 days at/after it. Proves the sconf → helper → params
+// wiring end-to-end (the params gate math itself is covered in the params pkg).
+func TestSafetySlashBurnDelayHeightGate(t *testing.T) {
+	t.Setenv("VSC_SLASH_BURN_DELAY", "") // ensure the off-mainnet env override is inert
+
+	base := systemconfig.MocknetConfig()
+	cp := base.ConsensusParams()
+	cp.SafetySlashBurnDelay7dHeight = 1_000
+	se := &StateEngine{sconf: &safetySlashSconf{SystemConfig: base, cp: cp}}
+
+	if got := se.safetySlashBurnDelayBlocks(999); got != params.SafetySlashBurnDelay3dBlocks {
+		t.Errorf("slash below 7d height: got %d, want 3d (%d)", got, params.SafetySlashBurnDelay3dBlocks)
+	}
+	if got := se.safetySlashBurnDelayBlocks(1_000); got != params.SafetySlashBurnDelay7dBlocks {
+		t.Errorf("slash at 7d height: got %d, want 7d (%d)", got, params.SafetySlashBurnDelay7dBlocks)
+	}
+	if got := se.safetySlashBurnDelayBlocks(2_000_000); got != params.SafetySlashBurnDelay7dBlocks {
+		t.Errorf("slash well after 7d height: got %d, want 7d", got)
+	}
+}

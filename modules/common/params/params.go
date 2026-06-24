@@ -324,6 +324,57 @@ type ConsensusParams struct {
 	// order, or mid-list open-ended) is rejected by ValidSafetySlashWindows, which
 	// is asserted against every shipped config in tests.
 	SafetySlashWindows []HeightWindow `json:"safetySlashWindows,omitempty"`
+
+	// GovernanceProposalExpiryBlocks is how long a witness-vote governance
+	// proposal (vsc.slash_restore / vsc.reserve_payout) stays open to collect
+	// approvals, in L1 blocks. A proposal that has not crossed the 2/3 threshold
+	// by creationBlock+this is closed. For a slash_restore the effective window
+	// is additionally capped to the slash's remaining pending time
+	// (min(expiry, maturity−creation) — see governance.EffectiveExpiry); it never
+	// extends the slash's fixed maturity. CONSENSUS-CRITICAL: the tally/expiry
+	// decision changes ledger state, so this is a fixed network-wide constant
+	// every node shares. 0 falls back to DefaultGovernanceProposalExpiryBlocks.
+	GovernanceProposalExpiryBlocks uint64 `json:"governanceProposalExpiryBlocks,omitempty"`
+
+	// SafetySlashBurnDelay7dHeight is the FORWARD-ONLY activation height for the
+	// extended 7-day safety-slash pending window (vs the original 3 days). A slash
+	// occurring at slashHeight uses the 7-day window iff slashHeight >= this value
+	// (and this != 0); earlier slashes keep the 3-day window. The longer window
+	// gives witnesses more time to notice a wrongful slash and gather a
+	// slash_restore quorum before the residual matures into the reserve.
+	//
+	// CONSENSUS-CRITICAL: the window length is read at slash-application time and
+	// folded into the STORED maturity (slashHeight + delay). Because the gate keys
+	// off the slash's OWN height it is recomputed identically on replay, so raising
+	// the window can NEVER retroactively shift a historical maturity (which would
+	// diverge a resync — the same footgun as SafetySlashWindows). Pin it STRICTLY
+	// ABOVE chain head with every witness upgraded first. 0 = not yet scheduled
+	// (stays 3 days), the safe default.
+	SafetySlashBurnDelay7dHeight uint64 `json:"safetySlashBurnDelay7dHeight,omitempty"`
+}
+
+// DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
+// (~3 days at 3s/block) used when a network pins no explicit value.
+const DefaultGovernanceProposalExpiryBlocks uint64 = 3 * 28800
+
+const (
+	// SafetySlashBurnDelay3dBlocks is the original ~3-day pending-burn window
+	// (mirrors safetyslash.DefaultSafetySlashBurnDelayBlocks; kept here to avoid a
+	// params→safety_slash import just for the gate).
+	SafetySlashBurnDelay3dBlocks uint64 = 3 * 28800
+	// SafetySlashBurnDelay7dBlocks is the extended ~7-day pending-burn window.
+	SafetySlashBurnDelay7dBlocks uint64 = 7 * 28800
+)
+
+// SafetySlashBurnDelayBlocks returns the pending-burn challenge-window length (in
+// L1 blocks) for a slash occurring at slashHeight: the 7-day window at/after
+// SafetySlashBurnDelay7dHeight, the 3-day window before it. Keying off the slash's
+// own height keeps maturity deterministic across replay (see the field comment).
+func (cp ConsensusParams) SafetySlashBurnDelayBlocks(slashHeight uint64) uint64 {
+	if cp.SafetySlashBurnDelay7dHeight != 0 && slashHeight >= cp.SafetySlashBurnDelay7dHeight {
+		return SafetySlashBurnDelay7dBlocks
+	}
+	return SafetySlashBurnDelay3dBlocks
 }
 
 // HeightWindow is a half-open [Start, End) range of L1 block heights. End == 0
@@ -400,6 +451,15 @@ func (cp ConsensusParams) ValidSafetySlashWindows() error {
 		}
 	}
 	return nil
+}
+
+// GovernanceProposalExpiry returns the configured proposal voting window in L1
+// blocks, falling back to DefaultGovernanceProposalExpiryBlocks when unset (0).
+func (cp ConsensusParams) GovernanceProposalExpiry() uint64 {
+	if cp.GovernanceProposalExpiryBlocks == 0 {
+		return DefaultGovernanceProposalExpiryBlocks
+	}
+	return cp.GovernanceProposalExpiryBlocks
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate

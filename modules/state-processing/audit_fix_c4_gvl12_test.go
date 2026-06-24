@@ -94,6 +94,7 @@ func newGVL12Env() *gvl12Env {
 		txDb, ledgerDbImpl, balanceDb, nil,
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
 		tssKeys, tssCommitments, tssRequests,
+		nil, // governanceDb
 		nil, // pendulumSettlementsDb
 		nil, // consensusStateDb
 		nil, // wasm

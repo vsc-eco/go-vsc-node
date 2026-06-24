@@ -157,6 +157,21 @@ const (
 	// safetySlashFinalizeCursorRowID is the deterministic Id used for the
 	// single cursor row. Repeating writes upsert the same row.
 	safetySlashFinalizeCursorRowID = "safety_slash_burn_finalize_cursor"
+
+	// LedgerTypeReservePayoutDebit is the FIRST-EVER debit of the keyless
+	// insurance reserve. A governance-approved payout (vsc.reserve_payout, ratified
+	// by a 2/3 witness vote) removes value FROM ProtocolSlashReserveAccount as a
+	// negative `hive` row. It is a protocol-meta row (excluded from spendable
+	// balance, like the reserve credit it draws down) and is paired 1:1 with a
+	// LedgerTypeReservePayoutCredit on the recipient so total `hive` supply is
+	// conserved: held reserve value becomes spendable on the recipient, never
+	// minted. The reserve is no longer a one-way sink — but the ONLY way out is a
+	// supermajority-voted payout, capped at the reserve's available balance.
+	LedgerTypeReservePayoutDebit = "reserve_payout_debit"
+	// LedgerTypeReservePayoutCredit credits the payout recipient with SPENDABLE
+	// `hive` (the make-whole disbursement). NOT a meta type — GetBalance must count
+	// it so the recipient can use the funds.
+	LedgerTypeReservePayoutCredit = "reserve_payout_credit"
 )
 
 // IsProtocolMetaLedgerType reports whether a ledger record type is a
@@ -187,7 +202,11 @@ func IsProtocolMetaLedgerType(t string) bool {
 		LedgerTypeSafetySlashHiveBurnPendingRelease,
 		LedgerTypeSafetySlashHiveBurnPendingFinalized,
 		LedgerTypeSafetySlashHiveBurnPendingCancelled,
-		LedgerTypeSafetySlashBurnFinalizeCursor:
+		LedgerTypeSafetySlashBurnFinalizeCursor,
+		// The reserve-payout DEBIT is held bookkeeping on the keyless reserve
+		// account — never spendable there. (The paired CREDIT on the recipient is
+		// deliberately NOT here: it is the spendable disbursement.)
+		LedgerTypeReservePayoutDebit:
 		return true
 	default:
 		return false
@@ -654,6 +673,100 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 		Type:        LedgerTypeSafetySlashConsensusReverse,
 	})
 	return LedgerResult{Ok: true, Msg: "reverse credit recorded"}
+}
+
+// maxReserveScanHeight bounds the reserve-balance scan. Like maxLedgerScanHeight
+// in state-processing it MUST be math.MaxInt64, not math.MaxUint64 — a uint64
+// above MaxInt64 BSON-wraps to -1 and matches zero rows on a real Mongo node.
+const maxReserveScanHeight uint64 = math.MaxInt64
+
+// reserveAvailable returns the keyless reserve's currently-available hive: the
+// sum of every reserve credit (LedgerTypeSafetySlashReserve) plus every prior
+// payout debit (LedgerTypeReservePayoutDebit, negative), EXCLUDING the debit row
+// for excludeDebitID. Excluding this proposal's own debit is what makes
+// ReservePayout idempotent: a re-apply recomputes the SAME available and the same
+// capped amount, so the upsert reproduces identical rows instead of shrinking the
+// payout. Block-on-error (fail-stop): a transient 0 would let a payout overdraw
+// the reserve and could fork.
+func (ls *ledgerSystem) reserveAvailable(excludeDebitID string) int64 {
+	if ls.LedgerDb == nil {
+		return 0
+	}
+	var recs *[]ledger_db.LedgerRecord
+	blockingRetry("reserveAvailable", func() error {
+		var err error
+		recs, err = ls.LedgerDb.GetLedgerRange(
+			params.ProtocolSlashReserveAccount, 0, maxReserveScanHeight, "hive",
+			ledger_db.LedgerOptions{OpType: []string{LedgerTypeSafetySlashReserve, LedgerTypeReservePayoutDebit}},
+		)
+		return err
+	})
+	if recs == nil {
+		return 0
+	}
+	total := int64(0)
+	for _, r := range *recs {
+		if r.Id == excludeDebitID {
+			continue
+		}
+		total += r.Amount
+	}
+	return total
+}
+
+// ReservePayout disburses governance-approved value out of the keyless insurance
+// reserve. It writes a supply-conserving PAIR: a meta debit on the reserve
+// account and a spendable credit on the recipient, both keyed by ProposalID so a
+// replay/double-apply upserts the same rows (never double-pays). The amount is
+// capped at the reserve's available balance, so a payout can neither mint nor
+// overdraw — the only authority that lets value leave the reserve is the 2/3
+// witness vote that drove this call.
+func (ls *ledgerSystem) ReservePayout(p ReservePayoutParams) LedgerResult {
+	proposalID := strings.TrimSpace(p.ProposalID)
+	recipient := normalizeHiveConsensusAccount(p.Recipient) // generic "hive:" normalizer
+	if proposalID == "" || recipient == "" {
+		return LedgerResult{Ok: false, Msg: "invalid reserve payout params"}
+	}
+	if p.Amount <= 0 {
+		return LedgerResult{Ok: false, Msg: "reserve payout amount must be positive"}
+	}
+	if ls.LedgerDb == nil {
+		return LedgerResult{Ok: false, Msg: "ledger not configured"}
+	}
+
+	debitID := proposalID + "#reserve_payout#debit"
+	creditID := proposalID + "#reserve_payout#credit#" + recipient
+
+	available := ls.reserveAvailable(debitID)
+	if available <= 0 {
+		return LedgerResult{Ok: false, Msg: "reserve has no available balance"}
+	}
+	amount := p.Amount
+	if amount > available {
+		amount = available
+	}
+
+	ls.LedgerDb.StoreLedger(
+		ledger_db.LedgerRecord{
+			Id:          debitID,
+			TxId:        proposalID,
+			BlockHeight: p.BlockHeight,
+			Amount:      -amount,
+			Asset:       "hive",
+			Owner:       params.ProtocolSlashReserveAccount,
+			Type:        LedgerTypeReservePayoutDebit,
+		},
+		ledger_db.LedgerRecord{
+			Id:          creditID,
+			TxId:        proposalID,
+			BlockHeight: p.BlockHeight,
+			Amount:      amount,
+			Asset:       "hive",
+			Owner:       recipient,
+			Type:        LedgerTypeReservePayoutCredit,
+		},
+	)
+	return LedgerResult{Ok: true, Msg: "reserve payout recorded"}
 }
 
 // PendulumBucketBalance sums every ledger record whose Owner == bucket and

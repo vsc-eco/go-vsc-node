@@ -117,6 +117,11 @@ func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(
 	return ledgerSystem.LedgerResult{Ok: false}
 }
 
+func (m *mockLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) ledgerSystem.LedgerResult {
+	_ = p
+	return ledgerSystem.LedgerResult{Ok: false}
+}
+
 // ── CalculateFrozenBal tests ──
 
 func TestCalculateFrozenBal_NoDecay(t *testing.T) {
