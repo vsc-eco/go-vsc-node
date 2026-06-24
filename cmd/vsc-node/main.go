@@ -21,6 +21,7 @@ import (
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	governance_db "vsc-node/modules/db/vsc/governance"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
@@ -96,6 +97,7 @@ func main() {
 	tssKeys := tss_db.NewKeys(vscDb)
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
+	governanceDb := governance_db.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
@@ -200,6 +202,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		governanceDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		wasm,
@@ -322,6 +325,7 @@ func main() {
 		tssKeys,
 		tssCommitments,
 		tssRequests,
+		governanceDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 

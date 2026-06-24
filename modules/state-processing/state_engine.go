@@ -29,6 +29,7 @@ import (
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	governance_db "vsc-node/modules/db/vsc/governance"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
@@ -82,6 +83,10 @@ type StateEngine struct {
 	tssRequests    tss_db.TssRequests
 	tssKeys        tss_db.TssKeys
 	tssCommitments tss_db.TssCommitments
+	// governanceDb persists witness-vote governance proposals + votes
+	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
+	// governance (the handlers no-op when nil).
+	governanceDb governance_db.Governance
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
@@ -577,6 +582,31 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"tx", tx.TransactionID, "slash_tx_id", rec.SlashTxID,
 							"action", rec.Action, "slashed", rec.SlashedAccount)
 					}
+				}
+
+				// vsc.slash_restore: a witness votes (from its own witness
+				// account) to restore a wrongful safety slash while it is still in
+				// its pending window. Propose==vote; on crossing 2/3 of the
+				// beneficiary-excluded electorate the bond is restored. The
+				// authority is the deterministic on-chain vote tally — no gateway
+				// key is materialized (restoration is pure L2 ledger state).
+				if Id == "vsc.slash_restore" {
+					se.handleSlashRestoreVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+				}
+
+				// vsc.reserve_payout: a witness PROPOSES a disbursement from the
+				// keyless insurance reserve {recipient, amount, reason}. The proposal
+				// id is derived from the content + this tx id, and the create counts
+				// as the proposer's first vote.
+				if Id == "vsc.reserve_payout" {
+					se.handleReservePayoutCreate(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+				}
+
+				// vsc.reserve_vote: a witness approves an existing reserve-payout
+				// proposal by id {id}. On crossing 2/3 of the recipient-excluded
+				// electorate, the reserve disburses (capped at its balance).
+				if Id == "vsc.reserve_vote" {
+					se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
 				}
 			}
 		}
@@ -2663,6 +2693,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssKeys tss_db.TssKeys,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
+	governanceDb governance_db.Governance,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
@@ -2717,6 +2748,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
+		governanceDb:   governanceDb,
 
 		consensusState:   consensusStateDb,
 		consensusRuntime: NewConsensusRuntime(),
@@ -2814,35 +2846,36 @@ func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 		TxID:            txID,
 		BlockHeight:     blockHeight,
 		EvidenceKind:    evidenceKind,
-		BurnDelayBlocks: se.safetySlashBurnDelayBlocks(),
+		BurnDelayBlocks: se.safetySlashBurnDelayBlocks(blockHeight),
 	})
 }
 
-// safetySlashBurnDelayBlocks returns the pending-burn challenge-window length
-// for a new safety slash. It is the production constant
-// (safetyslash.DefaultSafetySlashBurnDelayBlocks) on mainnet, and unconditionally
-// so — there is NO env override on mainnet. Off mainnet ONLY (devnet/testnet),
-// the integration-test harness may shorten or lengthen the window via the
-// VSC_SLASH_BURN_DELAY env var (parsed as a uint64 number of blocks), clamped to
-// params.MaxSafetySlashBurnDelayBlocks. This lets devnet tests either mature the
-// residual fast (reserve-destination proof) or hold it pending long enough to
-// post a wrongful-slash reversal (governance-reverse proof) without waiting the
-// production window. A missing/blank/unparseable value falls back to the
-// production default, so a misconfigured devnet node behaves exactly like
-// production rather than silently disabling the delay.
-func (se *StateEngine) safetySlashBurnDelayBlocks() uint64 {
-	delay := safetyslash.DefaultSafetySlashBurnDelayBlocks
+// safetySlashBurnDelayBlocks returns the pending-burn challenge-window length for
+// a new safety slash occurring at slashHeight. On mainnet it is the height-gated
+// production window (params.SafetySlashBurnDelayBlocks: 3 days, or 7 days at/after
+// SafetySlashBurnDelay7dHeight) — there is NO env override on mainnet. Off mainnet
+// ONLY (devnet/testnet), the integration-test harness may override the window via
+// the VSC_SLASH_BURN_DELAY env var (parsed as a uint64 number of blocks), clamped
+// to params.MaxSafetySlashBurnDelayBlocks, so tests can either mature the residual
+// fast (reserve-destination proof) or hold it pending long enough to post a
+// wrongful-slash reversal (governance-reverse proof). A missing/blank/unparseable
+// value falls back to the height-gated production window, so a misconfigured
+// devnet node behaves exactly like production rather than silently disabling it.
+func (se *StateEngine) safetySlashBurnDelayBlocks(slashHeight uint64) uint64 {
 	if se != nil && se.sconf != nil && !se.sconf.OnMainnet() {
 		if raw := strings.TrimSpace(os.Getenv("VSC_SLASH_BURN_DELAY")); raw != "" {
 			if parsed, err := strconv.ParseUint(raw, 10, 64); err == nil {
 				if parsed > params.MaxSafetySlashBurnDelayBlocks {
 					parsed = params.MaxSafetySlashBurnDelayBlocks
 				}
-				delay = parsed
+				return parsed
 			}
 		}
 	}
-	return delay
+	if se != nil && se.sconf != nil {
+		return se.sconf.ConsensusParams().SafetySlashBurnDelayBlocks(slashHeight)
+	}
+	return safetyslash.DefaultSafetySlashBurnDelayBlocks
 }
 
 func (se *StateEngine) evidenceKey(accountHive, kind string) string {

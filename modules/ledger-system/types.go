@@ -133,6 +133,27 @@ type ReverseSafetySlashConsensusDebitParams struct {
 	OpInstanceID string
 }
 
+// ReservePayoutParams drives a governance-approved disbursement OUT of the
+// keyless insurance reserve to a recipient. Authorized by a 2/3 witness vote
+// (see the vsc.reserve_payout governance op); the ledger primitive caps the
+// amount at the reserve's available balance so a payout can never mint or
+// overdraw the reserve.
+type ReservePayoutParams struct {
+	// ProposalID is the deterministic governance proposal id. It keys the
+	// idempotent ledger rows so re-applying the same approved proposal upserts
+	// (never double-pays) and is the unit the available-balance cap excludes
+	// when recomputing headroom on replay.
+	ProposalID string
+	// Recipient is the account credited with spendable hive (the make-whole).
+	Recipient string
+	// Amount in satoshis requested; capped at the reserve's available balance.
+	Amount int64
+	// BlockHeight at which the payout rows are recorded.
+	BlockHeight uint64
+	// Reason is logged for explorers.
+	Reason string
+}
+
 type LedgerResult struct {
 	Ok  bool
 	Msg string
@@ -227,6 +248,11 @@ type LedgerSystem interface {
 	// by a previous SafetySlashConsensusBond call. Idempotent per
 	// (TxID, EvidenceKind, Account) tuple.
 	ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult
+	// ReservePayout disburses governance-approved value OUT of the keyless
+	// insurance reserve to a recipient (the first and only path that debits the
+	// reserve). Idempotent per ProposalID; the amount is capped at the reserve's
+	// available balance so it can never mint or overdraw.
+	ReservePayout(p ReservePayoutParams) LedgerResult
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState
