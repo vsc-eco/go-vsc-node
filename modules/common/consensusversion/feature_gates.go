@@ -42,6 +42,24 @@ func Version0_2_0Active(active Version) bool {
 	return active.MeetsConsensusMin(V0_2_0)
 }
 
+// V0_3_0 is the consensus version line at which the v0.3.0 release batch
+// activates: consensus delegated stake/unstake, delegator pendulum rewards, and
+// operator opt-in delegation modes. Kept distinct from V0_2_0 (already shipped /
+// activating) so delegation rolls out on its OWN coordinated floor rise — the
+// 0.2.0 mainnet activation heights were fixed for the ICC + LP-floor batch and
+// must not silently gain new consensus behavior. The delegation gate
+// (state-processing delegatedStakeMinVersion) keys off this line.
+var V0_3_0 = Version{Major: 0, Consensus: 3, NonConsensus: 0}
+
+// Version0_3_0Active reports whether the v0.3.0 release batch (delegation +
+// rewards + modes) is in force given the chain-active consensus version. Below
+// the line every v0.3.0 rule is inert and stake/unstake/reward behavior stays
+// byte-identical to 0.2.0, so old and new binaries interoperate until the floor
+// reaches 0.3.0.
+func Version0_3_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_3_0)
+}
+
 // WitnessKeyStrictActive reports whether the election build should strictly
 // enforce consensus + gateway key admission (audit H-6): exclude any witness
 // whose consensus BLS key or gateway secp256k1 key fails its proof-of-possession,

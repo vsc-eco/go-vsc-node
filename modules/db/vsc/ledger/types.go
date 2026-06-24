@@ -14,6 +14,11 @@ type Ledger interface {
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
+	// GetLedgerRecordsByType returns ALL ledger records (every account) whose
+	// type is in `types`, up to and including toBlock, sorted deterministically
+	// (block_height, then id). Used by the one-time consensus-0.3.0 delegation
+	// backfill to reconstruct edges from the full stake/unstake history.
+	GetLedgerRecordsByType(types []string, toBlock uint64) ([]LedgerRecord, error)
 }
 
 type Balances interface {
@@ -38,8 +43,8 @@ type ClaimRecord struct {
 	//Numbers of accounts received interest
 	ReceivedN int `bson:"received_n"`
 	//Percent that was observed based on network averages
-	ObservedApr float64  `bson:"observed_apr"`
-	Timestamp   *string  `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
+	ObservedApr float64 `bson:"observed_apr"`
+	Timestamp   *string `json:"timestamp,omitempty" bson:"timestamp,omitempty"`
 }
 
 type BalanceRecord struct {

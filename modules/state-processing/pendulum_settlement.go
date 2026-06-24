@@ -257,22 +257,49 @@ func (se *StateEngine) validatePendulumSettlement(rec pendulumsettlement.Settlem
 		return fmt.Errorf("election at snapshot_to=%d has no members", rec.SnapshotRangeTo)
 	}
 	members := make(map[string]struct{}, len(election.Members))
+	memberList := make([]string, 0, len(election.Members))
 	for _, m := range election.Members {
 		acct := m.Account
 		if !strings.HasPrefix(acct, "hive:") {
 			acct = "hive:" + acct
 		}
 		members[acct] = struct{}{}
+		memberList = append(memberList, acct)
+	}
+
+	// Consensus 0.3.0: share-mode nodes pay their delegators, so a distribution
+	// to a non-committee account is legitimate iff that account is a delegator
+	// to a share-mode committee node at the snapshot height. Build the allowed
+	// delegator set from the same deterministic source the re-derivation uses.
+	//
+	// On a transient read failure the set is empty, so a (legitimate) delegator
+	// distribution would be strictly rejected here and the apply refused WITHOUT
+	// advancing the settlement marker — restart-replay then re-attempts the
+	// epoch once the read recovers (the codebase's standard "deterministic ids +
+	// idempotent upserts + replay" self-healing path). So a read blip delays the
+	// settlement on that node, it never diverges, and the actual payouts always
+	// come from the attested, BLS-aggregated record. With no share nodes the set
+	// is empty and this is byte-identical to the pre-0.3.0 members-only check.
+	shareDelegations, _ := se.PendulumShareDelegations(memberList, rec.SnapshotRangeTo)
+	allowedDelegators := make(map[string]struct{})
+	for _, edges := range shareDelegations {
+		for dlg := range edges {
+			allowedDelegators[dlg] = struct{}{}
+		}
 	}
 	for _, d := range rec.Distributions {
 		acct := d.Account
 		if !strings.HasPrefix(acct, "hive:") {
 			acct = "hive:" + acct
 		}
-		if _, ok := members[acct]; !ok {
-			return fmt.Errorf("distribution to non-committee account %s at epoch=%d",
-				d.Account, rec.Epoch)
+		if _, ok := members[acct]; ok {
+			continue
 		}
+		if _, ok := allowedDelegators[acct]; ok {
+			continue
+		}
+		return fmt.Errorf("distribution to non-committee account %s at epoch=%d",
+			d.Account, rec.Epoch)
 	}
 	for _, r := range rec.RewardReductions {
 		acct := r.Account
@@ -340,6 +367,16 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		uint64(pendulumoracle.DefaultTickIntervalBlocks),
 	)
 
+	// Consensus 0.3.0: re-read the share-mode delegation edges at the SAME
+	// pinned height (SnapshotRangeTo) the producer used, so the re-derived
+	// record's per-delegator distributions byte-match. A transient read failure
+	// means we can't re-derive deterministically — fall back to structural
+	// validation rather than risk a false byte-mismatch.
+	shareDelegations, sdOk := se.PendulumShareDelegations(members, rec.SnapshotRangeTo)
+	if !sdOk {
+		return nil, false
+	}
+
 	expected, err := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
 		Epoch:               rec.Epoch,
 		PrevEpoch:           rec.PrevEpoch,
@@ -348,6 +385,7 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		CommitteeBonds:      bonds,
 		BucketBalanceHBD:    bucket,
 		ReductionsByAccount: reductions,
+		ShareDelegations:    shareDelegations,
 	})
 	if err != nil || expected == nil {
 		return nil, false

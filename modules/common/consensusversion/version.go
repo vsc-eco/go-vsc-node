@@ -37,9 +37,19 @@ import (
 //     pendulum.LPFloorActivation.
 //     Until 0.2.0 is chain-active both behaviors are inert and splits/call semantics stay
 //     byte-identical to 0.1.0, so old and new binaries interoperate until activation.
+//   - 0.3.0 — consensus delegated stake/unstake (+ delegator pendulum rewards and operator
+//     opt-in delegation modes). Per-edge delegation accounting so a delegator (not the node
+//     operator) can always unstake their own delegated bond; a share-mode node splits its
+//     pendulum reward pro-rata to its delegators; third-party delegation requires the node
+//     to opt in (deactivated|share|custom, published in the announcement). Gated via
+//     StateEngine.delegatedStakeActive (delegatedStakeMinVersion == V0_3_0); the node's
+//     aggregate hive_consensus still feeds election weight + pendulum bond unchanged. Kept
+//     a SEPARATE version line from 0.2.0 so it activates on its own coordinated floor rise
+//     rather than joining the already-shipped 0.2.0 batch. Until 0.3.0 is chain-active the
+//     stake/unstake/reward semantics stay byte-identical to 0.2.0.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 2
+	currentConsensus    uint64 = 3
 	currentNonConsensus uint64 = 0
 )
 

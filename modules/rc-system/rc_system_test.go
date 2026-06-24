@@ -94,7 +94,6 @@ func (m *mockLedgerSystem) PendulumAccrue(
 ) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-
 func (m *mockLedgerSystem) SafetySlashConsensusBond(
 	p ledgerSystem.SafetySlashConsensusParams,
 ) ledgerSystem.LedgerResult {
@@ -115,6 +114,12 @@ func (m *mockLedgerSystem) ReverseSafetySlashConsensusDebit(
 ) ledgerSystem.LedgerResult {
 	_ = p
 	return ledgerSystem.LedgerResult{Ok: false}
+}
+
+func (m *mockLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int { return 0 }
+
+func (m *mockLedgerSystem) AllDelegationEdges(blockHeight uint64) (map[string]map[string]int64, bool) {
+	return nil, true
 }
 
 // ── CalculateFrozenBal tests ──

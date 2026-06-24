@@ -176,6 +176,27 @@ func (ledger *ledger) GetLedgerRange(
 	return &results, nil
 }
 
+// GetLedgerRecordsByType returns every ledger record (all accounts) of the given
+// types up to toBlock, sorted by (block_height, id) for a deterministic order.
+func (ledger *ledger) GetLedgerRecordsByType(types []string, toBlock uint64) ([]LedgerRecord, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "block_height", Value: 1}, {Key: "id", Value: 1}})
+	query := bson.M{
+		"t":            bson.M{"$in": types},
+		"block_height": bson.M{"$lte": toBlock},
+	}
+	findResult, err := ledger.Find(context.Background(), query, opts)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]LedgerRecord, 0)
+	for findResult.Next(context.Background()) {
+		ledRes := LedgerRecord{}
+		findResult.Decode(&ledRes)
+		results = append(results, ledRes)
+	}
+	return results, nil
+}
+
 func (ledger *ledger) GetLedgersTsRange(
 	account *string,
 	txId *string,

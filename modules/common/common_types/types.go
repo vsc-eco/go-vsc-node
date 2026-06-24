@@ -54,6 +54,14 @@ type StateEngine interface {
 	// peers — a fork). found=false means a deterministic absence (no election
 	// covers the height yet), which every honest node sees identically.
 	GetElectionInfoOrBlock(height uint64) (elections.ElectionResult, bool)
+	// NodeDelegationMode returns the operator-published consensus-delegation
+	// mode for node `account` as of blockHeight, normalized to a known value
+	// (delegationmode.{Deactivated,Share,Custom}). Defaults to Deactivated when
+	// the node has no announcement or an unset/unknown mode — delegation is
+	// strict opt-in. Sourced from the witness DB (the operator's authenticated
+	// on-chain announcement), so it is deterministic across nodes at a given
+	// height. Consensus 0.3.0+ uses it to gate third-party stake acceptance.
+	NodeDelegationMode(account string, blockHeight uint64) string
 	SystemConfig() systemconfig.SystemConfig
 	// PendulumOracleEnv returns key/value pairs merged into wasm contract env (system.get_env / get_env_key).
 	// Keys use the "pendulum.*" prefix; nil or empty means no pendulum snapshot is available.

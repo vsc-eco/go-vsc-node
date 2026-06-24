@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/config"
 
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -17,6 +18,29 @@ type identityConfig struct {
 	HiveActiveKey  string
 	HiveUsername   string
 	Libp2pPrivKey  string
+	// DelegationMode is the operator's consensus-delegation policy for their
+	// node, published in the node announcement and stored on the witness record
+	// (consensus 0.3.0+). One of delegationmode.{Deactivated,Share,Custom}; an
+	// empty / unrecognized value is treated as Deactivated (delegation is strict
+	// opt-in). See modules/common/delegationmode.
+	DelegationMode string
+}
+
+// DelegationMode returns the operator's configured consensus-delegation mode,
+// normalized to a known value (defaults to delegationmode.Deactivated). Read at
+// announcement time to publish the operator's policy on-chain.
+func (ac *identityConfigStruct) DelegationMode() string {
+	return delegationmode.Normalize(ac.Get().DelegationMode)
+}
+
+// SetDelegationMode persists the operator's consensus-delegation policy. The
+// value is normalized to a known mode (delegationmode.{Deactivated,Share,Custom});
+// an empty / unrecognized input is stored as Deactivated so a typo fails safe to
+// the opt-in default rather than silently enabling delegation.
+func (ac *identityConfigStruct) SetDelegationMode(mode string) error {
+	return ac.Update(func(dc *identityConfig) {
+		dc.DelegationMode = delegationmode.Normalize(mode)
+	})
 }
 
 func (ac *identityConfigStruct) SetUsername(username string) error {
@@ -169,6 +193,7 @@ func NewIdentityConfig(dataDir ...string) IdentityConfig {
 			HiveActiveKey:  "ADD_YOUR_PRIVATE_WIF",
 			HiveUsername:   "ADD_YOUR_USERNAME",
 			Libp2pPrivKey:  hex.EncodeToString(privKeyBytes),
+			DelegationMode: delegationmode.Deactivated,
 		},
 		dataDirPtr,
 	)}

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -392,6 +394,68 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	}
 	blockHeight := ParseHeight(height)
 	return r.Balances.GetBalanceRecord(account, blockHeight)
+}
+
+// GetConsensusDelegation is the resolver for the getConsensusDelegation field.
+func (r *queryResolver) GetConsensusDelegation(ctx context.Context, from string, to string, height *model.Uint64) (*ConsensusDelegation, error) {
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("from and to cannot be empty")
+	}
+	blockHeight := ParseHeight(height)
+	session := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+
+	// Gross stake on this edge, and the node's pooled bond (slash-aware) vs its
+	// slash-immune gross delegated total.
+	delegated := session.GetBalance(ledgerSystem.DelegationEdgeKey(from, to), blockHeight, ledgerSystem.AssetDelegation)
+	bond := session.GetBalance(to, blockHeight, "hive_consensus")
+	total := session.GetBalance(to, blockHeight, ledgerSystem.AssetDelegationTotal)
+
+	// Pro-rata claimable (mirrors ledgerSession.slashAdjustedRelease): full
+	// unless the node is slashed (bond < total), then delegated * bond / total.
+	claimable := delegated
+	if delegated > 0 && total > 0 && bond < total {
+		if bond <= 0 {
+			claimable = 0
+		} else {
+			num := new(big.Int).Mul(big.NewInt(delegated), big.NewInt(bond))
+			num.Div(num, big.NewInt(total))
+			claimable = num.Int64()
+		}
+	}
+
+	return &ConsensusDelegation{
+		From:      from,
+		To:        to,
+		Delegated: model.Int64(delegated),
+		Claimable: model.Int64(claimable),
+	}, nil
+}
+
+// GetNodeDelegationMode is the resolver for the getNodeDelegationMode field. It
+// returns the node operator's normalized consensus-delegation mode, always
+// defaulting to delegationmode.Deactivated when the node has not announced one
+// (delegation is strict opt-in). Mirrors how the consensus layer reads the mode
+// at stake time and at settlement.
+func (r *queryResolver) GetNodeDelegationMode(ctx context.Context, account string, height *model.Uint64) (*string, error) {
+	if account == "" {
+		return nil, fmt.Errorf("account cannot be empty")
+	}
+	// Witness records are keyed by the bare Hive account name; tolerate the
+	// "hive:" form used elsewhere in the API.
+	acct := strings.TrimPrefix(account, "hive:")
+
+	// nil height → latest announcement; otherwise pin to the requested height.
+	var bh *uint64
+	if height != nil {
+		h := ParseHeight(height)
+		bh = &h
+	}
+
+	mode := delegationmode.Default
+	if w, err := r.Witnesses.GetWitnessAtHeight(acct, bh); err == nil && w != nil {
+		mode = delegationmode.Normalize(w.DelegationMode)
+	}
+	return &mode, nil
 }
 
 // GetAccountRc is the resolver for the getAccountRC field.
