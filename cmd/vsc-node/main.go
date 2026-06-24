@@ -119,11 +119,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if sysConfig.OnMainnet() && args.disableTss {
-		log.Error("cannot disable TSS plugin on mainnet")
-		os.Exit(1)
-	}
-
 	// choose the source
 	hiveRpcClient := hivego.NewHiveRpc(hiveURIs)
 	hiveRpcClient.ChainID = sysConfig.HiveChainId()
@@ -140,6 +135,7 @@ func main() {
 	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig(args.dataDir)
+	hasPrivateKey := identityConfig.HasPrivateKey()
 
 	hiveCreator := hive.LiveTransactionCreator{
 		TransactionCrafter: hive.TransactionCrafter{},
@@ -318,18 +314,12 @@ func main() {
 		consensusStateDb,
 
 		p2p,
-		da,                   //Deps: [p2p]
-		dataAvailability,     //Deps: [p2p]
-		announcementsManager, // Deps: [p2p]
-
+		da,               //Deps: [p2p]
+		dataAvailability, //Deps: [p2p]
 		blockConsumer,
 		//Startup main state processing pipeline
 		streamerPlugin,
 		se,
-		bp,
-		oracle,
-		ep,
-		multisig,
 		sr,
 
 		//WASM execution environment
@@ -337,8 +327,8 @@ func main() {
 		txpool,
 	)
 
-	if !args.disableTss {
-		plugins = append(plugins, tssMgr)
+	if hasPrivateKey {
+		plugins = append(plugins, announcementsManager, bp, oracle, ep, multisig, tssMgr)
 	}
 
 	//Setup graphql manager after everything is initialized
