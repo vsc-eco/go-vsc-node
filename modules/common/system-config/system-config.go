@@ -204,19 +204,11 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
 			ElectionInterval:               params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch:           1406,
-			ConsensusVersionFloorEpoch:     1698,
+			ConsensusVersionFloorEpoch:     1712,
 			ConsensusVersionFloorMajor:     0,
 			ConsensusVersionFloorConsensus: 2,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
-			// v0.2.0 release activation: the contract-update timelock, gateway-key
-			// strict admission, gateway dao-removal, try/catch ICC and the pendulum
-			// LP-floor all gate on the CHAIN-ACTIVE CONSENSUS VERSION reaching 0.2.0
-			// (consensusversion.V0_2_0), driven by the floor below — NOT a dedicated
-			// height. The floor is currently 0.1.0 (epoch 1623), so the whole v0.2.0
-			// batch is inert. To roll out: raise ConsensusVersionFloorConsensus to 2
-			// at a future epoch boundary (CP-1 devnet-proven first — see the gateway
-			// dao-removal note in modules/gateway/multisig.go).
 			// Bond inclusion window (CP-2): 86,400 Hive blocks = 3 days @ 3s.
 			// Activation height 0 = INERT (no behavior change) until an operator
 			// pins a future epoch-boundary height (>=3d lead) for rollout.
@@ -380,15 +372,15 @@ func DevnetConfig() SystemConfig {
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
 			// Ephemeral network (fresh per run): pin the consensus-version floor to
-			// 0.2.0 from epoch 1 so the whole v0.2.0 batch is active from genesis and
-			// exercised by devnet/regression tests. Replaces the old
-			// Version0_2_0Height=1; this is the same floor pin the try/catch and
-			// LP-floor devnet tests already use (and pass with). No reindex concern —
-			// devnet is fresh per run and every node runs the current 0.2.0 binary,
-			// so the floor never excludes a witness.
+			// 0.3.0 from epoch 1 so the whole v0.2.0 AND v0.3.0 batches are active
+			// from genesis and exercised by devnet/regression tests (the governance
+			// slash_restore / reserve_payout / reserve_vote ops and the 7-day
+			// pending window all gate on 0.3.0). No reindex concern — devnet is fresh
+			// per run and every node runs the current 0.3.0 binary, so the floor
+			// never excludes a witness.
 			ConsensusVersionFloorEpoch:     1,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 2,
+			ConsensusVersionFloorConsensus: 3,
 			// Bond inclusion window (CP-2): tiny 80-block window for fast devnet
 			// tests. Activation 0 = inert; devnet test harness pins a low height
 			// to exercise the gate.

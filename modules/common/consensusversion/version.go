@@ -37,9 +37,17 @@ import (
 //     pendulum.LPFloorActivation.
 //     Until 0.2.0 is chain-active both behaviors are inert and splits/call semantics stay
 //     byte-identical to 0.1.0, so old and new binaries interoperate until activation.
+//   - 0.3.0 — the Consensus 2→3 bump gates the witness-vote GOVERNANCE batch, all
+//     activated together when the election floor reaches 0.3.0 (consensusversion.V0_3_0):
+//     (a) the vsc.slash_restore / vsc.reserve_payout / vsc.reserve_vote ops
+//     (GovernanceActionsActive) — below the line the ops are inert on every node;
+//     (b) the extended 7-day safety-slash pending window (SafetySlashBurnDelay7dActive),
+//     which backs (a) by giving witnesses time to gather a slash_restore quorum before
+//     the residual matures. Until 0.3.0 is chain-active the ops are ignored and the
+//     pending window stays 3 days, so old and new binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 2
+	currentConsensus    uint64 = 3
 	currentNonConsensus uint64 = 0
 )
 
