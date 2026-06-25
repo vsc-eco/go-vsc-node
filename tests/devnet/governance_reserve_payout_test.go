@@ -192,11 +192,27 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 
 	// 6) Cross-node consistency + reserve drawdown: every node must agree the
 	// recipient was paid, and the reserve must carry a debit of the disbursed amount.
-	for n := 1; n <= cfg.Nodes; n++ {
-		if v := gqlHiveSpendable(t, d.GQLEndpoint(n), "hive:"+attacker); v < wantHive {
-			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
-			t.Fatalf("[reserve-pay] node-%d disagrees: recipient spendable hive=%d < want=%d", n, v, wantHive)
+	// All nodes apply the payout at the SAME L1 block (the vote tally is a
+	// deterministic function of L1-ordered votes), but a non-leader may process
+	// that block a beat after node-1, so poll each node to convergence rather than
+	// reading a single instant. A genuine divergence still fails at the deadline.
+	crossDeadline := time.Now().Add(2 * time.Minute)
+	for {
+		laggard, laggardV := 0, int64(0)
+		for n := 1; n <= cfg.Nodes; n++ {
+			if v := gqlHiveSpendable(t, d.GQLEndpoint(n), "hive:"+attacker); v < wantHive {
+				laggard, laggardV = n, v
+				break
+			}
 		}
+		if laggard == 0 {
+			break // every node agrees
+		}
+		if time.Now().After(crossDeadline) {
+			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
+			t.Fatalf("[reserve-pay] node-%d disagrees: recipient spendable hive=%d < want=%d", laggard, laggardV, wantHive)
+		}
+		time.Sleep(3 * time.Second)
 	}
 	if debits := sumReservePayoutDebits(t, d); debits > -reserveAmt {
 		t.Fatalf("[reserve-pay] expected a reserve debit of <= %d, got %d", -reserveAmt, debits)
