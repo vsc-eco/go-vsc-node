@@ -174,15 +174,29 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 			wantBond, final, preVote, rowSlashedAmt)
 	}
 
-	// 5) Cross-node consistency: every node must agree the bond was restored (the
-	// reverse landed in a 2/3-ratified block, so all nodes apply it identically),
-	// and a safety_slash_consensus_reverse credit row must exist for the account.
-	for n := 1; n <= cfg.Nodes; n++ {
-		b := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker)
-		if b < wantBond {
-			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
-			t.Fatalf("[restore-vote] node-%d disagrees: bond=%d < want=%d (restoration not consistent across nodes)", n, b, wantBond)
+	// 5) Cross-node consistency: every node must agree the bond was restored. All
+	// nodes tally the L1 votes and apply the reverse at the same L1 block, but a
+	// non-leader may process that block a beat after node-1, so poll each node to
+	// convergence rather than reading a single instant. A genuine divergence still
+	// fails at the deadline. Then a safety_slash_consensus_reverse credit row must
+	// exist for the account.
+	crossDeadline := time.Now().Add(2 * time.Minute)
+	for {
+		laggard, laggardV := 0, int64(0)
+		for n := 1; n <= cfg.Nodes; n++ {
+			if b := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker); b < wantBond {
+				laggard, laggardV = n, b
+				break
+			}
 		}
+		if laggard == 0 {
+			break // every node agrees
+		}
+		if time.Now().After(crossDeadline) {
+			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
+			t.Fatalf("[restore-vote] node-%d disagrees: bond=%d < want=%d (restoration not consistent across nodes)", laggard, laggardV, wantBond)
+		}
+		time.Sleep(3 * time.Second)
 	}
 	reverseRows := findLedgerTXs(t, d.GQLEndpoint(1), "hive:"+attacker, []string{"safety_slash_consensus_reverse"})
 	var reverseTotal int64
