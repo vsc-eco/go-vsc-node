@@ -277,9 +277,9 @@ func TestnetConfig() SystemConfig {
 			TssIndexHeight:                 1409500,
 			ElectionInterval:               3600,
 			ElectionDupeFixEpoch:           268,
-			ConsensusVersionFloorEpoch:     662,
+			ConsensusVersionFloorEpoch:     765,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 2,
+			ConsensusVersionFloorConsensus: 3,
 			// Last pre-rollout testnet epoch. Seeds latestSettledEpoch=515 on
 			// upgrade so the first post-rollout election (epoch 516) can fire;
 			// epoch 515's settlement is skipped as stale and its bucket HBD
