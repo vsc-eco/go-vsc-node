@@ -335,22 +335,6 @@ type ConsensusParams struct {
 	// decision changes ledger state, so this is a fixed network-wide constant
 	// every node shares. 0 falls back to DefaultGovernanceProposalExpiryBlocks.
 	GovernanceProposalExpiryBlocks uint64 `json:"governanceProposalExpiryBlocks,omitempty"`
-
-	// SafetySlashBurnDelay7dHeight is the FORWARD-ONLY activation height for the
-	// extended 7-day safety-slash pending window (vs the original 3 days). A slash
-	// occurring at slashHeight uses the 7-day window iff slashHeight >= this value
-	// (and this != 0); earlier slashes keep the 3-day window. The longer window
-	// gives witnesses more time to notice a wrongful slash and gather a
-	// slash_restore quorum before the residual matures into the reserve.
-	//
-	// CONSENSUS-CRITICAL: the window length is read at slash-application time and
-	// folded into the STORED maturity (slashHeight + delay). Because the gate keys
-	// off the slash's OWN height it is recomputed identically on replay, so raising
-	// the window can NEVER retroactively shift a historical maturity (which would
-	// diverge a resync — the same footgun as SafetySlashWindows). Pin it STRICTLY
-	// ABOVE chain head with every witness upgraded first. 0 = not yet scheduled
-	// (stays 3 days), the safe default.
-	SafetySlashBurnDelay7dHeight uint64 `json:"safetySlashBurnDelay7dHeight,omitempty"`
 }
 
 // DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
@@ -360,22 +344,16 @@ const DefaultGovernanceProposalExpiryBlocks uint64 = 3 * 28800
 const (
 	// SafetySlashBurnDelay3dBlocks is the original ~3-day pending-burn window
 	// (mirrors safetyslash.DefaultSafetySlashBurnDelayBlocks; kept here to avoid a
-	// params→safety_slash import just for the gate).
+	// params→safety_slash import just for the gate). Used below the v0.3.0 line.
 	SafetySlashBurnDelay3dBlocks uint64 = 3 * 28800
-	// SafetySlashBurnDelay7dBlocks is the extended ~7-day pending-burn window.
+	// SafetySlashBurnDelay7dBlocks is the extended ~7-day pending-burn window, in
+	// force once the chain-active consensus version reaches 0.3.0 (the v0.3.0
+	// governance batch — see consensusversion.SafetySlashBurnDelay7dActive). The
+	// 7d/3d choice is resolved in state-processing from the version active at the
+	// slash's own height, NOT a raw activation height, so it flips in lockstep with
+	// the governance slash_restore op it backs.
 	SafetySlashBurnDelay7dBlocks uint64 = 7 * 28800
 )
-
-// SafetySlashBurnDelayBlocks returns the pending-burn challenge-window length (in
-// L1 blocks) for a slash occurring at slashHeight: the 7-day window at/after
-// SafetySlashBurnDelay7dHeight, the 3-day window before it. Keying off the slash's
-// own height keeps maturity deterministic across replay (see the field comment).
-func (cp ConsensusParams) SafetySlashBurnDelayBlocks(slashHeight uint64) uint64 {
-	if cp.SafetySlashBurnDelay7dHeight != 0 && slashHeight >= cp.SafetySlashBurnDelay7dHeight {
-		return SafetySlashBurnDelay7dBlocks
-	}
-	return SafetySlashBurnDelay3dBlocks
-}
 
 // HeightWindow is a half-open [Start, End) range of L1 block heights. End == 0
 // means open-ended (no upper bound). Used by SafetySlashWindows to schedule

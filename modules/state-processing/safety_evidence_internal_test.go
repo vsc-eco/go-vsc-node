@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"testing"
 
+	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
@@ -648,25 +649,52 @@ func TestSeedProposalsFromStoredBlock_RebuildsCurrentSlot(t *testing.T) {
 // ProcessBlock entry-point test (custom_json from the gateway → sink enqueue;
 // non-gateway → reject) is a devnet integration item.
 
-// TestSafetySlashBurnDelayHeightGate verifies the production slash path resolves
-// the pending-burn window through the height gate: 3 days for a slash below the
-// 7-day activation height, 7 days at/after it. Proves the sconf → helper → params
-// wiring end-to-end (the params gate math itself is covered in the params pkg).
-func TestSafetySlashBurnDelayHeightGate(t *testing.T) {
+// versionElectionDb is a minimal elections.Elections whose GetElectionByHeight
+// reports consensus version 0.3.0 at/after activationHeight and 0.2.0 below it,
+// so a test can drive the chain-active-version burn-delay gate. The embedded
+// aggregate.Plugin (nil) covers the Init/Start/Stop methods the slash path never
+// calls.
+type versionElectionDb struct {
+	aggregate.Plugin
+	activationHeight uint64
+}
+
+func (m *versionElectionDb) StoreElection(elecResult elections.ElectionResult) error { return nil }
+func (m *versionElectionDb) GetElection(epoch uint64) *elections.ElectionResult       { return nil }
+func (m *versionElectionDb) GetPreviousElections(beforeEpoch uint64, limit int) []elections.ElectionResult {
+	return nil
+}
+func (m *versionElectionDb) GetElectionByHeight(height uint64) (elections.ElectionResult, error) {
+	consensus := uint64(2)
+	if height >= m.activationHeight {
+		consensus = 3
+	}
+	return elections.ElectionResult{
+		ElectionDataInfo: elections.ElectionDataInfo{ProtocolVersion: consensus},
+	}, nil
+}
+
+// TestSafetySlashBurnDelayVersionGate verifies the production slash path resolves
+// the pending-burn window through the CONSENSUS-VERSION gate: 3 days while the
+// chain-active version is below 0.3.0, 7 days once it reaches 0.3.0. The version
+// is read at the slash's own height (deterministic, replay-correct). Proves the
+// sconf/electionDb → ActiveConsensusVersion → 7d/3d wiring end-to-end (the gate
+// predicate itself is covered in the consensusversion pkg).
+func TestSafetySlashBurnDelayVersionGate(t *testing.T) {
 	t.Setenv("VSC_SLASH_BURN_DELAY", "") // ensure the off-mainnet env override is inert
 
-	base := systemconfig.MocknetConfig()
-	cp := base.ConsensusParams()
-	cp.SafetySlashBurnDelay7dHeight = 1_000
-	se := &StateEngine{sconf: &safetySlashSconf{SystemConfig: base, cp: cp}}
+	se := &StateEngine{
+		sconf:      systemconfig.MocknetConfig(),
+		electionDb: &versionElectionDb{activationHeight: 1_000}, // 0.3.0 active at/after 1000
+	}
 
 	if got := se.safetySlashBurnDelayBlocks(999); got != params.SafetySlashBurnDelay3dBlocks {
-		t.Errorf("slash below 7d height: got %d, want 3d (%d)", got, params.SafetySlashBurnDelay3dBlocks)
+		t.Errorf("slash below 0.3.0: got %d, want 3d (%d)", got, params.SafetySlashBurnDelay3dBlocks)
 	}
 	if got := se.safetySlashBurnDelayBlocks(1_000); got != params.SafetySlashBurnDelay7dBlocks {
-		t.Errorf("slash at 7d height: got %d, want 7d (%d)", got, params.SafetySlashBurnDelay7dBlocks)
+		t.Errorf("slash at 0.3.0: got %d, want 7d (%d)", got, params.SafetySlashBurnDelay7dBlocks)
 	}
 	if got := se.safetySlashBurnDelayBlocks(2_000_000); got != params.SafetySlashBurnDelay7dBlocks {
-		t.Errorf("slash well after 7d height: got %d, want 7d", got)
+		t.Errorf("slash well after 0.3.0: got %d, want 7d", got)
 	}
 }

@@ -82,3 +82,40 @@ func ContractUpdateTimelockActive(active Version) bool {
 func GatewayDecentralizationActive(active Version) bool {
 	return Version0_2_0Active(active)
 }
+
+// V0_3_0 is the consensus version line at which the v0.3.0 witness-vote
+// GOVERNANCE batch activates. Every consensus-affecting change in v0.3.0 keys off
+// this single version so the network has ONE coordinated activation, driven by
+// the election floor reaching 0.3.0.
+var V0_3_0 = Version{Major: 0, Consensus: 3, NonConsensus: 0}
+
+// Version0_3_0Active reports whether the v0.3.0 batch is in force given the
+// chain-active consensus version. `active` is resolved by the caller from the
+// on-chain election (deterministic, replay-correct). Below the line every v0.3.0
+// rule is inert and behavior stays byte-identical to 0.2.0, so old and new
+// binaries interoperate until the floor reaches 0.3.0.
+func Version0_3_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_3_0)
+}
+
+// GovernanceActionsActive reports whether the witness-vote governance ops
+// (vsc.slash_restore, vsc.reserve_payout, vsc.reserve_vote) are in force given
+// the chain-active consensus version. Resolve `active` from the version active at
+// the op's block height (StateEngine.ActiveConsensusVersion(blockHeight)); below
+// the line the ops are ignored on every node, so a full reindex reproduces
+// historical state and a laggard is excluded from the committee rather than
+// applying the ops over a chain that didn't.
+func GovernanceActionsActive(active Version) bool {
+	return Version0_3_0Active(active)
+}
+
+// SafetySlashBurnDelay7dActive reports whether a new safety slash uses the
+// extended 7-day pending-burn window (vs the original 3 days), given the chain-
+// active consensus version. Resolve `active` from the version active at the
+// SLASH's own height (StateEngine.ActiveConsensusVersion(slashHeight)) so the
+// stored maturity (slashHeight + delay) recomputes identically on replay; below
+// the line the window stays 3 days. It shares the v0.3.0 line with the governance
+// ops it backs, so both flip together.
+func SafetySlashBurnDelay7dActive(active Version) bool {
+	return Version0_3_0Active(active)
+}

@@ -584,29 +584,38 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
-				// vsc.slash_restore: a witness votes (from its own witness
-				// account) to restore a wrongful safety slash while it is still in
-				// its pending window. Propose==vote; on crossing 2/3 of the
-				// beneficiary-excluded electorate the bond is restored. The
-				// authority is the deterministic on-chain vote tally — no gateway
-				// key is materialized (restoration is pure L2 ledger state).
-				if Id == "vsc.slash_restore" {
-					se.handleSlashRestoreVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
-				}
+				// The witness-vote governance batch (vsc.slash_restore /
+				// vsc.reserve_payout / vsc.reserve_vote) is gated on the CHAIN-ACTIVE
+				// consensus version reaching 0.3.0, resolved from the election active
+				// at this block (deterministic, replay-correct). Below the line the
+				// ops are inert on EVERY node, so old and new binaries interoperate
+				// and a laggard is excluded from the committee rather than applying
+				// these ledger effects over a chain that didn't (see feature_gates.go).
+				if consensusversion.GovernanceActionsActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+					// vsc.slash_restore: a witness votes (from its own witness
+					// account) to restore a wrongful safety slash while it is still in
+					// its pending window. Propose==vote; on crossing 2/3 of the
+					// beneficiary-excluded electorate the bond is restored. The
+					// authority is the deterministic on-chain vote tally — no gateway
+					// key is materialized (restoration is pure L2 ledger state).
+					if Id == "vsc.slash_restore" {
+						se.handleSlashRestoreVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
 
-				// vsc.reserve_payout: a witness PROPOSES a disbursement from the
-				// keyless insurance reserve {recipient, amount, reason}. The proposal
-				// id is derived from the content + this tx id, and the create counts
-				// as the proposer's first vote.
-				if Id == "vsc.reserve_payout" {
-					se.handleReservePayoutCreate(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
-				}
+					// vsc.reserve_payout: a witness PROPOSES a disbursement from the
+					// keyless insurance reserve {recipient, amount, reason}. The proposal
+					// id is derived from the content + this tx id, and the create counts
+					// as the proposer's first vote.
+					if Id == "vsc.reserve_payout" {
+						se.handleReservePayoutCreate(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
 
-				// vsc.reserve_vote: a witness approves an existing reserve-payout
-				// proposal by id {id}. On crossing 2/3 of the recipient-excluded
-				// electorate, the reserve disburses (capped at its balance).
-				if Id == "vsc.reserve_vote" {
-					se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					// vsc.reserve_vote: a witness approves an existing reserve-payout
+					// proposal by id {id}. On crossing 2/3 of the recipient-excluded
+					// electorate, the reserve disburses (capped at its balance).
+					if Id == "vsc.reserve_vote" {
+						se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
 				}
 			}
 		}
@@ -2851,16 +2860,22 @@ func (se *StateEngine) applyPrincipalSlashForProvableEvidence(
 }
 
 // safetySlashBurnDelayBlocks returns the pending-burn challenge-window length for
-// a new safety slash occurring at slashHeight. On mainnet it is the height-gated
-// production window (params.SafetySlashBurnDelayBlocks: 3 days, or 7 days at/after
-// SafetySlashBurnDelay7dHeight) — there is NO env override on mainnet. Off mainnet
-// ONLY (devnet/testnet), the integration-test harness may override the window via
-// the VSC_SLASH_BURN_DELAY env var (parsed as a uint64 number of blocks), clamped
-// to params.MaxSafetySlashBurnDelayBlocks, so tests can either mature the residual
-// fast (reserve-destination proof) or hold it pending long enough to post a
-// wrongful-slash reversal (governance-reverse proof). A missing/blank/unparseable
-// value falls back to the height-gated production window, so a misconfigured
-// devnet node behaves exactly like production rather than silently disabling it.
+// a new safety slash occurring at slashHeight. On mainnet it is the version-gated
+// production window: 3 days, or 7 days once the CHAIN-ACTIVE consensus version
+// reaches 0.3.0 (consensusversion.SafetySlashBurnDelay7dActive) — there is NO env
+// override on mainnet. Off mainnet ONLY (devnet/testnet), the integration-test
+// harness may override the window via the VSC_SLASH_BURN_DELAY env var (parsed as
+// a uint64 number of blocks), clamped to params.MaxSafetySlashBurnDelayBlocks, so
+// tests can either mature the residual fast (reserve-destination proof) or hold it
+// pending long enough to post a wrongful-slash reversal (governance-reverse
+// proof). A missing/blank/unparseable value falls back to the version-gated
+// production window.
+//
+// The 7-day window is gated on the consensus version (NOT a raw height) so it
+// flips in lockstep with the v0.3.0 governance slash_restore op it backs and a
+// laggard is excluded from the committee rather than forking across a height. The
+// version is resolved at the slash's OWN height so the stored maturity
+// (slashHeight + delay) recomputes identically on replay.
 func (se *StateEngine) safetySlashBurnDelayBlocks(slashHeight uint64) uint64 {
 	if se != nil && se.sconf != nil && !se.sconf.OnMainnet() {
 		if raw := strings.TrimSpace(os.Getenv("VSC_SLASH_BURN_DELAY")); raw != "" {
@@ -2872,8 +2887,13 @@ func (se *StateEngine) safetySlashBurnDelayBlocks(slashHeight uint64) uint64 {
 			}
 		}
 	}
-	if se != nil && se.sconf != nil {
-		return se.sconf.ConsensusParams().SafetySlashBurnDelayBlocks(slashHeight)
+	// electionDb is required to resolve the chain-active version; on the rare test
+	// paths without it, fall back to the 3-day default (safe, matches pre-0.3.0).
+	if se != nil && se.electionDb != nil {
+		if consensusversion.SafetySlashBurnDelay7dActive(se.ActiveConsensusVersion(slashHeight)) {
+			return params.SafetySlashBurnDelay7dBlocks
+		}
+		return params.SafetySlashBurnDelay3dBlocks
 	}
 	return safetyslash.DefaultSafetySlashBurnDelayBlocks
 }
