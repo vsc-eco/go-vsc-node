@@ -258,12 +258,23 @@ func (se *StateEngine) resolveSlashConsensusRowByTx(slashTxID, normalizedAcct st
 	if recs == nil {
 		return ledgerDb.LedgerRecord{}, false
 	}
+	// In practice one safety_slash_consensus row exists per slash tx (the two
+	// detectors that fire on a double-sign use different triggering txs, so they
+	// have different tx ids). Guard the rare case anyway: pick the lexicographically
+	// smallest Id so the resolution is deterministic across nodes regardless of the
+	// DB's (unsorted) return order.
+	var best ledgerDb.LedgerRecord
+	found := false
 	for _, r := range *recs {
-		if r.TxId == slashTxID {
-			return r, true
+		if r.TxId != slashTxID {
+			continue
+		}
+		if !found || r.Id < best.Id {
+			best = r
+			found = true
 		}
 	}
-	return ledgerDb.LedgerRecord{}, false
+	return best, found
 }
 
 // parseEvidenceKindFromSlashRowID extracts <kind> from a principal-debit row id
