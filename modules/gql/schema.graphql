@@ -855,6 +855,72 @@ type SimulateContractCallResult {
   state_diff: Map
 }
 
+"""
+A single witness approval vote recorded against a governance proposal.
+"""
+type GovernanceVote {
+  """Normalized Hive account of the witness that voted."""
+  voter: String!
+  """L1 block height at which the vote was recorded."""
+  blockHeight: Uint64!
+  """Hive transaction id of the vote op."""
+  txId: String!
+}
+
+"""
+A witness-vote governance proposal. Encapsulates BOTH governance actions: a
+safety-slash restoration (type 'slash_restore' — re-credit a wrongfully slashed
+bond while it is still pending) and a reserve spend (type 'reserve_payout' —
+disburse from the keyless insurance reserve to a recipient). Kind-specific
+fields are populated according to `type`; the shared fields apply to both.
+"""
+type GovernanceProposal {
+  """Deterministic proposal id (the unit witnesses reference when voting)."""
+  proposalId: String!
+  """Proposal kind: 'slash_restore' or 'reserve_payout'."""
+  type: String!
+  """Lifecycle status: 'open', 'applied', or 'expired'."""
+  status: String!
+  """Block height of the first vote; anchors expiry window + electorate snapshot."""
+  creationBlock: Uint64!
+  """Account excluded from the tally (slashed account / payout recipient — no self-dealing)."""
+  beneficiary: String!
+  """Amount in satoshis (restored bond / disbursed reserve value)."""
+  amount: Int64!
+  """Block height at which the proposal was applied (0 if not yet applied)."""
+  appliedBlock: Uint64!
+  """Hive tx id of the vote that crossed the threshold (empty if not applied)."""
+  appliedTxId: String!
+  """slash_restore: Hive tx id of the original slash being restored."""
+  slashTxId: String!
+  """slash_restore: evidence kind of the original slash."""
+  evidenceKind: String!
+  """slash_restore: the slashed account whose bond is restored."""
+  slashedAccount: String!
+  """reserve_payout: the account credited by the disbursement."""
+  recipient: String!
+  """reserve_payout: human-readable reason logged for explorers."""
+  reason: String!
+  """Recorded approval votes (excludes the proposal row itself)."""
+  votes: [GovernanceVote!]!
+}
+
+"""
+Filter options for querying governance proposals.
+"""
+input GovernanceProposalFilter {
+  """Restrict to a single proposal by exact id."""
+  byProposalId: String
+  """Filter by proposal type ('slash_restore' or 'reserve_payout')."""
+  byType: String
+  """Filter by lifecycle status ('open', 'applied', 'expired')."""
+  byStatus: String
+  """Number of records to skip (for pagination)."""
+  offset: Int
+  """Maximum number of records to return (for pagination)."""
+  limit: Int
+}
+
 type Query {
   """
   Retrieve contract state values by their keys. Returns a map of key-value pairs from the contract's state merkle tree.
@@ -1064,5 +1130,15 @@ type Query {
     """Simulation input containing the batch of contract calls to execute."""
     input: SimulateContractCallsInput!
   ): [SimulateContractCallResult!]!
+
+  """
+  Search witness-vote governance proposals — both safety-slash restorations
+  ('slash_restore') and reserve spends ('reserve_payout') — and their recorded
+  approval votes. Returns newest-created first.
+  """
+  findGovernanceProposals(
+    """Filter criteria for the governance proposal search."""
+    filterOptions: GovernanceProposalFilter
+  ): [GovernanceProposal!]!
 }
 

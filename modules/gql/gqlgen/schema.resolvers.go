@@ -958,6 +958,58 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 	return results, nil
 }
 
+// FindGovernanceProposals is the resolver for the findGovernanceProposals field.
+func (r *queryResolver) FindGovernanceProposals(ctx context.Context, filterOptions *GovernanceProposalFilter) ([]GovernanceProposal, error) {
+	if filterOptions == nil {
+		filterOptions = &GovernanceProposalFilter{}
+	}
+	offset, limit, err := Paginate(filterOptions.Offset, filterOptions.Limit)
+	if err != nil {
+		return nil, err
+	}
+	// Governance is unwired on indexer/test surfaces — return an empty set
+	// rather than erroring so the query is always answerable.
+	if r.Governance == nil {
+		return []GovernanceProposal{}, nil
+	}
+	rows, err := r.Governance.ListProposals(filterOptions.ByProposalID, filterOptions.ByType, filterOptions.ByStatus, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]GovernanceProposal, 0, len(rows))
+	for _, p := range rows {
+		votes, err := r.Governance.GetVotes(p.ProposalId)
+		if err != nil {
+			return nil, err
+		}
+		gv := make([]GovernanceVote, 0, len(votes))
+		for _, v := range votes {
+			gv = append(gv, GovernanceVote{
+				Voter:       v.Voter,
+				BlockHeight: model.Uint64(v.BlockHeight),
+				TxID:        v.TxId,
+			})
+		}
+		out = append(out, GovernanceProposal{
+			ProposalID:     p.ProposalId,
+			Type:           p.Type,
+			Status:         p.Status,
+			CreationBlock:  model.Uint64(p.CreationBlock),
+			Beneficiary:    p.Beneficiary,
+			Amount:         model.Int64(p.Amount),
+			AppliedBlock:   model.Uint64(p.AppliedBlock),
+			AppliedTxID:    p.AppliedTxId,
+			SlashTxID:      p.SlashTxId,
+			EvidenceKind:   p.EvidenceKind,
+			SlashedAccount: p.SlashedAccount,
+			Recipient:      p.Recipient,
+			Reason:         p.Reason,
+			Votes:          gv,
+		})
+	}
+	return out, nil
+}
+
 // Amount is the resolver for the amount field.
 func (r *rcRecordResolver) Amount(ctx context.Context, obj *rcDb.RcRecord) (model.Int64, error) {
 	return model.Int64(obj.Amount), nil

@@ -714,13 +714,24 @@ func (ls *ledgerSystem) reserveAvailable(excludeDebitID string) int64 {
 	return total
 }
 
+// ReserveAvailable returns the keyless reserve's currently-available hive (sum
+// of every reserve credit minus every prior payout debit). It excludes no debit
+// (the create-time over-ask gate wants the live headroom), so it is the
+// public counterpart of reserveAvailable("").
+func (ls *ledgerSystem) ReserveAvailable() int64 {
+	return ls.reserveAvailable("")
+}
+
 // ReservePayout disburses governance-approved value out of the keyless insurance
 // reserve. It writes a supply-conserving PAIR: a meta debit on the reserve
 // account and a spendable credit on the recipient, both keyed by ProposalID so a
-// replay/double-apply upserts the same rows (never double-pays). The amount is
-// capped at the reserve's available balance, so a payout can neither mint nor
-// overdraw — the only authority that lets value leave the reserve is the 2/3
-// witness vote that drove this call.
+// replay/double-apply upserts the same rows (never double-pays). It is
+// all-or-nothing: rejected when the requested amount exceeds the reserve's
+// available balance (never a partial pay that would close the proposal having
+// disbursed less than approved), so a payout can neither mint nor overdraw — the
+// only authority that lets value leave the reserve is the 2/3 witness vote that
+// drove this call. The caller leaves the proposal open on rejection so a later
+// vote can retry once the reserve is refunded.
 func (ls *ledgerSystem) ReservePayout(p ReservePayoutParams) LedgerResult {
 	proposalID := strings.TrimSpace(p.ProposalID)
 	recipient := normalizeHiveConsensusAccount(p.Recipient) // generic "hive:" normalizer
@@ -737,14 +748,18 @@ func (ls *ledgerSystem) ReservePayout(p ReservePayoutParams) LedgerResult {
 	debitID := proposalID + "#reserve_payout#debit"
 	creditID := proposalID + "#reserve_payout#credit#" + recipient
 
+	// Exclude this proposal's own debit so a re-apply recomputes the SAME
+	// available and the same (full) amount — idempotent on replay.
 	available := ls.reserveAvailable(debitID)
 	if available <= 0 {
 		return LedgerResult{Ok: false, Msg: "reserve has no available balance"}
 	}
-	amount := p.Amount
-	if amount > available {
-		amount = available
+	if p.Amount > available {
+		// All-or-nothing: do NOT partial-pay-and-close. The caller keeps the
+		// proposal open so a later vote can retry once the reserve is funded.
+		return LedgerResult{Ok: false, Msg: "reserve payout exceeds available balance"}
 	}
+	amount := p.Amount
 
 	ls.LedgerDb.StoreLedger(
 		ledger_db.LedgerRecord{

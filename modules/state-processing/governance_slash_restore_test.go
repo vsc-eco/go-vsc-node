@@ -53,6 +53,22 @@ func (m *memGovDb) RecordVote(v governance_db.ProposalVote) error {
 func (m *memGovDb) GetVotes(id string) ([]governance_db.ProposalVote, error) {
 	return m.votes[id], nil
 }
+func (m *memGovDb) ListProposals(byProposalId, byType, byStatus *string, offset, limit int) ([]governance_db.Proposal, error) {
+	out := make([]governance_db.Proposal, 0, len(m.proposals))
+	for _, p := range m.proposals {
+		if byProposalId != nil && *byProposalId != "" && p.ProposalId != *byProposalId {
+			continue
+		}
+		if byType != nil && *byType != "" && p.Type != *byType {
+			continue
+		}
+		if byStatus != nil && *byStatus != "" && p.Status != *byStatus {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
 
 // fourMemberElection: alice (the slashed beneficiary) + bob, carol, dave, equal
 // weight. Effective electorate excludes alice → 3; threshold = ceil(2*3/3) = 2.

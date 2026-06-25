@@ -289,6 +289,7 @@ func main() {
 		TssKeys:        tssKeys,
 		TssCommitments: tssCommitments,
 		TssRequests:    tssRequests,
+		Governance:     governanceDb,
 		InterestClaims: interestClaims,
 		ChainOracle:    oracle.ChainOracle(),
 	}}), gqlConf)

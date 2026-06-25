@@ -146,7 +146,9 @@ type ReservePayoutParams struct {
 	ProposalID string
 	// Recipient is the account credited with spendable hive (the make-whole).
 	Recipient string
-	// Amount in satoshis requested; capped at the reserve's available balance.
+	// Amount in satoshis requested. ReservePayout is all-or-nothing: it pays
+	// exactly this or rejects (never a partial pay) when it exceeds the reserve's
+	// available balance.
 	Amount int64
 	// BlockHeight at which the payout rows are recorded.
 	BlockHeight uint64
@@ -250,9 +252,16 @@ type LedgerSystem interface {
 	ReverseSafetySlashConsensusDebit(p ReverseSafetySlashConsensusDebitParams) LedgerResult
 	// ReservePayout disburses governance-approved value OUT of the keyless
 	// insurance reserve to a recipient (the first and only path that debits the
-	// reserve). Idempotent per ProposalID; the amount is capped at the reserve's
-	// available balance so it can never mint or overdraw.
+	// reserve). Idempotent per ProposalID; rejected (all-or-nothing, never a
+	// partial pay) when the requested amount exceeds the reserve's available
+	// balance so it can never mint or overdraw.
 	ReservePayout(p ReservePayoutParams) LedgerResult
+	// ReserveAvailable returns the keyless reserve's currently-available hive:
+	// the sum of every reserve credit minus every prior payout debit. Used by the
+	// governance create handler to reject a vsc.reserve_payout that proposes
+	// spending more than the reserve holds. Deterministic (on-chain ledger scan,
+	// fail-stop), so every node gates proposal creation identically.
+	ReserveAvailable() int64
 	PendulumBucketBalance(bucket string, blockHeight uint64) int64
 	NewEmptySession(state *LedgerState, startHeight uint64) LedgerSession
 	NewEmptyState() *LedgerState

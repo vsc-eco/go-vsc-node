@@ -53,6 +53,7 @@ func (s *stubLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.Rever
 func (s *stubLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
+func (s *stubLedgerSystem) ReserveAvailable() int64 { return 0 }
 func (s *stubLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
 func (s *stubLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return nil

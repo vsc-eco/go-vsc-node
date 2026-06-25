@@ -126,6 +126,8 @@ func (m *mockLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) led
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "mock ledger: reserve payout not implemented"}
 }
 
+func (m *mockLedgerSystem) ReserveAvailable() int64 { return 0 }
+
 // ---------------------------------------------------------------------------
 // Invariant 1: Balance Conservation
 //
