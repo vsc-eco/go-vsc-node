@@ -204,9 +204,9 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
 			ElectionInterval:               params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch:           1406,
-			ConsensusVersionFloorEpoch:     1712,
+			ConsensusVersionFloorEpoch:     1713,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 2,
+			ConsensusVersionFloorConsensus: 3,
 			PendulumSeedEpoch:              1622,
 			EvmAddressChecksumHeight:       106_907_500,
 			// Bond inclusion window (CP-2): 86,400 Hive blocks = 3 days @ 3s.
