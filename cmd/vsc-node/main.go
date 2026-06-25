@@ -135,6 +135,18 @@ func main() {
 	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 
 	identityConfig := common.NewIdentityConfig(args.dataDir)
+	// Load the identity config from disk BEFORE reading it. NewIdentityConfig
+	// only seeds in-memory defaults (HiveActiveKey == "ADD_YOUR_PRIVATE_WIF");
+	// the on-disk key is not read until Config.Init(). Without this explicit
+	// load, the HasPrivateKey() check below always observed the placeholder and
+	// returned false, so bp/oracle/ep/multisig/tss/announcements were never
+	// registered even on witnesses with a valid key. identityConfig is also in
+	// the aggregate plugin list and gets Init'd again by a.Run(); Config.Init()
+	// is idempotent (re-opens and re-unmarshals the same file), so that is safe.
+	if err := identityConfig.Init(); err != nil {
+		log.Error("failed to load identity config", "err", err)
+		os.Exit(1)
+	}
 	hasPrivateKey := identityConfig.HasPrivateKey()
 
 	hiveCreator := hive.LiveTransactionCreator{
