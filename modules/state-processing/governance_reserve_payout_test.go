@@ -44,10 +44,11 @@ func reserveAvailable(db *test_utils.MockLedgerDb) int64 {
 	return total
 }
 
-// TestReservePayout_PrimitiveCapAndIdempotency exercises the ledger primitive
-// directly: supply-conserving disbursement, idempotency on re-apply, the
-// balance cap, and rejection once the reserve is empty.
-func TestReservePayout_PrimitiveCapAndIdempotency(t *testing.T) {
+// TestReservePayout_PrimitiveAllOrNothingAndIdempotency exercises the ledger
+// primitive directly: supply-conserving disbursement, idempotency on re-apply,
+// all-or-nothing rejection of an over-available request (never a partial pay),
+// an exact-balance payout, and rejection once the reserve is empty.
+func TestReservePayout_PrimitiveAllOrNothingAndIdempotency(t *testing.T) {
 	f := newChainOpFixture(t)
 	f.fireSlash(t, "fund-1", 100, 0) // burnDelay 0 → 100_000 lands straight in the reserve
 	require.EqualValues(t, 100_000, reserveCreditsTotal(f.db))
@@ -67,12 +68,22 @@ func TestReservePayout_PrimitiveCapAndIdempotency(t *testing.T) {
 	require.EqualValues(t, 60_000, recipientCredit(f.db, "hive:victim"), "idempotent on proposal id")
 	require.EqualValues(t, 40_000, reserveAvailable(f.db))
 
-	// Cap: a second proposal requesting more than remaining is capped at 40k.
+	// All-or-nothing: a second proposal requesting more than remaining (40k) is
+	// REJECTED, not partial-paid — the reserve is untouched so the proposal can
+	// retry once refunded.
 	r2 := f.ls.ReservePayout(ledgerSystem.ReservePayoutParams{
 		ProposalID: "p2", Recipient: "victim", Amount: 999_999, BlockHeight: 122,
 	})
-	require.True(t, r2.Ok, r2.Msg)
-	require.EqualValues(t, 100_000, recipientCredit(f.db, "hive:victim"), "second payout capped to remaining reserve")
+	require.False(t, r2.Ok, "over-available payout must be rejected, not capped")
+	require.EqualValues(t, 60_000, recipientCredit(f.db, "hive:victim"), "no partial payout")
+	require.EqualValues(t, 40_000, reserveAvailable(f.db), "reserve unchanged by a rejected payout")
+
+	// An exact-available payout succeeds and fully draws the reserve.
+	r2b := f.ls.ReservePayout(ledgerSystem.ReservePayoutParams{
+		ProposalID: "p2b", Recipient: "victim", Amount: 40_000, BlockHeight: 122,
+	})
+	require.True(t, r2b.Ok, r2b.Msg)
+	require.EqualValues(t, 100_000, recipientCredit(f.db, "hive:victim"), "exact-balance payout disburses in full")
 	require.EqualValues(t, 0, reserveAvailable(f.db), "reserve fully drawn")
 
 	// Empty: a further payout is rejected (cannot overdraw / mint).
@@ -117,6 +128,30 @@ func TestReservePayout_CreateVoteDisburses(t *testing.T) {
 	// A late vote after apply is a no-op.
 	f.se.HandleReservePayoutVoteForTest([]byte(votePayload), "dave", "v-dave", 113)
 	require.EqualValues(t, 60_000, recipientCredit(f.db, "hive:victim"), "no double payout after applied")
+}
+
+// TestReservePayout_OverAskCreateRejected: a create op proposing more than the
+// reserve currently holds is failed outright — no proposal row is written — so a
+// payout can never gather a quorum only to disburse less than approved and close.
+func TestReservePayout_OverAskCreateRejected(t *testing.T) {
+	f, gov := wireRestoreFixture(t)
+	f.fireSlash(t, "fund-1", 100, 0) // reserve holds 100_000
+
+	overAmount := int64(150_000) // more than available
+	overPayload := fmt.Sprintf(`{"recipient":"victim","amount":%d,"reason":"too-big"}`, overAmount)
+	overID := governance.ReservePayoutProposalID("victim", overAmount, "too-big", "create-over")
+
+	f.se.HandleReservePayoutCreateForTest([]byte(overPayload), "alice", "create-over", 110)
+	_, ok, _ := gov.GetProposal(overID)
+	require.False(t, ok, "over-ask create must not create a proposal")
+	require.EqualValues(t, 0, recipientCredit(f.db, "hive:victim"))
+
+	// An exact-available create (100_000) is accepted.
+	okPayload := fmt.Sprintf(`{"recipient":"victim","amount":%d,"reason":"ok"}`, 100_000)
+	okID := governance.ReservePayoutProposalID("victim", 100_000, "ok", "create-ok")
+	f.se.HandleReservePayoutCreateForTest([]byte(okPayload), "alice", "create-ok", 111)
+	_, ok2, _ := gov.GetProposal(okID)
+	require.True(t, ok2, "exact-available create must succeed")
 }
 
 // TestReservePayout_NonWitnessCreateIgnored: only electorate members may propose.

@@ -306,13 +306,32 @@ func (se *StateEngine) slashPendingMaturity(slashTxID, evidenceKind, normalizedA
 	if recs == nil {
 		return 0
 	}
+	// One pending-burn row exists per (slashTxID, evidenceKind, account), so in
+	// practice a single row matches the prefix. Guard the rare case anyway:
+	// pick the lexicographically-smallest matching Id so the maturity is
+	// resolved deterministically across nodes regardless of the DB's (unsorted)
+	// return order — mirroring resolveSlashConsensusRowByTx above. A divergent
+	// maturity would shift the slash_restore window and could fork.
 	prefix := slashTxID + "#safety_slash#" + evidenceKind + "#"
+	var bestID string
+	var bestMaturity uint64
+	found := false
 	for _, r := range *recs {
-		if strings.HasPrefix(r.Id, prefix) {
-			if m, err := strconv.ParseUint(strings.TrimSpace(r.From), 10, 64); err == nil {
-				return m
-			}
+		if !strings.HasPrefix(r.Id, prefix) {
+			continue
+		}
+		m, err := strconv.ParseUint(strings.TrimSpace(r.From), 10, 64)
+		if err != nil {
+			continue
+		}
+		if !found || r.Id < bestID {
+			bestID = r.Id
+			bestMaturity = m
+			found = true
 		}
 	}
-	return 0
+	if !found {
+		return 0
+	}
+	return bestMaturity
 }

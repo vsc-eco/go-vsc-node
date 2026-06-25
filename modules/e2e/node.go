@@ -322,6 +322,7 @@ func MakeNode(input MakeNodeInput) *Node {
 			TssKeys:        tssKeys,
 			TssCommitments: tssCommitments,
 			TssRequests:    tssRequests,
+			Governance:     governanceDb,
 			InterestClaims: interestClaims,
 		}}), gqlConfig)
 		plugins = append(plugins, gqlManager)

@@ -122,6 +122,8 @@ func (m *mockLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) led
 	return ledgerSystem.LedgerResult{Ok: false}
 }
 
+func (m *mockLedgerSystem) ReserveAvailable() int64 { return 0 }
+
 // ── CalculateFrozenBal tests ──
 
 func TestCalculateFrozenBal_NoDecay(t *testing.T) {

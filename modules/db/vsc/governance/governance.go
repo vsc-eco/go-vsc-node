@@ -65,6 +65,11 @@ type Governance interface {
 	RecordVote(v ProposalVote) error
 	// GetVotes returns every vote row for a proposal (excludes the proposal row).
 	GetVotes(proposalId string) ([]ProposalVote, error)
+	// ListProposals returns proposal rows (voter="") matching the optional
+	// proposalId/type/status filters, newest creation_block first, paginated by
+	// offset/limit. Read-only — backs the GraphQL governance query, never the
+	// consensus path.
+	ListProposals(byProposalId, byType, byStatus *string, offset, limit int) ([]Proposal, error)
 }
 
 type governance struct {
@@ -152,6 +157,44 @@ func (g *governance) GetVotes(proposalId string) ([]ProposalVote, error) {
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (g *governance) ListProposals(byProposalId, byType, byStatus *string, offset, limit int) ([]Proposal, error) {
+	filter := bson.M{"voter": ""} // proposal rows only
+	if byProposalId != nil && *byProposalId != "" {
+		filter["proposal_id"] = *byProposalId
+	}
+	if byType != nil && *byType != "" {
+		filter["type"] = *byType
+	}
+	if byStatus != nil && *byStatus != "" {
+		filter["status"] = *byStatus
+	}
+	// Newest creation first, proposal_id as a stable tiebreak for paging.
+	opts := options.Find().SetSort(bson.D{
+		{Key: "creation_block", Value: -1},
+		{Key: "proposal_id", Value: 1},
+	})
+	if offset > 0 {
+		opts.SetSkip(int64(offset))
+	}
+	if limit > 0 {
+		opts.SetLimit(int64(limit))
+	}
+	cursor, err := g.Find(context.Background(), filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(context.Background())
+	out := make([]Proposal, 0)
+	for cursor.Next(context.Background()) {
+		var p Proposal
+		if err := cursor.Decode(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }

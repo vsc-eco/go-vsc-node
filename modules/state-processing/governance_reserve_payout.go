@@ -54,6 +54,23 @@ func (se *StateEngine) handleReservePayoutCreate(payload []byte, creatorAccount,
 		return
 	}
 
+	// Over-ask gate: fail the op outright if it proposes spending more than the
+	// reserve currently holds. This keeps the reserve all-or-nothing — a proposal
+	// never disburses less than it asked and then closes (the partial-pay wart) —
+	// and avoids gathering a quorum for a payout that could only ever be capped.
+	// Deterministic: ReserveAvailable is an on-chain ledger scan evaluated at this
+	// (L1-ordered) creation block, so every node makes the same create/skip
+	// decision. The apply path (ReservePayout) re-checks all-or-nothing in case
+	// the reserve drains between creation and approval.
+	if se.LedgerSystem == nil {
+		return
+	}
+	if available := se.LedgerSystem.ReserveAvailable(); req.Amount > available {
+		log.Warn("vsc.reserve_payout: amount exceeds reserve available; ignoring",
+			"tx", txID, "amount", req.Amount, "available", available)
+		return
+	}
+
 	proposalID := governance.ReservePayoutProposalID(recipient, req.Amount, req.Reason, txID)
 
 	// Create the proposal if it doesn't already exist (replay of the same create

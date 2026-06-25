@@ -6,6 +6,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
+	governance_db "vsc-node/modules/db/vsc/governance"
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
@@ -44,6 +45,7 @@ type Resolver struct {
 	TssKeys        tss_db.TssKeys
 	TssCommitments tss_db.TssCommitments
 	TssRequests    tss_db.TssRequests
+	Governance     governance_db.Governance
 	ChainOracle    *chain.ChainOracle
 }
 
