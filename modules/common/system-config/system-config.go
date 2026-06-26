@@ -204,6 +204,7 @@ func MainnetConfig() SystemConfig {
 			TssIndexHeight:                 params.TSS_INDEX_HEIGHT,
 			ElectionInterval:               params.ELECTION_INTERVAL,
 			ElectionDupeFixEpoch:           1406,
+			MinMembersGuardEpoch:           9999999, // GV4-3 guard DORMANT until pinned to a coordinated epoch (replay-safe: mainnet has valid pre-raise 7-member history)
 			ConsensusVersionFloorEpoch:     1713,
 			ConsensusVersionFloorMajor:     0,
 			ConsensusVersionFloorConsensus: 3,
@@ -277,6 +278,7 @@ func TestnetConfig() SystemConfig {
 			TssIndexHeight:                 1409500,
 			ElectionInterval:               3600,
 			ElectionDupeFixEpoch:           268,
+			MinMembersGuardEpoch:           765, // GV4-3 guard activates at the testnet 0.3.0 version-floor epoch (current epoch ~555); co-activates with ConsensusVersionFloorEpoch below so all enforcing nodes are 0.3.0
 			ConsensusVersionFloorEpoch:     765,
 			ConsensusVersionFloorMajor:     0,
 			ConsensusVersionFloorConsensus: 3,
@@ -369,6 +371,7 @@ func DevnetConfig() SystemConfig {
 			TssIndexHeight:                0,
 			ElectionInterval:              40,
 			ElectionDupeFixEpoch:          0,
+			MinMembersGuardEpoch:          0, // GV4-3 guard active from genesis on devnet (devnet-proven by TestGV43SubMinElectionGuarded)
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
 			// Ephemeral network (fresh per run): pin the consensus-version floor to
@@ -433,6 +436,7 @@ func MocknetConfig() SystemConfig {
 			TssIndexHeight:                0,
 			ElectionInterval:              1000,
 			ElectionDupeFixEpoch:          0,
+			MinMembersGuardEpoch:          0, // GV4-3 guard active from genesis on mocknet
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
 			// Mocknet leaves the consensus-version floor UNPINNED (no 0.2.0 floor).

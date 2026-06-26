@@ -811,6 +811,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							// double-sign that already fired in this same incident
 							// so we don't stack two independent 10% slashes against
 							// CorrelatedSlashCapBps without acknowledging it.
+							// Reason logged symmetrically with the Skip/Stale cases
+							// above so the deterministic rejection is observable
+							// (e.g. "malformed BLS signature") instead of silent.
+							log.Warn("invalid block proposal rejected",
+								"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID,
+								"slot_height", slotInfo.StartHeight, "reason", outcome.Reason)
 							_ = doubleSign
 							slashRes := se.slashForEvidenceIfPolicyAllows(
 								cj.RequiredAuths[0],

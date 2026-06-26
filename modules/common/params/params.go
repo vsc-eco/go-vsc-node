@@ -169,6 +169,13 @@ type ConsensusParams struct {
 	TssIndexHeight       uint64 `json:"tssIndexHeight,omitempty"`
 	ElectionInterval     uint64 `json:"electionInterval,omitempty"`
 	ElectionDupeFixEpoch uint64 `json:"electionDupeFixEpoch,omitempty"`
+	// MinMembersGuardEpoch gates the GV4-3 fix: from this epoch onward the state
+	// engine rejects an election whose new committee has < MinMembers members
+	// before persisting it (see TxElectionResult.ExecuteTx). Epoch-gated like
+	// ElectionDupeFixEpoch so guarded and unguarded nodes agree on the
+	// accept/reject decision at a coordinated activation. A sub-MinMembers
+	// election is never valid, so 0 (active from genesis) is always safe.
+	MinMembersGuardEpoch uint64 `json:"minMembersGuardEpoch,omitempty"`
 
 	// PendulumSeedEpoch bootstraps the pendulum settlement chain on a network
 	// that pre-dates inlined settlement. On startup, if the pendulum_settlements
@@ -466,6 +473,14 @@ func (cp ConsensusParams) TssIndexed(blockHeight uint64) bool {
 // fix is in force. Below this epoch the legacy behavior (no dedup) applies.
 func (cp ConsensusParams) ElectionDupeFixActive(epoch uint64) bool {
 	return epoch >= cp.ElectionDupeFixEpoch
+}
+
+// MinMembersGuardActive returns true at epoch when the GV4-3 sub-MinMembers
+// election-reject guard is enforced (see TxElectionResult.ExecuteTx). Gating
+// mirrors ElectionDupeFixActive so the accept/reject decision flips
+// network-wide at a coordinated epoch.
+func (cp ConsensusParams) MinMembersGuardActive(epoch uint64) bool {
+	return epoch >= cp.MinMembersGuardEpoch
 }
 
 // PendulumSeedConfigured returns true when this network has a pendulum

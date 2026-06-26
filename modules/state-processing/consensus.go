@@ -65,6 +65,15 @@ type WitnessSlot struct {
 
 func GenerateSchedule(blockHeight uint64, witnessList []Witness, seed [32]byte) []WitnessSlot {
 
+	// GV4-3 backstop: never modulo by an empty witness set. A valid election
+	// always has >= MinMembers members (now enforced at election acceptance in
+	// TxElectionResult.ExecuteTx), so an empty list here would mean a degenerate
+	// election slipped through; return an empty schedule (no producer this round)
+	// rather than panic-crashing the node on witnessList[slot % 0].
+	if len(witnessList) == 0 {
+		return []WitnessSlot{}
+	}
+
 	roundInfo := vscBlocks.CalculateRoundInfo(blockHeight)
 
 	slots := (roundInfo.EndHeight - roundInfo.StartHeight) / CONSENSUS_SPECS.SlotLength

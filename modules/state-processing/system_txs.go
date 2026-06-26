@@ -704,6 +704,31 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
+			// GV4-3 fix (defense-in-depth, mirrors the proposer's MinMembers abort
+			// in election-proposer.go HoldElection). The signer-quorum check above
+			// proves the PREVIOUS committee approved this result, but nothing has
+			// validated the NEW committee's size. A sub-MinMembers (e.g. empty)
+			// Members list would be persisted here and then drive
+			// consensus.GenerateSchedule into witnessList[slot % 0] — an integer
+			// divide-by-zero that panic-crashes every validating node (full chain
+			// halt). Reject before StoreElection so the prior committee stays in
+			// charge and the chain keeps producing; the next proposer retries.
+			// A sub-MinMembers election is never valid, so this can never reject a
+			// legitimate election. Epoch-gated (MinMembersGuardActive) like
+			// ElectionDupeFixActive so the accept/reject decision flips
+			// network-wide at a coordinated epoch and replay of pre-activation
+			// history is unaffected (active from genesis on devnet/mocknet,
+			// dormant on mainnet/testnet until pinned).
+			if se.sconf.ConsensusParams().MinMembersGuardActive(tx.Epoch) &&
+				len(elecResult.Members) < se.sconf.ConsensusParams().MinMembers {
+				log.Warn("election rejected: sub-MinMembers committee",
+					"epoch", tx.Epoch,
+					"members", len(elecResult.Members),
+					"min_members", se.sconf.ConsensusParams().MinMembers,
+					"proposer", elecResult.Proposer)
+				return
+			}
+
 			// Apply inlined pendulum settlement BEFORE StoreElection so
 			// validatePendulumSettlement's GetElectionByHeight(SnapshotRangeTo)
 			// resolves to the CLOSING committee, not the incoming one. Two
