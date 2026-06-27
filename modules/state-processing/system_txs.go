@@ -779,6 +779,13 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 				"new_weight", sumWeights(elecResult.Weights, len(elecResult.Members)),
 				"participation", fmt.Sprintf("%d/%d", realWeight, totalWeight),
 			)
+
+			// Garbage-collect consensus-version proposals against the now-canonical
+			// floor: drop adopted/sub-floor, hard-expired, and no-traction candidates,
+			// and clear an adopted recovery override (deterministic — pure function of
+			// this ratified election + the proposal set). Replaces the never-called
+			// ClearScheduledActivation.
+			se.PruneVersionProposalsAfterElection(elecResult)
 		} else {
 			log.Debug("election failed verification", "epoch", tx.Epoch, "verified", verified, "realWeight", realWeight, "minWeight", minimums)
 		}

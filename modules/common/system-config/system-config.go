@@ -371,6 +371,10 @@ func DevnetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
+			// Short version-proposal windows so devnet integration tests exercise
+			// adoption + expiry without waiting weeks of (fast) epochs.
+			VersionProposalExpiryEpochs:   6,
+			VersionProposalFastFailEpochs: 3,
 			// Ephemeral network (fresh per run): pin the consensus-version floor to
 			// 0.3.0 from epoch 1 so the whole v0.2.0 AND v0.3.0 batches are active
 			// from genesis and exercised by devnet/regression tests (the governance

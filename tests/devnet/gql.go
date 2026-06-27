@@ -177,6 +177,31 @@ func (d *Devnet) LocalNodeInfo(ctx context.Context, node int) (lastBlock, epoch 
 	return out.LocalNodeInfo.LastProcessedBlock, out.LocalNodeInfo.Epoch, nil
 }
 
+// ConsensusInfo returns a node's active consensus line, its own running version,
+// and the set of pending consensus-version candidate proposals (targets).
+func (d *Devnet) ConsensusInfo(ctx context.Context, node int) (activeLine, runningVersion string, proposalTargets []string, err error) {
+	const q = `query{localNodeInfo{active_consensus_line running_version consensus_version_proposals{target}}}`
+	var out struct {
+		LocalNodeInfo *struct {
+			ActiveConsensusLine       string `json:"active_consensus_line"`
+			RunningVersion            string `json:"running_version"`
+			ConsensusVersionProposals []struct {
+				Target string `json:"target"`
+			} `json:"consensus_version_proposals"`
+		} `json:"localNodeInfo"`
+	}
+	if err = d.gqlQuery(ctx, node, q, nil, &out); err != nil {
+		return "", "", nil, err
+	}
+	if out.LocalNodeInfo == nil {
+		return "", "", nil, fmt.Errorf("magi-%d returned nil localNodeInfo", node)
+	}
+	for _, p := range out.LocalNodeInfo.ConsensusVersionProposals {
+		proposalTargets = append(proposalTargets, p.Target)
+	}
+	return out.LocalNodeInfo.ActiveConsensusLine, out.LocalNodeInfo.RunningVersion, proposalTargets, nil
+}
+
 // TssRequestRecord is a TSS signing request as seen via GQL.
 type TssRequestRecord struct {
 	KeyId  string `json:"key_id"`
