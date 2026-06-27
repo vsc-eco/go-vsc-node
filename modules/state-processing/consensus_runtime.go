@@ -80,9 +80,32 @@ func lineFromVersion(v consensusversion.Version) ConsensusLine {
 	return ConsensusLine{Major: v.Major, Consensus: v.Consensus}
 }
 
-// ConsensusActivation reports the pending scheduled version switch (for API visibility).
-func (se *StateEngine) ConsensusActivation() *consensus_state.ScheduledActivation {
-	return se.scheduledActivation()
+// ConsensusActivation reports the headline pending switch for API visibility: the
+// recovery override if one is set, else the highest-target normal proposal (nil if
+// none). Use ConsensusVersionProposals for the full candidate set.
+func (se *StateEngine) ConsensusActivation() *consensus_state.VersionProposal {
+	if f := se.forcedActivation(); f != nil {
+		return f
+	}
+	props := se.versionProposals()
+	var best *consensus_state.VersionProposal
+	for i := range props {
+		if best == nil || props[i].Target().Cmp(best.Target()) > 0 {
+			p := props[i]
+			best = &p
+		}
+	}
+	return best
+}
+
+// ConsensusVersionProposals returns a copy of the full pending candidate set
+// (with the recovery override appended, if any) for API visibility.
+func (se *StateEngine) ConsensusVersionProposals() []consensus_state.VersionProposal {
+	props := se.versionProposals()
+	if f := se.forcedActivation(); f != nil {
+		props = append(props, *f)
+	}
+	return props
 }
 
 // ActiveConsensusLine returns the coordinated major.consensus line for a block height,

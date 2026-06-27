@@ -418,6 +418,98 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 // rebuild the whole network) only in lockstep.
 const banSystemEnabled = false
 
+// resolveVersionFloor computes the consensus-version floor advance for an election.
+// A recovery override (forced) takes precedence and bypasses the stake-readiness
+// guard; otherwise the floor rises to the HIGHEST candidate target the committee is
+// stake-ready for (readiness is monotonic non-increasing in target) that also keeps
+// the outgoing TSS committee above reshare quorum (H-3/C-2). A junk high target
+// simply never clears readiness, so it cannot block a legitimate lower candidate.
+// Returns the (possibly unchanged) floor. Pure function of its inputs ⇒ every signer
+// reaches the identical result → identical committee CID (Constraint 3).
+//
+// proposals/forced are expected pre-filtered to those recorded before this block
+// (height-addressable). num/den is the stake-readiness fraction (default 4/5).
+func resolveVersionFloor(
+	floor consensusversion.Version,
+	newEpoch uint64,
+	blockHeight uint64,
+	forced *consensus_state.VersionProposal,
+	proposals []consensus_state.VersionProposal,
+	witnessList []witnesses.Witness,
+	weightMap map[string]uint64,
+	previousElection *elections.ElectionResult,
+	num, den int64,
+) consensusversion.Version {
+	// stakeReady: >= num/den of committee STAKE announces a version meeting target.
+	stakeReady := func(target consensusversion.Version) bool {
+		var totalWeight, readyWeight uint64
+		for _, w := range witnessList {
+			wt := weightMap[w.Account]
+			totalWeight += wt
+			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
+				readyWeight += wt
+			}
+		}
+		return totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num
+	}
+
+	// H-3/C-2 (TSS vault-freeze prevention): the stake guard only proves the NEW
+	// committee is ready. The OUTGOING committee holds the outstanding TSS key shares,
+	// and both signing AND resharing are gated by this same floor (tss.go:1104/1310) —
+	// advancing past the outgoing committee's readiness can filter its share-holders
+	// below threshold, freezing the vault. Additionally require the previous committee
+	// to retain threshold+1 (= ceil(2N/3) = (2N+2)/3, the GetThreshold+1 quorum)
+	// members meeting target. A prev member no longer a candidate, or not on target,
+	// counts not-ready — which can only BLOCK the advance. Skipped at genesis.
+	prevReadyAt := func(target consensusversion.Version) bool {
+		if previousElection == nil || len(previousElection.Members) == 0 {
+			return true
+		}
+		candidateVer := make(map[string]consensusversion.Version, len(witnessList))
+		for _, w := range witnessList {
+			candidateVer[w.Account] = w.ConsensusVersionTriple()
+		}
+		prevReady := 0
+		for _, m := range previousElection.Members {
+			acct := strings.TrimPrefix(m.Account, "hive:")
+			if v, ok := candidateVer[acct]; ok && v.MeetsConsensusMin(target) {
+				prevReady++
+			}
+		}
+		prevQuorum := (2*len(previousElection.Members) + 2) / 3
+		if prevReady < prevQuorum {
+			log.Warn("H-3/C-2: deferring version-floor advance — outgoing committee below TSS-reshare quorum at target",
+				"block_height", blockHeight, "prev_ready", prevReady, "prev_quorum", prevQuorum, "target", target.Format())
+			return false
+		}
+		return true
+	}
+
+	// Recovery override first: applies past its activation epoch, bypasses both guards.
+	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target().Cmp(floor) > 0 {
+		return forced.Target()
+	}
+
+	// Highest live candidate meeting BOTH guards.
+	best := floor
+	for _, p := range proposals {
+		target := p.Target()
+		if newEpoch < p.ActivationEpoch || target.Cmp(floor) <= 0 {
+			continue
+		}
+		if p.ExpiryEpoch != 0 && newEpoch >= p.ExpiryEpoch {
+			continue // expired
+		}
+		if target.Cmp(best) <= 0 {
+			continue // can't improve on the best so far
+		}
+		if stakeReady(target) && prevReadyAt(target) {
+			best = target
+		}
+	}
+	return best
+}
+
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
@@ -746,76 +838,21 @@ func (e *electionProposer) GenerateFullElection(
 		})
 	}
 
-	// Epoch-scheduled version switch with stake-readiness guard. Resolved here (at the
-	// ratified election checkpoint) rather than via a live singleton, so every signer
-	// regenerating this election at the same height computes the identical floor → CID.
-	// The schedule is read height-addressably (ScheduledActivationForHeight) for purity.
-	var schedule *consensus_state.ScheduledActivation
+	// Consensus-version floor advance, from the bounded candidate set + recovery
+	// override, both read height-addressably (VersionProposalsForHeight /
+	// ForcedActivationForHeight) so every signer regenerating this election computes
+	// the identical floor → CID. resolveVersionFloor is a pure function (unit-tested
+	// in version_floor_test.go) so the consensus-critical decision is reproducible.
 	if e.se != nil {
-		schedule = e.se.ScheduledActivationForHeight(blockHeight)
-	}
-	if schedule != nil &&
-		newEpoch >= schedule.ActivationEpoch && schedule.Target().Cmp(floor) > 0 {
-		target := schedule.Target()
-		var totalWeight, readyWeight uint64
-		for _, w := range witnessList {
-			wt := weightMap[w.Account]
-			totalWeight += wt
-			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
-				readyWeight += wt
-			}
-		}
-		num, den := int64(
-			e.sconf.ConsensusParams().ConsensusVersionActivationNum,
-		), int64(
-			e.sconf.ConsensusParams().ConsensusVersionActivationDen,
-		)
+		num, den := int64(e.sconf.ConsensusParams().ConsensusVersionActivationNum),
+			int64(e.sconf.ConsensusParams().ConsensusVersionActivationDen)
 		if num <= 0 || den <= 0 {
 			num, den = 4, 5 // default 80%
 		}
-
-		// H-3/C-2 (TSS vault-freeze prevention): the 80% guard above only proves
-		// the NEW committee is ready for the target. But the OUTGOING committee
-		// holds the outstanding TSS key shares, and BOTH signing AND resharing
-		// those keys are gated by this same version floor (tss.go:1104/1310) — so
-		// advancing the floor past the outgoing committee's readiness can filter
-		// its share-holders below threshold, freezing the BTC/ETH/DASH vault
-		// (can't sign, can't reshare to hand off). Additionally require the
-		// previous committee to retain threshold+1 (= ceil(2N/3), the
-		// GetThreshold+1 quorum) members that meet the target. Conservative +
-		// deterministic: a previous member who is no longer a current candidate,
-		// or isn't on the target version, counts as not-ready — which can only
-		// BLOCK the advance (the floor simply waits another epoch; a delayed
-		// version upgrade is never a custody freeze). Skipped at genesis (no
-		// previous committee) and when Forced (recovery override accepts the
-		// risk explicitly). Pure function of previousElection (on-chain) + the
-		// deterministic candidate set + compile-time target ⇒ identical on every
-		// signer (Constraint 3).
-		prevCommitteeReady := true
-		if !schedule.Forced && previousElection != nil && len(previousElection.Members) > 0 {
-			candidateVer := make(map[string]consensusversion.Version, len(witnessList))
-			for _, w := range witnessList {
-				candidateVer[w.Account] = w.ConsensusVersionTriple()
-			}
-			prevReady := 0
-			for _, m := range previousElection.Members {
-				acct := strings.TrimPrefix(m.Account, "hive:")
-				if v, ok := candidateVer[acct]; ok && v.MeetsConsensusMin(target) {
-					prevReady++
-				}
-			}
-			// threshold+1 = ceil(2N/3) = (2N+2)/3 (matches tss_helpers.GetThreshold(N)+1).
-			prevQuorum := (2*len(previousElection.Members) + 2) / 3
-			if prevReady < prevQuorum {
-				prevCommitteeReady = false
-				log.Warn("H-3/C-2: deferring version-floor advance — outgoing committee below TSS-reshare quorum at target",
-					"block_height", blockHeight, "prev_ready", prevReady, "prev_quorum", prevQuorum, "target", target.Format())
-			}
-		}
-
-		// Integer-only comparison: readyWeight/totalWeight >= num/den.
-		if schedule.Forced || (prevCommitteeReady && totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num) {
-			floor = target
+		if nf := resolveVersionFloor(floor, newEpoch, blockHeight,
+			e.se.ForcedActivationForHeight(blockHeight), e.se.VersionProposalsForHeight(blockHeight),
+			witnessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
+			floor = nf
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
 			})
