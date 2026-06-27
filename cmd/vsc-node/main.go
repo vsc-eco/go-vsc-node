@@ -15,6 +15,7 @@ import (
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -79,12 +80,29 @@ func main() {
 
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl, dbConf)
-	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
+	// Reindex gate: the usual REINDEX_ID/force path PLUS a consensus-version-lag
+	// trigger — if the binary that last processed up to the head was BELOW the
+	// chain-active version there (a version-adoption laggard that diverged locally),
+	// and this binary can handle it, replay history from genesis under the correct
+	// rules. ChainActiveAt reads the on-chain election active at the head.
+	runningVer := consensusversion.RunningVersion()
+	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex, &db.VersionReindex{
+		RunningMajor:     runningVer.Major,
+		RunningConsensus: runningVer.Consensus,
+		ChainActiveAt: func(blockHeight uint64) (uint64, uint64, bool) {
+			elec, err := electionDb.GetElectionByHeight(blockHeight)
+			if err != nil {
+				return 0, 0, false
+			}
+			v := elections.ResultVersion(elec)
+			return v.Major, v.Consensus, true
+		},
+	})
 	contractDb := contracts.New(vscDb)
 	txDb := transactions.New(vscDb)
 	ledgerDbImpl := ledgerDb.New(vscDb)

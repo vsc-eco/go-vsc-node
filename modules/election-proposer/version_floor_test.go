@@ -36,7 +36,7 @@ func wlist(n, ready int, target, floorV consensusversion.Version) ([]witnesses.W
 
 func prop(major, consensus, activationEpoch, expiryEpoch uint64, proposer string) consensus_state.VersionProposal {
 	return consensus_state.VersionProposal{
-		TargetMajor: major, TargetConsensus: consensus,
+		Target:          v(major, consensus),
 		ActivationEpoch: activationEpoch, ExpiryEpoch: expiryEpoch, Proposer: proposer,
 	}
 }
@@ -72,7 +72,7 @@ func TestResolveVersionFloor_StaysBelowThreshold(t *testing.T) {
 func TestResolveVersionFloor_ForcedBypassesReadiness(t *testing.T) {
 	floor := v(0, 0)
 	ws, wm := wlist(5, 0, v(0, 5), floor) // nobody announces anything above floor
-	forced := &consensus_state.VersionProposal{TargetMajor: 0, TargetConsensus: 5, ActivationEpoch: 1, Forced: true}
+	forced := &consensus_state.VersionProposal{Target: v(0, 5), ActivationEpoch: 1, Forced: true}
 	got := resolveVersionFloor(floor, 2, 100, forced, nil, ws, wm, nil, num, den)
 	if got.Cmp(v(0, 5)) != 0 {
 		t.Fatalf("floor = %s, want 0.5 (forced bypasses readiness)", got.Format())
