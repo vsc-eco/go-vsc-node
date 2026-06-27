@@ -19,6 +19,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -551,15 +552,28 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		return nil, electionErr
 	}
 	info := &LocalNodeInfo{
-		GitCommit:               announcements.GitCommit,
-		VersionID:               announcements.VersionId,
-		LastProcessedBlock:      model.Uint64(head),
-		Epoch:                   model.Uint64(election.Epoch),
-		ConsensusVersionDisplay: r.StateEngine.DisplayConsensusVersion(),
-		ProcessingSuspended:     r.StateEngine.ProcessingSuspendedForPool(),
-		ActiveConsensusLine:     r.StateEngine.ActiveConsensusLine(head).Key(),
-		ActiveConsensusExecutor: r.StateEngine.ActiveConsensusExecutor(head).Name(),
-		ChainOracles:            []ChainOracleStatus{},
+		GitCommit:                 announcements.GitCommit,
+		VersionID:                 announcements.VersionId,
+		RunningVersion:            consensusversion.RunningVersion().Format(),
+		LastProcessedBlock:        model.Uint64(head),
+		Epoch:                     model.Uint64(election.Epoch),
+		ConsensusVersionDisplay:   r.StateEngine.DisplayConsensusVersion(),
+		ProcessingSuspended:       r.StateEngine.ProcessingSuspendedForPool(),
+		ActiveConsensusLine:       r.StateEngine.ActiveConsensusLine(head).Key(),
+		ActiveConsensusExecutor:   r.StateEngine.ActiveConsensusExecutor(head).Name(),
+		ConsensusVersionProposals: []ConsensusVersionProposal{},
+		ChainOracles:              []ChainOracleStatus{},
+	}
+	for _, p := range r.StateEngine.ConsensusVersionProposals() {
+		info.ConsensusVersionProposals = append(info.ConsensusVersionProposals, ConsensusVersionProposal{
+			Target:          p.Target().Format(),
+			ActivationEpoch: model.Uint64(p.ActivationEpoch),
+			CreationEpoch:   model.Uint64(p.CreationEpoch),
+			ExpiryEpoch:     model.Uint64(p.ExpiryEpoch),
+			Forced:          p.Forced,
+			Proposer:        p.Proposer,
+			Txid:            p.TxId,
+		})
 	}
 	if act := r.StateEngine.ConsensusActivation(); act != nil {
 		mode := "normal"

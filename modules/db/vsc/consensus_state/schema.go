@@ -4,29 +4,43 @@ import "vsc-node/modules/common/consensusversion"
 
 const singletonID = "singleton"
 
-// ChainConsensusState is persisted chain-global recovery state plus the pending
-// epoch-scheduled version switch. The *active* consensus version is NOT stored here —
-// it is a pure function of the on-chain election (elections.ResultVersion). This record
-// only holds (a) the recovery halt flag and (b) the scheduled switch awaiting its
-// activation epoch + stake-readiness guard, both consumed deterministically at election build.
+// ChainConsensusState is persisted chain-global recovery state plus the bounded set
+// of pending consensus-version proposals. The *active* consensus version is NOT stored
+// here — it is a pure function of the on-chain election (elections.ResultVersion). This
+// record only holds (a) the recovery halt flag, (b) the recovery-multisig forced override,
+// and (c) the normal candidate proposals awaiting their activation epoch + stake-readiness
+// guard, all consumed deterministically at election build.
 type ChainConsensusState struct {
 	ID string `bson:"_id"`
 
 	// ProcessingSuspended blocks normal vsc custom_json processing until cleared by recovery_require_version.
 	ProcessingSuspended bool `bson:"processing_suspended"`
 
-	// ScheduledActivation is the pending epoch-scheduled version switch (set by
-	// vsc.propose_consensus_version, or Forced by recovery_require_version). It is
-	// resolved into the election at its activation epoch once the stake-readiness guard passes.
-	ScheduledActivation *ScheduledActivation `bson:"scheduled_activation,omitempty"`
+	// ForcedActivation is the recovery-multisig override (vsc.recovery_require_version):
+	// at most one, it bypasses the stake-readiness guard and takes precedence over every
+	// normal proposal. The bson key stays "scheduled_activation" for back-compat with any
+	// pre-existing on-disk doc.
+	ForcedActivation *VersionProposal `bson:"scheduled_activation,omitempty"`
+
+	// VersionProposals is the bounded set of normal candidate version switches (set by
+	// vsc.propose_consensus_version), one slot per proposer. The election proposer adopts
+	// the highest target the committee is stake-ready for; the election_result handler
+	// garbage-collects adopted / expired / no-traction entries.
+	VersionProposals []VersionProposal `bson:"version_proposals,omitempty"`
 }
 
-// ScheduledActivation captures a target major.consensus to switch to at ActivationEpoch.
-type ScheduledActivation struct {
+// VersionProposal is a single candidate consensus-version switch. Provenance fields
+// (Proposer/TxId/BlockHeight) make reads height-addressable (honored only when
+// BlockHeight < query height) so every signer resolves the identical floor → CID.
+type VersionProposal struct {
 	TargetMajor     uint64 `bson:"target_major"`
 	TargetConsensus uint64 `bson:"target_consensus"`
 	// ActivationEpoch is the election epoch at/after which the switch may activate.
 	ActivationEpoch uint64 `bson:"activation_epoch"`
+	// CreationEpoch is the epoch of the proposing block — anchors the fast-fail window.
+	CreationEpoch uint64 `bson:"creation_epoch,omitempty"`
+	// ExpiryEpoch is the hard deadline; the proposal is pruned once an election reaches it.
+	ExpiryEpoch uint64 `bson:"expiry_epoch,omitempty"`
 	// Forced skips the stake-readiness guard (recovery path only).
 	Forced bool `bson:"forced"`
 	// Proposer/TxId/BlockHeight record provenance; BlockHeight makes the read
@@ -37,7 +51,7 @@ type ScheduledActivation struct {
 }
 
 // Target returns the coordinated target (non_consensus is not coordinated).
-func (s ScheduledActivation) Target() consensusversion.Version {
+func (s VersionProposal) Target() consensusversion.Version {
 	return consensusversion.Version{
 		Major:     s.TargetMajor,
 		Consensus: s.TargetConsensus,

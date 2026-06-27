@@ -411,6 +411,10 @@ type LocalNodeInfo {
   """
   version_id: String!
   """
+  This node's own running consensus version (major.consensus.non_consensus) compiled into the binary. Compare against active_consensus_line to spot a node behind the chain.
+  """
+  running_version: String!
+  """
   Git commit hash of the running binary.
   """
   git_commit: String!
@@ -459,9 +463,48 @@ type LocalNodeInfo {
   """
   consensus_activation_attested_txid: String
   """
+  The full set of pending consensus-version candidate proposals (and the recovery override, if any). consensus_activation_* above is the headline entry; this is the complete set.
+  """
+  consensus_version_proposals: [ConsensusVersionProposal!]!
+  """
   Status of each registered chain oracle.
   """
   chain_oracles: [ChainOracleStatus!]!
+}
+
+"""
+A single pending consensus-version candidate proposal (vsc.propose_consensus_version),
+or the recovery-multisig forced override (forced=true).
+"""
+type ConsensusVersionProposal {
+  """
+  Target consensus version display (major.consensus).
+  """
+  target: String!
+  """
+  Election epoch at/after which the switch may activate.
+  """
+  activation_epoch: Uint64!
+  """
+  Epoch of the proposing block (anchors the no-traction fast-fail window).
+  """
+  creation_epoch: Uint64!
+  """
+  Hard-deadline epoch; the proposal is pruned once an election reaches it (0 = no deadline, e.g. forced).
+  """
+  expiry_epoch: Uint64!
+  """
+  True for the recovery-multisig forced override (bypasses the stake-readiness guard).
+  """
+  forced: Boolean!
+  """
+  Proposer account (the committee member that submitted it).
+  """
+  proposer: String!
+  """
+  Transaction id that submitted the proposal.
+  """
+  txid: String!
 }
 
 """

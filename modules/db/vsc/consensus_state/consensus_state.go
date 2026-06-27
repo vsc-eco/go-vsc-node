@@ -38,17 +38,22 @@ func (c *consensusState) Stop() error {
 	return nil
 }
 
-// ConsensusState is chain-global recovery flags plus the pending scheduled version switch.
+// ConsensusState is chain-global recovery flags plus the bounded set of pending
+// consensus-version proposals (and the recovery-multisig forced override).
 type ConsensusState interface {
 	a.Plugin
 	Get(ctx context.Context) (ChainConsensusState, error)
 	Upsert(ctx context.Context, state ChainConsensusState) error
-	SetScheduledActivation(ctx context.Context, s *ScheduledActivation) error
-	ClearScheduledActivation(ctx context.Context) error
+	// SetVersionProposals replaces the whole normal-proposal set. Callers read the
+	// cached set, upsert-by-proposer or prune in memory, then write the result back
+	// (the state engine processes blocks serially, so read-modify-write is safe).
+	SetVersionProposals(ctx context.Context, props []VersionProposal) error
+	// SetForcedActivation sets (or, with nil, clears) the recovery forced override.
+	SetForcedActivation(ctx context.Context, s *VersionProposal) error
 	SetProcessingSuspended(ctx context.Context, suspended bool) error
-	// SetForcedActivationAndClearSuspension is the recovery path: schedule a Forced
+	// SetForcedActivationAndClearSuspension is the recovery path: install a Forced
 	// switch and lift the processing halt in one update.
-	SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error
+	SetForcedActivationAndClearSuspension(ctx context.Context, s *VersionProposal) error
 }
 
 func (c *consensusState) Get(ctx context.Context) (ChainConsensusState, error) {
@@ -67,7 +72,8 @@ func defaultState() ChainConsensusState {
 	return ChainConsensusState{
 		ID:                  singletonID,
 		ProcessingSuspended: false,
-		ScheduledActivation: nil,
+		ForcedActivation:    nil,
+		VersionProposals:    nil,
 	}
 }
 
@@ -77,19 +83,24 @@ func (c *consensusState) Upsert(ctx context.Context, state ChainConsensusState) 
 	return err
 }
 
-func (c *consensusState) SetScheduledActivation(ctx context.Context, s *ScheduledActivation) error {
+func (c *consensusState) SetVersionProposals(ctx context.Context, props []VersionProposal) error {
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
-		bson.M{"$set": bson.M{"scheduled_activation": s}},
+		bson.M{"$set": bson.M{"version_proposals": props}},
 		options.Update().SetUpsert(true),
 	)
 	return err
 }
 
-func (c *consensusState) ClearScheduledActivation(ctx context.Context) error {
+// SetForcedActivation installs (s != nil) or clears (s == nil) the recovery override.
+func (c *consensusState) SetForcedActivation(ctx context.Context, s *VersionProposal) error {
+	update := bson.M{"$set": bson.M{"scheduled_activation": s}}
+	if s == nil {
+		update = bson.M{"$unset": bson.M{"scheduled_activation": ""}}
+	}
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
-		bson.M{"$unset": bson.M{"scheduled_activation": ""}},
+		update,
 		options.Update().SetUpsert(true),
 	)
 	return err
@@ -104,7 +115,7 @@ func (c *consensusState) SetProcessingSuspended(ctx context.Context, suspended b
 	return err
 }
 
-func (c *consensusState) SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error {
+func (c *consensusState) SetForcedActivationAndClearSuspension(ctx context.Context, s *VersionProposal) error {
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		bson.M{
