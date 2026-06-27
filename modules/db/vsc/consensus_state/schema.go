@@ -29,12 +29,15 @@ type ChainConsensusState struct {
 	VersionProposals []VersionProposal `bson:"version_proposals,omitempty"`
 }
 
-// VersionProposal is a single candidate consensus-version switch. Provenance fields
-// (Proposer/TxId/BlockHeight) make reads height-addressable (honored only when
-// BlockHeight < query height) so every signer resolves the identical floor → CID.
+// VersionProposal is a single candidate consensus-version switch. This is LOCAL,
+// non-hashed state (rebuilt from L1 ops on reindex), so it stores the version as a
+// single consensusversion.Version rather than the flat fields the consensus-serialized
+// structs keep for wire-format stability. Provenance fields (Proposer/TxId/BlockHeight)
+// make reads height-addressable (honored only when BlockHeight < query height) so every
+// signer resolves the identical floor → CID.
 type VersionProposal struct {
-	TargetMajor     uint64 `bson:"target_major"`
-	TargetConsensus uint64 `bson:"target_consensus"`
+	// Target is the coordinated version to switch to (non_consensus is not coordinated).
+	Target consensusversion.Version `bson:"target"`
 	// ActivationEpoch is the election epoch at/after which the switch may activate.
 	ActivationEpoch uint64 `bson:"activation_epoch"`
 	// CreationEpoch is the epoch of the proposing block — anchors the fast-fail window.
@@ -48,12 +51,4 @@ type VersionProposal struct {
 	Proposer    string `bson:"proposer"`
 	TxId        string `bson:"tx_id"`
 	BlockHeight uint64 `bson:"block_height"`
-}
-
-// Target returns the coordinated target (non_consensus is not coordinated).
-func (s VersionProposal) Target() consensusversion.Version {
-	return consensusversion.Version{
-		Major:     s.TargetMajor,
-		Consensus: s.TargetConsensus,
-	}
 }

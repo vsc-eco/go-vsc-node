@@ -90,7 +90,7 @@ func (se *StateEngine) ConsensusActivation() *consensus_state.VersionProposal {
 	props := se.versionProposals()
 	var best *consensus_state.VersionProposal
 	for i := range props {
-		if best == nil || props[i].Target().Cmp(best.Target()) > 0 {
+		if best == nil || props[i].Target.Cmp(best.Target) > 0 {
 			p := props[i]
 			best = &p
 		}

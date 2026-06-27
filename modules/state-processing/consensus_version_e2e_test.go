@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/consensus_state"
@@ -65,6 +66,11 @@ func proposeJSON(major, consensus, activationEpoch uint64) string {
 	return string(b)
 }
 
+// vp builds a coordinated target version (major.consensus).
+func vp(major, consensus uint64) consensusversion.Version {
+	return consensusversion.Version{Major: major, Consensus: consensus}
+}
+
 // propOf returns proposer's candidate proposal from the snapshot (or nil).
 func propOf(st consensus_state.ChainConsensusState, proposer string) *consensus_state.VersionProposal {
 	for i := range st.VersionProposals {
@@ -89,8 +95,8 @@ func TestE2E_ProposeSchedulesActivation(t *testing.T) {
 
 	s := propOf(mem.Snapshot(), "alice")
 	require.NotNil(t, s)
-	assert.Equal(t, uint64(1), s.TargetMajor)
-	assert.Equal(t, uint64(1), s.TargetConsensus)
+	assert.Equal(t, uint64(1), s.Target.Major)
+	assert.Equal(t, uint64(1), s.Target.Consensus)
 	assert.Equal(t, uint64(2), s.ActivationEpoch, "default activation epoch is currentEpoch+1")
 	assert.Equal(t, uint64(1), s.CreationEpoch)
 	assert.False(t, s.Forced)
@@ -156,10 +162,10 @@ func TestE2E_ProposeMultiCandidateNoPoison(t *testing.T) {
 	require.Len(t, st.VersionProposals, 2, "both candidates coexist (one slot per proposer)")
 	a := propOf(st, "alice")
 	require.NotNil(t, a)
-	assert.Equal(t, uint64(1), a.TargetConsensus, "alice's legitimate 1.1 survives the poison")
+	assert.Equal(t, uint64(1), a.Target.Consensus, "alice's legitimate 1.1 survives the poison")
 	b := propOf(st, "bob")
 	require.NotNil(t, b)
-	assert.Equal(t, uint64(99), b.TargetMajor)
+	assert.Equal(t, uint64(99), b.Target.Major)
 }
 
 // TestE2E_ProposeOnePerProposer: a second proposal from the same proposer replaces
@@ -180,7 +186,7 @@ func TestE2E_ProposeOnePerProposer(t *testing.T) {
 
 	st := mem.Snapshot()
 	require.Len(t, st.VersionProposals, 1, "alice keeps a single slot")
-	assert.Equal(t, uint64(5), st.VersionProposals[0].TargetConsensus, "re-propose replaced alice's own slot")
+	assert.Equal(t, uint64(5), st.VersionProposals[0].Target.Consensus, "re-propose replaced alice's own slot")
 }
 
 // TestE2E_ProposeSelfVersionGate: a proposer may only propose up to the version it
@@ -231,7 +237,7 @@ func TestE2E_ProposeCustomAndPastActivationEpoch(t *testing.T) {
 	te.processAndWait()
 	a = propOf(mem.Snapshot(), "alice")
 	require.NotNil(t, a)
-	assert.Equal(t, uint64(1), a.TargetMajor, "proposal with past activation epoch rejected; prior slot kept")
+	assert.Equal(t, uint64(1), a.Target.Major, "proposal with past activation epoch rejected; prior slot kept")
 	assert.Equal(t, uint64(5), a.ActivationEpoch)
 }
 
@@ -288,8 +294,8 @@ func TestE2E_RecoveryRequireVersionForcedScheduleAndClears(t *testing.T) {
 	assert.False(t, st.ProcessingSuspended)
 	require.NotNil(t, st.ForcedActivation)
 	assert.True(t, st.ForcedActivation.Forced, "recovery installs a forced activation")
-	assert.Equal(t, uint64(1), st.ForcedActivation.TargetMajor)
-	assert.Equal(t, uint64(2), st.ForcedActivation.TargetConsensus)
+	assert.Equal(t, uint64(1), st.ForcedActivation.Target.Major)
+	assert.Equal(t, uint64(2), st.ForcedActivation.Target.Consensus)
 	assert.Equal(t, uint64(2), st.ForcedActivation.ActivationEpoch, "recovery activates next epoch")
 }
 
@@ -360,7 +366,7 @@ func TestE2E_VersionProposalsForHeightFilter(t *testing.T) {
 	mem.ReplaceState(consensus_state.ChainConsensusState{
 		ID: "singleton",
 		VersionProposals: []consensus_state.VersionProposal{
-			{TargetMajor: 1, TargetConsensus: 1, ActivationEpoch: 3, BlockHeight: 10, Proposer: "alice"},
+			{Target: vp(1, 1), ActivationEpoch: 3, BlockHeight: 10, Proposer: "alice"},
 		},
 	})
 	te := newTestEnvWithConsensus(mem, nil)
@@ -380,14 +386,14 @@ func TestE2E_PruneVersionProposalsAfterElection(t *testing.T) {
 		ID: "singleton",
 		// Forced override at 1.2 — adopted once the floor reaches it.
 		ForcedActivation: &consensus_state.VersionProposal{
-			TargetMajor: 1, TargetConsensus: 2, Forced: true, Proposer: "alice",
+			Target: vp(1, 2), Forced: true, Proposer: "alice",
 		},
 		VersionProposals: []consensus_state.VersionProposal{
-			{TargetMajor: 1, TargetConsensus: 2, Proposer: "a", CreationEpoch: 1, ExpiryEpoch: 100},     // == floor → drop (adopted)
-			{TargetMajor: 1, TargetConsensus: 1, Proposer: "b", CreationEpoch: 1, ExpiryEpoch: 100},     // < floor → drop (sub-floor)
-			{TargetMajor: 1, TargetConsensus: 3, Proposer: "c", CreationEpoch: 1, ExpiryEpoch: 5},       // expired (5 <= epoch 10) → drop
-			{TargetMajor: 1, TargetConsensus: 4, Proposer: "alice", CreationEpoch: 1, ExpiryEpoch: 100}, // no traction past fast-fail → drop
-			{TargetMajor: 1, TargetConsensus: 5, Proposer: "d", CreationEpoch: 9, ExpiryEpoch: 100},     // fresh (within fast-fail) → keep
+			{Target: vp(1, 2), Proposer: "a", CreationEpoch: 1, ExpiryEpoch: 100},     // == floor → drop (adopted)
+			{Target: vp(1, 1), Proposer: "b", CreationEpoch: 1, ExpiryEpoch: 100},     // < floor → drop (sub-floor)
+			{Target: vp(1, 3), Proposer: "c", CreationEpoch: 1, ExpiryEpoch: 5},       // expired (5 <= epoch 10) → drop
+			{Target: vp(1, 4), Proposer: "alice", CreationEpoch: 1, ExpiryEpoch: 100}, // no traction past fast-fail → drop
+			{Target: vp(1, 5), Proposer: "d", CreationEpoch: 9, ExpiryEpoch: 100},     // fresh (within fast-fail) → keep
 		},
 	})
 	te := newTestEnvWithConsensus(mem, nil)
@@ -402,5 +408,5 @@ func TestE2E_PruneVersionProposalsAfterElection(t *testing.T) {
 	assert.Nil(t, st.ForcedActivation, "adopted forced override cleared")
 	require.Len(t, st.VersionProposals, 1, "only the fresh, still-viable candidate survives")
 	assert.Equal(t, "d", st.VersionProposals[0].Proposer)
-	assert.Equal(t, uint64(5), st.VersionProposals[0].TargetConsensus)
+	assert.Equal(t, uint64(5), st.VersionProposals[0].Target.Consensus)
 }
