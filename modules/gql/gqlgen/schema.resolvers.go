@@ -566,7 +566,7 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 	}
 	for _, p := range r.StateEngine.ConsensusVersionProposals() {
 		info.ConsensusVersionProposals = append(info.ConsensusVersionProposals, ConsensusVersionProposal{
-			Target:          p.Target().Format(),
+			Target:          p.Target.Format(),
 			ActivationEpoch: model.Uint64(p.ActivationEpoch),
 			CreationEpoch:   model.Uint64(p.CreationEpoch),
 			ExpiryEpoch:     model.Uint64(p.ExpiryEpoch),
@@ -586,7 +586,7 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		info.ConsensusActivationEpoch = &ep
 		ab := model.Uint64(act.BlockHeight)
 		info.ConsensusActivationAttestedBlock = &ab
-		av := act.Target().Format()
+		av := act.Target.Format()
 		info.ConsensusActivationVersion = &av
 		if act.TxId != "" {
 			info.ConsensusActivationAttestedTxid = &act.TxId

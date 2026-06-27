@@ -16,6 +16,13 @@ type Document struct {
 	LastStoredBlock    *uint64      `json:"last_stored_block,omitempty" bson:"last_stored_block,omitempty"`
 	HeadHeight         *uint64      `json:"head_height,omitempty" bson:"head_height,omitempty"`
 	ReindexId          *uint64      `json:"reindex_id,omitempty" bson:"reindex_id,omitempty"`
+	// ProcessedUnderMajor/Consensus record the coordinated consensus version of the
+	// binary that last processed up to LastProcessedBlock. On startup the reindex
+	// check compares it against the chain-active version at the head: if the previous
+	// run was BELOW the chain (a version-adoption laggard that diverged) and this
+	// binary is at/above it, a full reindex replays history under the correct rules.
+	ProcessedUnderMajor     *uint64 `json:"processed_under_major,omitempty" bson:"processed_under_major,omitempty"`
+	ProcessedUnderConsensus *uint64 `json:"processed_under_consensus,omitempty" bson:"processed_under_consensus,omitempty"`
 }
 
 // the simplified version of a hive block we store
