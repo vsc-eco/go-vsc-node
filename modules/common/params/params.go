@@ -335,11 +335,33 @@ type ConsensusParams struct {
 	// decision changes ledger state, so this is a fixed network-wide constant
 	// every node shares. 0 falls back to DefaultGovernanceProposalExpiryBlocks.
 	GovernanceProposalExpiryBlocks uint64 `json:"governanceProposalExpiryBlocks,omitempty"`
+
+	// VersionProposalExpiryEpochs is the hard deadline (in election epochs) for a
+	// vsc.propose_consensus_version candidate: a proposal that has not been adopted
+	// by creationEpoch+this is pruned at election build. Long enough to schedule a
+	// rollout in advance and let the fleet upgrade (~2 weeks at 6h/epoch), short
+	// enough that stale candidates don't linger. 0 falls back to
+	// DefaultVersionProposalExpiryEpochs.
+	VersionProposalExpiryEpochs uint64 `json:"versionProposalExpiryEpochs,omitempty"`
+
+	// VersionProposalFastFailEpochs is the no-traction window: a candidate older
+	// than this that has attracted no stake beyond its own proposer is pruned early
+	// (kills junk/poison well before the hard deadline). 0 falls back to
+	// DefaultVersionProposalFastFailEpochs.
+	VersionProposalFastFailEpochs uint64 `json:"versionProposalFastFailEpochs,omitempty"`
 }
 
 // DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
 // (~3 days at 3s/block) used when a network pins no explicit value.
 const DefaultGovernanceProposalExpiryBlocks uint64 = 3 * 28800
+
+// DefaultVersionProposalExpiryEpochs (~2 weeks at 6h/epoch) is the fallback
+// hard deadline for a consensus-version proposal.
+const DefaultVersionProposalExpiryEpochs uint64 = 56
+
+// DefaultVersionProposalFastFailEpochs (~2 days at 6h/epoch) is the fallback
+// no-traction window after which a candidate with no stake beyond its proposer is pruned.
+const DefaultVersionProposalFastFailEpochs uint64 = 8
 
 const (
 	// SafetySlashBurnDelay3dBlocks is the original ~3-day pending-burn window
@@ -438,6 +460,24 @@ func (cp ConsensusParams) GovernanceProposalExpiry() uint64 {
 		return DefaultGovernanceProposalExpiryBlocks
 	}
 	return cp.GovernanceProposalExpiryBlocks
+}
+
+// VersionProposalExpiry returns the consensus-version-proposal hard deadline in
+// epochs, falling back to DefaultVersionProposalExpiryEpochs when unset (0).
+func (cp ConsensusParams) VersionProposalExpiry() uint64 {
+	if cp.VersionProposalExpiryEpochs == 0 {
+		return DefaultVersionProposalExpiryEpochs
+	}
+	return cp.VersionProposalExpiryEpochs
+}
+
+// VersionProposalFastFail returns the no-traction window in epochs, falling back
+// to DefaultVersionProposalFastFailEpochs when unset (0).
+func (cp ConsensusParams) VersionProposalFastFail() uint64 {
+	if cp.VersionProposalFastFailEpochs == 0 {
+		return DefaultVersionProposalFastFailEpochs
+	}
+	return cp.VersionProposalFastFailEpochs
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate

@@ -9,6 +9,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/witnesses"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,16 @@ func proposeJSON(major, consensus, activationEpoch uint64) string {
 	return string(b)
 }
 
+// propOf returns proposer's candidate proposal from the snapshot (or nil).
+func propOf(st consensus_state.ChainConsensusState, proposer string) *consensus_state.VersionProposal {
+	for i := range st.VersionProposals {
+		if st.VersionProposals[i].Proposer == proposer {
+			return &st.VersionProposals[i]
+		}
+	}
+	return nil
+}
+
 func TestE2E_ProposeSchedulesActivation(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	te := newTestEnvWithConsensus(mem, nil)
@@ -76,11 +87,12 @@ func TestE2E_ProposeSchedulesActivation(t *testing.T) {
 	})
 	te.processAndWait()
 
-	s := mem.Snapshot().ScheduledActivation
+	s := propOf(mem.Snapshot(), "alice")
 	require.NotNil(t, s)
 	assert.Equal(t, uint64(1), s.TargetMajor)
 	assert.Equal(t, uint64(1), s.TargetConsensus)
 	assert.Equal(t, uint64(2), s.ActivationEpoch, "default activation epoch is currentEpoch+1")
+	assert.Equal(t, uint64(1), s.CreationEpoch)
 	assert.False(t, s.Forced)
 	assert.Equal(t, "alice", s.Proposer)
 }
@@ -97,7 +109,7 @@ func TestE2E_ProposeIgnoredWhenProposerNotInCommittee(t *testing.T) {
 	})
 	te.processAndWait()
 
-	assert.Nil(t, mem.Snapshot().ScheduledActivation)
+	assert.Empty(t, mem.Snapshot().VersionProposals)
 }
 
 func TestE2E_ProposeBelowOrEqualActiveIgnored(t *testing.T) {
@@ -110,42 +122,91 @@ func TestE2E_ProposeBelowOrEqualActiveIgnored(t *testing.T) {
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 2, 0),
 	})
 	te.processAndWait()
-	assert.Nil(t, mem.Snapshot().ScheduledActivation, "target equal to active must be ignored")
+	assert.Empty(t, mem.Snapshot().VersionProposals, "target equal to active must be ignored")
 
 	// Below active → ignored.
 	te.Creator.CustomJson(stateEngine.MockJson{
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
 	})
 	te.processAndWait()
-	assert.Nil(t, mem.Snapshot().ScheduledActivation, "target below active must be ignored")
+	assert.Empty(t, mem.Snapshot().VersionProposals, "target below active must be ignored")
 }
 
-func TestE2E_ProposeMonotoneReplace(t *testing.T) {
+// TestE2E_ProposeMultiCandidateNoPoison: distinct proposers hold independent
+// candidate slots, and a junk high target cannot block a legitimate lower one
+// (the poison can only fail readiness — it never displaces another candidate).
+func TestE2E_ProposeMultiCandidateNoPoison(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	te := newTestEnvWithConsensus(mem, nil)
 	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1) // active 0.0
 
-	// Schedule 1.1.
+	// alice proposes a real 1.1.
 	te.Creator.CustomJson(stateEngine.MockJson{
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
 	})
 	te.processAndWait()
-	require.NotNil(t, mem.Snapshot().ScheduledActivation)
-	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetConsensus)
 
-	// Lower target (1.0) must NOT replace.
+	// bob proposes a poison 99.0 — it must NOT remove or block alice's candidate.
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"bob"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 0, 0),
+		RequiredAuths: []string{"bob"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(99, 0, 0),
 	})
 	te.processAndWait()
-	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetConsensus, "lower target must not replace")
 
-	// Strictly higher target (2.0) replaces.
+	st := mem.Snapshot()
+	require.Len(t, st.VersionProposals, 2, "both candidates coexist (one slot per proposer)")
+	a := propOf(st, "alice")
+	require.NotNil(t, a)
+	assert.Equal(t, uint64(1), a.TargetConsensus, "alice's legitimate 1.1 survives the poison")
+	b := propOf(st, "bob")
+	require.NotNil(t, b)
+	assert.Equal(t, uint64(99), b.TargetMajor)
+}
+
+// TestE2E_ProposeOnePerProposer: a second proposal from the same proposer replaces
+// its own slot (never accumulates).
+func TestE2E_ProposeOnePerProposer(t *testing.T) {
+	mem := test_utils.NewMockConsensusState()
+	te := newTestEnvWithConsensus(mem, nil)
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
+
 	te.Creator.CustomJson(stateEngine.MockJson{
-		RequiredAuths: []string{"carol"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 0),
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
 	})
 	te.processAndWait()
-	assert.Equal(t, uint64(2), mem.Snapshot().ScheduledActivation.TargetMajor, "higher target must replace")
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 5, 0),
+	})
+	te.processAndWait()
+
+	st := mem.Snapshot()
+	require.Len(t, st.VersionProposals, 1, "alice keeps a single slot")
+	assert.Equal(t, uint64(5), st.VersionProposals[0].TargetConsensus, "re-propose replaced alice's own slot")
+}
+
+// TestE2E_ProposeSelfVersionGate: a proposer may only propose up to the version it
+// is announcing — proposing higher than its witness record is rejected.
+func TestE2E_ProposeSelfVersionGate(t *testing.T) {
+	mem := test_utils.NewMockConsensusState()
+	te := newTestEnvWithConsensus(mem, nil)
+	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
+	// alice announces 1.1; bob has no record (gate skipped for missing records).
+	te.WitnessDb.ByAccount = map[string]*witnesses.Witness{
+		"alice": {Account: "alice", VersionMajor: 1, ProtocolVersion: 1},
+	}
+
+	// alice proposes 1.2 (> announced 1.1) → rejected.
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 2, 0),
+	})
+	te.processAndWait()
+	assert.Nil(t, propOf(mem.Snapshot(), "alice"), "proposing above announced version is rejected")
+
+	// alice proposes 1.1 (== announced) → accepted.
+	te.Creator.CustomJson(stateEngine.MockJson{
+		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 0),
+	})
+	te.processAndWait()
+	require.NotNil(t, propOf(mem.Snapshot(), "alice"), "proposing at announced version is accepted")
 }
 
 func TestE2E_ProposeCustomAndPastActivationEpoch(t *testing.T) {
@@ -158,16 +219,20 @@ func TestE2E_ProposeCustomAndPastActivationEpoch(t *testing.T) {
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(1, 1, 5),
 	})
 	te.processAndWait()
-	require.NotNil(t, mem.Snapshot().ScheduledActivation)
-	assert.Equal(t, uint64(5), mem.Snapshot().ScheduledActivation.ActivationEpoch)
+	a := propOf(mem.Snapshot(), "alice")
+	require.NotNil(t, a)
+	assert.Equal(t, uint64(5), a.ActivationEpoch)
 
-	// Past/current activation epoch (<= current epoch 1) rejected — a strictly higher target
-	// with a bad epoch must not replace the existing schedule.
+	// alice re-proposes with a past/current activation epoch (<= current epoch 1) →
+	// rejected, so her existing slot is unchanged.
 	te.Creator.CustomJson(stateEngine.MockJson{
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 1),
 	})
 	te.processAndWait()
-	assert.Equal(t, uint64(1), mem.Snapshot().ScheduledActivation.TargetMajor, "proposal with past activation epoch rejected")
+	a = propOf(mem.Snapshot(), "alice")
+	require.NotNil(t, a)
+	assert.Equal(t, uint64(1), a.TargetMajor, "proposal with past activation epoch rejected; prior slot kept")
+	assert.Equal(t, uint64(5), a.ActivationEpoch)
 }
 
 func TestE2E_ProposeIgnoredWhileSuspended(t *testing.T) {
@@ -186,7 +251,7 @@ func TestE2E_ProposeIgnoredWhileSuspended(t *testing.T) {
 		RequiredAuths: []string{"alice"}, Id: "vsc.propose_consensus_version", Json: proposeJSON(2, 0, 0),
 	})
 	te.processAndWait()
-	assert.Nil(t, mem.Snapshot().ScheduledActivation, "propose must be skipped while suspended")
+	assert.Empty(t, mem.Snapshot().VersionProposals, "propose must be skipped while suspended")
 }
 
 func TestE2E_RecoverySuspendSetsFlag(t *testing.T) {
@@ -221,11 +286,11 @@ func TestE2E_RecoveryRequireVersionForcedScheduleAndClears(t *testing.T) {
 
 	st := mem.Snapshot()
 	assert.False(t, st.ProcessingSuspended)
-	require.NotNil(t, st.ScheduledActivation)
-	assert.True(t, st.ScheduledActivation.Forced, "recovery schedules a forced activation")
-	assert.Equal(t, uint64(1), st.ScheduledActivation.TargetMajor)
-	assert.Equal(t, uint64(2), st.ScheduledActivation.TargetConsensus)
-	assert.Equal(t, uint64(2), st.ScheduledActivation.ActivationEpoch, "recovery activates next epoch")
+	require.NotNil(t, st.ForcedActivation)
+	assert.True(t, st.ForcedActivation.Forced, "recovery installs a forced activation")
+	assert.Equal(t, uint64(1), st.ForcedActivation.TargetMajor)
+	assert.Equal(t, uint64(2), st.ForcedActivation.TargetConsensus)
+	assert.Equal(t, uint64(2), st.ForcedActivation.ActivationEpoch, "recovery activates next epoch")
 }
 
 func TestE2E_RecoveryRequireVersionWithoutPriorSuspendNoOp(t *testing.T) {
@@ -240,7 +305,7 @@ func TestE2E_RecoveryRequireVersionWithoutPriorSuspendNoOp(t *testing.T) {
 	})
 	te.processAndWait()
 
-	assert.Nil(t, mem.Snapshot().ScheduledActivation, "must not schedule without suspend-then-resume flow")
+	assert.Nil(t, mem.Snapshot().ForcedActivation, "must not schedule without suspend-then-resume flow")
 }
 
 func TestE2E_RecoveryRequireVersionWithInsufficientSignersNoOp(t *testing.T) {
@@ -288,18 +353,54 @@ func TestE2E_ActiveConsensusVersionPureOfHeight(t *testing.T) {
 	assert.Equal(t, uint64(3), v.Consensus, "active version is the election's ResultVersion, no live merge")
 }
 
-func TestE2E_ScheduledActivationForHeightFilter(t *testing.T) {
+// TestE2E_VersionProposalsForHeightFilter: a candidate is height-addressable — not
+// visible at its own block height, visible strictly after it (keeps election CIDs pure).
+func TestE2E_VersionProposalsForHeightFilter(t *testing.T) {
 	mem := test_utils.NewMockConsensusState()
 	mem.ReplaceState(consensus_state.ChainConsensusState{
 		ID: "singleton",
-		ScheduledActivation: &consensus_state.ScheduledActivation{
-			TargetMajor: 1, TargetConsensus: 1, ActivationEpoch: 3, BlockHeight: 10,
+		VersionProposals: []consensus_state.VersionProposal{
+			{TargetMajor: 1, TargetConsensus: 1, ActivationEpoch: 3, BlockHeight: 10, Proposer: "alice"},
 		},
 	})
 	te := newTestEnvWithConsensus(mem, nil)
 	te.ElectionDb.ElectionsByHeight[1] = sampleElection(1)
 	te.processAndWait() // load cache from mem
 
-	assert.Nil(t, te.SE.ScheduledActivationForHeight(10), "schedule not visible at its own block height")
-	assert.NotNil(t, te.SE.ScheduledActivationForHeight(11), "schedule visible after its block height")
+	assert.Empty(t, te.SE.VersionProposalsForHeight(10), "candidate not visible at its own block height")
+	assert.Len(t, te.SE.VersionProposalsForHeight(11), 1, "candidate visible after its block height")
+}
+
+// TestE2E_PruneVersionProposalsAfterElection covers the deterministic GC: adopted /
+// sub-floor / hard-expired / no-traction candidates are dropped, fresh ones kept, and
+// an adopted recovery override is cleared.
+func TestE2E_PruneVersionProposalsAfterElection(t *testing.T) {
+	mem := test_utils.NewMockConsensusState()
+	mem.ReplaceState(consensus_state.ChainConsensusState{
+		ID: "singleton",
+		// Forced override at 1.2 — adopted once the floor reaches it.
+		ForcedActivation: &consensus_state.VersionProposal{
+			TargetMajor: 1, TargetConsensus: 2, Forced: true, Proposer: "alice",
+		},
+		VersionProposals: []consensus_state.VersionProposal{
+			{TargetMajor: 1, TargetConsensus: 2, Proposer: "a", CreationEpoch: 1, ExpiryEpoch: 100},     // == floor → drop (adopted)
+			{TargetMajor: 1, TargetConsensus: 1, Proposer: "b", CreationEpoch: 1, ExpiryEpoch: 100},     // < floor → drop (sub-floor)
+			{TargetMajor: 1, TargetConsensus: 3, Proposer: "c", CreationEpoch: 1, ExpiryEpoch: 5},       // expired (5 <= epoch 10) → drop
+			{TargetMajor: 1, TargetConsensus: 4, Proposer: "alice", CreationEpoch: 1, ExpiryEpoch: 100}, // no traction past fast-fail → drop
+			{TargetMajor: 1, TargetConsensus: 5, Proposer: "d", CreationEpoch: 9, ExpiryEpoch: 100},     // fresh (within fast-fail) → keep
+		},
+	})
+	te := newTestEnvWithConsensus(mem, nil)
+	te.processAndWait() // load cache from mem
+
+	// Ratified election: epoch 10, floor 1.2 (members announce only the floor, so no
+	// member meets target 1.4 → that candidate has no traction).
+	elec := versionedElection(100, 10, 1, 2)
+	te.SE.PruneVersionProposalsAfterElection(elec)
+
+	st := mem.Snapshot()
+	assert.Nil(t, st.ForcedActivation, "adopted forced override cleared")
+	require.Len(t, st.VersionProposals, 1, "only the fresh, still-viable candidate survives")
+	assert.Equal(t, "d", st.VersionProposals[0].Proposer)
+	assert.Equal(t, uint64(5), st.VersionProposals[0].TargetConsensus)
 }
