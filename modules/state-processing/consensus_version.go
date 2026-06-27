@@ -211,8 +211,7 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	// longer block a legitimate lower one — each candidate is adopted (or not) by the
 	// readiness guard on its own merits, and garbage-collected at expiry / no-traction.
 	se.upsertVersionProposal(consensus_state.VersionProposal{
-		TargetMajor:     target.Major,
-		TargetConsensus: target.Consensus,
+		Target:          target,
 		ActivationEpoch: activationEpoch,
 		CreationEpoch:   elec.Epoch,
 		ExpiryEpoch:     elec.Epoch + se.sconf.ConsensusParams().VersionProposalExpiry(),
@@ -280,8 +279,7 @@ func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersio
 	}
 	target := coordinationTarget(consensusversion.Version{Major: tx.Major, Consensus: tx.Consensus})
 	s := &consensus_state.VersionProposal{
-		TargetMajor:     target.Major,
-		TargetConsensus: target.Consensus,
+		Target:          target,
 		ActivationEpoch: elec.Epoch + 1,
 		CreationEpoch:   elec.Epoch,
 		Forced:          true,
@@ -312,7 +310,7 @@ func (se *StateEngine) PruneVersionProposalsAfterElection(elec elections.Electio
 	fastFail := se.sconf.ConsensusParams().VersionProposalFastFail()
 
 	// Clear the recovery override once it has been adopted (target <= floor).
-	if f := se.forcedActivation(); f != nil && f.Target().Cmp(floor) <= 0 {
+	if f := se.forcedActivation(); f != nil && f.Target.Cmp(floor) <= 0 {
 		if err := se.consensusState.SetForcedActivation(context.Background(), nil); err != nil {
 			log.Warn("clear forced activation failed", "err", err)
 		} else {
@@ -329,12 +327,12 @@ func (se *StateEngine) PruneVersionProposalsAfterElection(elec elections.Electio
 	for _, p := range props {
 		drop := false
 		switch {
-		case p.Target().Cmp(floor) <= 0: // adopted or sub-floor → auto-cancel
+		case p.Target.Cmp(floor) <= 0: // adopted or sub-floor → auto-cancel
 			drop = true
 		case p.ExpiryEpoch != 0 && epoch >= p.ExpiryEpoch: // hard deadline
 			drop = true
 		case fastFail > 0 && epoch >= p.CreationEpoch+fastFail &&
-			versionProposalReadyWeight(elec, p.Target()) <= electionMemberWeightOf(elec, p.Proposer):
+			versionProposalReadyWeight(elec, p.Target) <= electionMemberWeightOf(elec, p.Proposer):
 			drop = true // no traction beyond the proposer
 		}
 		if drop {

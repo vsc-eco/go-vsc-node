@@ -486,14 +486,14 @@ func resolveVersionFloor(
 	}
 
 	// Recovery override first: applies past its activation epoch, bypasses both guards.
-	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target().Cmp(floor) > 0 {
-		return forced.Target()
+	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target.Cmp(floor) > 0 {
+		return forced.Target
 	}
 
 	// Highest live candidate meeting BOTH guards.
 	best := floor
 	for _, p := range proposals {
-		target := p.Target()
+		target := p.Target
 		if newEpoch < p.ActivationEpoch || target.Cmp(floor) <= 0 {
 			continue
 		}
