@@ -49,7 +49,7 @@ type SafetySlashReverseRecord struct {
 	// constants above.
 	Action SafetySlashReverseAction `json:"action" refmt:"action"`
 
-	// Amount is the requested HIVE_CONSENSUS re-credit in satoshis. Used
+	// Amount is the requested HIVE_CONSENSUS re-credit in base units. Used
 	// only by reverse / both. The apply path caps it at the original
 	// slash amount minus any already-finalized burn so the resulting
 	// ledger state never re-credits more than was debited.

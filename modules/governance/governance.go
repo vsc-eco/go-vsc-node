@@ -152,7 +152,7 @@ func IsExpired(currentBlock, creationBlock, expiryBlocks, maturity uint64) bool 
 // proposal from its content (normalized recipient, amount, reason) PLUS the
 // create op's tx id. Folding in createTxID means two distinct create ops are two
 // distinct proposals — voters reference this id rather than reproducing the
-// content, and a one-satoshi difference can't silently merge votes across
+// content, and a one base unit difference can't silently merge votes across
 // unrelated payouts. Fields are null-delimited (a byte that can't appear in a
 // Hive account or an integer) so the reason text can't be crafted to collide
 // with a different (recipient, amount).

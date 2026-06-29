@@ -114,7 +114,7 @@ type ReverseSafetySlashConsensusDebitParams struct {
 	EvidenceKind string
 	// Account whose HIVE_CONSENSUS bond is being re-credited.
 	Account string
-	// Amount in satoshis to re-credit. Caller must enforce that this does
+	// Amount in base units to re-credit. Caller must enforce that this does
 	// not exceed the original debit recorded for (TxID, EvidenceKind, Account)
 	// — the ledger primitive does not currently look up the original debit.
 	Amount int64
@@ -146,7 +146,7 @@ type ReservePayoutParams struct {
 	ProposalID string
 	// Recipient is the account credited with spendable hive (the make-whole).
 	Recipient string
-	// Amount in satoshis requested. ReservePayout is all-or-nothing: it pays
+	// Amount in base units requested. ReservePayout is all-or-nothing: it pays
 	// exactly this or rejects (never a partial pay) when it exceeds the reserve's
 	// available balance.
 	Amount int64
