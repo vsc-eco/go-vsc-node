@@ -204,6 +204,39 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 	}
 }
 
+// ChainActiveVersionAt returns the coordinated consensus version active at blockHeight
+// — the ResultVersion of the most recent election strictly below it ($lt, matching
+// GetElectionByHeight) — queried directly against the live DbInstance.
+//
+// Unlike the GetElectionByHeight method, it does NOT require the elections plugin's
+// collection handle to be Init-bound: it binds a fresh handle from the already-connected
+// DbInstance. That makes it safe to call during early startup — specifically the reindex
+// version-lag gate (reindex.go), which runs before the elections collection plugin is
+// initialized. Calling the method there dereferences a nil *mongo.Collection and panics
+// the node on every restart (the gate only fires once a prior run recorded a version).
+//
+// ok=false when no election precedes blockHeight or the query/decode fails.
+func ChainActiveVersionAt(d *db.DbInstance, blockHeight uint64) (consensusversion.Version, bool) {
+	var rec struct {
+		VersionMajor        uint64 `bson:"version_major"`
+		ProtocolVersion     uint64 `bson:"protocol_version"`
+		VersionNonConsensus uint64 `bson:"version_non_consensus"`
+	}
+	err := d.Collection("elections").FindOne(
+		context.Background(),
+		bson.M{"block_height": bson.M{"$lt": blockHeight}},
+		options.FindOne().SetSort(bson.M{"block_height": -1}),
+	).Decode(&rec)
+	if err != nil {
+		return consensusversion.Version{}, false
+	}
+	return consensusversion.Version{
+		Major:        rec.VersionMajor,
+		Consensus:    rec.ProtocolVersion,
+		NonConsensus: rec.VersionNonConsensus,
+	}, true
+}
+
 // Utility function
 func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
 	IncludedDids := circuit.IncludedDIDs()
