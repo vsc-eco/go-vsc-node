@@ -94,12 +94,16 @@ func main() {
 	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex, &db.VersionReindex{
 		RunningMajor:     runningVer.Major,
 		RunningConsensus: runningVer.Consensus,
+		// Query the elections collection directly off the (already-connected)
+		// DbInstance rather than via electionDb.GetElectionByHeight: this callback
+		// runs inside reindexDb.Init(), which the aggregate sequences BEFORE the
+		// electionDb plugin Init that binds its mongo handle — using electionDb here
+		// dereferences a nil collection and panics the node on restart.
 		ChainActiveAt: func(blockHeight uint64) (uint64, uint64, bool) {
-			elec, err := electionDb.GetElectionByHeight(blockHeight)
-			if err != nil {
+			v, ok := elections.ChainActiveVersionAt(vscDb.DbInstance, blockHeight)
+			if !ok {
 				return 0, 0, false
 			}
-			v := elections.ResultVersion(elec)
 			return v.Major, v.Consensus, true
 		},
 	})
