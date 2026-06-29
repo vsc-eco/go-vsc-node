@@ -48,7 +48,7 @@ func assertBounds(t *testing.T, weights []int) {
 
 func TestQuantizeStakeWeights_Proportional(t *testing.T) {
 	accounts := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
-	// Skewed stakes (satoshi-scale, well above uint16) including one large node.
+	// Skewed stakes (base unit-scale, well above uint16) including one large node.
 	stakes := []uint64{900_000_000, 120_000_000, 60_000_000, 40_000_000,
 		25_000_000, 10_000_000, 4_000_000, 2_000_000}
 
