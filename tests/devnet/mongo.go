@@ -150,6 +150,32 @@ func (d *Devnet) getLastProcessedBlock(ctx context.Context, node int) (uint64, e
 	return *result.LastProcessedBlock, nil
 }
 
+// seedProcessedUnderVersion overwrites the consensus version recorded against a
+// node's processed history in the hive_blocks metadata doc. It is a test affordance
+// for the reindex version-lag trigger: in a homogeneous-binary devnet every node
+// records its own running version, so to simulate a node that processed under an
+// OLDER version (a laggard that diverged) we write a lower processed_under_* directly.
+// On the node's next boot the reindex gate compares this against the chain-active
+// version at the head and, if lower, full-reindexes. The node must be stopped first.
+func (d *Devnet) seedProcessedUnderVersion(ctx context.Context, node int, major, consensus uint64) error {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer client.Disconnect(ctx)
+
+	coll := client.Database(d.nodeDbName(node)).Collection("hive_blocks")
+	_, err = coll.UpdateOne(ctx,
+		bson.M{"type": "metadata"},
+		bson.M{"$set": bson.M{
+			"processed_under_major":     major,
+			"processed_under_consensus": consensus,
+		}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
 // CountRegisteredWitnesses returns the number of distinct accounts that have a
 // witness registration in the given node's DB. Every such record carries a
 // consensus key (SetWitnessUpdate rejects records without one), so this is the
