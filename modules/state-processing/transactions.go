@@ -658,6 +658,7 @@ func (t *TxUnstakeHbd) Type() string {
 	return "unstake_hbd"
 }
 
+
 type TxConsensusStake struct {
 	Self TxSelf `json:"-"`
 
@@ -1215,13 +1216,24 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	// data := make(map[string]interface{})
-	txs := tx.ToTransaction()
+	// An invalid tx (err != nil) is still recorded — with no ops — so it is
+	// queryable and reaches a terminal status. It is marked FAILED later via the
+	// oplog round-trip driven by ExecuteBatch's TxPacket.Invalid branch, exactly
+	// as every other tx's status is finalized. Resolving zero ops here never
+	// means "success": empty Ops on an invalid tx ride the FAILED path.
+	txs, _ := tx.ToTransaction()
 
 	opTypes := make([]string, 0)
 	opTypesM := make(map[string]bool, 0)
 	opList := make([]transactions.TransactionOperation, 0)
 
 	for idx, v := range txs {
+		// Defense-in-depth: ToTransaction never emits a nil VSCTransaction (it
+		// returns an error instead), but guard here too — v.Type() on a nil
+		// interface is the panic that halted every node in the devnet PoC.
+		if v == nil {
+			continue
+		}
 		op := transactions.TransactionOperation{
 			Type: v.Type(),
 			Data: v.ToData(),
@@ -1258,7 +1270,18 @@ func (tx *OffchainTransaction) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
+// ToTransaction resolves the offchain op list into executable VSCTransactions.
+// It returns an error the moment any op cannot be executed exactly as submitted
+// — an unknown op.Type, or an F4/F21 CBOR decode failure on the (fully
+// attacker-controlled) op.Payload. A non-nil error means the ENTIRE transaction
+// must fail: callers record it FAILED with no op executed (see TxPacket.Invalid
+// and the early-fail branch in ExecuteBatch) rather than partially applying it
+// or — the old bug — silently dropping the op and reporting a CONFIRMED no-op.
+//
+// Determinism: invalidity is a pure function of the content-addressed tx bytes
+// (op.Type string match + CBOR decodability), so every node either resolves the
+// identical op list or fails the identical tx, producing the same block CID.
+func (tx *OffchainTransaction) ToTransaction() ([]VSCTransaction, error) {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
@@ -1272,7 +1295,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				NetId: tx.Headers.NetId,
 			}
 			callTx.Self.OpIndex = idx
-			transactionpool.DecodeTxCbor(op, &callTx)
+			if err := transactionpool.DecodeTxCbor(op, &callTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = callTx
 		case "transfer":
@@ -1280,7 +1305,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
-			transactionpool.DecodeTxCbor(op, &transferTx)
+			if err := transactionpool.DecodeTxCbor(op, &transferTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = transferTx
 		case "withdraw":
@@ -1288,7 +1315,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
-			transactionpool.DecodeTxCbor(op, &withdrawTx)
+			if err := transactionpool.DecodeTxCbor(op, &withdrawTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &withdrawTx
 		case "stake_hbd":
@@ -1298,25 +1327,46 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				NetId: tx.Headers.NetId,
 			}
 
-			transactionpool.DecodeTxCbor(op, &stakeTx)
+			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &stakeTx
 		case "unstake_hbd":
+			// NOTE: offchain unstake_hbd intentionally still builds TxStakeHbd
+			// here (the 0.3.0 behavior — it STAKES instead of releasing). The
+			// direction is wrong, but correcting it changes ledger state on a
+			// VALID input and would fork live 0.3.0 nodes, so the fix (F14, build
+			// TxUnstakeHbd) is deferred to the version-gated 0.4.0 rollout and
+			// lives in its own commit.
 			stakeTx := TxStakeHbd{
-				Self: self,
-
+				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
 
-			transactionpool.DecodeTxCbor(op, &stakeTx)
+			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &stakeTx
+		default:
+			// F4: an unknown op.Type previously left vtx as a nil VSCTransaction
+			// interface, dereferenced (v.Type()) in Ingest/ExecuteBatch and
+			// panicking ProcessBlock on every ingesting node (unprivileged,
+			// network-wide chain halt, devnet-confirmed). An unknown op cannot be
+			// executed as submitted, so fail the entire tx deterministically.
+			return nil, fmt.Errorf("op %d: unknown op type %q", idx, op.Type)
 		}
 
+		// Defense-in-depth: a known case that forgets to set vtx must still fail
+		// the tx, never silently drop the op (a nil here is what halts the chain).
+		if vtx == nil {
+			return nil, fmt.Errorf("op %d (%q): nil transaction produced", idx, op.Type)
+		}
 		output = append(output, vtx)
 	}
 
-	return output
+	return output, nil
 }
 
 func (tx *OffchainTransaction) Type() string {
@@ -1340,5 +1390,5 @@ type VSCTransaction interface {
 
 type VscTxContainer interface {
 	Type() string //Hive, offchain
-	ToTransaction() []VSCTransaction
+	ToTransaction() ([]VSCTransaction, error)
 }
