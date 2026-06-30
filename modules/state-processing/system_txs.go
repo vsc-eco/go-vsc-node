@@ -1133,11 +1133,26 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}
 			confirmedNonces[keyId].Nonces[tx.Headers.Nonce] = true
 
-			txs := tx.ToTransaction()
-			txsToInjest = append(txsToInjest, TxPacket{
-				TxId: tx.Cid().String(),
-				Ops:  txs,
-			})
+			txs, txErr := tx.ToTransaction()
+			if txErr != nil {
+				// The tx contains an op that can't be executed exactly as
+				// submitted (unknown type / undecodable payload). Fail the WHOLE
+				// tx: execute no op, mark it FAILED, and charge the payer a fixed
+				// RC. Deterministic — every node hits the identical resolve error
+				// (RequiredAuths is non-empty here, guaranteed by the guard above).
+				log.Warn("offchain tx invalid; failing entire tx",
+					"id", tx.Cid().String(), "err", txErr)
+				txsToInjest = append(txsToInjest, TxPacket{
+					TxId:    tx.Cid().String(),
+					Invalid: true,
+					Payer:   tx.Headers.RequiredAuths[0],
+				})
+			} else {
+				txsToInjest = append(txsToInjest, TxPacket{
+					TxId: tx.Cid().String(),
+					Ops:  txs,
+				})
+			}
 		} else if txContainer.Type() == "output" {
 			contractOutput, err := txContainer.AsContractOutput()
 			if err != nil {

@@ -694,6 +694,14 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		if txRecord == nil {
 			return "", errors.New("invalid transaction")
 		}
+		// F22 fix: Ops[0] previously indexed an empty slice → index-out-of-range
+		// panic (recovered in the pubsub goroutine, so non-fatal, but it aborts
+		// block-msg handling). A tx with zero ops is invalid — reject it cleanly,
+		// the same way a nil txRecord is handled above. (Exposed once F4 made an
+		// unknown-op tx resolve to zero ops instead of a chain-halting nil.)
+		if len(txRecord.Ops) == 0 {
+			return "", errors.New("transaction has no ops")
+		}
 		op := txRecord.Ops[0].Type
 		transactions = append(transactions, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,

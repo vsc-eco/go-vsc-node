@@ -1926,6 +1926,22 @@ func (se *StateEngine) ExecuteBatch() {
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
 	for idx, tx := range se.TxBatch {
+		// Invalid tx (unknown op type / undecodable payload): execute NO op and
+		// mark it FAILED. This is the explicit second failure location for txs
+		// that can't even be resolved — distinct from the per-op ExecuteTx
+		// failure path below. It rides the same oplog finalization as every other
+		// tx (TxOutIds → MakeOplog → SetOutput FAILED). A fixed RC is charged so
+		// the tx isn't free. Deterministic: Invalid/Payer are set identically on
+		// every node from the content-addressed resolve error.
+		if tx.Invalid {
+			if tx.Payer != "" {
+				se.RcMap[tx.Payer] += 50
+			}
+			se.TxOutput[tx.TxId] = TxOutput{Ok: false}
+			se.TxOutIds = append(se.TxOutIds, tx.TxId)
+			continue
+		}
+
 		var opTypes map[string]bool = make(map[string]bool)
 		for _, vscTx := range tx.Ops {
 			opTypes[vscTx.Type()] = true
