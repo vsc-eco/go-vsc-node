@@ -1154,7 +1154,10 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}
 			confirmedNonces[keyId].Nonces[tx.Headers.Nonce] = true
 
-			txs, txErr := tx.ToTransaction()
+			// Resolve op builds against the version active at this block's height
+			// (same height threaded into Ingest above) so version-gated op builds
+			// — e.g. the F14 unstake_hbd direction — are deterministic on-chain.
+			txs, txErr := tx.ToTransaction(se.ActiveConsensusVersion(uint64(t.SignedBlock.Headers.Br[1])))
 			if txErr != nil {
 				// The tx contains an op that can't be executed exactly as
 				// submitted (unknown type / undecodable payload). Fail the WHOLE

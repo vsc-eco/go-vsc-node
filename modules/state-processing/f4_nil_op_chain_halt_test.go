@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	stateEngine "vsc-node/modules/state-processing"
@@ -46,7 +47,7 @@ func TestF4_UnknownOpFailsWholeTx(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction()
+	ops, err := tx.ToTransaction(consensusversion.Version{})
 	if err == nil {
 		t.Fatal("F4 REGRESSION: unknown op did not fail the tx (err == nil) — halt path open")
 	}
@@ -68,7 +69,7 @@ func TestF4_ValidPlusInvalidFailsWholeTx(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction()
+	ops, err := tx.ToTransaction(consensusversion.Version{})
 	if err == nil {
 		t.Fatal("F4 ATOMICITY: tx with one invalid op must fail entirely (err == nil)")
 	}
@@ -92,7 +93,7 @@ func TestF4_ValidTxResolvesAllOpsNoNil(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction()
+	ops, err := tx.ToTransaction(consensusversion.Version{})
 	if err != nil {
 		t.Fatalf("F4: valid tx unexpectedly failed to resolve: %v", err)
 	}
@@ -123,6 +124,48 @@ func TestF4_ReachabilityOpTypeNotValidatedInTxPool(t *testing.T) {
 	t.Logf("F4 NOTE: tx-pool still has no op-type allowlist (cost=%d); the failure is enforced downstream at ToTransaction, not here", cost)
 }
 
+// TestF14_UnstakeHbdDirectionVersionGated: an offchain "unstake_hbd" op (valid
+// payload) must build a *TxUnstakeHbd (whose ExecuteTx releases stake) ONLY once
+// the chain-active consensus version reaches 0.4.0. Below the line it keeps the
+// legacy 0.3.0 behavior — *TxStakeHbd (the wrong direction, but byte-identical on
+// replay). Proves the F14 fix is gated, not unconditional. Cherry-picked from
+// a1c171d7 and converted from an unconditional fix to the 0.4.0 version gate.
+func TestF14_UnstakeHbdDirectionVersionGated(t *testing.T) {
+	build := func(active consensusversion.Version) stateEngine.VSCTransaction {
+		tx := &stateEngine.OffchainTransaction{}
+		tx.Tx = []transactionpool.VSCTransactionOp{
+			{Type: "unstake_hbd", Payload: validPayload(t, map[string]interface{}{
+				"from": "hive:alice", "to": "hive:alice", "amount": "1.000", "asset": "hbd",
+			})},
+		}
+		tx.Headers.RequiredAuths = []string{"hive:alice"}
+		ops, err := tx.ToTransaction(active)
+		if err != nil {
+			t.Fatalf("F14: valid unstake_hbd unexpectedly failed: %v", err)
+		}
+		if len(ops) != 1 {
+			t.Fatalf("F14: expected 1 element for unstake_hbd, got %d", len(ops))
+		}
+		return ops[0]
+	}
+
+	// Below 0.4.0: legacy behavior — builds TxStakeHbd (staked, the wrong direction).
+	if op := build(consensusversion.Version{Major: 0, Consensus: 3}); op == nil {
+		t.Fatal("F14: nil op below the gate")
+	} else if _, ok := op.(*stateEngine.TxStakeHbd); !ok {
+		t.Fatalf("F14: below 0.4.0 unstake_hbd built %T, expected legacy *TxStakeHbd", op)
+	}
+
+	// At/above 0.4.0: fixed — builds TxUnstakeHbd (releases stake).
+	if op := build(consensusversion.V0_4_0); op == nil {
+		t.Fatal("F14: nil op at the gate")
+	} else if _, ok := op.(*stateEngine.TxUnstakeHbd); !ok {
+		t.Fatalf("F14 REGRESSION: at 0.4.0 unstake_hbd built %T, expected *TxUnstakeHbd (releases stake)", op)
+	} else if got := op.Type(); got != "unstake_hbd" {
+		t.Fatalf("F14: Type() = %q, want unstake_hbd", got)
+	}
+}
+
 // TestF21_BadPayloadFailsWholeTx: a KNOWN op type carrying an empty/malformed
 // CBOR payload must NOT panic DecodeTxCbor (which previously dropped the decode
 // error and dereferenced a nil node in MarshalJSON → chain halt). Post-fix it
@@ -143,7 +186,7 @@ func TestF21_BadPayloadFailsWholeTx(t *testing.T) {
 		)
 		func() {
 			defer func() { panicVal = recover() }()
-			ops, err = tx.ToTransaction()
+			ops, err = tx.ToTransaction(consensusversion.Version{})
 		}()
 		if panicVal != nil {
 			t.Fatalf("F21 REGRESSION: ToTransaction panicked on empty-payload %q op: %v", opType, panicVal)
