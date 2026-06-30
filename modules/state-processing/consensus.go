@@ -69,7 +69,8 @@ func GenerateSchedule(blockHeight uint64, witnessList []Witness, seed [32]byte) 
 	// divide-by-zero panic that fires identically on every node (network halt).
 	// Return an empty schedule (= no producer this round), which callers already
 	// treat as "nobody scheduled". Deterministic: witnessList is on-chain election
-	// data. Defense-in-depth behind the proposer's MinMembers floor.
+	// data. Defense-in-depth behind the GV4-3 sub-MinMembers election reject in
+	// TxElectionResult.ExecuteTx (and the proposer's MinMembers floor).
 	if len(witnessList) == 0 {
 		return []WitnessSlot{}
 	}
