@@ -2,6 +2,7 @@ package transactionpool
 
 import (
 	"encoding/json"
+	"fmt"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db/vsc/transactions"
 
@@ -37,9 +38,21 @@ func HashKeyAuths(keyAuths []string) string {
 	}
 }
 
+// F21 fix: previously the decode error was dropped and `node` (nil on an
+// empty/malformed, attacker-controlled payload) was dereferenced by MarshalJSON
+// → panic → chain halt, exactly as the unknown-op F4 did. Return the error
+// instead. ToTransaction now propagates it by failing the ENTIRE transaction
+// (TxInvalidOp), and callRcLimit falls back to the minimum floor. Deterministic
+// on every node since op.Payload is content-addressed.
 func DecodeTxCbor(op VSCTransactionOp, input interface{}) error {
-	node, _ := cbornode.Decode(op.Payload, multihash.SHA2_256, -1)
-	jsonBytes, _ := node.MarshalJSON()
+	node, err := cbornode.Decode(op.Payload, multihash.SHA2_256, -1)
+	if err != nil || node == nil {
+		return fmt.Errorf("decode cbor op payload (type %q): %w", op.Type, err)
+	}
+	jsonBytes, err := node.MarshalJSON()
+	if err != nil {
+		return fmt.Errorf("marshal cbor op payload (type %q): %w", op.Type, err)
+	}
 
 	return json.Unmarshal(jsonBytes, input)
 }

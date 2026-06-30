@@ -65,6 +65,15 @@ type WitnessSlot struct {
 
 func GenerateSchedule(blockHeight uint64, witnessList []Witness, seed [32]byte) []WitnessSlot {
 
+	// F13 fix: an empty witness list makes `slot % len(witnessList)` below a
+	// divide-by-zero panic that fires identically on every node (network halt).
+	// Return an empty schedule (= no producer this round), which callers already
+	// treat as "nobody scheduled". Deterministic: witnessList is on-chain election
+	// data. Defense-in-depth behind the proposer's MinMembers floor.
+	if len(witnessList) == 0 {
+		return []WitnessSlot{}
+	}
+
 	roundInfo := vscBlocks.CalculateRoundInfo(blockHeight)
 
 	slots := (roundInfo.EndHeight - roundInfo.StartHeight) / CONSENSUS_SPECS.SlotLength
