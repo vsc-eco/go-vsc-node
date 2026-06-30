@@ -658,7 +658,6 @@ func (t *TxUnstakeHbd) Type() string {
 	return "unstake_hbd"
 }
 
-
 type TxConsensusStake struct {
 	Self TxSelf `json:"-"`
 
@@ -1221,7 +1220,10 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 	// oplog round-trip driven by ExecuteBatch's TxPacket.Invalid branch, exactly
 	// as every other tx's status is finalized. Resolving zero ops here never
 	// means "success": empty Ops on an invalid tx ride the FAILED path.
-	txs, _ := tx.ToTransaction()
+	// Resolve op builds against the version active at the anchored height (same
+	// height used for execution in ExecuteBatch) so the indexed op types match
+	// what actually executes (e.g. F14 unstake_hbd direction).
+	txs, _ := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
 
 	opTypes := make([]string, 0)
 	opTypesM := make(map[string]bool, 0)
@@ -1281,7 +1283,7 @@ func (tx *OffchainTransaction) TxSelf() TxSelf {
 // Determinism: invalidity is a pure function of the content-addressed tx bytes
 // (op.Type string match + CBOR decodability), so every node either resolves the
 // identical op list or fails the identical tx, producing the same block CID.
-func (tx *OffchainTransaction) ToTransaction() ([]VSCTransaction, error) {
+func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error) {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
@@ -1333,12 +1335,32 @@ func (tx *OffchainTransaction) ToTransaction() ([]VSCTransaction, error) {
 
 			vtx = &stakeTx
 		case "unstake_hbd":
-			// NOTE: offchain unstake_hbd intentionally still builds TxStakeHbd
-			// here (the 0.3.0 behavior — it STAKES instead of releasing). The
-			// direction is wrong, but correcting it changes ledger state on a
-			// VALID input and would fork live 0.3.0 nodes, so the fix (F14, build
-			// TxUnstakeHbd) is deferred to the version-gated 0.4.0 rollout and
-			// lives in its own commit.
+			// F14: correct the offchain unstake_hbd direction, version-gated on the
+			// 0.4.0 consensus line (UnstakeHbdDirectionFixActive). Below the line this
+			// case built TxStakeHbd (identical to "stake_hbd"), so an offchain
+			// unstake_hbd STAKED funds instead of releasing them — the wrong
+			// direction. Correcting it changes ledger state on a VALID input, so it
+			// must flip network-wide only once the floor reaches 0.4.0; activeVersion
+			// is resolved by the caller from the op's anchored height
+			// (ActiveConsensusVersion), on-chain and identical on every node, so a
+			// full reindex reproduces historical ledger state. At/above 0.4.0, build
+			// the dedicated TxUnstakeHbd, whose ExecuteTx calls ledgerSession.Unstake.
+			// (The L1 vsc.unstake_hbd path was already correct; only this offchain
+			// path was wrong.)
+			if consensusversion.UnstakeHbdDirectionFixActive(activeVersion) {
+				unstakeTx := TxUnstakeHbd{
+					Self:  self,
+					NetId: tx.Headers.NetId,
+				}
+
+				if err := transactionpool.DecodeTxCbor(op, &unstakeTx); err != nil {
+					return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+				}
+
+				vtx = &unstakeTx
+				break
+			}
+
 			stakeTx := TxStakeHbd{
 				Self:  self,
 				NetId: tx.Headers.NetId,
@@ -1390,5 +1412,9 @@ type VSCTransaction interface {
 
 type VscTxContainer interface {
 	Type() string //Hive, offchain
-	ToTransaction() ([]VSCTransaction, error)
+	// ToTransaction resolves the offchain op list into executable VSCTransactions.
+	// activeVersion is the chain-active consensus version at the tx's anchored
+	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
+	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
+	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
 }
