@@ -119,3 +119,43 @@ func GovernanceActionsActive(active Version) bool {
 func SafetySlashBurnDelay7dActive(active Version) bool {
 	return Version0_3_0Active(active)
 }
+
+// V0_4_0 is the consensus version line at which the v0.4.0 safety/correctness
+// batch activates. Every consensus-affecting change in v0.4.0 keys off this single
+// version so the network has ONE coordinated activation, driven by the election
+// floor reaching 0.4.0.
+var V0_4_0 = Version{Major: 0, Consensus: 4, NonConsensus: 0}
+
+// Version0_4_0Active reports whether the v0.4.0 batch is in force given the
+// chain-active consensus version. `active` is resolved by the caller from the
+// on-chain election (deterministic, replay-correct). Below the line every v0.4.0
+// rule is inert and behavior stays byte-identical to 0.3.0, so old and new
+// binaries interoperate until the floor reaches 0.4.0.
+func Version0_4_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_4_0)
+}
+
+// MinMembersGuardActive reports whether the GV4-3 sub-MinMembers election-reject
+// guard is enforced given the chain-active consensus version: the state engine
+// rejects an incoming election whose new committee has < MinMembers members before
+// persisting it (see TxElectionResult.ExecuteTx), so a degenerate committee can
+// never drive consensus.GenerateSchedule into witnessList[slot % 0] (a divide-by-
+// zero chain halt). Resolve `active` from the version active at the election's
+// submit height (StateEngine.ActiveConsensusVersion(tx.Self.BlockHeight)); below
+// the line the reject is inert so replay of pre-activation history (which on
+// mainnet includes valid 7-member elections) is byte-identical. A sub-MinMembers
+// election is never legitimate, so the guard can only ever reject degenerate input.
+func MinMembersGuardActive(active Version) bool {
+	return Version0_4_0Active(active)
+}
+
+// UnstakeHbdDirectionFixActive reports whether the F14 fix is in force given the
+// chain-active consensus version: an offchain unstake_hbd op builds TxUnstakeHbd
+// (releases stake) instead of the legacy TxStakeHbd (which wrongly STAKED — the
+// 0.3.0 behavior). Resolve `active` from the version active at the op's anchored
+// height (StateEngine.ActiveConsensusVersion(anchoredHeight)); below the line the
+// legacy stake direction is preserved so a full reindex reproduces historical
+// ledger state. The L1 vsc.unstake_hbd path was already correct and is unaffected.
+func UnstakeHbdDirectionFixActive(active Version) bool {
+	return Version0_4_0Active(active)
+}
