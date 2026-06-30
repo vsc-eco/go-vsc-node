@@ -45,9 +45,20 @@ import (
 //     which backs (a) by giving witnesses time to gather a slash_restore quorum before
 //     the residual matures. Until 0.3.0 is chain-active the ops are ignored and the
 //     pending window stays 3 days, so old and new binaries interoperate until activation.
+//   - 0.4.0 — the Consensus 3→4 bump gates a safety/correctness batch, all activated
+//     together when the election floor reaches 0.4.0 (consensusversion.V0_4_0):
+//     (a) GV4-3 sub-MinMembers election reject (MinMembersGuardActive) — the state
+//     engine rejects an incoming election whose new committee is below MinMembers
+//     before persisting it, so a degenerate (e.g. empty) committee can never drive
+//     consensus.GenerateSchedule into a divide-by-zero chain halt; below the line the
+//     reject is inert so replay of pre-activation history is byte-identical;
+//     (b) F14 offchain unstake_hbd direction fix (UnstakeHbdDirectionFixActive) — an
+//     offchain unstake_hbd builds TxUnstakeHbd (releases stake) instead of TxStakeHbd
+//     (the 0.3.0 behavior that wrongly STAKED); below the line the legacy stake
+//     direction is preserved so old and new binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 3
+	currentConsensus    uint64 = 4
 	currentNonConsensus uint64 = 0
 )
 
