@@ -704,6 +704,34 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
 
+			// GV4-3 fix (defense-in-depth, mirrors the proposer's MinMembers abort
+			// in election-proposer.go HoldElection). The signer-quorum check above
+			// proves the PREVIOUS committee approved this result, but nothing has
+			// validated the NEW committee's size. A sub-MinMembers (e.g. empty)
+			// Members list would be persisted here and then drive
+			// consensus.GenerateSchedule into witnessList[slot % 0] — an integer
+			// divide-by-zero that panic-crashes every validating node (full chain
+			// halt). Reject before StoreElection so the prior committee stays in
+			// charge and the chain keeps producing; the next proposer retries.
+			// A sub-MinMembers election is never valid, so this can never reject a
+			// legitimate election. Version-gated on the 0.4.0 consensus line
+			// (MinMembersGuardActive): the accept/reject decision flips network-wide
+			// only once the election floor reaches 0.4.0, resolved deterministically
+			// from the version ACTIVE at this election's submit height
+			// (ActiveConsensusVersion(tx.Self.BlockHeight) — the outgoing committee's
+			// ResultVersion, on-chain and identical on every node). Below the line the
+			// reject is inert so replay of pre-activation history (mainnet has valid
+			// pre-raise 7-member elections) is byte-identical.
+			if consensusversion.MinMembersGuardActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) &&
+				len(elecResult.Members) < se.sconf.ConsensusParams().MinMembers {
+				log.Warn("election rejected: sub-MinMembers committee",
+					"epoch", tx.Epoch,
+					"members", len(elecResult.Members),
+					"min_members", se.sconf.ConsensusParams().MinMembers,
+					"proposer", elecResult.Proposer)
+				return
+			}
+
 			// Apply inlined pendulum settlement BEFORE StoreElection so
 			// validatePendulumSettlement's GetElectionByHeight(SnapshotRangeTo)
 			// resolves to the CLOSING committee, not the incoming one. Two
