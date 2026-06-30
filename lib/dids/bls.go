@@ -806,7 +806,16 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 
 	// aggregate the pub keys
 	// agg all the pub keys at once
-	pubKey, _ := bls.AggregatePubkeys(includedPubKeys)
+	// F9 fix: the AggregatePubkeys error was previously dropped. A key that
+	// deserialized non-nil but is not a valid group element (e.g. the identity
+	// point) makes this fail and return a nil/invalid pubKey, which then panics
+	// in bls.Verify below — a network-wide halt. The keyset is on-chain election
+	// data (identical across nodes), so failing the whole verify deterministically
+	// here is safe and strictly better than a panic.
+	pubKey, err := bls.AggregatePubkeys(includedPubKeys)
+	if err != nil || pubKey == nil {
+		return false, nil, fmt.Errorf("aggregate pubkeys failed: %w", err)
+	}
 	// aggWorks := aggPub.Aggregate(includedPubKeys, true)
 	// aggPubKey := aggPub.ToAffine()
 
