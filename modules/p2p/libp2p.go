@@ -342,7 +342,7 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				for i, peer := range p2ps.host.Network().Peers() {
 					peerNames[i] = peer.String()
 				}
-				log.Verbose("all peers", "accounts", p2ps.host.Network().Peers())
+				log.Verbose("all peers", "ids", p2ps.host.Network().Peers())
 			}
 
 			if peerLen >= len(uniquePeers)-1 {
