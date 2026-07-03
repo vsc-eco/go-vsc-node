@@ -161,6 +161,17 @@ var TSS_INDEX_HEIGHT uint64 = 102_083_000
 // Election once every 6 hours on mainnet
 var ELECTION_INTERVAL = uint64(6 * 60 * 20)
 
+// CONSENSUS_UNSTAKE_LOCK_EPOCHS is the unbond period: a consensus_unstake is held
+// this many election epochs before the HIVE is released (~30h at
+// ELECTION_INTERVAL). Consensus rule — identical on every node.
+var CONSENSUS_UNSTAKE_LOCK_EPOCHS uint64 = 5
+
+// DELEGATION_DOWNGRADE_LOCK_EPOCHS defers an ADVERSE delegation-mode change
+// (leaving Share, which strips delegators' on-chain reward share) so delegators
+// get at least a full unbond window to exit before the change takes effect. Set
+// to the unbond period plus one epoch of reaction margin.
+var DELEGATION_DOWNGRADE_LOCK_EPOCHS uint64 = CONSENSUS_UNSTAKE_LOCK_EPOCHS + 1
+
 type ConsensusParams struct {
 	MinStake             int64  `json:"minStake,omitempty"`
 	MinMembers           int    `json:"minMembers,omitempty"`

@@ -681,6 +681,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						BlockId:  blockInfo.BlockId,
 						Metadata: rawJson,
 					}
+					// Delegation-mode downgrade timelock (consensus 0.5.0+): resolve
+					// the effective mode + maturity for this announcement from the
+					// prior row and the election at this height, so an adverse
+					// (leaving-Share) change is deferred a full unbond window. Returns
+					// zero-values below 0.5.0, keeping historical rows byte-identical.
+					inputData.DelegationModeEffective, inputData.DelegationModeMaturityEpoch =
+						se.computeDelegationTimelock(acct, blockInfo.BlockHeight, rawJson.VscNode.DelegationMode)
 					se.witnessDb.SetWitnessUpdate(inputData)
 				}
 			}
