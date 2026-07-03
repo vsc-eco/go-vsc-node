@@ -1001,7 +1001,18 @@ func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg E
 				if ctx.Err() != nil {
 					return
 				}
-				res, err := scanBlock(rpc, h, cfg.VaultAddress, cfg.Tokens)
+				// C-ER1 (round3): runOnceSafe's recover() only catches panics in
+				// the tick goroutine — Go's recover() does NOT cross goroutine
+				// boundaries. A panic in this worker (scanBlock parses the most
+				// attacker-influenced data: hostile RPC block/log/receipt JSON)
+				// would otherwise crash the WHOLE bot process, bypassing the
+				// MED-46 recover entirely. Wrap each per-height scan in its own
+				// recover so a worker panic degrades to a per-block ERROR (the
+				// caller stops at the first error/gap and retries the window)
+				// rather than killing the bridge. Never record a silent success:
+				// on panic we write an error entry, so the block is treated as
+				// failed and re-scanned, not skipped.
+				res, err := scanBlockSafe(rpc, h, cfg.VaultAddress, cfg.Tokens)
 				mu.Lock()
 				out[h] = blockScanEntry{result: res, err: err}
 				mu.Unlock()
@@ -1020,6 +1031,21 @@ feed:
 	close(heights)
 	wg.Wait()
 	return out
+}
+
+// scanBlockSafe wraps scanBlock with a per-height recover (C-ER1, round3). A
+// panic inside a worker goroutine cannot be caught by runOnceSafe's recover
+// (recover is per-goroutine), so without this a malformed-RPC-induced panic in
+// scanBlock would crash the whole bot. On panic we return a non-nil error so
+// the block is treated as failed (re-scanned), never a silent success.
+func scanBlockSafe(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (res *blockScanResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = nil
+			err = fmt.Errorf("scanBlock panic at height %d: %v", height, r)
+		}
+	}()
+	return scanBlock(rpc, height, vaultAddr, tokens)
 }
 
 func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (*blockScanResult, error) {
@@ -1192,41 +1218,47 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 // ---------------------------------------------------------------------------
 
 // PendingSpend mirrors the contract's PendingSpend stored at state key d-{nonce}.
+//
+// H-F1 (round3): the contract stores this as JSON (contract/mapping/withdrawal.go
+// StorePendingSpend → json.Marshal; v18 §AE migration from pipe-delimited). The
+// JSON tags here MUST match the contract struct (withdrawal.go:76-91) EXACTLY:
+//
+//	nonce, amount, from, to, asset, unsigned_tx_hex, block_height,
+//	vault_at_queue, token_address (omitempty)
+//
+// The old bot parser did strings.Split(raw, "|"), which on a JSON string yields
+// ONE field → len<7 → nil → every withdrawal wedged. VaultAtQueue was also
+// entirely absent from the bot struct (the contract ecrecovers confirmSpend
+// against it). Both are now present.
 type PendingSpend struct {
-	Nonce         uint64
-	From          string
-	To            string
-	Asset         string
-	Amount        int64
-	UnsignedTxHex string
-	BlockHeight   uint64
-	TokenAddress  string
+	Nonce         uint64 `json:"nonce"`
+	Amount        int64  `json:"amount"`
+	From          string `json:"from"`
+	To            string `json:"to"`
+	Asset         string `json:"asset"`
+	UnsignedTxHex string `json:"unsigned_tx_hex"`
+	BlockHeight   uint64 `json:"block_height"`
+	VaultAtQueue  string `json:"vault_at_queue"`
+	TokenAddress  string `json:"token_address,omitempty"`
 }
 
+// parsePendingSpend decodes the contract's JSON-encoded PendingSpend (H-F1).
+// Returns nil on a malformed/empty entry or a non-positive Amount / empty
+// UnsignedTxHex (the same validation the prior pipe parser enforced), so the
+// caller routes to "no usable pending spend" rather than assembling a bad tx.
 func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
-	fields := strings.Split(raw, "|")
-	// MED-30 (F-M22-MED-10): accept >= 7 fields rather than strict == 7 so a
-	// future contract upgrade that appends fields does not silently wedge the
-	// bot before a coordinated redeploy. Fewer than 7 fields is still rejected
-	// (the first 7 positions are required to assemble a withdrawal).
-	if len(fields) < 7 {
+	ps := &PendingSpend{}
+	if err := json.Unmarshal([]byte(raw), ps); err != nil {
 		return nil
 	}
-	ps := &PendingSpend{Nonce: nonce}
-	ps.From = fields[0]
-	ps.To = fields[1]
-	ps.Asset = fields[2]
-	ps.Amount, _ = strconv.ParseInt(fields[3], 10, 64)
+	// The contract keys the entry by nonce; trust the caller's nonce over any
+	// in-band value (mirrors contract GetPendingSpend which sets ps.Nonce=nonce).
+	ps.Nonce = nonce
 	if ps.Amount <= 0 {
 		return nil
 	}
-	ps.UnsignedTxHex = fields[4]
 	if ps.UnsignedTxHex == "" {
 		return nil
-	}
-	ps.BlockHeight, _ = strconv.ParseUint(fields[5], 10, 64)
-	if len(fields) >= 7 {
-		ps.TokenAddress = fields[6]
 	}
 	return ps
 }
@@ -1507,7 +1539,42 @@ type receiptForProof struct {
 	} `json:"logs"`
 }
 
-func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int) (json.RawMessage, error) {
+// confirmSpendRequest mirrors the contract's mapping.ConfirmSpendRequest
+// (contract/mapping/types.go:58-72), whose canonical wire schema is exported by
+// the contract as confirmSpendSchema. H-F2 (round3): the old payload emitted a
+// nested {tx_data:{block_height,tx_index,raw_hex,merkle_proof_hex}} (the DEPOSIT
+// envelope), which the flat intent-bound confirmSpend ABI ignores entirely —
+// every field decoded zero → confirmSpend ALWAYS reverted on the intent gate.
+// The contract verifies BOTH a transactions-trie proof (tx_hex + tx_proof_hex
+// against header.TransactionsRoot) AND a receipts-trie proof (receipt_hex +
+// receipt_proof_hex against header.ReceiptsRoot) for the SAME tx_index, plus the
+// 4 intent_* fields (verified == PendingSpend BEFORE any proof work, HIGH #13).
+type confirmSpendRequest struct {
+	BlockHeight     uint64 `json:"block_height"`
+	TxIndex         uint64 `json:"tx_index"`
+	TxHex           string `json:"tx_hex"`
+	TxProofHex      string `json:"tx_proof_hex"`
+	ReceiptHex      string `json:"receipt_hex"`
+	ReceiptProofHex string `json:"receipt_proof_hex"`
+	IntentNonce     uint64 `json:"intent_nonce"`
+	IntentTo        string `json:"intent_to"`
+	IntentAmount    int64  `json:"intent_amount"`
+	IntentAsset     string `json:"intent_asset"`
+}
+
+// buildConfirmSpendPayload assembles the flat 10-field ConfirmSpendRequest
+// (H-F2). It builds a transactions-trie proof and a receipts-trie proof for the
+// withdrawal tx at txIndex, and carries the intent fields from the PendingSpend
+// the bot already parsed (ps). The contract uses the same tx_index as the trie
+// key for BOTH proofs (handlers.go:492,593), so a single index drives both legs.
+//
+// All proof hex is BARE (no 0x prefix): the contract decodes via Go's
+// encoding/hex which rejects a 0x prefix (proof.go / handlers.go hex.DecodeString).
+func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
+	if ps == nil {
+		return nil, fmt.Errorf("confirmSpend: nil pending spend (intent fields unavailable)")
+	}
+
 	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, blockHeight))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d for confirmSpend: %w", blockHeight, err)
@@ -1519,7 +1586,40 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 	if err := json.Unmarshal(blockData, &block); err != nil {
 		return nil, fmt.Errorf("parse block %d: %w", blockHeight, err)
 	}
+	if txIndex < 0 || txIndex >= len(block.Transactions) {
+		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(block.Transactions))
+	}
 
+	// --- Transactions-trie leg: tx_hex (raw typed tx RLP) + tx_proof_hex.
+	// Mirrors the deposit path (buildMapPayloadFromRPC): the raw tx bytes
+	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
+	// so the reconstructed root matches header.TransactionsRoot. The contract
+	// compares the proven leaf byte-for-byte against tx_hex.
+	rawTxs := make([][]byte, len(block.Transactions))
+	for i, hash := range block.Transactions {
+		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
+		if err != nil {
+			return nil, fmt.Errorf("fetch raw tx %d/%d for confirmSpend: %w", i, len(block.Transactions), err)
+		}
+		var rawHex string
+		if err := json.Unmarshal(rData, &rawHex); err != nil {
+			return nil, fmt.Errorf("parse raw tx %d: %w", i, err)
+		}
+		rawTxs[i] = hexToBytes(rawHex)
+		if rawTxs[i] == nil {
+			return nil, fmt.Errorf("confirmSpend: raw tx %d decoded to nil (RPC returned %q)", i, rawHex)
+		}
+	}
+	txKeys := make([][]byte, len(rawTxs))
+	for i := range txKeys {
+		txKeys[i] = rlpEncodeUint64(uint64(i))
+	}
+	_, txProofNodes, txTargetRLP := buildMPTProof(txKeys, rawTxs, txIndex)
+	if txProofNodes == nil {
+		return nil, fmt.Errorf("confirmSpend tx proof construction failed: txIndex %d / %d txs", txIndex, len(rawTxs))
+	}
+
+	// --- Receipts-trie leg: receipt_hex (RLP receipt) + receipt_proof_hex.
 	allReceipts := make([]receiptForProof, len(block.Transactions))
 	for i, hash := range block.Transactions {
 		rData, err := rpc.getReceipt(hash)
@@ -1530,37 +1630,45 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 			return nil, fmt.Errorf("parse receipt %d: %w", i, err)
 		}
 	}
-
 	encodedReceipts := make([][]byte, len(allReceipts))
 	for i := range allReceipts {
 		encodedReceipts[i] = encodeReceiptRLP(&allReceipts[i])
 	}
-
-	keys := make([][]byte, len(encodedReceipts))
-	for i := range keys {
-		keys[i] = rlpEncodeUint64(uint64(i))
+	rcptKeys := make([][]byte, len(encodedReceipts))
+	for i := range rcptKeys {
+		rcptKeys[i] = rlpEncodeUint64(uint64(i))
+	}
+	_, rcptProofNodes, rcptTargetRLP := buildMPTProof(rcptKeys, encodedReceipts, txIndex)
+	if rcptProofNodes == nil {
+		return nil, fmt.Errorf("confirmSpend receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(encodedReceipts))
 	}
 
-	_, proofNodes, targetRLP := buildMPTProof(keys, encodedReceipts, txIndex)
-	if proofNodes == nil {
-		return nil, fmt.Errorf("proof construction failed: txIndex %d out of range (block has %d txs)", txIndex, len(encodedReceipts))
+	txProofHex := ""
+	for _, node := range txProofNodes {
+		txProofHex += hex.EncodeToString(node)
+	}
+	rcptProofHex := ""
+	for _, node := range rcptProofNodes {
+		rcptProofHex += hex.EncodeToString(node)
 	}
 
-	proofHex := ""
-	for _, node := range proofNodes {
-		proofHex += hex.EncodeToString(node)
+	req := confirmSpendRequest{
+		BlockHeight:     blockHeight,
+		TxIndex:         uint64(txIndex),
+		TxHex:           hex.EncodeToString(txTargetRLP),
+		TxProofHex:      txProofHex,
+		ReceiptHex:      hex.EncodeToString(rcptTargetRLP),
+		ReceiptProofHex: rcptProofHex,
+		IntentNonce:     ps.Nonce,
+		IntentTo:        ps.To,
+		IntentAmount:    ps.Amount,
+		IntentAsset:     ps.Asset,
 	}
 
-	payload := map[string]interface{}{
-		"tx_data": map[string]interface{}{
-			"block_height":     blockHeight,
-			"tx_index":         txIndex,
-			"raw_hex":          hex.EncodeToString(targetRLP),
-			"merkle_proof_hex": proofHex,
-		},
+	data, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend marshal: %w", err)
 	}
-
-	data, _ := json.Marshal(payload)
 	return data, nil
 }
 
@@ -2463,7 +2571,29 @@ func handleConfirmations(
 			)
 		}
 
-		payload, err := buildConfirmSpendPayload(rpc, stx.TxHash, blockNum, txIndex)
+		// H-F2 (round3): confirmSpend is intent-bound — the contract verifies the
+		// 4 intent_* fields against the PendingSpend at the confirmed nonce BEFORE
+		// any proof work (HIGH #13). SentTx does not carry To/Amount/Asset, so
+		// re-fetch the PendingSpend from contract state (key d-{nonce}) and parse
+		// it with the JSON parser (H-F1). The intent fields MUST equal the stored
+		// PendingSpend, so reading it from the contract is the authoritative source.
+		spendKey := "d-" + strconv.FormatUint(stx.Nonce, 10)
+		spendState, sErr := gql.fetchContractState(ctx, cfg.ContractID, []string{spendKey})
+		if sErr != nil {
+			slog.Warn("confirmSpend: fetch pending spend failed", "txHash", stx.TxHash, "nonce", stx.Nonce, "err", sErr)
+			continue
+		}
+		ps := parsePendingSpend(stx.Nonce, spendState[spendKey])
+		if ps == nil {
+			// The pending spend is gone (nonce already advanced/cleared) or
+			// unparseable. Don't fabricate intent fields — skip and let the
+			// nonce-advance reconciliation below clear stale entries.
+			slog.Warn("confirmSpend: pending spend missing/unparseable — skipping",
+				"txHash", stx.TxHash, "nonce", stx.Nonce, "raw", spendState[spendKey])
+			continue
+		}
+
+		payload, err := buildConfirmSpendPayload(rpc, stx.TxHash, blockNum, txIndex, ps)
 		if err != nil {
 			slog.Error("build confirmSpend payload failed", "txHash", stx.TxHash, "err", err)
 			continue
