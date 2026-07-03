@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -118,7 +119,41 @@ func parseConfig() EVMBotConfig {
 		os.Exit(1)
 	}
 
+	// MED-44 (EVM-B-M4): validate the vault address FORMAT, not just non-empty.
+	// A zero address (0x000...0) or any non-20-byte / non-hex string previously
+	// passed the "!= \"\"" check, after which the bot would treat burns to
+	// address(0) as deposits and sign withdrawals the contract can never confirm.
+	if !isValidEthAddress(cfg.VaultAddress) {
+		slog.Error("VAULT_ADDRESS is not a valid 20-byte hex Ethereum address (or is the zero address)",
+			"vault", cfg.VaultAddress)
+		os.Exit(1)
+	}
+
 	return cfg
+}
+
+// isValidEthAddress reports whether s is a 0x-prefixed 20-byte hex address that
+// is not the zero address. Used to reject vault misconfiguration at startup.
+func isValidEthAddress(s string) bool {
+	if !strings.HasPrefix(s, "0x") && !strings.HasPrefix(s, "0X") {
+		return false
+	}
+	body := s[2:]
+	if len(body) != 40 {
+		return false
+	}
+	raw, err := hex.DecodeString(body)
+	if err != nil {
+		return false
+	}
+	allZero := true
+	for _, b := range raw {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	return !allZero
 }
 
 // initEthKey loads or generates the secp256k1 private key for L2 signing.
@@ -170,10 +205,15 @@ type Checkpoint struct {
 	LastScannedBlock uint64            `json:"last_scanned_block"`
 	SentWithdrawals  map[string]SentTx `json:"sent_withdrawals"`
 	BlockRetries     map[uint64]int    `json:"block_retries,omitempty"`
+	Version          int               `json:"version"`
 	mu               sync.Mutex
 }
 
 const blockRetryAlertThreshold = 10
+
+// checkpointVersion is the on-disk schema version. Bumping the struct layout
+// MUST bump this so a future bot refuses to silently consume a stale layout.
+const checkpointVersion = 1
 
 type SentTx struct {
 	SignedTxHex string `json:"signed_tx_hex"`
@@ -186,12 +226,30 @@ func loadCheckpoint(path string) *Checkpoint {
 	cp := &Checkpoint{
 		SentWithdrawals: make(map[string]SentTx),
 		BlockRetries:    make(map[uint64]int),
+		Version:         checkpointVersion,
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cp
 	}
-	json.Unmarshal(data, cp)
+	// MED-43 / MED-137 (EVM-B-M2/M8, m59 F11): do NOT discard the unmarshal
+	// error. A corrupt/partial checkpoint previously yielded Checkpoint{} —
+	// the bot then re-scanned from block 1 and could rebroadcast already-sent
+	// withdrawals at reused L1 nonces. On a decode error, fail closed: refuse
+	// to start from a phantom-empty state rather than silently re-scanning.
+	if err := json.Unmarshal(data, cp); err != nil {
+		slog.Error("checkpoint file is corrupt — refusing to start from an empty state to avoid re-scan / nonce-reuse; move or repair the file",
+			"path", path, "err", err)
+		os.Exit(1)
+	}
+	// MED-43: reject an unknown on-disk schema version rather than mis-reading
+	// fields written by an incompatible build.
+	if cp.Version != 0 && cp.Version != checkpointVersion {
+		slog.Error("checkpoint schema version mismatch — refusing to start",
+			"path", path, "fileVersion", cp.Version, "expected", checkpointVersion)
+		os.Exit(1)
+	}
+	cp.Version = checkpointVersion
 	if cp.SentWithdrawals == nil {
 		cp.SentWithdrawals = make(map[string]SentTx)
 	}
@@ -204,19 +262,42 @@ func loadCheckpoint(path string) *Checkpoint {
 func (cp *Checkpoint) save(path string) {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
+	cp.Version = checkpointVersion
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		slog.Error("checkpoint marshal failed", "err", err)
 		return
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	// MED-120 / MED-90 (SSH-9 / OP-2): the checkpoint holds SignedTxHex and the
+	// last-scanned block — broadcast-replay + OPSEC surface. Write 0600 so it is
+	// not world-readable on shared hosts.
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
 		slog.Error("checkpoint write failed", "path", tmpPath, "err", err)
 		return
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		slog.Error("checkpoint rename failed", "err", err)
 	}
+}
+
+// acquireCheckpointLock takes an exclusive advisory lock on a sidecar lock file
+// next to the checkpoint. MED-91 (M32-NEW-9): two bot instances pointed at the
+// same checkpoint would otherwise race competing broadcasts at the same L2/L1
+// nonce. A non-blocking flock makes a second instance fail fast instead of
+// silently double-broadcasting. The returned *os.File must be kept open for the
+// lifetime of the process (closing releases the lock).
+func acquireCheckpointLock(path string) (*os.File, error) {
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file %s: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another bot instance already holds %s: %w", lockPath, err)
+	}
+	return f, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +313,39 @@ func newEthRPC(url string) *ethRPC {
 	return &ethRPC{url: url, client: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// maxHTTPResponseBytes caps how many bytes we will read from any single HTTP
+// response body (JSON-RPC or GraphQL). MED-57 (EVM-B-M5 / F-ST-2 / F-MON-3 /
+// EH-MED-5): a hostile or buggy upstream RPC/GQL endpoint could otherwise stream
+// an unbounded body into io.ReadAll and OOM-kill the bot, halting the bridge. A
+// legitimate eth_getBlockByNumber with full txs for a ~300-tx ETH block is well
+// under this; 16 MiB leaves generous headroom for L2 forks with denser blocks
+// while still bounding worst-case memory.
+const maxHTTPResponseBytes = 16 << 20 // 16 MiB
+
+// gqlPerURLTimeout bounds how long any single GraphQL endpoint may take before
+// the bot abandons it and rotates to the next URL. MED-116 (m39 F-INJ-B4): the
+// GraphQL clients walk all configured URLs sequentially; without a per-URL cap a
+// slow-loris endpoint (or several) could hold each request for the full client
+// Timeout, so N URLs serialized into N*30s and stalled the withdrawal pipeline.
+// A tight per-URL deadline makes a hung endpoint fail fast and bounds the total
+// walk to len(urls)*gqlPerURLTimeout (further clamped by the parent context).
+const gqlPerURLTimeout = 12 * time.Second
+
+// readBodyCapped reads up to maxHTTPResponseBytes from r and returns an error if
+// the body exceeds the cap (rather than silently truncating, which would corrupt
+// JSON decoding). MED-57: mirrors the io.LimitReader(body, max+1) bounded-read
+// pattern already used at modules/wasm/runtime_ipc/setup_unix.go:89.
+func readBodyCapped(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxHTTPResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxHTTPResponseBytes {
+		return nil, fmt.Errorf("response body exceeds %d byte cap", maxHTTPResponseBytes)
+	}
+	return data, nil
+}
+
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
 	resp, err := e.client.Post(e.url, "application/json", strings.NewReader(body))
@@ -239,7 +353,11 @@ func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	// MED-57: bound the response body so a hostile RPC cannot OOM the bot.
+	raw, err := readBodyCapped(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read rpc response: %w", err)
+	}
 
 	var result struct {
 		Result json.RawMessage           `json:"result"`
@@ -277,6 +395,14 @@ func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
 	return e.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash))
 }
 
+// getTransactionByHash fetches the canonical transaction object for a hash.
+// MED-50: used to cross-check that a receipt returned by "already mined"
+// recovery actually corresponds to a transaction the RPC knows about, so a
+// hostile RPC cannot fabricate a receipt for a hash we never broadcast.
+func (e *ethRPC) getTransactionByHash(txHash string) (json.RawMessage, error) {
+	return e.call("eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash))
+}
+
 func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
 	data, err := e.call("eth_sendRawTransaction", fmt.Sprintf(`"0x%s"`, signedTxHex))
 	if err != nil {
@@ -285,6 +411,17 @@ func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
 	var txHash string
 	json.Unmarshal(data, &txHash)
 	return txHash, nil
+}
+
+// fetchContractPaused reports whether the contract's "paused" state key is "1".
+// MED-51 (F-M37-7): lets the tick loop detect a paused contract and back off
+// instead of burning RC retrying calls that the contract will reject.
+func fetchContractPaused(ctx context.Context, gql *vscGraphQL, contractID string) (bool, error) {
+	state, err := gql.fetchContractState(ctx, contractID, []string{"paused"})
+	if err != nil {
+		return false, err
+	}
+	return state["paused"] == "1", nil
 }
 
 // ---------------------------------------------------------------------------
@@ -307,25 +444,21 @@ func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[s
 	})
 
 	var lastErr error
-	for _, url := range g.urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	for i, url := range g.urls {
+		// MED-115 (m39 F-INJ-B3): rotating to a fallback endpoint after a primary
+		// failure must NOT be silent. A transient 502 on URL[0] followed by a 200
+		// from a less-trusted fallback previously looked identical to a clean
+		// success — there was no signal the bot had degraded to a secondary
+		// source (and may be acting on its possibly-staler data). We still fail
+		// CLOSED on total exhaustion (return error below); here we make every
+		// fall-through observable so a stuck-on-fallback condition is detectable.
+		res, err := g.doGQL(ctx, url, body)
 		if err != nil {
 			lastErr = err
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := g.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: GraphQL endpoint failed — rotating to next endpoint (degraded to fallback; data may be staler)",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 
@@ -335,16 +468,58 @@ func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[s
 				Message string `json:"message"`
 			} `json:"errors"`
 		}
-		if err := json.Unmarshal(raw, &result); err != nil {
+		if err := json.Unmarshal(res, &result); err != nil {
 			lastErr = fmt.Errorf("decode: %w", err)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: GraphQL endpoint returned undecodable body — rotating to next endpoint",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 		if len(result.Errors) > 0 {
+			// A GraphQL-level error is an authoritative answer from the endpoint,
+			// not a transport failure — do NOT silently rotate past it (that would
+			// be the fail-open the audit flags). Fail closed.
 			return nil, fmt.Errorf("graphql error: %s", result.Errors[0].Message)
 		}
 		return result.Data, nil
 	}
 	return nil, fmt.Errorf("all graphql endpoints failed: %w", lastErr)
+}
+
+// doGQL performs one POST to a single GraphQL endpoint with a per-URL deadline,
+// reads the response under a size cap, and validates the HTTP status. It is the
+// shared per-endpoint primitive for the URL-rotation loops.
+//   - MED-116 (m39 F-INJ-B4): each attempt gets its own bounded sub-context
+//     (gqlPerURLTimeout, further clamped by the parent ctx) so one slow-loris
+//     endpoint cannot consume the whole client Timeout and serialize N URLs into
+//     N*30s — a hung endpoint fails fast and the walk rotates on.
+//   - MED-57 (EVM-B-M5): the body is read through readBodyCapped so a hostile
+//     endpoint cannot OOM the bot with an unbounded response.
+func (g *vscGraphQL) doGQL(ctx context.Context, url string, body []byte) (json.RawMessage, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, gqlPerURLTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	raw, err := readBodyCapped(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response from %s: %w", url, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+	return raw, nil
 }
 
 // fetchContractState reads keys from the EVM mapping contract's state.
@@ -448,24 +623,15 @@ func (g *vscGraphQL) FetchAccountNonce(ctx context.Context, account string) (uin
 	})
 
 	var lastErr error
-	for _, url := range g.urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	for i, url := range g.urls {
+		// MED-57 + MED-116: capped read + per-URL deadline via doGQL.
+		raw, err := g.doGQL(ctx, url, reqBody)
 		if err != nil {
 			lastErr = err
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := g.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: nonce endpoint failed — rotating to next endpoint",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 
@@ -481,6 +647,10 @@ func (g *vscGraphQL) FetchAccountNonce(ctx context.Context, account string) (uin
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
 			lastErr = fmt.Errorf("decode nonce: %w", err)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: nonce endpoint returned undecodable body — rotating to next endpoint",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 		if len(result.Errors) > 0 {
@@ -500,24 +670,18 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 	})
 
 	var lastErr error
-	for _, url := range g.urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	for i, url := range g.urls {
+		// MED-57 + MED-116: capped read + per-URL deadline via doGQL. Rotation
+		// semantics are unchanged from the original loop; L2 nonce-reuse / double-
+		// submit safety on this broadcast path is enforced upstream in
+		// callContractL2/callWithRetry (errNonceConsumed, context-done abort).
+		raw, err := g.doGQL(ctx, url, reqBody)
 		if err != nil {
 			lastErr = err
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := g.client.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		raw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: submit endpoint failed — rotating to next endpoint",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 
@@ -533,6 +697,10 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
 			lastErr = fmt.Errorf("decode submit: %w", err)
+			if i < len(g.urls)-1 {
+				slog.Warn("MED-115: submit endpoint returned undecodable body — rotating to next endpoint",
+					"failedURL", url, "err", err)
+			}
 			continue
 		}
 		if len(result.Errors) > 0 {
@@ -557,6 +725,7 @@ func (s *l2Submitter) callContractL2(
 	contractID string,
 	action string,
 	payload json.RawMessage,
+	rcOverride uint64,
 ) (string, error) {
 	// Serialize concurrent L2 submissions for nonce ordering.
 	s.mu.Lock()
@@ -570,6 +739,12 @@ func (s *l2Submitter) callContractL2(
 	}
 
 	rcLimit := s.cfg.RcLimit
+	// MED-99 (M33-M6): allow per-call RcLimit escalation so a large-instruction
+	// (gas-bomb) deposit that exceeds the default RC budget can be recovered by
+	// retrying with a higher limit instead of being permanently dead-lettered.
+	if rcOverride > 0 {
+		rcLimit = rcOverride
+	}
 	call := &transactionpool.VscContractCall{
 		ContractId: contractID,
 		Action:     action,
@@ -615,6 +790,19 @@ func (s *l2Submitter) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
 	if err != nil {
+		// MED-98 (M33-M4): the bot uses a single freshly-fetched L2 account
+		// nonce per submission. If a prior attempt actually landed (but the bot
+		// observed an error), this attempt reuses a now-consumed nonce and the
+		// node rejects it as "nonce too low" / "already known" / "duplicate".
+		// Re-fetching the same stale nonce and retrying forever would stall ALL
+		// subsequent submissions. Treat an already-consumed-nonce rejection as
+		// terminal-progress (errNonceConsumed) so the retry layer stops cleanly
+		// instead of wedging — the next tick re-derives a fresh nonce.
+		if isNonceConsumedErr(err) {
+			slog.Warn("MED-98: L2 nonce already consumed (prior submission likely landed) — not stalling on a stale-nonce retry",
+				"action", action, "nonce", nonce, "err", err)
+			return "", fmt.Errorf("%w: %v", errNonceConsumed, err)
+		}
 		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
 
@@ -638,9 +826,19 @@ func (s *l2Submitter) callWithRetry(
 	maxAttempts int,
 ) error {
 	var lastErr error
+	var rcOverride uint64 // 0 = use configured default
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		_, err := s.callContractL2(ctx, contractID, action, payload)
+		_, err := s.callContractL2(ctx, contractID, action, payload, rcOverride)
 		if err == nil {
+			return nil
+		}
+		// MED-98 (M33-M4): if the prior submission already consumed the nonce
+		// (it landed), do NOT keep retrying at a stale nonce — that would stall
+		// every later submission. Stop cleanly; the next tick re-derives a fresh
+		// nonce and the contract dedupes the already-landed action.
+		if errors.Is(err, errNonceConsumed) {
+			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
+				"action", action)
 			return nil
 		}
 		lastErr = err
@@ -650,6 +848,35 @@ func (s *l2Submitter) callWithRetry(
 			"maxAttempts", maxAttempts,
 			"err", err,
 		)
+		// MED-49 (F-M22-MED-5): if the surrounding context has been cancelled or
+		// has timed out, the previous SubmitTransactionV1 may have reached the
+		// node even though we observed an error. Retrying would re-fetch a fresh
+		// nonce and re-submit the SAME action, double-spending RC (and, for
+		// withdrawals, risking a second L1 broadcast). Stop retrying on an
+		// ambiguous context-done outcome rather than risk a double-submit.
+		if ctx.Err() != nil {
+			return fmt.Errorf("L2 submission aborted (context done; prior attempt outcome ambiguous, not retrying to avoid double-submit): %w", lastErr)
+		}
+		// MED-99 (M33-M6) + MED-96 (M33-H1): on an RC-exhaustion error (a
+		// gas-bomb payload) OR an RC-contention rejection (a competing bot
+		// outbidding the honest bot on L2 mempool RC), escalate the RcLimit for
+		// the next attempt (bounded). This lets a gas-bomb-sized payload be
+		// recovered and lets the honest bot out-bid contention rather than be
+		// censored. Full anti-censorship is a protocol-level priority concern
+		// (structural) — this is the bot-local mitigation.
+		if isRcExhaustionErr(err) || isRcContentionErr(err) {
+			next := s.cfg.RcLimit * 4
+			if rcOverride > 0 {
+				next = rcOverride * 4
+			}
+			const maxRcEscalation = 1 << 22 // hard ceiling so escalation is bounded
+			if next > maxRcEscalation {
+				next = maxRcEscalation
+			}
+			rcOverride = next
+			slog.Warn("MED-99/MED-96: RC exhausted or contended — escalating RcLimit for next attempt",
+				"action", action, "newRcLimit", rcOverride)
+		}
 		if attempt < maxAttempts {
 			backoff := time.Duration(attempt) * 2 * time.Second
 			select {
@@ -660,6 +887,58 @@ func (s *l2Submitter) callWithRetry(
 		}
 	}
 	return fmt.Errorf("all %d L2 submission attempts failed: %w", maxAttempts, lastErr)
+}
+
+// errNonceConsumed is a sentinel: the L2 account nonce used for a submission was
+// already consumed by a prior attempt that actually landed. MED-98 — callers
+// must treat this as terminal-progress, NOT a retryable failure.
+var errNonceConsumed = errors.New("l2 nonce already consumed")
+
+// isNonceConsumedErr reports whether an L2 submission error indicates the nonce
+// was already used (the prior attempt landed). MED-98.
+func isNonceConsumedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nonce too low") ||
+		strings.Contains(msg, "nonce already") ||
+		strings.Contains(msg, "already known") ||
+		strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "already in pool") ||
+		strings.Contains(msg, "already exists")
+}
+
+// isRcExhaustionErr reports whether an L2 submission error looks like an RC /
+// resource-credit exhaustion rejection. Used by MED-99 RcLimit escalation.
+func isRcExhaustionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "rc") &&
+		(strings.Contains(msg, "exceed") ||
+			strings.Contains(msg, "exhaust") ||
+			strings.Contains(msg, "insufficient") ||
+			strings.Contains(msg, "limit") ||
+			strings.Contains(msg, "not enough"))
+}
+
+// isRcContentionErr reports whether an L2 submission error looks like an
+// RC-contention / mempool-priority rejection (a competing bot outbidding the
+// honest bot). MED-96 (M33-H1) — bot-local mitigation only; full anti-censorship
+// is a protocol-level priority concern.
+func isRcContentionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "mempool") ||
+		strings.Contains(msg, "replacement") ||
+		strings.Contains(msg, "underpriced") ||
+		strings.Contains(msg, "priority") ||
+		strings.Contains(msg, "too many") ||
+		strings.Contains(msg, "congest")
 }
 
 // ---------------------------------------------------------------------------
@@ -681,6 +960,66 @@ type detectedDeposit struct {
 type blockScanResult struct {
 	Deposits []detectedDeposit
 	BlockRaw json.RawMessage // full block JSON for proof construction
+}
+
+// blockScanEntry pairs a scanBlock result with its error for the parallel
+// prefetch path (MED-47). A nil err means the result is usable.
+type blockScanEntry struct {
+	result *blockScanResult
+	err    error
+}
+
+// scanBlocksParallel prefetches scanBlock results for the inclusive block range
+// [from, to] concurrently using a bounded worker pool, and returns them keyed by
+// block height. MED-47 (EVM-B-M7): scanBlock is read-only on the RPC and
+// independent per block, so the heavy serial RPC latency can be parallelized.
+// The CALLER still consumes results in strict ascending block order and stops at
+// the first error/gap, preserving the original checkpoint-advancement semantics
+// (advance only through the highest contiguous successfully-scanned block).
+func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg EVMBotConfig) map[uint64]blockScanEntry {
+	out := make(map[uint64]blockScanEntry)
+	if to < from {
+		return out
+	}
+
+	// Bounded concurrency so a wide window cannot open thousands of sockets.
+	const maxScanWorkers = 8
+	workers := maxScanWorkers
+	if span := int(to - from + 1); span < workers {
+		workers = span
+	}
+
+	heights := make(chan uint64)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for h := range heights {
+				// Honor cancellation so a timed-out tick stops issuing RPC.
+				if ctx.Err() != nil {
+					return
+				}
+				res, err := scanBlock(rpc, h, cfg.VaultAddress, cfg.Tokens)
+				mu.Lock()
+				out[h] = blockScanEntry{result: res, err: err}
+				mu.Unlock()
+			}
+		}()
+	}
+
+feed:
+	for h := from; h <= to; h++ {
+		select {
+		case <-ctx.Done():
+			break feed
+		case heights <- h:
+		}
+	}
+	close(heights)
+	wg.Wait()
+	return out
 }
 
 func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (*blockScanResult, error) {
@@ -866,7 +1205,11 @@ type PendingSpend struct {
 
 func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
 	fields := strings.Split(raw, "|")
-	if len(fields) != 7 {
+	// MED-30 (F-M22-MED-10): accept >= 7 fields rather than strict == 7 so a
+	// future contract upgrade that appends fields does not silently wedge the
+	// bot before a coordinated redeploy. Fewer than 7 fields is still rejected
+	// (the first 7 positions are required to assemble a withdrawal).
+	if len(fields) < 7 {
 		return nil
 	}
 	ps := &PendingSpend{Nonce: nonce}
@@ -893,11 +1236,18 @@ func parseDERSignature(der []byte) (r, s []byte, err error) {
 	if len(der) < 8 || der[0] != 0x30 {
 		return nil, nil, fmt.Errorf("not a DER signature: len=%d", len(der))
 	}
-	seqLen := int(der[1])
-	if seqLen+2 > len(der) {
+	// MED-72 (T4): support both short-form and long-form DER length encoding of
+	// the outer SEQUENCE. secp256k1 sigs are always 70-72B (short form) today,
+	// but a long-form length (high bit of the length byte set) was previously
+	// mis-parsed as a literal length, silently corrupting r/s extraction.
+	seqLen, hdrLen, lerr := decodeDERLength(der, 1)
+	if lerr != nil {
+		return nil, nil, fmt.Errorf("DER sequence length: %w", lerr)
+	}
+	pos := 1 + hdrLen
+	if pos+seqLen > len(der) {
 		return nil, nil, fmt.Errorf("DER sequence length %d exceeds data length %d", seqLen, len(der))
 	}
-	pos := 2
 
 	if pos >= len(der) || der[pos] != 0x02 {
 		return nil, nil, fmt.Errorf("missing INTEGER tag for r at pos %d", pos)
@@ -906,8 +1256,11 @@ func parseDERSignature(der []byte) (r, s []byte, err error) {
 	if pos >= len(der) {
 		return nil, nil, fmt.Errorf("truncated DER: no r length byte")
 	}
-	rLen := int(der[pos])
-	pos++
+	rLen, rHdr, rerr := decodeDERLength(der, pos)
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("DER r length: %w", rerr)
+	}
+	pos += rHdr
 	if pos+rLen > len(der) {
 		return nil, nil, fmt.Errorf("r length %d exceeds remaining %d bytes", rLen, len(der)-pos)
 	}
@@ -921,8 +1274,11 @@ func parseDERSignature(der []byte) (r, s []byte, err error) {
 	if pos >= len(der) {
 		return nil, nil, fmt.Errorf("truncated DER: no s length byte")
 	}
-	sLen := int(der[pos])
-	pos++
+	sLen, sHdr, serr := decodeDERLength(der, pos)
+	if serr != nil {
+		return nil, nil, fmt.Errorf("DER s length: %w", serr)
+	}
+	pos += sHdr
 	if pos+sLen > len(der) {
 		return nil, nil, fmt.Errorf("s length %d exceeds remaining %d bytes", sLen, len(der)-pos)
 	}
@@ -939,6 +1295,35 @@ func parseDERSignature(der []byte) (r, s []byte, err error) {
 	s = padLeft(s, 32)
 
 	return r, s, nil
+}
+
+// decodeDERLength decodes a DER length field starting at off in der. It returns
+// the decoded length value and the number of bytes the length field occupied
+// (1 for short form, 1+N for long form). MED-72 (T4): handles long-form
+// lengths (lengths >= 128) which the previous single-byte parse mishandled.
+func decodeDERLength(der []byte, off int) (length int, hdrLen int, err error) {
+	if off >= len(der) {
+		return 0, 0, fmt.Errorf("truncated: no length byte at %d", off)
+	}
+	b := der[off]
+	if b < 0x80 {
+		// short form: the byte IS the length.
+		return int(b), 1, nil
+	}
+	n := int(b & 0x7f)
+	if n == 0 || n > 4 {
+		// n==0 is indefinite form (not valid in DER); n>4 would overflow an int
+		// length for our purposes and is far beyond any secp256k1 signature.
+		return 0, 0, fmt.Errorf("unsupported long-form length-of-length %d", n)
+	}
+	if off+1+n > len(der) {
+		return 0, 0, fmt.Errorf("truncated long-form length")
+	}
+	val := 0
+	for i := 0; i < n; i++ {
+		val = (val << 8) | int(der[off+1+i])
+	}
+	return val, 1 + n, nil
 }
 
 func padLeft(b []byte, size int) []byte {
@@ -1509,6 +1894,14 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	gql := newVSCGraphQL(cfg.GraphQLURLs)
 	cp := loadCheckpoint(cfg.CheckpointFile)
 
+	// MED-91 (M32-NEW-9): take an exclusive lock so a second bot instance
+	// pointed at the same checkpoint cannot double-broadcast at the same nonce.
+	lockFile, err := acquireCheckpointLock(cfg.CheckpointFile)
+	if err != nil {
+		return fmt.Errorf("checkpoint lock: %w", err)
+	}
+	defer lockFile.Close()
+
 	submitter := &l2Submitter{
 		ethKey: ethKey,
 		did:    did,
@@ -1519,7 +1912,20 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	// EVM contract creates key with ID "primary" (BTC contract uses "main")
 	tssKeyID := cfg.ContractID + "-primary"
 
+	// MED-4 (CHAIN-V2-14): cross-validate that the TSS key's derived ETH
+	// address matches the configured vault. A mismatch means every withdrawal
+	// would be signed by a key the vault does not recognize → confirmSpend
+	// rejects it → funds stuck. This is a non-fatal startup WARN: the pubkey
+	// encoding is not guaranteed, so we never brick a working bot on a parse
+	// failure — we only alarm on a confidently-derived mismatch.
+	validateTssVaultBinding(ctx, gql, tssKeyID, cfg.VaultAddress)
+
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
+
+	// MED-51 (F-M37-7): exponential backoff applied when the contract is paused
+	// so the tick loop does not burn RC retrying against a paused contract.
+	pausedBackoff := cfg.PollInterval
+	const maxPausedBackoff = 10 * time.Minute
 
 	for {
 		select {
@@ -1529,9 +1935,32 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		default:
 		}
 
+		// MED-51: if the contract is paused, skip the tick body and back off
+		// exponentially instead of hammering it with RC-charged calls.
+		pauseCtx, pauseCancel := context.WithTimeout(ctx, 15*time.Second)
+		paused, pErr := fetchContractPaused(pauseCtx, gql, cfg.ContractID)
+		pauseCancel()
+		if pErr == nil && paused {
+			slog.Warn("contract is paused — skipping tick and backing off",
+				"backoff", pausedBackoff.String())
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pausedBackoff):
+			}
+			if pausedBackoff < maxPausedBackoff {
+				pausedBackoff *= 2
+				if pausedBackoff > maxPausedBackoff {
+					pausedBackoff = maxPausedBackoff
+				}
+			}
+			continue
+		}
+		pausedBackoff = cfg.PollInterval // reset once unpaused
+
 		loopCtx, loopCancel := context.WithTimeout(ctx, 60*time.Second)
 
-		err := runOnce(loopCtx, rpc, gql, submitter, cp, cfg, tssKeyID)
+		err := runOnceSafe(loopCtx, rpc, gql, submitter, cp, cfg, tssKeyID)
 		if err != nil {
 			slog.Error("loop tick failed", "err", err)
 		}
@@ -1545,6 +1974,94 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 			return ctx.Err()
 		case <-time.After(cfg.PollInterval):
 		}
+	}
+}
+
+// runOnceSafe wraps runOnce with a panic recover. MED-46 (EVM-B-M6): a latent
+// panic in any tick stage (hostile RPC, malformed data, nil deref) would
+// otherwise kill the bot and halt the bridge. Recover, log, and let the loop
+// retry on the next tick.
+func runOnceSafe(
+	ctx context.Context,
+	rpc *ethRPC,
+	gql *vscGraphQL,
+	submitter *l2Submitter,
+	cp *Checkpoint,
+	cfg EVMBotConfig,
+	tssKeyID string,
+) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("recovered panic in runOnce: %v", r)
+			slog.Error("recovered from panic in tick — bot continues", "panic", r)
+		}
+	}()
+	return runOnce(ctx, rpc, gql, submitter, cp, cfg, tssKeyID)
+}
+
+// validateTssVaultBinding fetches the TSS key's aggregated public key and
+// checks that the ETH address it derives to equals the configured vault.
+// MED-4 (CHAIN-V2-14). Non-fatal: logs CRITICAL on a confident mismatch,
+// DEBUG when the pubkey cannot be parsed (unknown encoding) so a working bot
+// is never bricked by this check.
+func validateTssVaultBinding(ctx context.Context, gql *vscGraphQL, tssKeyID, vault string) {
+	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	data, err := gql.query(qctx,
+		`query GetKey($id: String!){ getTssKey(keyId: $id){ public_key } }`,
+		map[string]interface{}{"id": tssKeyID},
+	)
+	if err != nil {
+		slog.Warn("MED-4: could not fetch TSS key to validate vault binding (continuing)", "err", err)
+		return
+	}
+	var parsed struct {
+		GetTssKey *struct {
+			PublicKey string `json:"public_key"`
+		} `json:"getTssKey"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil || parsed.GetTssKey == nil {
+		slog.Warn("MED-4: TSS key not found / undecodable — skipping vault binding check", "keyId", tssKeyID)
+		return
+	}
+	addr, ok := tssPubKeyToAddress(parsed.GetTssKey.PublicKey)
+	if !ok {
+		slog.Debug("MED-4: TSS public_key encoding not recognized — skipping vault binding check (non-fatal)",
+			"keyId", tssKeyID)
+		return
+	}
+	if !strings.EqualFold(addr, vault) {
+		slog.Error("MED-4 CRITICAL: TSS-derived ETH address does NOT match configured VAULT_ADDRESS — withdrawals will be unconfirmable; verify configuration before funds move",
+			"keyId", tssKeyID, "derived", addr, "vault", vault)
+		return
+	}
+	slog.Info("MED-4: TSS-derived ETH address matches configured vault", "vault", vault)
+}
+
+// tssPubKeyToAddress derives the lowercase 0x ETH address from a hex-encoded
+// secp256k1 public key (uncompressed 65-byte or compressed 33-byte). Returns
+// ok=false if the encoding is not a recognized secp256k1 pubkey.
+func tssPubKeyToAddress(pk string) (string, bool) {
+	pk = strings.TrimPrefix(strings.TrimPrefix(pk, "0x"), "0X")
+	raw, err := hex.DecodeString(pk)
+	if err != nil {
+		return "", false
+	}
+	switch len(raw) {
+	case 65:
+		pub, err := ethCrypto.UnmarshalPubkey(raw)
+		if err != nil {
+			return "", false
+		}
+		return strings.ToLower(ethCrypto.PubkeyToAddress(*pub).Hex()), true
+	case 33:
+		pub, err := ethCrypto.DecompressPubkey(raw)
+		if err != nil {
+			return "", false
+		}
+		return strings.ToLower(ethCrypto.PubkeyToAddress(*pub).Hex()), true
+	default:
+		return "", false
 	}
 }
 
@@ -1578,6 +2095,15 @@ func runOnce(
 		contractHeight = finalized
 	}
 
+	// MED-48 (F-M22-MED-4): if the contract's ingested height is behind our
+	// checkpoint (e.g. the ZK verifier has stalled), the scan window below is
+	// empty and the bot would silently do no deposit work. Surface a WARN so
+	// the stall is observable instead of looking like a healthy idle bot.
+	if err == nil && contractHeight < cp.LastScannedBlock {
+		slog.Warn("contract ingested height is behind bot checkpoint — verifier may be stalled; no new deposits will be mapped this tick",
+			"contractHeight", contractHeight, "checkpoint", cp.LastScannedBlock)
+	}
+
 	// ---------------------------------------------------------------
 	// STEP 3: Scan new blocks for deposits
 	// ---------------------------------------------------------------
@@ -1590,6 +2116,16 @@ func runOnce(
 		scanUpTo = cp.LastScannedBlock + maxBlocksPerTick
 	}
 
+	// MED-47 (EVM-B-M7): scanBlock issues many serial RPC calls per block
+	// (1 eth_getBlockByNumber + N eth_getLogs + per-log receipt lookups). Done
+	// strictly serially across up to maxBlocksPerTick blocks, this is the tick's
+	// dominant latency and can starve the 60s loopCtx. scanBlock is read-only on
+	// the RPC (http.Client is concurrency-safe) and stateless per block, so we
+	// PREFETCH the scan results concurrently with a bounded worker pool, then
+	// process them below in STRICT block order. The checkpoint-advancement and
+	// stop-at-first-failure semantics are unchanged — only the I/O is parallel.
+	scanResults := scanBlocksParallel(ctx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
+
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
 		select {
 		case <-ctx.Done():
@@ -1597,11 +2133,14 @@ func runOnce(
 		default:
 		}
 
-		result, err := scanBlock(rpc, h, cfg.VaultAddress, cfg.Tokens)
-		if err != nil {
-			slog.Error("scan block failed", "block", h, "err", err)
-			break // stop scanning, retry next tick
+		sr, ok := scanResults[h]
+		if !ok || sr.err != nil {
+			if ok && sr.err != nil {
+				slog.Error("scan block failed", "block", h, "err", sr.err)
+			}
+			break // stop scanning at the first gap/failure; retry next tick
 		}
+		result := sr.result
 
 		if len(result.Deposits) == 0 {
 			cp.mu.Lock()
@@ -1782,6 +2321,28 @@ func handleWithdrawals(
 				candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
 				receiptData, rErr := rpc.getReceipt(candidateHash)
 				if rErr != nil || receiptData == nil {
+					continue
+				}
+				// MED-50 (F-M22-MED-8): do NOT trust a receipt blindly. A
+				// hostile RPC can fabricate a receipt for a hash we never
+				// landed, making the bot record a phantom SentTx and stall the
+				// confirmation loop forever. Cross-check that the RPC also
+				// returns a real transaction object for this exact hash, AND
+				// that the canonical tx hash it reports matches what we asked
+				// for.
+				txData, txErr := rpc.getTransactionByHash(candidateHash)
+				if txErr != nil || txData == nil {
+					slog.Warn("MED-50: receipt present but no matching transaction object — ignoring (possible hostile RPC)",
+						"candidateHash", candidateHash)
+					continue
+				}
+				var txObj struct {
+					Hash string `json:"hash"`
+				}
+				if json.Unmarshal(txData, &txObj) != nil ||
+					!strings.EqualFold(txObj.Hash, candidateHash) {
+					slog.Warn("MED-50: transaction object hash mismatch — ignoring (possible hostile RPC)",
+						"candidateHash", candidateHash, "rpcHash", txObj.Hash)
 					continue
 				}
 				var receipt struct {
