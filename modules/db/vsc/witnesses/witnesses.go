@@ -70,28 +70,34 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		"account": request.Account,
 		"height":  request.Height,
 	}
-	update := bson.M{
-		"$set": bson.M{
-			"peer_id":    request.Metadata.VscNode.PeerId,
-			"peer_addrs": request.Metadata.VscNode.PeerAddrs,
-			//timestamp
-			"ts":                    request.Metadata.VscNode.Ts,
-			"tx_id":                 request.TxId,
-			"version_id":            request.Metadata.VscNode.VersionId,
-			"git_commit":            request.Metadata.VscNode.GitCommit,
-			"net_id":                request.Metadata.VscNode.NetId,
-			"version_major":         request.Metadata.VscNode.VersionMajor,
-			"protocol_version":      request.Metadata.VscNode.ProtocolVersion,
-			"version_non_consensus": request.Metadata.VscNode.VersionNonConsensus,
-			"enabled":               request.Metadata.VscNode.Witness.Enabled,
-			"did_keys":              request.Metadata.DidKeys,
-			"gateway_key":           request.Metadata.VscNode.GatewayKey,
-			"gateway_key_pop":       request.Metadata.VscNode.GatewayKeyPoP,
-			// Operator's consensus-delegation policy (consensus 0.5.0+); empty
-			// when the announcement predates the field. Normalized by readers.
-			"delegation_mode": request.Metadata.VscNode.DelegationMode,
-		},
+	set := bson.M{
+		"peer_id":    request.Metadata.VscNode.PeerId,
+		"peer_addrs": request.Metadata.VscNode.PeerAddrs,
+		//timestamp
+		"ts":                    request.Metadata.VscNode.Ts,
+		"tx_id":                 request.TxId,
+		"version_id":            request.Metadata.VscNode.VersionId,
+		"git_commit":            request.Metadata.VscNode.GitCommit,
+		"net_id":                request.Metadata.VscNode.NetId,
+		"version_major":         request.Metadata.VscNode.VersionMajor,
+		"protocol_version":      request.Metadata.VscNode.ProtocolVersion,
+		"version_non_consensus": request.Metadata.VscNode.VersionNonConsensus,
+		"enabled":               request.Metadata.VscNode.Witness.Enabled,
+		"did_keys":              request.Metadata.DidKeys,
+		"gateway_key":           request.Metadata.VscNode.GatewayKey,
+		"gateway_key_pop":       request.Metadata.VscNode.GatewayKeyPoP,
+		// Operator's consensus-delegation policy (consensus 0.5.0+); empty
+		// when the announcement predates the field. Normalized by readers.
+		"delegation_mode": request.Metadata.VscNode.DelegationMode,
 	}
+	// Delegation-mode downgrade timelock (consensus 0.5.0+): only written when a
+	// downgrade is actually pending (MaturityEpoch != 0), so pre-0.5.0 and
+	// non-adverse rows stay byte-identical to before the feature.
+	if request.DelegationModeMaturityEpoch != 0 {
+		set["delegation_mode_effective"] = request.DelegationModeEffective
+		set["delegation_mode_maturity_epoch"] = request.DelegationModeMaturityEpoch
+	}
+	update := bson.M{"$set": set}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
 
 	oldRecordsFilter := bson.M{

@@ -91,3 +91,18 @@ func AllowsDelegation(s string) bool {
 func SharesRewards(s string) bool {
 	return Normalize(s) == Share
 }
+
+// IsAdverseTransition reports whether changing a node's EFFECTIVE delegation
+// mode from old to new strips the on-chain pro-rata REWARD SHARE from existing
+// delegators — i.e. leaving Share for a non-sharing mode (Share->Custom or
+// Share->Deactivated). Only these transitions are timelocked, giving delegators
+// an unbond window to exit before their rewards stop.
+//
+// Acceptance-only changes (Custom<->Deactivated) are NOT adverse: they never
+// touch existing delegators' rewards, principal, or exit rights (unstake is
+// never mode-gated), only whether NEW third-party delegation is accepted.
+// Becoming more generous (-> Share) is never adverse. Inputs are Normalized, so
+// unknown/empty modes are treated as Deactivated.
+func IsAdverseTransition(old, new string) bool {
+	return SharesRewards(old) && !SharesRewards(new)
+}

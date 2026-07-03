@@ -21,7 +21,6 @@ import (
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
-	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -441,21 +440,12 @@ func (r *queryResolver) GetNodeDelegationMode(ctx context.Context, account strin
 	if account == "" {
 		return nil, fmt.Errorf("account cannot be empty")
 	}
-	// Witness records are keyed by the bare Hive account name; tolerate the
-	// "hive:" form used elsewhere in the API.
-	acct := strings.TrimPrefix(account, "hive:")
-
-	// nil height → latest announcement; otherwise pin to the requested height.
-	var bh *uint64
-	if height != nil {
-		h := ParseHeight(height)
-		bh = &h
-	}
-
-	mode := delegationmode.Default
-	if w, err := r.Witnesses.GetWitnessAtHeight(acct, bh); err == nil && w != nil {
-		mode = delegationmode.Normalize(w.DelegationMode)
-	}
+	// Route through the consensus-layer reader so the API reports the EFFECTIVE
+	// (timelock-resolved) mode a delegator actually gets — during a pending
+	// adverse downgrade this is the still-protected mode, not the raw announced
+	// target. NodeDelegationMode strips the "hive:" prefix and defaults to
+	// Deactivated when unavailable. nil height → latest (ParseHeight → MaxInt64).
+	mode := r.StateEngine.NodeDelegationMode(account, ParseHeight(height))
 	return &mode, nil
 }
 

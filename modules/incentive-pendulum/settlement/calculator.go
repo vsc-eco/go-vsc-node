@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"sort"
 	"vsc-node/lib/intmath"
-	"vsc-node/modules/incentive-pendulum"
+	pendulum "vsc-node/modules/incentive-pendulum"
 	"vsc-node/modules/incentive-pendulum/rewards"
 )
 
@@ -129,7 +129,7 @@ func ComputeNodeDistributions(nodeShare int64, bonds map[string]int64) []Distrib
 
 // ExpandShareDistributions rewrites node-level distributions into per-recipient
 // distributions for nodes that share their pendulum rewards with delegators
-// (delegationmode.Share). Consensus 0.3.0+.
+// (delegationmode.Share). Consensus 0.5.0+.
 //
 // For a node present in shareDelegations, its HBD amount is split across the
 // node's stake edges pro-rata by stake using integer floor division
