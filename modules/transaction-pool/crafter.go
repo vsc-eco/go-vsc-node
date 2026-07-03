@@ -466,7 +466,7 @@ type VscContractCall struct {
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
 	Payload    string             `json:"payload"`
-	RcLimit    uint               `json:"rc_limit"`
+	RcLimit    uint64             `json:"rc_limit"`
 	Intents    []contracts.Intent `json:"intents"`
 
 	Caller string `json:"caller"`
