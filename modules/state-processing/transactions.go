@@ -872,7 +872,7 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		Amount:        amount,
 		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
-		ElectionEpoch: electionResult.Epoch + 5,
+		ElectionEpoch: electionResult.Epoch + params.CONSENSUS_UNSTAKE_LOCK_EPOCHS,
 		// Consensus 0.5.0 gate (reuses the election already read above for the
 		// lock epoch): authorize against the signer's delegation edge + debit the
 		// node bond + return HIVE to the delegator. Pre-activation → legacy path.

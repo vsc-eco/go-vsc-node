@@ -28,6 +28,17 @@ type Witness struct {
 	// Consensus 0.5.0+ reads this to gate delegation acceptance and reward
 	// sharing. omitempty keeps pre-0.5.0 records byte-identical.
 	DelegationMode string `json:"delegation_mode,omitempty" bson:"delegation_mode,omitempty"`
+	// DelegationModeEffective is the delegation mode IN FORCE at this row's height
+	// while an adverse (leaving-Share) downgrade is timelocked (consensus 0.5.0+).
+	// Readers return it until the chain epoch reaches DelegationModeMaturityEpoch,
+	// then switch to DelegationMode (the announced target). Empty when no downgrade
+	// is pending and on pre-0.5.0 rows. Set by the state engine at ingest
+	// (StateEngine.computeDelegationTimelock), NOT from L1 metadata.
+	DelegationModeEffective string `json:"delegation_mode_effective,omitempty" bson:"delegation_mode_effective,omitempty"`
+	// DelegationModeMaturityEpoch is the election epoch at/after which DelegationMode
+	// replaces DelegationModeEffective. 0 means "effective immediately" (pre-0.5.0
+	// rows and non-adverse announcements), so readers ignore the timelock fields.
+	DelegationModeMaturityEpoch uint64 `json:"delegation_mode_maturity_epoch,omitempty" bson:"delegation_mode_maturity_epoch,omitempty"`
 }
 
 type PostingJsonMetadata struct {
@@ -78,4 +89,11 @@ type SetWitnessUpdateType struct {
 	BlockId          string
 	GatewayKey       string
 	GatewayActiveKey string
+	// DelegationModeEffective / DelegationModeMaturityEpoch carry the timelock
+	// resolution computed by the state engine (computeDelegationTimelock) into
+	// SetWitnessUpdate. Zero-values mean "no pending downgrade" and are not
+	// persisted. json tags are required: SetWitnessUpdate deep-copies this struct
+	// via a JSON round-trip.
+	DelegationModeEffective     string `json:"delegation_mode_effective"`
+	DelegationModeMaturityEpoch uint64 `json:"delegation_mode_maturity_epoch"`
 }

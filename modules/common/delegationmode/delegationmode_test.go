@@ -77,3 +77,37 @@ func TestSharesRewards(t *testing.T) {
 		t.Error("default must not split rewards")
 	}
 }
+
+func TestIsAdverseTransition(t *testing.T) {
+	// Adverse iff the node LEAVES Share (strips delegators' on-chain reward
+	// share). Every other transition is immediate. Full 3x3 truth table over the
+	// normalized modes, plus a couple of un-normalized inputs.
+	adverse := map[[2]string]bool{
+		// old=deactivated: nothing to strip.
+		{Deactivated, Deactivated}: false,
+		{Deactivated, Share}:       false,
+		{Deactivated, Custom}:      false,
+		// old=share: leaving Share is adverse; staying / re-announcing is not.
+		{Share, Deactivated}: true,
+		{Share, Share}:       false,
+		{Share, Custom}:      true,
+		// old=custom: never shared on-chain, so no reward share to lose —
+		// custom->deactivated is an acceptance-only change, NOT adverse.
+		{Custom, Deactivated}: false,
+		{Custom, Share}:       false,
+		{Custom, Custom}:      false,
+	}
+	for pair, want := range adverse {
+		if got := IsAdverseTransition(pair[0], pair[1]); got != want {
+			t.Errorf("IsAdverseTransition(%q, %q) = %v, want %v", pair[0], pair[1], got, want)
+		}
+	}
+
+	// Normalization applies to both operands.
+	if !IsAdverseTransition("SHARE", " custom") {
+		t.Error("IsAdverseTransition must normalize inputs: SHARE->custom is adverse")
+	}
+	if IsAdverseTransition("custom", "unknown-mode") {
+		t.Error("custom->(unknown=deactivated) is acceptance-only, not adverse")
+	}
+}
