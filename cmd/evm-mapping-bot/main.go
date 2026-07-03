@@ -1677,19 +1677,31 @@ func encodeReceiptRLP(r *receiptForProof) []byte {
 	cumGas := hexToUint64(r.CumulativeGasUsed)
 	bloom := hexToBytes(r.LogsBloom)
 
+	// CC-1 (H-F2 receipt leg): receipt-trie byte-string fields (bloom, log
+	// address, log topics, log data) MUST be RLP-encoded VERBATIM. The previous
+	// encodeRLPBytes stripped leading zero bytes, so the reconstructed receipts
+	// root != header.ReceiptsRoot and the contract receipt-proof verify
+	// (handlers.go:592-599) reverted on ~every withdrawal (guaranteed for ETH:
+	// a no-log receipt's all-zero 256-byte bloom became 0x80 instead of the
+	// canonical 0xb9 0x01 0x00 <256B>). rlpEncodeRaw is byte-identical to the
+	// contract's rlp.EncodeBytes (evm-mapping-contract/contract/rlp/encode.go:5)
+	// used by the contract monitor's EncodeReceipt (monitor/receipt.go:62-102).
+	// The integer fields keep their integer-RLP encoders: status via
+	// encodeRLPByte (0->0x80, 1->0x01) and cumulativeGasUsed via
+	// rlpEncodeUint64Bytes — both match rlp.EncodeUint64.
 	logItems := make([][]byte, len(r.Logs))
 	for i, log := range r.Logs {
 		addr := hexToBytes(log.Address)
 		topicItems := make([][]byte, len(log.Topics))
 		for j, t := range log.Topics {
-			topicItems[j] = encodeRLPBytes(hexToBytes(t))
+			topicItems[j] = rlpEncodeRaw(hexToBytes(t))
 		}
 		topicsList := encodeRLPList(concatBytes(topicItems...))
 		data := hexToBytes(log.Data)
 		logItems[i] = encodeRLPList(concatBytes(
-			encodeRLPBytes(addr),
+			rlpEncodeRaw(addr),
 			topicsList,
-			encodeRLPBytes(data),
+			rlpEncodeRaw(data),
 		))
 	}
 	logsList := encodeRLPList(concatBytes(logItems...))
@@ -1697,7 +1709,7 @@ func encodeReceiptRLP(r *receiptForProof) []byte {
 	receiptBody := concatBytes(
 		encodeRLPByte(byte(status)),
 		rlpEncodeUint64Bytes(cumGas),
-		encodeRLPBytes(bloom),
+		rlpEncodeRaw(bloom),
 		logsList,
 	)
 	receiptRLP := encodeRLPList(receiptBody)
