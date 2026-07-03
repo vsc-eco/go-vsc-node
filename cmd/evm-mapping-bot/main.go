@@ -2643,11 +2643,29 @@ func handleConfirmations(
 // ---------------------------------------------------------------------------
 
 func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID string) (uint64, error) {
-	state, err := gql.fetchContractState(ctx, contractID, []string{"h"})
+	// M23-F5 (#31): the account-mapping contract no longer stores "h" in its own
+	// state — header height now lives in the ZK verifier contract (the contract's
+	// GetLastHeight reads it via VerifierContractIdKey "zkverifier"). Resolve the
+	// verifier id from the account-mapping contract, then read "h" from it. Honor
+	// a local "h" first for backward-compat with any pre-M23-F5 deployment that
+	// still stored it locally. Without this the bot reads an absent "h" → 0 →
+	// scanUpTo = min(finalized, 0) = 0 → it never scans / maps zero deposits.
+	amState, err := gql.fetchContractState(ctx, contractID, []string{"h", "zkverifier"})
 	if err != nil {
 		return 0, err
 	}
-	h, _ := strconv.ParseUint(state["h"], 10, 64)
+	if h, _ := strconv.ParseUint(amState["h"], 10, 64); h > 0 {
+		return h, nil // legacy/local height
+	}
+	verifierID := amState["zkverifier"]
+	if verifierID == "" {
+		return 0, nil // no verifier wired — contract refuses bridge ops anyway
+	}
+	vState, err := gql.fetchContractState(ctx, verifierID, []string{"h"})
+	if err != nil {
+		return 0, err
+	}
+	h, _ := strconv.ParseUint(vState["h"], 10, 64)
 	return h, nil
 }
 
