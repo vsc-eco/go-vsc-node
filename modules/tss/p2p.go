@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 	"vsc-node/modules/common"
 	tss_helpers "vsc-node/modules/tss/helpers"
@@ -17,7 +19,9 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	multiaddr "github.com/multiformats/go-multiaddr"
 	"github.com/multiformats/go-multicodec"
 	blsu "github.com/protolambda/bls12-381-util"
 )
@@ -437,10 +441,22 @@ func (tss *TssManager) SendMsg(
 		return err
 	}
 
+	// Ensure a live connection before sending. TSS reshare delivers its round
+	// messages over on-demand unicast RPC streams; between reshares these
+	// connections go idle and can be torn down by NAT idle-eviction or transport
+	// keepalive timeouts. If libp2p reports the peer as disconnected, re-dial
+	// from its announced addresses so THIS send can proceed over a fresh
+	// connection instead of failing outright. (This handles the
+	// reported-disconnected case; a half-open "Connected" connection is healed
+	// by the ClosePeer below on an idle-death send error.) Transport-only: the
+	// message bytes are unchanged.
 	if !tss.isPeerConnected(peerId) {
-		log.Warn("peer not connected",
-			"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String())
-		return fmt.Errorf("peer %s not connected", peerId.String())
+		tss.reconnectPeer(context.Background(), peerId, witness.PeerAddrs)
+		if !tss.isPeerConnected(peerId) {
+			log.Warn("peer not connected",
+				"sessionId", sessionId, "to", participant.Account, "peerId", peerId.String())
+			return fmt.Errorf("peer %s not connected", peerId.String())
+		}
 	}
 
 	tMsg := TMsg{
@@ -474,6 +490,22 @@ func (tss *TssManager) SendMsg(
 			"sessionId", sessionId, "from", fromAccount, "to", participant.Account,
 			"peerId", peerId.String(), "duration", duration, "err", err)
 		tss.metrics.IncrementMessageSendFailure()
+		// An unambiguous idle-death error means the connection is dead even
+		// though libp2p may briefly still report the peer as "connected"
+		// (half-open, killed by NAT idle-eviction / keepalive timeout). Evict it
+		// so it is re-established by the next keepalive pass or the pre-send
+		// reconnect above, instead of subsequent sends repeatedly failing over
+		// the same dead connection. Gated on isTransportErr (idle-death only, see
+		// there) so a live-but-busy peer's connection is never dropped — note
+		// ClosePeer is connection-wide and the reshare path does not retry
+		// individual messages. Transport-only: message bytes are unchanged, so
+		// this cannot affect the party list or the commitment CID.
+		if isTransportErr(err) {
+			if cerr := tss.p2p.Host().Network().ClosePeer(peerId); cerr != nil {
+				log.Trace("failed to evict stale peer connection",
+					"peerId", peerId.String(), "err", cerr)
+			}
+		}
 		return err
 	}
 
@@ -568,4 +600,186 @@ func (tss *TssManager) isPeerConnected(peerId peer.ID) bool {
 		log.Trace("peer connection check", "peerId", peerId.String(), "state", connState)
 	}
 	return connected
+}
+
+// parseWitnessAddrs converts a witness's announced multiaddr strings into
+// multiaddrs, skipping any that fail to parse.
+func parseWitnessAddrs(addrStrs []string) []multiaddr.Multiaddr {
+	addrs := make([]multiaddr.Multiaddr, 0, len(addrStrs))
+	for _, s := range addrStrs {
+		a, err := multiaddr.NewMultiaddr(s)
+		if err != nil {
+			continue
+		}
+		addrs = append(addrs, a)
+	}
+	return addrs
+}
+
+// isTransportErr reports whether an RPC error indicates a genuinely dead,
+// idle-killed connection. It matches ONLY libp2p's own idle-detection strings
+// ("no recent network activity", "keepalive timeout") — the exact symptoms of
+// the production half-open stalls (e.g. "stream reset: connection closed:
+// keepalive timeout", "timeout: no recent network activity"), so real coverage
+// is retained.
+//
+// It deliberately does NOT match "stream reset" / "connection closed" /
+// "canceled by remote" / "context deadline exceeded" on their own: those are
+// also produced by a LIVE-but-busy peer under resource-manager or stream-limit
+// pressure (and by our own ClosePeer). Because the caller reacts with a
+// connection-wide ClosePeer, and the reshare send path does NOT retry
+// individual messages, treating those ambiguous errors as death would evict a
+// healthy connection mid-reshare — dropping any concurrent in-flight round
+// message on it and stalling that peer for the full timeout. Narrow on purpose.
+func isTransportErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, tok := range []string{
+		"no recent network activity",
+		"keepalive timeout",
+	} {
+		if strings.Contains(s, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconnectPeer re-establishes a direct connection to a peer from its announced
+// addresses. The dial is bounded by both a 10s timeout and the caller's ctx so
+// it unwinds promptly on shutdown. Transport-only: it does not read or modify
+// any TSS message, party list, or commitment.
+func (tss *TssManager) reconnectPeer(ctx context.Context, peerId peer.ID, addrStrs []string) {
+	addrs := parseWitnessAddrs(addrStrs)
+	if len(addrs) == 0 {
+		return
+	}
+	tss.p2p.Peerstore().AddAddrs(peerId, addrs, peerstore.TempAddrTTL)
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := tss.p2p.Connect(dialCtx, peer.AddrInfo{ID: peerId, Addrs: addrs}); err != nil {
+		log.Trace("reconnect failed", "peerId", peerId.String(), "err", err)
+	}
+}
+
+// runConnectionKeepalive keeps direct libp2p connections to the other witnesses
+// warm for the lifetime of the node. TSS reshare delivers its round messages
+// over on-demand unicast RPC streams to specific peers; between reshares those
+// direct connections sit idle and are torn down by NAT idle-eviction,
+// connection-manager trimming, or transport keepalive timeouts. Ordinary block
+// production is unaffected because it rides the continuously active gossip mesh,
+// but the next reshare then fails to deliver its messages over a
+// dead-but-"Connected" stream, stalling the reshare until the connection
+// happens to be alive again. This loop is the production counterpart of the TSS
+// test harness (startPeerKeepalive + ConnManager().Protect) — the mechanism
+// that makes reshares succeed under test but which was absent in production.
+// Transport-only: it never reads or modifies party lists, btss inputs, or
+// serialized commitments.
+func (tss *TssManager) runConnectionKeepalive(ctx context.Context) {
+	const keepaliveInterval = 15 * time.Second
+	ticker := time.NewTicker(keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Guard against a startup race where the p2p host is not yet
+			// initialized — P2PServer.Host() panics rather than returning nil,
+			// and an unrecovered panic in this background goroutine would crash
+			// the whole node.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Warn("keepalive pass panicked, skipping", "panic", r)
+					}
+				}()
+				tss.warmCommitteePeers(ctx)
+			}()
+		}
+	}
+}
+
+// warmCommitteePeers protects, (re)connects, and probes every other enabled
+// witness so each direct TSS connection stays alive before the next reshare
+// needs it. Per-peer work runs concurrently so a few slow or unreachable peers
+// cannot stall warming of the healthy ones.
+func (tss *TssManager) warmCommitteePeers(ctx context.Context) {
+	self := tss.config.Get().HiveUsername
+	witnessList, err := tss.witnessDb.GetLastestWitnesses()
+	if err != nil {
+		log.Trace("keepalive: failed to list witnesses", "err", err)
+		return
+	}
+	host := tss.p2p.Host()
+	// GetLastestWitnesses returns every announcement row (height-descending),
+	// not one per account, so dedup to the latest row per account. This both
+	// cuts per-pass work (accounts re-announce many times) and evaluates each
+	// account on its most recent announcement — current peer_id / enabled state
+	// — instead of warming stale rows. We intentionally warm the full enabled
+	// witness set (no network filter): the committee is always a subset of it,
+	// and skipping a member risks reintroducing the very idle-death this fixes.
+	seen := make(map[string]bool)
+	var wg sync.WaitGroup
+	for _, w := range witnessList {
+		if w.Account == self || seen[w.Account] {
+			continue
+		}
+		seen[w.Account] = true
+		if !w.Enabled || w.PeerId == "" {
+			continue
+		}
+		peerId, err := peer.Decode(w.PeerId)
+		if err != nil {
+			continue
+		}
+		// Keep committee peers out of the connection-manager trim set.
+		tss.p2p.ConnManager().Protect(peerId, "tss-committee")
+		if addrs := parseWitnessAddrs(w.PeerAddrs); len(addrs) > 0 {
+			tss.p2p.Peerstore().AddAddrs(peerId, addrs, peerstore.TempAddrTTL)
+		}
+		wg.Add(1)
+		go func(peerId peer.ID, account string, addrStrs []string) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Warn("keepalive peer task panicked", "account", account, "panic", r)
+				}
+			}()
+			if host.Network().Connectedness(peerId) != network.Connected {
+				// Re-establish a dropped connection ahead of the next reshare.
+				tss.reconnectPeer(ctx, peerId, addrStrs)
+				return
+			}
+			// Connected: send a cheap probe to generate traffic and reset
+			// NAT/transport idle timers. A failed probe is deliberately NOT
+			// treated as a dead connection — under heavy TSS load a busy peer can
+			// miss a probe while remaining reachable, and closing a live
+			// connection mid-reshare is exactly the harm we are avoiding. Genuine
+			// dead-connection eviction happens in SendMsg on a real send failure
+			// (unambiguous transport error), and libp2p's own keepalive will
+			// eventually drop a truly dead connection, after which the branch
+			// above reconnects it on the next pass.
+			if err := tss.pingPeerAlive(ctx, peerId); err != nil {
+				log.Trace("keepalive: probe failed (connection left intact)", "account", account, "err", err)
+			}
+		}(peerId, w.Account, w.PeerAddrs)
+	}
+	wg.Wait()
+}
+
+// pingPeerAlive sends a lightweight readiness RPC over the direct connection to
+// generate traffic that resets NAT / transport idle timers, keeping the
+// connection warm. It reuses the existing "ready" handler (rpc.go), which
+// replies with a cheap ack and has no side effects. The returned error is used
+// only for logging — a failed probe is deliberately not treated as a dead
+// connection (see warmCommitteePeers).
+func (tss *TssManager) pingPeerAlive(ctx context.Context, peerId peer.ID) error {
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	tMsg := TMsg{Type: "ready"}
+	tRes := TRes{}
+	return tss.client.CallContext(pingCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
 }

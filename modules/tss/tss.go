@@ -2078,6 +2078,11 @@ func (tssMgr *TssManager) Start() *promise.Promise[any] {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	tssMgr.bgCancel = bgCancel
 
+	// Keep direct TSS connections to committee peers warm so reshare round
+	// messages are not lost over idle-killed connections (see
+	// runConnectionKeepalive in p2p.go).
+	go tssMgr.runConnectionKeepalive(bgCtx)
+
 	go func() {
 		//Every one minute
 		ticker := time.NewTicker(time.Minute)
