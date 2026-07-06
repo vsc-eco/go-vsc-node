@@ -234,17 +234,14 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		//                          NOT reduced by slashing (bond/total = solvency).
 		// Both always summed from height 0: their owners are never snapshotted into
 		// a BalanceRecord (no typed column), so there is no base to add.
-		ledgerResults, _ := ls.LedgerDb.GetLedgerRange(
-			account,
-			0,
-			blockHeight,
-			asset,
-			ledger_db.LedgerOptions{
-				OpType: []string{"consensus_stake", "consensus_unstake"},
-			},
-		)
+		// GV-H1: fail-stop this read. The prior `ledgerResults, _ :=` +
+		// `range *ledgerResults` panicked on the nil slice GetLedgerRange returns
+		// on a Mongo fault (and a partial read would fork this node from peers).
+		// ledgerRangeOrBlock blocks until the read succeeds and returns non-nil.
 		balAdjust := int64(0)
-		for _, v := range *ledgerResults {
+		for _, v := range ls.ledgerRangeOrBlock(
+			account, 0, blockHeight, asset, []string{"consensus_stake", "consensus_unstake"},
+		) {
 			balAdjust += v.Amount
 		}
 		return balAdjust

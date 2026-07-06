@@ -11,7 +11,7 @@ import (
 )
 
 // edgeRec is a delegation-edge ledger row (the virtual AssetDelegation asset the
-// 0.3.0 stake path writes).
+// 0.5.0 stake path writes).
 func edgeRec(id, from, to string, amount int64) ledgerDb.LedgerRecord {
 	return ledgerDb.LedgerRecord{
 		Id:          id,

@@ -117,7 +117,7 @@ func main() {
 		})
 		idConf.SetUsername(witnessName)
 		idConf.SetActiveKey(args.wif)
-		// Consensus 0.2.0: nodes must opt in to receive third-party consensus
+		// Consensus 0.5.0: nodes must opt in to receive third-party consensus
 		// delegation (default is Deactivated). Devnet nodes announce "custom" so
 		// the delegation stake/unstake paths are exercisable; "custom" keeps
 		// pendulum rewards at the node account, so reward-distribution devnet

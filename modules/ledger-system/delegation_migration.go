@@ -152,18 +152,40 @@ func (ls *ledgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int {
 	if ls.LedgerDb == nil {
 		return 0
 	}
+	// FAIL-STOP throughout: this runs once at the 0.5.0 activation slot and is
+	// consensus-relevant (it seeds the edges a delegated unstake authorizes
+	// against). A swallowed error that let the slot advance without migrating
+	// would (a) reject a delegated unstake peers accept, and (b) leave the marker
+	// absent so a re-run scans history that now includes a finalized delegated
+	// unstake's hive_consensus #in row — which BackfillDelegationEdges would
+	// misclassify as a legacy self-edge, durably diverging this node. Blocking
+	// until the DB recovers is the same discipline the rest of ExecuteBatch uses.
+
 	// Already migrated? (marker present, or restored from a post-activation snapshot)
-	if marker, _ := ls.LedgerDb.GetLedgerRange(
-		delegationMigrationAccount, 0, blockHeight, delegationMigrationAsset,
-	); marker != nil && len(*marker) > 0 {
+	var marker *[]ledgerDb.LedgerRecord
+	blockingLedgerRead("delegation-migration marker read", func() error {
+		m, err := ls.LedgerDb.GetLedgerRange(
+			delegationMigrationAccount, 0, blockHeight, delegationMigrationAsset)
+		if err != nil {
+			return err
+		}
+		marker = m
+		return nil
+	})
+	if marker != nil && len(*marker) > 0 {
 		return 0
 	}
 
-	records, err := ls.LedgerDb.GetLedgerRecordsByType(
-		[]string{"consensus_stake", "consensus_unstake"}, blockHeight)
-	if err != nil {
-		return 0 // transient read failure — retried next slot (marker still absent)
-	}
+	var records []ledgerDb.LedgerRecord
+	blockingLedgerRead("delegation-migration history scan", func() error {
+		r, err := ls.LedgerDb.GetLedgerRecordsByType(
+			[]string{"consensus_stake", "consensus_unstake"}, blockHeight)
+		if err != nil {
+			return err
+		}
+		records = r
+		return nil
+	})
 
 	edges := BackfillDelegationEdges(records, blockHeight)
 
@@ -193,9 +215,11 @@ func (ls *ledgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int {
 		BlockHeight: blockHeight,
 	})
 
-	if err := ls.LedgerDb.StoreLedger(out...); err != nil {
-		return 0 // store failed — marker absent, retried next slot
-	}
+	// Fail-stop the store too: the edges + marker must land atomically before the
+	// slot advances, or a delegated unstake this slot sees no edge. Block on error.
+	blockingLedgerRead("delegation-migration store", func() error {
+		return ls.LedgerDb.StoreLedger(out...)
+	})
 	return seeded
 }
 
