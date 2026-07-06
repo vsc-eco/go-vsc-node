@@ -1672,12 +1672,16 @@ type Query {
   ): ConsensusDelegation
 
   """
-  The consensus-delegation mode node `account` has opted into, as of `height`
-  (consensus 0.5.0+). Returns the normalized policy — one of `deactivated`,
-  `share`, or `custom` — always defaulting to `deactivated` when the node has
-  not announced a mode (delegation is strict opt-in). `deactivated` rejects
-  third-party delegation; `share` splits pendulum rewards pro-rata to
-  delegators; `custom` allows delegation with off-chain reward settlement.
+  The EFFECTIVE consensus-delegation mode node `account` has opted into, as of
+  `height` (consensus 0.5.0+). Returns the normalized policy — one of
+  `deactivated`, `share`, or `custom` — or `null` when the mode cannot be
+  determined: the node has never announced one, or the read was momentarily
+  unavailable. Treat `null` as "no mode set" (consensus behaves as `deactivated`,
+  i.e. strict opt-in). During a pending adverse downgrade (leaving `share`) this
+  returns the still-protected mode in force, not the not-yet-active target.
+  `deactivated` rejects third-party delegation; `share` splits pendulum rewards
+  pro-rata to delegators; `custom` allows delegation with off-chain reward
+  settlement.
   """
   getNodeDelegationMode(
     """Node (witness) account whose mode to read, with or without the `hive:` prefix."""

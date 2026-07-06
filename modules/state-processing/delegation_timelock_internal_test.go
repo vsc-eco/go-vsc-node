@@ -283,6 +283,51 @@ func TestNodeDelegationMode_ZeroFieldsUnchanged(t *testing.T) {
 	}
 }
 
+func TestNodeDelegationModeBestEffort_NullVsValue(t *testing.T) {
+	const node = "node1"
+
+	// (a) No announcement → ok=false (API surfaces null, not a fabricated default).
+	empty := tlEngine(map[string]*witnesses.Witness{}, nil)
+	if mode, ok := empty.NodeDelegationModeBestEffort("hive:"+node, 100); ok {
+		t.Errorf("no announcement: got (%q,true), want ok=false (null)", mode)
+	}
+
+	// (b) A plain row (no pending downgrade) → the announced mode, ok=true, and it
+	//     never touches the election DB (nil map is fine).
+	plain := tlEngine(
+		map[string]*witnesses.Witness{node: {Height: 100, DelegationMode: delegationmode.Share}},
+		nil,
+	)
+	if mode, ok := plain.NodeDelegationModeBestEffort("hive:"+node, 100); !ok || mode != delegationmode.Share {
+		t.Errorf("plain share row: got (%q,%v), want (share,true)", mode, ok)
+	}
+
+	// (c) Pending downgrade + resolvable election → effective (protected) mode.
+	pending := tlEngine(
+		map[string]*witnesses.Witness{node: {
+			Height: 200, DelegationMode: delegationmode.Custom,
+			DelegationModeEffective: delegationmode.Share, DelegationModeMaturityEpoch: 16,
+		}},
+		map[uint64]elections.ElectionResult{210: electionAtEpoch(15, 5)}, // before maturity
+	)
+	if mode, ok := pending.NodeDelegationModeBestEffort("hive:"+node, 210); !ok || mode != delegationmode.Share {
+		t.Errorf("pending downgrade pre-maturity: got (%q,%v), want (share,true)", mode, ok)
+	}
+
+	// (d) Pending downgrade but the election read fails (height absent → error) →
+	//     ok=false (null): never guess the mode when it can't be resolved.
+	unresolvable := tlEngine(
+		map[string]*witnesses.Witness{node: {
+			Height: 200, DelegationMode: delegationmode.Custom,
+			DelegationModeEffective: delegationmode.Share, DelegationModeMaturityEpoch: 16,
+		}},
+		map[uint64]elections.ElectionResult{}, // no election at any height → GetElectionByHeight errors
+	)
+	if mode, ok := unresolvable.NodeDelegationModeBestEffort("hive:"+node, 210); ok {
+		t.Errorf("pending downgrade, unresolvable election: got (%q,true), want ok=false (null)", mode)
+	}
+}
+
 func TestNodeDelegationMode_GateOffIgnoresTimelock(t *testing.T) {
 	// If a row carries timelock fields but the read height is below the 0.5.0 gate,
 	// the raw target is returned (replay below the floor is byte-identical).

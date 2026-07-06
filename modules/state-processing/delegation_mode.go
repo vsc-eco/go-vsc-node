@@ -1,12 +1,42 @@
 package state_engine
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/witnesses"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// getWitnessAtHeightOrBlock is the FAIL-STOP witness read the delegation timelock
+// relies on (the witness analog of GetElectionInfoOrBlock). A genuine "no
+// announcement below height" (mongo.ErrNoDocuments) returns nil — every node sees
+// that identically. A transient infra error BLOCKS until the DB recovers, so a
+// per-node blip can never flip the timelock decision: at ingest it would persist
+// a divergent maturity (durable fork until reindex), and at read it would gate
+// stake acceptance / the settlement split differently across nodes. `account` is
+// the bare Hive name.
+func (se *StateEngine) getWitnessAtHeightOrBlock(account string, height uint64) *witnesses.Witness {
+	var out *witnesses.Witness
+	bh := height
+	blockingRetry(fmt.Sprintf("GetWitnessAtHeight(%s @%d)", account, height), func() error {
+		w, err := se.witnessDb.GetWitnessAtHeight(account, &bh)
+		if err == nil {
+			out = w
+			return nil
+		}
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			out = nil // deterministic absence: no prior announcement below height
+			return nil
+		}
+		return err // infra failure → keep blocking
+	})
+	return out
+}
 
 // NodeDelegationMode returns the EFFECTIVE consensus-delegation mode node
 // `account` has opted into, as of blockHeight, normalized to a known value
@@ -34,38 +64,74 @@ func (se *StateEngine) NodeDelegationMode(account string, blockHeight uint64) st
 		return delegationmode.Default
 	}
 	bare := strings.TrimPrefix(account, "hive:")
-	bh := blockHeight
-	w, err := se.witnessDb.GetWitnessAtHeight(bare, &bh)
-	if err != nil || w == nil {
+	// Fail-stop the witness read: a transient DB error must NOT silently resolve
+	// to Default (which would gate stake acceptance / the settlement split
+	// differently on a node with a blip vs its peers). Only a genuine absence
+	// (nil) falls through to Default — strict opt-in.
+	w := se.getWitnessAtHeightOrBlock(bare, blockHeight)
+	if w == nil {
 		return delegationmode.Default
 	}
 	return se.resolveDelegationMode(w, blockHeight)
 }
 
-// resolveDelegationMode maps a witness row to the mode in force at blockHeight,
-// applying the downgrade timelock. A zero DelegationModeMaturityEpoch (pre-0.5.0
-// rows and every non-adverse announcement) means "effective immediately", so the
-// announced mode is returned unchanged — byte-identical to the pre-feature read.
-// Otherwise the announced (adverse) target only takes over once the chain epoch
-// reaches the stored maturity; until then the protected DelegationModeEffective
-// is returned.
-func (se *StateEngine) resolveDelegationMode(w *witnesses.Witness, blockHeight uint64) string {
+// effectiveDelegationMode is the PURE timelock resolution: given the witness row,
+// the chain epoch at the read height, and whether the 0.5.0 gate is active there,
+// it returns the mode in force. A zero maturity (pre-0.5.0 / non-adverse rows), an
+// inactive gate, or an already-matured epoch all yield the announced target;
+// while an adverse downgrade is still pending it returns the protected effective
+// mode. The two callers differ only in HOW they obtain the epoch/gate — the
+// consensus path fail-stops, the API path is best-effort — so the resolution
+// itself lives here once.
+func effectiveDelegationMode(w *witnesses.Witness, currentEpoch uint64, gateActive bool) string {
 	target := delegationmode.Normalize(w.DelegationMode)
-	if w.DelegationModeMaturityEpoch == 0 {
+	if w.DelegationModeMaturityEpoch == 0 || !gateActive || currentEpoch >= w.DelegationModeMaturityEpoch {
 		return target
-	}
-	// A pending downgrade exists. Resolve the current epoch from the same
-	// fail-stop election read the unbond release uses, so every node agrees or
-	// halts (never a silent per-node fork). Below the 0.5.0 gate or pre-genesis,
-	// ignore the timelock fields.
-	elec, found := se.GetElectionInfoOrBlock(blockHeight)
-	if !found || !DelegatedStakeActiveForElection(elec) {
-		return target
-	}
-	if elec.Epoch >= w.DelegationModeMaturityEpoch {
-		return target // downgrade matured
 	}
 	return delegationmode.Normalize(w.DelegationModeEffective) // still protected
+}
+
+// resolveDelegationMode maps a witness row to the mode in force at blockHeight for
+// the CONSENSUS paths (stake acceptance, settlement split). It resolves the epoch
+// via the fail-stop GetElectionInfoOrBlock — the same read the unbond release uses
+// — so every node agrees or halts, never a silent per-node fork. A zero maturity
+// skips the election read entirely (byte-identical to the pre-feature read).
+func (se *StateEngine) resolveDelegationMode(w *witnesses.Witness, blockHeight uint64) string {
+	if w.DelegationModeMaturityEpoch == 0 {
+		return delegationmode.Normalize(w.DelegationMode)
+	}
+	elec, found := se.GetElectionInfoOrBlock(blockHeight)
+	gateActive := found && DelegatedStakeActiveForElection(elec)
+	return effectiveDelegationMode(w, elec.Epoch, gateActive)
+}
+
+// NodeDelegationModeBestEffort is the NON-BLOCKING, API-facing read of the
+// effective delegation mode. Unlike NodeDelegationMode (fail-stop, for consensus
+// paths), it never blocks and never fabricates a value: it returns ok=false when
+// the mode cannot be determined — no announcement exists, or a witness/election
+// read fails transiently — so the caller can surface null ("not found") instead
+// of hanging a request or reporting a wrong default. Only ok=true carries a real,
+// resolved mode.
+func (se *StateEngine) NodeDelegationModeBestEffort(account string, blockHeight uint64) (string, bool) {
+	if se == nil || se.witnessDb == nil || account == "" {
+		return "", false
+	}
+	bare := strings.TrimPrefix(account, "hive:")
+	bh := blockHeight
+	w, err := se.witnessDb.GetWitnessAtHeight(bare, &bh)
+	if err != nil || w == nil {
+		return "", false // read failed OR no announcement → no result to report
+	}
+	if w.DelegationModeMaturityEpoch == 0 {
+		return delegationmode.Normalize(w.DelegationMode), true
+	}
+	// Pending downgrade: resolve the epoch with a plain (non-blocking) election
+	// read. Any error (including no election at this height) → don't guess.
+	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
+	if err != nil {
+		return "", false
+	}
+	return effectiveDelegationMode(w, elec.Epoch, DelegatedStakeActiveForElection(elec)), true
 }
 
 // computeDelegationTimelock resolves the (effective, maturityEpoch) pair to store
@@ -92,8 +158,11 @@ func (se *StateEngine) computeDelegationTimelock(account string, Hn uint64, anno
 	epoch := elec.Epoch
 
 	bare := strings.TrimPrefix(account, "hive:")
-	bh := Hn
-	prev, _ := se.witnessDb.GetWitnessAtHeight(bare, &bh) // strict height < Hn → prior row
+	// FAIL-STOP: a swallowed error here would flip the timelock decision (prev=nil
+	// → treated as no prior mode → an adverse downgrade stored as immediate) and
+	// PERSIST that divergence on this node's witness row, forking it from peers
+	// until a full reindex. Block on infra errors; ErrNoDocuments → nil (no prior).
+	prev := se.getWitnessAtHeightOrBlock(bare, Hn) // strict height < Hn → prior row
 
 	// Mode actually in force at Hn (respecting any still-pending prior downgrade).
 	effNow := target

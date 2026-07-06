@@ -432,20 +432,25 @@ func (r *queryResolver) GetConsensusDelegation(ctx context.Context, from string,
 }
 
 // GetNodeDelegationMode is the resolver for the getNodeDelegationMode field. It
-// returns the node operator's normalized consensus-delegation mode, always
-// defaulting to delegationmode.Deactivated when the node has not announced one
-// (delegation is strict opt-in). Mirrors how the consensus layer reads the mode
-// at stake time and at settlement.
+// returns the node operator's normalized EFFECTIVE consensus-delegation mode
+// (timelock-resolved, as the stake/settlement paths see it), or null when it
+// cannot be determined — no announcement, or a transient read failure — rather
+// than blocking or reporting a wrong default.
 func (r *queryResolver) GetNodeDelegationMode(ctx context.Context, account string, height *model.Uint64) (*string, error) {
 	if account == "" {
 		return nil, fmt.Errorf("account cannot be empty")
 	}
-	// Route through the consensus-layer reader so the API reports the EFFECTIVE
-	// (timelock-resolved) mode a delegator actually gets — during a pending
-	// adverse downgrade this is the still-protected mode, not the raw announced
-	// target. NodeDelegationMode strips the "hive:" prefix and defaults to
-	// Deactivated when unavailable. nil height → latest (ParseHeight → MaxInt64).
-	mode := r.StateEngine.NodeDelegationMode(account, ParseHeight(height))
+	// Report the EFFECTIVE (timelock-resolved) mode a delegator actually gets —
+	// during a pending adverse downgrade that is the still-protected mode, not the
+	// raw announced target. Use the NON-BLOCKING best-effort read: when the mode
+	// cannot be determined (no announcement, or a transient DB error) return null
+	// ("not found") rather than hanging the request or reporting a wrong default.
+	// The consensus paths use the fail-stop NodeDelegationMode instead. nil height
+	// → latest (ParseHeight → MaxInt64).
+	mode, ok := r.StateEngine.NodeDelegationModeBestEffort(account, ParseHeight(height))
+	if !ok {
+		return nil, nil // null / not found
+	}
 	return &mode, nil
 }
 
