@@ -537,7 +537,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// function of bh + the config BTC-contract prefix), so every node
 				// skips the identical keyId at the identical height → no divergent
 				// session/party-list. Inert until VaultRotationV2Enabled flips.
-				if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) && tssMgr.isBtcVaultKey(key.Id) {
+				if tssMgr.shouldSkipReshareForVaultRotation(key.Id, bh) {
 					continue
 				}
 				generatedActions = append(generatedActions, QueuedAction{
