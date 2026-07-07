@@ -269,6 +269,8 @@ func main() {
 		sysConfig,
 		flatDb,
 		&hiveCreator,
+		contractState,
+		da,
 	)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Complexity: gql.NewComplexityRoot(), Resolvers: &gqlgen.Resolver{

@@ -268,6 +268,15 @@ type ConsensusParams struct {
 	// point-in-time read.
 	BondInclusionSampleCount int `json:"bondInclusionSampleCount,omitempty"`
 
+	// VaultRotationV2ActivationHeight gates the BTC TSS vault-rotation-v2 cutover
+	// (Build Map §7 N1 — reshare→fresh-keygen-per-generation rotation for the BTC
+	// vault key only). Like BondInclusionActivationHeight it MUST be a fixed
+	// network-wide constant set strictly above the current head on an epoch
+	// boundary, identical on every node, or live-vs-reindex diverges. 0 = disabled
+	// (inert; the safe default — no behaviour change until governance pins a height
+	// and ALL nodes run the same binary at/after it).
+	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
+
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
 	// the bond inclusion gate admits in a single election. The maturity window
@@ -455,6 +464,16 @@ func (cp ConsensusParams) BondInclusionActive(blockHeight uint64) bool {
 	return cp.BondInclusionActivationHeight != 0 && blockHeight >= cp.BondInclusionActivationHeight
 }
 
+// VaultRotationV2Enabled reports whether the BTC TSS vault-rotation-v2 cutover is
+// live at blockHeight (Build Map §7 N1). Deterministic: a pure function of the
+// per-network activation height, so every node flips identically. 0 = disabled
+// (inert). When true, the BTC vault key rotates by fresh keygen-per-generation
+// instead of reshare — PER-KEYID (only the BTC vault key; other chains keep
+// reshare, so the shared committee/reshare loop is not frozen).
+func (cp ConsensusParams) VaultRotationV2Enabled(blockHeight uint64) bool {
+	return cp.VaultRotationV2ActivationHeight != 0 && blockHeight >= cp.VaultRotationV2ActivationHeight
+}
+
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this
 // network. Callers that need network-aware gating (e.g. "only gate on testnet")
 // should keep their explicit OnTestnet/OnMainnet check around this predicate.
@@ -508,6 +527,18 @@ type TssParams struct {
 	// Set higher (e.g. 10m) in test/CI environments where multiple nodes
 	// compete for CPU and prime generation takes longer.
 	PreParamsTimeout time.Duration `json:"preParamsTimeout,omitempty"`
+	// SolvencyGapSats is the tolerance (in satoshis) for the BTC keysign solvency
+	// observation (observeBtcSolvencyInsolvent, modules/tss/solvency_gate.go).
+	// STAGED FOR M1.1b — the observation is not yet wired to anything. When M1.1b
+	// wires it (to trip the FLAG, not to gate locally), it flags insolvency only
+	// when the vault's real L1 balance is BELOW the contract-claimed supply by
+	// MORE than this gap:
+	//   insolvent  iff  L1assets < Supply - SolvencyGapSats
+	// It absorbs benign transient discrepancies — in-flight deposits not yet
+	// credited, mempool/confirmation lag, dust rounding. The LIVE M1.1a freeze is
+	// the deterministic governance FLAG (vsc.tss_halt), NOT this tolerance.
+	// Handled by the reflection Marshal/Unmarshal above as a uint64 field.
+	SolvencyGapSats uint64 `json:"solvencyGapSats,omitempty"`
 }
 
 // MarshalJSON serializes TssParams with durations as human-readable
@@ -585,6 +616,16 @@ var DefaultTssParams = TssParams{
 	RpcTimeout:            30 * time.Second,
 	CommitDelay:           5 * time.Second,
 	WaitForSigsTimeout:    6 * time.Second,
+	// 100,000 sats = 0.001 BTC. A conservative in-flight/rounding tolerance for
+	// the BTC keysign SIGNAL fail-safe: small relative to the vault's holdings
+	// yet large enough to swallow an uncredited deposit or mempool-lag blip so
+	// the local probe never spuriously freezes signing. Used by mainnet, testnet
+	// AND devnet (all take DefaultTssParams — system-config.go:257/352/420); only
+	// mocknet takes MocknetTssParams, which sets the same value below. It is inert
+	// on networks with no BTC oracle contract because the gate short-circuits when
+	// OracleParams().ContractId("BTC") is empty. The primary, durable freeze is
+	// the deterministic vsc.tss_halt FLAG, not this tolerance.
+	SolvencyGapSats: 100_000,
 }
 
 var MocknetTssParams = TssParams{
@@ -596,6 +637,11 @@ var MocknetTssParams = TssParams{
 	RpcTimeout:            10 * time.Second,
 	CommitDelay:           1 * time.Second,
 	WaitForSigsTimeout:    6 * time.Second,
+	// Same BTC keysign solvency tolerance as DefaultTssParams, so mocknet (the
+	// only config that uses these params — system-config.go:472) calibrates
+	// identically once vault addresses are configured. Inert until the M1.1b
+	// observation is wired.
+	SolvencyGapSats: 100_000,
 }
 
 type OracleParams struct {
@@ -610,6 +656,23 @@ type OracleParams struct {
 
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
+
+	// BtcL1BaseURL is the esplora/mempool.space REST base URL the BTC keysign
+	// solvency SIGNAL (modules/tss/solvency_gate.go) queries for the vault's
+	// REAL on-chain balance. Injected here (per-network config) rather than
+	// hardcoded in the client. Empty disables the L1 probe (SIGNAL fails open),
+	// leaving only the deterministic FLAG. e.g. "https://mempool.space/api".
+	BtcL1BaseURL string `json:"btcL1BaseURL,omitempty"`
+
+	// BtcVaultAddresses is the authoritative set of BTC vault addresses the
+	// solvency SIGNAL sums L1 balances over. Left empty by default: while empty
+	// the SIGNAL fails OPEN (never freezes) because it cannot make a trustworthy
+	// solvency determination from an empty/undercounted address set. The
+	// intended long-term source is the on-chain UTXO registry (contract state
+	// keys "r"/"u-"); decoding it in Go requires the mapping contract's msgp
+	// registry schema, which is not present in this tree — see the marked hook
+	// in solvency_gate.go. Populating this list makes the SIGNAL fully live.
+	BtcVaultAddresses []string `json:"btcVaultAddresses,omitempty"`
 }
 
 // HasZKVerifier returns true if the given chain uses ZK proof verification

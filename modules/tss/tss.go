@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
@@ -20,6 +21,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -291,6 +293,12 @@ type TssManager struct {
 	scheduler  GetScheduler
 	hiveClient hive.HiveTransactionCreator
 
+	// contractState + da let the BTC keysign solvency gate (solvency_gate.go)
+	// read the mapping contract's Supply and (future) UTXO registry, to compare
+	// the contract-claimed supply against the vault's real L1 balance.
+	contractState contracts.ContractState
+	da            *datalayer.DataLayer
+
 	//Active list of actions occurring
 	queuedActions []QueuedAction
 	lock          sync.Mutex
@@ -522,6 +530,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
 
 			for _, key := range reshareKeys {
+				// M1.3 (Build Map §7 N1, U-1): under vault-rotation-v2 the BTC vault
+				// key rotates by fresh keygen, not reshare — skip ONLY that keyId
+				// here. PER-KEYID, never a loop-level gate: all other chains share
+				// this reshare loop and must keep resharing. Deterministic (pure
+				// function of bh + the config BTC-contract prefix), so every node
+				// skips the identical keyId at the identical height → no divergent
+				// session/party-list. Inert until VaultRotationV2Enabled flips.
+				if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) && tssMgr.isBtcVaultKey(key.Id) {
+					continue
+				}
 				generatedActions = append(generatedActions, QueuedAction{
 					Type:  ReshareAction,
 					KeyId: key.Id,
@@ -1000,6 +1018,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 
 		} else if action.Type == SignAction {
+			// Build Map §5b — BTC keysign emergency halt (M1.1a: FLAG-only).
+			// A pure LOCAL issuance gate: skip issuing this SignAction when the
+			// BTC vault is frozen by the deterministic governance FLAG
+			// (vsc.tss_halt). Placed before any sessionId/commitment/dispatcher
+			// work, so it cannot affect party lists or commitment CIDs (repo
+			// CLAUDE.md TSS Constraints 1-3). Automatic solvency detection that
+			// TRIPS this flag is the deferred M1.1b auto-trip.
+			if tssMgr.btcKeysignFrozen(action.KeyId) {
+				log.Warn("BTC keysign frozen by solvency gate; skipping issuance", "keyId", action.KeyId, "bh", bh)
+				continue
+			}
+
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
@@ -2043,6 +2073,14 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// M1.3 (U-1): under vault-rotation-v2 the BTC vault key rotates by keygen, not
+	// reshare — refuse a manual reshare enqueue for it (this RPC/manual path is not
+	// covered by the per-keyId skip in the FindEpochKeys loop, and an enqueued
+	// reshare here would create a session no other node schedules → divergent).
+	// Manual entry has no block height, so gate on the last block height seen.
+	if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(tssMgr.lastBlockHeight.Load()) && tssMgr.isBtcVaultKey(keyId) {
+		return 0, fmt.Errorf("reshare disabled for BTC vault key %q under vault-rotation-v2; it rotates by keygen", keyId)
+	}
 	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  ReshareAction,
@@ -2120,6 +2158,8 @@ func New(
 	sconf systemconfig.SystemConfig,
 	keystore *flatfs.Datastore,
 	hiveClient hive.HiveTransactionCreator,
+	contractState contracts.ContractState,
+	da *datalayer.DataLayer,
 ) *TssManager {
 	preParams := make(chan ecKeyGen.LocalPreParams, 1)
 
@@ -2135,6 +2175,9 @@ func New(
 		preParams:  preParams,
 		p2p:        p2p,
 		hiveClient: hiveClient,
+
+		contractState: contractState,
+		da:            da,
 
 		tssKeys:        tssKeys,
 		metrics:        GetMetrics(),

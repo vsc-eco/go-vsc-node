@@ -105,6 +105,44 @@ func TestScoreTssReshareExclusion_BadBitsetSkipped(t *testing.T) {
 	}
 }
 
+func TestScoreTssKeygenExclusion_StrictPerKey(t *testing.T) {
+	// G15: mirror of the reshare scorer. Two keys' keygens; alice excluded from
+	// key A only, bob from both, carol from neither.
+	in := []KeygenWithCommittee{
+		{
+			Commitment:   tss_db.TssCommitment{Type: "keygen", Commitment: encodeBitset(2)}, // only carol set
+			NewCommittee: []string{"alice", "bob", "carol"},
+		},
+		{
+			Commitment:   tss_db.TssCommitment{Type: "keygen", Commitment: encodeBitset(0, 2)}, // alice + carol
+			NewCommittee: []string{"alice", "bob", "carol"},
+		},
+	}
+	got := ScoreTssKeygenExclusion(in)
+	if got["alice"] != TssKeygenExclusionBps {
+		t.Errorf("alice: got %d want %d (excluded from one key)", got["alice"], TssKeygenExclusionBps)
+	}
+	if got["bob"] != 2*TssKeygenExclusionBps {
+		t.Errorf("bob: got %d want %d (excluded from both keys)", got["bob"], 2*TssKeygenExclusionBps)
+	}
+	if _, ok := got["carol"]; ok {
+		t.Errorf("carol should have no penalty (in both): %d", got["carol"])
+	}
+}
+
+func TestScoreTssKeygenExclusion_BadBitsetSkipped(t *testing.T) {
+	in := []KeygenWithCommittee{
+		{
+			Commitment:   tss_db.TssCommitment{Type: "keygen", Commitment: "not-base64!"},
+			NewCommittee: []string{"alice"},
+		},
+	}
+	got := ScoreTssKeygenExclusion(in)
+	if len(got) != 0 {
+		t.Fatalf("bad bitset should be skipped, got %v", got)
+	}
+}
+
 func TestScoreTssBlame_BlamedWitnessesPenalized(t *testing.T) {
 	in := []BlameWithCommittee{
 		{
