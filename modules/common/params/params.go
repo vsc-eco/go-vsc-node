@@ -302,6 +302,19 @@ type ConsensusParams struct {
 	// backfills (those are not "new"), so it can never fight the floor guard.
 	MaxNewMembersPerElection int `json:"maxNewMembersPerElection,omitempty"`
 
+	// MaxNewMembersActivationHeight gates the churn cap's 0→N cutover (pruned-
+	// methodology, 4-lens: the cap change is a consensus-critical ELECTION input).
+	// Like BondInclusionActivationHeight / VaultRotationV2ActivationHeight, the cap
+	// is INERT until this height is pinned and reached, so the value change flips on
+	// EVERY node at one deterministic block — NOT at whenever each node swaps
+	// binaries. A bare value (no height) lets a rolling upgrade run old-binary
+	// (cap=0) and new-binary (cap=N) nodes side by side, computing DIFFERENT election
+	// member sets for the same election → BLS won't aggregate → the epoch/rotation
+	// stalls (a determinism break in the election mechanism underlying blocks/TSS/
+	// oracle). Pin a FUTURE epoch-boundary height with lead time, identical on every
+	// node. 0 = disabled (inert; the safe default — the cap does nothing until pinned).
+	MaxNewMembersActivationHeight uint64 `json:"maxNewMembersActivationHeight,omitempty"`
+
 	// BondInclusionEstablishedGraceBlocks is the established-member exception to
 	// the inclusion window (operator requirement). A witness that has served as
 	// a RATIFIED committee member in at least one past election ("established")
@@ -483,6 +496,25 @@ func (cp ConsensusParams) BondInclusionActive(blockHeight uint64) bool {
 // reshare, so the shared committee/reshare loop is not frozen).
 func (cp ConsensusParams) VaultRotationV2Enabled(blockHeight uint64) bool {
 	return cp.VaultRotationV2ActivationHeight != 0 && blockHeight >= cp.VaultRotationV2ActivationHeight
+}
+
+// MaxNewMembersActive reports whether the churn cap is in force at blockHeight.
+// Deterministic pure function of the per-network activation height, so the 0→N
+// cutover flips identically on every node (mirrors BondInclusionActive /
+// VaultRotationV2Enabled). 0 = disabled (inert).
+func (cp ConsensusParams) MaxNewMembersActive(blockHeight uint64) bool {
+	return cp.MaxNewMembersActivationHeight != 0 && blockHeight >= cp.MaxNewMembersActivationHeight
+}
+
+// EffectiveMaxNewMembers is the churn cap in force at blockHeight: the configured
+// MaxNewMembersPerElection once MaxNewMembersActive, else 0 (disabled). Election
+// enforcement MUST read this, never the raw field, so a rolling binary upgrade
+// cannot split the election member set before the pinned cutover height.
+func (cp ConsensusParams) EffectiveMaxNewMembers(blockHeight uint64) int {
+	if cp.MaxNewMembersActive(blockHeight) {
+		return cp.MaxNewMembersPerElection
+	}
+	return 0
 }
 
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this
