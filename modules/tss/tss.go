@@ -622,18 +622,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(bh); err == nil {
 			for _, key := range retiredKeys {
 				dsKey := makeKey("key", key.Id, int(key.Epoch))
-				// M1.4 (Build Map §5a) — DORMANT defence-in-depth share-zeroization.
-				// Gated on VaultRotationV2Enabled → byte-identical to the bare delete
-				// on every network today (flag 0). It deliberately does NOT change
-				// WHEN retirement fires: this path is still the legacy time-gate under
-				// KeyRetirementEnabled (false on mainnet); the real fund-gated trigger
-				// is S5. Wiring secure-erase to the current time-gate would turn a
-				// stalled-migration freeze into unrecoverable loss — hence dormant.
-				if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
-					if zErr := zeroizeKeystoreEntry(context.Background(), tssMgr.keyStore, dsKey); zErr != nil {
-						log.Error("keystore zeroize failed (proceeding to plain delete)", "keyId", key.Id, "epoch", key.Epoch, "err", zErr)
-					}
-				}
+				// M1.4 (Build Map §5a): share-zeroization is DELIBERATELY NOT wired to
+				// this legacy TIME-gated delete. FindNewlyRetired fires on the grace
+				// timer with ZERO fund check, so a stalled-migration key can still be
+				// FUNDED here — secure-erasing it would turn a recoverable freeze into
+				// PERMANENT loss (pruned-methodology key-lifecycle L1). zeroizeKeystoreEntry
+				// (keystore_crypto.go) is written + tested as the primitive that S5's
+				// FUND-GATED retire path calls after proving zero L1 balance; until then
+				// this stays the pre-existing plain delete.
 				if delErr := tssMgr.keyStore.Delete(context.Background(), dsKey); delErr != nil {
 					log.Error("keystore delete failed", "keyId", key.Id, "epoch", key.Epoch, "err", delErr)
 				} else {
@@ -2090,7 +2086,14 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	// covered by the per-keyId skip in the FindEpochKeys loop, and an enqueued
 	// reshare here would create a session no other node schedules → divergent).
 	// Manual entry has no block height, so gate on the last block height seen.
-	if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(tssMgr.lastBlockHeight.Load()) && tssMgr.isBtcVaultKey(keyId) {
+	// Fail CLOSED before the first BlockTick (lastBlockHeight==0): if v2 is even
+	// CONFIGURED (activation height set) we can't be sure we're pre-activation, so
+	// refuse a BTC-vault reshare rather than risk enqueuing a session no other node
+	// schedules (pruned-methodology F3: the height-0 read otherwise fails OPEN). If
+	// v2 is unconfigured (height 0) it can never activate → allow.
+	if tssMgr.isBtcVaultKey(keyId) &&
+		(tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(tssMgr.lastBlockHeight.Load()) ||
+			(tssMgr.lastBlockHeight.Load() == 0 && tssMgr.sconf.ConsensusParams().VaultRotationV2ActivationHeight != 0)) {
 		return 0, fmt.Errorf("reshare disabled for BTC vault key %q under vault-rotation-v2; it rotates by keygen", keyId)
 	}
 	tssMgr.bufferLock.Lock()

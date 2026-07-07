@@ -102,3 +102,30 @@ func TestVaultRotationV2Enabled(t *testing.T) {
 		}
 	}
 }
+
+// EffectiveMaxNewMembers gates the churn cap on an activation height so a rolling
+// binary upgrade can't split the election member set: the cap is INERT (0) until a
+// height is pinned and reached, then the configured value applies. Mirrors
+// VaultRotationV2Enabled/BondInclusionActive (pruned-methodology, 4-lens fix).
+func TestEffectiveMaxNewMembers(t *testing.T) {
+	// Inert: no activation height → cap disabled at every height, whatever the value.
+	inert := ConsensusParams{MaxNewMembersPerElection: 5, MaxNewMembersActivationHeight: 0}
+	for _, bh := range []uint64{0, 1, 100, 1 << 40} {
+		if inert.MaxNewMembersActive(bh) || inert.EffectiveMaxNewMembers(bh) != 0 {
+			t.Fatalf("cap must be inert with activation height 0, but active at bh=%d", bh)
+		}
+	}
+	// Gated: the value is in force only at/after the pinned height.
+	cp := ConsensusParams{MaxNewMembersPerElection: 3, MaxNewMembersActivationHeight: 100}
+	cases := []struct {
+		bh   uint64
+		want int
+	}{
+		{0, 0}, {99, 0}, {100, 3}, {101, 3}, {1 << 40, 3},
+	}
+	for _, tc := range cases {
+		if got := cp.EffectiveMaxNewMembers(tc.bh); got != tc.want {
+			t.Fatalf("EffectiveMaxNewMembers(bh=%d) value=3 height=100 = %d, want %d", tc.bh, got, tc.want)
+		}
+	}
+}

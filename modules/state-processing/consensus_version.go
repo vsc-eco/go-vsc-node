@@ -20,14 +20,19 @@ func isRecoveryAllowlistedCustomJSON(id string) bool {
 }
 
 func (se *StateEngine) refreshChainConsensusCache() {
-	var next consensus_state.ChainConsensusState
-	if se.consensusState != nil {
-		if st, err := se.consensusState.Get(context.Background()); err == nil {
-			next = st
-		}
+	if se.consensusState == nil {
+		return
+	}
+	st, err := se.consensusState.Get(context.Background())
+	if err != nil {
+		// Fail CLOSED: a transient consensus-state read error must NOT silently reset
+		// the safety flags (BtcKeysignHalted / ProcessingSuspended) to their zero
+		// value — retain the last-known cache and retry next block
+		// (pruned-methodology F1: halt read-path fail-open).
+		return
 	}
 	se.chainConsensusMu.Lock()
-	se.chainConsensusCache = next
+	se.chainConsensusCache = st
 	se.chainConsensusMu.Unlock()
 }
 

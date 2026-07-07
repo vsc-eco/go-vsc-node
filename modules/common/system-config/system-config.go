@@ -234,6 +234,14 @@ func MainnetConfig() SystemConfig {
 			// divergent member sets. Coordinate the upgrade (testnet/devnet/mocknet
 			// stay 0 to preserve the churn-heavy regression harness).
 			MaxNewMembersPerElection: 1,
+			// Gated behind an activation height (pruned-methodology, 4-lens): the cap
+			// VALUE is 1 but the cap is INERT until governance pins a FUTURE
+			// MaxNewMembersActivationHeight, so the 0→1 cutover is an atomic single-
+			// block flip on every node — a bare value would split old/new-binary nodes
+			// mid-rolling-upgrade into divergent election member sets (a determinism
+			// break in the election mechanism). 0 = disabled now; pin a future
+			// epoch-boundary height with lead time to activate.
+			MaxNewMembersActivationHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
