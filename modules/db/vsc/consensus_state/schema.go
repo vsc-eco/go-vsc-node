@@ -16,6 +16,17 @@ type ChainConsensusState struct {
 	// ProcessingSuspended blocks normal vsc custom_json processing until cleared by recovery_require_version.
 	ProcessingSuspended bool `bson:"processing_suspended"`
 
+	// BtcKeysignHalted freezes BTC TSS keysign issuance when set by the
+	// governance multisig via vsc.tss_halt (Build Map §5b emergency solvency
+	// containment). Like ProcessingSuspended it is a chain-global deterministic
+	// flag every node converges on by processing the same Hive op; the BTC
+	// solvency gate (modules/tss/solvency_gate.go) reads it before issuing a
+	// SignAction.
+	BtcKeysignHalted bool `bson:"btc_keysign_halted"`
+	// BtcKeysignHaltHeight records the block height the halt was last set (0 when
+	// cleared) — provenance/observability only.
+	BtcKeysignHaltHeight uint64 `bson:"btc_keysign_halt_height"`
+
 	// ForcedActivation is the recovery-multisig override (vsc.recovery_require_version):
 	// at most one, it bypasses the stake-readiness guard and takes precedence over every
 	// normal proposal. The bson key stays "scheduled_activation" for back-compat with any

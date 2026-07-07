@@ -584,6 +584,36 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
+				// vsc.tss_halt: the governance multisig freezes/unfreezes BTC TSS
+				// keysign issuance (emergency solvency containment, Build Map §5b).
+				// Chain-global deterministic flag — every node converges by processing
+				// this same op. The BTC solvency gate (modules/tss/solvency_gate.go)
+				// reads it before issuing a SignAction. Authority = the gateway/
+				// governance multisig (same gate as safety_slash_reverse / reserve_*).
+				if Id == "vsc.tss_halt" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					var h struct {
+						Active bool   `json:"active"`
+						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+					}
+					if err := json.Unmarshal(cj.Json, &h); err != nil {
+						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
+					} else if se.consensusState == nil {
+						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else {
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetBtcKeysignHalt(context.Background(), h.Active, height); err != nil {
+							log.Warn("vsc.tss_halt: SetBtcKeysignHalt failed", "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied", "active", h.Active, "keyId", h.KeyId,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
+					}
+				}
+
 				// The witness-vote governance batch (vsc.slash_restore /
 				// vsc.reserve_payout / vsc.reserve_vote) is gated on the CHAIN-ACTIVE
 				// consensus version reaching 0.3.0, resolved from the election active
@@ -1834,9 +1864,23 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.tssCommitments != nil {
 		from := fromBlock
 		to := tickHeight
+		// G15: keygen-exclusion scoring is GATED on VaultRotationV2Enabled.
+		// When inert (flag 0 — the default on every network today), "keygen"
+		// is NOT added to the query type list, so `commits` is byte-identical
+		// to base and no keygen commitment can enter the reward pipeline. When
+		// active, the BTC vault key rotates by fresh keygen-per-generation
+		// instead of reshare, so skipping the security-critical new-vault DKG
+		// must cost the same as skipping a reshare. Nil-guard sconf so a
+		// minimal (test) engine keeps base behavior.
+		keygenScoringEnabled := se.sconf != nil &&
+			se.sconf.ConsensusParams().VaultRotationV2Enabled(tickHeight)
+		commitTypes := []string{"reshare", "blame", "sign_result"}
+		if keygenScoringEnabled {
+			commitTypes = append(commitTypes, "keygen")
+		}
 		commits, err := se.tssCommitments.FindCommitments(
 			nil,
-			[]string{"reshare", "blame", "sign_result"},
+			commitTypes,
 			nil,
 			&from,
 			&to,
@@ -1855,6 +1899,20 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 				switch c.Type {
 				case "reshare":
 					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "keygen":
+					// G15: only reachable when VaultRotationV2Enabled — "keygen"
+					// is absent from commitTypes otherwise, so this case never
+					// fires while the flag is inert (double gate: query + here).
+					// Keygen carries the same participant bitset as reshare
+					// (KeyGenResult.Serialize → setToCommitment, identical
+					// semantics), so a member absent from the bitset was
+					// excluded from the new-vault DKG and scores like a reshare
+					// exclusion. Same committee source as reshare: the election
+					// elected for the commitment's own epoch.
+					in.Keygens = append(in.Keygens, rewards.KeygenWithCommittee{
 						Commitment:   c,
 						NewCommittee: memberAccounts,
 					})

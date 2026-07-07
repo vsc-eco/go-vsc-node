@@ -136,6 +136,55 @@ type ReshareWithCommittee struct {
 	NewCommittee []string // members in elected order so bit indexes match
 }
 
+// ScoreTssKeygenExclusion returns per-witness keygen-exclusion bps — the
+// keygen-path analogue of ScoreTssReshareExclusion (G15). Each entry in
+// `keygens` represents one canonical successful keygen commitment landing in
+// the tick window. The committee for each keygen is the committee at that
+// keygen's epoch (the committee elected for the epoch the keygen opened).
+//
+// For each keygen: any member of the new committee not represented in the
+// commitment's bitset accumulates TssKeygenExclusionBps. Keygen carries the
+// same participant bitset as reshare (KeyGenResult.Serialize emits Type
+// "keygen" via setToCommitment — identical semantics), so this mirrors the
+// reshare scorer 1:1.
+//
+// Strict per-key: if a witness is excluded from N keys' keygens in the tick,
+// they accumulate N × TssKeygenExclusionBps before max-of and per-tick clamp.
+func ScoreTssKeygenExclusion(keygens []KeygenWithCommittee) map[string]int {
+	if len(keygens) == 0 {
+		return nil
+	}
+	out := make(map[string]int)
+	for _, k := range keygens {
+		bits, ok := decodeBitset(k.Commitment.Commitment)
+		if !ok {
+			// Unparseable bitset = treat as everyone excluded would be too
+			// punitive; treat as no info, no penalty. Logged at the wire
+			// layer if it ever happens.
+			continue
+		}
+		for idx, member := range k.NewCommittee {
+			if member == "" {
+				continue
+			}
+			if bits.Bit(idx) == 1 {
+				continue
+			}
+			out[member] += TssKeygenExclusionBps
+		}
+	}
+	return out
+}
+
+// KeygenWithCommittee pairs a keygen commitment with the new committee its
+// bitset is encoded against. The aggregator must look up the election at the
+// keygen's commitment.Epoch (NOT the current epoch — same requirement as
+// ReshareWithCommittee).
+type KeygenWithCommittee struct {
+	Commitment   tss_db.TssCommitment
+	NewCommittee []string // members in elected order so bit indexes match
+}
+
 // ScoreTssBlame returns per-witness Tier-B bps. For each blame commitment
 // in the tick window, decode its bitset against the blame's own epoch
 // election (avoiding the main-branch decoding bug at state_engine.go:718)
