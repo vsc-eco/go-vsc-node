@@ -52,4 +52,7 @@ type GetScheduler interface {
 	GetSchedule(slotHeight uint64) []stateEngine.WitnessSlot
 	// TssMinimumConsensusVersion is the minimum major/consensus triple for TSS at this Hive height.
 	TssMinimumConsensusVersion(blockHeight uint64) consensusversion.Version
+	// BtcKeysignHalted reports whether governance has frozen BTC TSS keysign via
+	// vsc.tss_halt (Build Map §5b). Read by the solvency gate before issuing a sign.
+	BtcKeysignHalted() bool
 }

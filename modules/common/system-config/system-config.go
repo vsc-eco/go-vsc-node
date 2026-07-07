@@ -215,10 +215,18 @@ func MainnetConfig() SystemConfig {
 			BondInclusionWindowBlocks:     86_400,
 			BondInclusionActivationHeight: 107454300,
 			BondInclusionSampleCount:      8,
-			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
-			// together with the bond activation height to bound atomic cohort
-			// entry once the gate is live.
-			MaxNewMembersPerElection: 0,
+			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
+			// most N NEW members per election so a coordinated cohort maturing on
+			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
+			// majority flip. Set to 1 (most conservative — governance-TUNABLE; a
+			// ~16-node committee still onboards ≥1 established node per ~5-min
+			// election). LIVE now: enforcement is inert until bondActive, and
+			// BondInclusionActivationHeight (107454300, above) is already passed.
+			// DEPLOY CONSTRAINT: compile-time consensus param, no version gate — ALL
+			// nodes must run this value at the same election or they compute
+			// divergent member sets. Coordinate the upgrade (testnet/devnet/mocknet
+			// stay 0 to preserve the churn-heavy regression harness).
+			MaxNewMembersPerElection: 1,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
@@ -246,6 +254,13 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
+			// BTC keysign solvency observation endpoint — STAGED FOR M1.1b
+			// (observeBtcSolvencyInsolvent), not yet wired, so INERT today.
+			// BtcVaultAddresses is intentionally left empty. NOTE (council): when
+			// M1.1b activates the observation, use a per-node TRUSTED full node
+			// here, not this shared public API a thief could rate-limit into a
+			// fail-open. The live M1.1a freeze is the deterministic governance FLAG.
+			BtcL1BaseURL: "https://mempool.space/api",
 		},
 		tssParams: params.DefaultTssParams,
 		// Seeded with the deployed pool contract IDs; operators can override via
@@ -339,6 +354,8 @@ func TestnetConfig() SystemConfig {
 			ZKVerifierChains: map[string]string{
 				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
 			},
+			// BTC keysign solvency SIGNAL: testnet esplora endpoint.
+			BtcL1BaseURL: "https://mempool.space/testnet/api",
 		},
 		tssParams: params.DefaultTssParams,
 		// Populate with deployed pool contract IDs once they exist; operators

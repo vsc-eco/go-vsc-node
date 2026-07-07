@@ -37,6 +37,16 @@ func (se *StateEngine) chainProcessingSuspended() bool {
 	return se.chainConsensusCache.ProcessingSuspended
 }
 
+// BtcKeysignHalted reports whether the governance multisig has frozen BTC TSS
+// keysign via vsc.tss_halt (Build Map §5b). Read by the TSS solvency gate
+// through the GetScheduler interface. Mirrors chainProcessingSuspended's cache
+// read — deterministic once the halt op has been processed on every node.
+func (se *StateEngine) BtcKeysignHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.BtcKeysignHalted
+}
+
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
 func (se *StateEngine) ProcessingSuspendedForPool() bool {
 	return se.chainProcessingSuspended()
