@@ -23,6 +23,7 @@ type WitnessLivenessEvidence struct {
 	BlockProductionBps         int
 	BlockAttestationBps        int
 	TssReshareExclusionBps     int
+	TssKeygenExclusionBps      int
 	TssBlameBps                int
 	TssSignNonParticipationBps int
 	OracleQuoteDivergenceBps   int
@@ -43,6 +44,7 @@ type TickInputs struct {
 	BlocksInWindow      []TickBlockHeader // narrow shape — only Signers needed
 
 	Reshares []ReshareWithCommittee
+	Keygens  []KeygenWithCommittee
 	Blames   []BlameWithCommittee
 	Signs    []SignResultWithCommittee
 
@@ -73,6 +75,7 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 	prod := ScoreBlockProduction(in.Slots, in.ProducedSlotHeights, in.Committee)
 	att := scoreAttestationFromHeaders(in.BlocksInWindow, in.Committee)
 	tssA := ScoreTssReshareExclusion(in.Reshares)
+	tssKeygen := ScoreTssKeygenExclusion(in.Keygens)
 	tssB := ScoreTssBlame(in.Blames)
 	tssC := ScoreTssSignNonParticipation(in.Signs)
 	oracle := ScoreOracleQuoteDivergence(in.DivergingOracleWitnesses, in.Committee)
@@ -88,6 +91,7 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 			BlockProductionBps:         clampPerTick(prod[w]),
 			BlockAttestationBps:        clampPerTick(att[w]),
 			TssReshareExclusionBps:     clampPerTick(tssA[w]),
+			TssKeygenExclusionBps:      clampPerTick(tssKeygen[w]),
 			TssBlameBps:                clampPerTick(tssB[w]),
 			TssSignNonParticipationBps: clampPerTick(tssC[w]),
 			OracleQuoteDivergenceBps:   clampPerTick(oracle[w]),
@@ -96,6 +100,7 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 			ev.BlockProductionBps,
 			ev.BlockAttestationBps,
 			ev.TssReshareExclusionBps,
+			ev.TssKeygenExclusionBps,
 			ev.TssBlameBps,
 			ev.TssSignNonParticipationBps,
 			ev.OracleQuoteDivergenceBps,

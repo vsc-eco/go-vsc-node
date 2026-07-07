@@ -260,6 +260,8 @@ func MakeNode(input MakeNodeInput) *Node {
 		sysConfig,
 		ds,
 		&txCreator,
+		contractState,
+		datalayer,
 	)
 
 	plugins := make([]aggregate.Plugin, 0)

@@ -76,6 +76,8 @@ func (mes *MockElectionSystem) TssMinimumConsensusVersion(uint64) consensusversi
 	return consensusversion.Version{}
 }
 
+func (mes *MockElectionSystem) BtcKeysignHalted() bool { return false }
+
 type nodeComponents struct {
 	agg            *aggregate.Aggregate
 	consumer       *blockconsumer.HiveConsumer
@@ -253,6 +255,8 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 		sysConf,
 		keystore,
 		&txCreator,
+		nil, // contractState — solvency gate inert in this test (no BTC contract)
+		nil, // da
 	)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -2543,6 +2547,8 @@ func TestTssThresholdIntegration(t *testing.T) {
 			sysConf,
 			keystore,
 			&txCreator,
+			nil, // contractState — solvency gate inert in this test (no BTC contract)
+			nil, // da
 		)
 
 		agg := aggregate.New([]aggregate.Plugin{
@@ -3116,6 +3122,8 @@ func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
 		sysConf,
 		keystore,
 		&txCreator,
+		nil, // contractState — solvency gate inert in this test (no BTC contract)
+		nil, // da
 	)
 
 	agg := aggregate.New([]aggregate.Plugin{
