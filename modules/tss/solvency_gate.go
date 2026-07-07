@@ -60,6 +60,20 @@ func (tssMgr *TssManager) isBtcVaultKey(keyId string) bool {
 	return btcContract != "" && strings.HasPrefix(keyId, btcContract+"-")
 }
 
+// shouldSkipReshareForVaultRotation reports whether the BlockTick reshare loop
+// must skip emitting a ReshareAction for keyId at height bh, because under
+// vault-rotation-v2 the BTC vault key rotates by FRESH KEYGEN, not reshare
+// (Build Map §7 N1, U-1). PER-KEYID and never loop-level: true ONLY for the BTC
+// vault key AND only once the rotation flag is active — every other chain shares
+// this reshare loop and keeps resharing. Pure function of bh + config (the flag
+// activation height + the BTC contract prefix), so every node makes the identical
+// decision at the identical height (no divergent session/party-list). Inert
+// (always false) until VaultRotationV2Enabled flips. Extracted from the tss.go
+// reshare loop so the load-bearing skip decision is directly unit-testable.
+func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uint64) bool {
+	return tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) && tssMgr.isBtcVaultKey(keyId)
+}
+
 // observeBtcSolvencyInsolvent compares the vault's real L1 balance against the
 // contract-claimed Supply and reports (insolvent, ok). STAGED FOR M1.1b — it is
 // NOT wired to the gate. When M1.1b wires it, per the council it MUST:

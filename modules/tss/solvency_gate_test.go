@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	stateEngine "vsc-node/modules/state-processing"
 )
@@ -74,5 +75,63 @@ func TestParseSupplySats(t *testing.T) {
 		if ok != tc.ok || (ok && got != tc.want) {
 			t.Fatalf("parseSupplySats(%q) = (%d, %v), want (%d, %v)", tc.in, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// flagOnConfig wraps a real SystemConfig, overriding ONLY ConsensusParams so the
+// vault-rotation-v2 flag reads as ACTIVE while OracleParams (the BTC contract id
+// used by isBtcVaultKey) stays real. Embedding the interface gives every other
+// method for free — no 15-method fake.
+type flagOnConfig struct {
+	systemconfig.SystemConfig
+	cp params.ConsensusParams
+}
+
+func (f flagOnConfig) ConsensusParams() params.ConsensusParams { return f.cp }
+
+// TestShouldSkipReshareForVaultRotation pins the load-bearing per-keyId gate-off
+// decision at the tss.go reshare loop (M1.3, U-1): the BTC vault key is skipped
+// ONLY when the rotation flag is active and only at/after the pinned height;
+// every OTHER chain keeps resharing (per-keyId, never loop-level); and the whole
+// thing is INERT (never skips) while the flag is off — the property that lets the
+// binary dark-launch before governance pins an activation height.
+func TestShouldSkipReshareForVaultRotation(t *testing.T) {
+	base := systemconfig.MainnetConfig()
+	btc := base.OracleParams().ContractId("BTC")
+	if btc == "" {
+		t.Fatal("expected a mainnet BTC contract id to be configured")
+	}
+	btcKey := btc + "-main"
+	siblingKey := "vsc1SomeEthKeyNotBtc-main"
+
+	// Flag ON at height 100, keeping real mainnet OracleParams via embedding.
+	cpOn := base.ConsensusParams() // returned by value → safe to mutate our copy
+	cpOn.VaultRotationV2ActivationHeight = 100
+	onCfg := flagOnConfig{SystemConfig: base, cp: cpOn}
+
+	cases := []struct {
+		name  string
+		sconf systemconfig.SystemConfig
+		keyId string
+		bh    uint64
+		want  bool
+	}{
+		// Flag OFF (real MainnetConfig, activation height 0): NEVER skip — inert.
+		{"flag off, BTC key -> never skip (inert)", base, btcKey, 1 << 40, false},
+		{"flag off, sibling key -> never skip", base, siblingKey, 1 << 40, false},
+		// Flag ON: skip ONLY the BTC vault key, and only at/after the height.
+		{"flag on, below height, BTC key -> not yet", onCfg, btcKey, 99, false},
+		{"flag on, at height, BTC key -> skip", onCfg, btcKey, 100, true},
+		{"flag on, above height, BTC key -> skip", onCfg, btcKey, 200, true},
+		{"flag on, sibling key -> keep resharing (per-keyId)", onCfg, siblingKey, 200, false},
+		{"flag on, empty key -> not BTC -> keep", onCfg, "", 200, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &TssManager{sconf: tc.sconf}
+			if got := mgr.shouldSkipReshareForVaultRotation(tc.keyId, tc.bh); got != tc.want {
+				t.Fatalf("shouldSkipReshareForVaultRotation(%q, bh=%d) = %v, want %v", tc.keyId, tc.bh, got, tc.want)
+			}
+		})
 	}
 }

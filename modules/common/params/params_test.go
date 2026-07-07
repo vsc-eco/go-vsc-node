@@ -74,3 +74,31 @@ func TestPinnedVersionFloorExcludesOldCode(t *testing.T) {
 		t.Fatal("upgraded 0.1.0 must meet a 0.1 floor")
 	}
 }
+
+// VaultRotationV2Enabled must be a pure, deterministic function of config +
+// blockHeight: INERT (always false) when the activation height is 0 — the safe
+// default on every network today, the property that lets the binary dark-launch
+// — and, once pinned, disabled strictly BELOW the height and enabled at/above it
+// (mirrors BondInclusionActive; a height at/below an already-processed block
+// would diverge live-vs-reindex, hence the strictly-above deploy rule).
+func TestVaultRotationV2Enabled(t *testing.T) {
+	inert := ConsensusParams{VaultRotationV2ActivationHeight: 0}
+	for _, bh := range []uint64{0, 1, 100, 1 << 40} {
+		if inert.VaultRotationV2Enabled(bh) {
+			t.Fatalf("activation height 0 must be inert, but enabled at bh=%d", bh)
+		}
+	}
+
+	cp := ConsensusParams{VaultRotationV2ActivationHeight: 100}
+	cases := []struct {
+		bh   uint64
+		want bool
+	}{
+		{0, false}, {99, false}, {100, true}, {101, true}, {1 << 40, true},
+	}
+	for _, tc := range cases {
+		if got := cp.VaultRotationV2Enabled(tc.bh); got != tc.want {
+			t.Fatalf("VaultRotationV2Enabled(bh=%d) with activation=100 = %v, want %v", tc.bh, got, tc.want)
+		}
+	}
+}
