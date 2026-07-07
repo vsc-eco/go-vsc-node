@@ -622,6 +622,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(bh); err == nil {
 			for _, key := range retiredKeys {
 				dsKey := makeKey("key", key.Id, int(key.Epoch))
+				// M1.4 (Build Map §5a) — DORMANT defence-in-depth share-zeroization.
+				// Gated on VaultRotationV2Enabled → byte-identical to the bare delete
+				// on every network today (flag 0). It deliberately does NOT change
+				// WHEN retirement fires: this path is still the legacy time-gate under
+				// KeyRetirementEnabled (false on mainnet); the real fund-gated trigger
+				// is S5. Wiring secure-erase to the current time-gate would turn a
+				// stalled-migration freeze into unrecoverable loss — hence dormant.
+				if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+					if zErr := zeroizeKeystoreEntry(context.Background(), tssMgr.keyStore, dsKey); zErr != nil {
+						log.Error("keystore zeroize failed (proceeding to plain delete)", "keyId", key.Id, "epoch", key.Epoch, "err", zErr)
+					}
+				}
 				if delErr := tssMgr.keyStore.Delete(context.Background(), dsKey); delErr != nil {
 					log.Error("keystore delete failed", "keyId", key.Id, "epoch", key.Epoch, "err", delErr)
 				} else {
