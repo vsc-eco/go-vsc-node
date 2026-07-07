@@ -214,7 +214,14 @@ func MainnetConfig() SystemConfig {
 			// pins a future epoch-boundary height (>=3d lead) for rollout.
 			BondInclusionWindowBlocks:     86_400,
 			BondInclusionActivationHeight: 107454300,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2 (BTC TSS reshare→fresh-keygen). 0 = INERT, the
+			// safe default. HARD GO-LIVE GATE (see params.go doc): do NOT pin until
+			// the contract emits fresh-keyId "create" ops + old→new sweep + old-share
+			// destruction are built & devnet-proven, else BTC reshare gate-offs with
+			// no keygen replacement and the vault freezes as the committee churns.
+			// Same cutover discipline as BondInclusionActivationHeight above.
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
 			// most N NEW members per election so a coordinated cohort maturing on
 			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
@@ -326,7 +333,9 @@ func TestnetConfig() SystemConfig {
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
 			BondInclusionActivationHeight: 3_870_000,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -403,7 +412,9 @@ func DevnetConfig() SystemConfig {
 			// to exercise the gate.
 			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -462,7 +473,9 @@ func MocknetConfig() SystemConfig {
 			// Version0_2_0Height=1.)
 			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.

@@ -1515,6 +1515,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							} else if newKey {
 								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
+								// corr-F1 (M1.3 council; rule-zero — don't grant the trust
+								// assumption): a "keygen" commitment must NEVER land on an
+								// already-active keyId. Under vault-rotation-v2 every rotation
+								// mints a FRESH keyId (always status "created" → the newKey
+								// branch above), so a keygen for an ALREADY-active key means
+								// the contract reused a keyId. Taking this else-branch would
+								// bump the epoch while keeping the stale on-chain PublicKey
+								// (old d) — but the DKG has written NEW shares (d') to the
+								// keystore at the bumped epoch. On-chain key and shares then
+								// disagree and the committee can no longer sign the vault's own
+								// funds (split-brain FREEZE). Reject it. A RESHARE legitimately
+								// re-keys an active key WITHOUT changing the pubkey → unaffected.
+								// Gated on the flag → byte-identical when inert (flag 0 default).
+								if commitment.Type == "keygen" && se.sconf != nil && se.sconf.ConsensusParams().VaultRotationV2Enabled(block.BlockNumber) {
+									tssLog.Warn("rejecting keygen commitment for an already-active keyId (v2 rotation must use a fresh keyId; contract keyId-reuse would split-brain the vault)", "keyId", commitment.KeyId, "activeEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+									continue
+								}
 								// S8: never rewind an active key's Epoch.
 								// keyInfo.Epoch drives the on-disk keystore-path
 								// derivation (tss.go: makeKey("key", id, epoch)),

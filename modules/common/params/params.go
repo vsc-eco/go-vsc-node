@@ -275,6 +275,17 @@ type ConsensusParams struct {
 	// boundary, identical on every node, or live-vs-reindex diverges. 0 = disabled
 	// (inert; the safe default — no behaviour change until governance pins a height
 	// and ALL nodes run the same binary at/after it).
+	//
+	// HARD GO-LIVE PRECONDITION (M1.3 council-converged, 3 independent lenses —
+	// do NOT treat a non-zero value as "rotation is safe to enable"): this flag
+	// ships only the NODE half — it gate-offs BTC reshare. The fresh keygen is
+	// triggered by a CONTRACT "create" TssOp (spine S1), and the old→new fund
+	// sweep + old-share destruction are also spine work. Pinning a height before
+	// those exist and are DEVNET-PROVEN (with signing continuity across a
+	// rotation) makes the BTC key stop resharing with NO keygen replacement → it
+	// rotates to neither → the vault FREEZES as the committee churns members out.
+	// Precondition to pin: (a) contract emits fresh-keyId "create" per generation,
+	// (b) old→new migration sweep, (c) old-share destruction — all built + proven.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
