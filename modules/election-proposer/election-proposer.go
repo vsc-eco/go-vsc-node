@@ -873,8 +873,8 @@ func (e *electionProposer) GenerateFullElection(
 	// on-chain previous election; ranking is the already-computed effective
 	// values; cap is compile-time. Inert unless bondActive, staked, cap>0, and
 	// there is a previous election (genesis/bootstrap has no "new" concept).
-	if bondActive && pType == "staked" && previousElection != nil &&
-		e.sconf.ConsensusParams().MaxNewMembersPerElection > 0 {
+	effMaxNew := e.sconf.ConsensusParams().EffectiveMaxNewMembers(blockHeight)
+	if bondActive && pType == "staked" && previousElection != nil && effMaxNew > 0 {
 		prevMembers := make(map[string]struct{}, len(previousElection.Members))
 		for _, m := range previousElection.Members {
 			prevMembers[strings.TrimPrefix(m.Account, "hive:")] = struct{}{}
@@ -902,7 +902,7 @@ func (e *electionProposer) GenerateFullElection(
 				effective: bondMatured[w.Account],
 			})
 		}
-		churnedOut := selectChurnedOut(newEntrants, e.sconf.ConsensusParams().MaxNewMembersPerElection)
+		churnedOut := selectChurnedOut(newEntrants, effMaxNew)
 		if len(churnedOut) > 0 {
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				_, drop := churnedOut[w.Account]
@@ -915,7 +915,7 @@ func (e *electionProposer) GenerateFullElection(
 			slices.Sort(deferred)
 			log.Info("bond churn cap deferred new members",
 				"block_height", blockHeight,
-				"cap", e.sconf.ConsensusParams().MaxNewMembersPerElection,
+				"cap", effMaxNew,
 				"new_entrants", len(newEntrants),
 				"deferred", strings.Join(deferred, ","))
 		}
