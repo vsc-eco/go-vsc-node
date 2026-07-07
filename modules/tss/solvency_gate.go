@@ -118,8 +118,23 @@ func (tssMgr *TssManager) observeBtcSolvencyInsolvent(bh uint64) (insolvent bool
 		}
 		l1 += bal
 	}
-	gap := int64(tssMgr.sconf.TssParams().SolvencyGapSats)
-	return l1 < int64(supplySats)-gap, true
+	gap := tssMgr.sconf.TssParams().SolvencyGapSats
+	// Reject an implausibly large / hostile contract Supply before it can drive a
+	// freeze decision (max BTC = 21e6·1e8 sats « 2^63); a corrupt/attacker-inflated
+	// "s" key must fail open, never trip (pruned-methodology money-math F1: the old
+	// int64(supplySats)-int64(gap) overflowed/inverted for uint64 inputs ≥ 2^63).
+	if supplySats > 21_000_000*100_000_000 {
+		return false, false
+	}
+	if supplySats < gap {
+		// Solvency tolerance exceeds Supply → threshold non-positive → cannot
+		// conclude insolvent. (uint64 subtraction below would otherwise underflow.)
+		return false, true
+	}
+	if l1 < 0 {
+		l1 = 0
+	}
+	return uint64(l1) < supplySats-gap, true
 }
 
 // readContractStateKey resolves a single contract state key at blockHeight,

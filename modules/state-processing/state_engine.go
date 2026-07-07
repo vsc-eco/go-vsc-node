@@ -605,7 +605,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							height = blockInfo.BlockHeight
 						}
 						if err := se.consensusState.SetBtcKeysignHalt(context.Background(), h.Active, height); err != nil {
-							log.Warn("vsc.tss_halt: SetBtcKeysignHalt failed", "err", err)
+							// ERROR, not Warn: this node did NOT apply the emergency BTC
+							// keysign halt (write failed) and will keep signing until a
+							// later op succeeds — operators must alert + re-broadcast the
+							// idempotent vsc.tss_halt op (pruned-methodology F1 write-path).
+							log.Error("vsc.tss_halt: SetBtcKeysignHalt FAILED — halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
 						} else {
 							se.refreshChainConsensusCache()
 							log.Info("vsc.tss_halt applied", "active", h.Active, "keyId", h.KeyId,
