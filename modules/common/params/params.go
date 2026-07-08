@@ -297,10 +297,15 @@ type ConsensusParams struct {
 	//       id makes isBtcVaultKey false, silently disabling S3 output scoping AND
 	//       the M1.1a solvency halt AND the M1.3 reshare-skip TOGETHER (fail-open
 	//       on theft-prevention). Verify it is set on the target network.
-	//   (f) the migration confirm flow is reorg-hardened (delete swept inputs at
-	//       CONFIRM, not build; gate the next rotation on a pending unconfirmed
-	//       sweep) and the contract `pause` exempts the in-flight migration confirm
-	//       path (else a pause strands a sweep) — tracked S2 items, must be built.
+	//   (f) DONE (BRK-1 + BRK-4b — contract feat/vault-rotation-s1 @ a5cf0a0): the
+	//       migration confirm flow is reorg-hardened — swept inputs are deleted at
+	//       CONFIRM not build (settleMigrationSweep, under the sweep's SPV proof), the
+	//       next rotation is gated on a pending unconfirmed sweep (inputs stay in the
+	//       registry → AnyFundedSupersededGen true → NN#3 refuses createKey), and the
+	//       in-flight migration confirm is pause-EXEMPT (BRK-4b). Fee is CHECK-at-build /
+	//       DEBIT-at-confirm so no confirm aborts post-L1. Council-proven (5 lenses:
+	//       conservation, state-machine, adversarial, determinism, fail-safe) —
+	//       conserving, deterministic, no reachable permanent brick / fund loss.
 	//   (g) the check-SIGNATURE-before-activate ceremony (M1.3b) is built — the new
 	//       generation's activation must gate on a PRODUCED + consensus-verified
 	//       test signature, not just keygen agreement (attestPrimaryKey), or funds
@@ -326,6 +331,17 @@ type ConsensusParams struct {
 	//       today is byte-identical), but a heterogeneous fleet would diverge in the
 	//       v2 era. Same all-nodes-same-height discipline as this flag (brick-fix
 	//       determinism lens).
+	//   (l) the migration DUST-ESCAPE is handled — a sub-sweep-fee dust deposit to a
+	//       superseded gen's still-matchable address is credited (S1.4) but can NEVER be
+	//       swept (buildMigrationTransaction V-1/V5-4 fee abort), and BRK-1's registry-
+	//       based NN#3 then FREEZES all rotation until that gen drains, so an unprivileged
+	//       dust deposit can wedge rotation (BRK-1 council state-machine N1; funds-safe —
+	//       L1 + CSV, but a liveness DoS). Pre-existing, but BRK-1 makes rotation-liveness
+	//       depend on it. Ship the V-1 dust-burn / reserve-subsidy (or a min-deposit floor
+	//       / prune the residual via the S5 SPV-zero gate) before pinning a height.
+	//       Also fund FeeSupply — calcVscFee is 0 today, so the BRK-1 build-time fee
+	//       reserve check rejects EVERY sweep (fail-safe can't-start, not stuck-on-L1);
+	//       rotation cannot complete until the migration fee model is funded.
 	// STATUS: (a)-(g) tracked/unbuilt (spine); (h) enforced by the S5 SPV-zero rule;
 	// (i) DONE (MaxBlockRetention=4608, BRK-4a); (j) DONE (BRK-5 suspend-freeze).
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
