@@ -943,6 +943,16 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
 			}
+			// BRK-2 (D1, simulate accuracy): reflect the chain-active
+			// vault-rotation-v2 flag so a simulated activateKey enforces the same
+			// check-signature gate (TssGetKey's 4th field) the real tx would —
+			// otherwise a preview would optimistically show activation succeeding
+			// before the new committee has proven signability. Read-only sim
+			// (reverted like the rest); non-consensus, so this only affects the
+			// preview's accuracy, never the state root.
+			if sc := r.StateEngine.SystemConfig(); sc != nil && sc.ConsensusParams().VaultRotationV2Enabled(blockHeight) {
+				ctxOpts = append(ctxOpts, contract_execution_context.WithVaultRotationV2(true))
+			}
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
