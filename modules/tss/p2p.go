@@ -248,11 +248,21 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		return
 	}
 
+	// V-A: fund-holding retiring/draining-gen committee members are ALSO valid
+	// readiness attesters for a migration sweep, even when churned out of the
+	// current election. Deterministic on-chain set (gated on v2; empty → inert), so
+	// every node accepts the same widened attester set and verifies each against the
+	// election that carries its BLS key.
+	retiringSet := s.tssMgr.retiringGenSignerSet(targetBlock)
+
 	// Build a set of valid election members for cheap pre-filtering
 	// before the expensive BLS signature verification.
-	electionMembers := make(map[string]bool, len(election.Members))
+	electionMembers := make(map[string]bool, len(election.Members)+len(retiringSet.signerElection))
 	for _, m := range election.Members {
 		electionMembers[m.Account] = true
+	}
+	for acct := range retiringSet.signerElection {
+		electionMembers[acct] = true
 	}
 
 	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
@@ -270,7 +280,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	// Cap bundle size at the election member count to prevent a malicious peer
 	// from sending an oversized bundle that wastes CPU on BLS verification.
-	maxAttestations := len(election.Members)
+	maxAttestations := len(election.Members) + len(retiringSet.signerElection)
 	if len(attList) > maxAttestations {
 		log.Warn("oversized gossip bundle, truncating",
 			"received", len(attList), "max", maxAttestations,
@@ -326,7 +336,16 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 			Sig:                 sig,
 		}
 
-		if !s.tssMgr.verifyAttestation(att, election) {
+		// Verify against the current election; if the attester is a churned-out
+		// retiring-gen committee member (V-A), verify against that gen's commitment
+		// epoch election, which carries its BLS key.
+		verified := s.tssMgr.verifyAttestation(att, election)
+		if !verified {
+			if relec, isRetiring := retiringSet.signerElection[account]; isRetiring {
+				verified = s.tssMgr.verifyAttestation(att, relec)
+			}
+		}
+		if !verified {
 			log.Warn("rejecting attestation with invalid BLS signature",
 				"account", account, "targetBlock", targetBlock)
 			continue

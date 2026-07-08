@@ -454,7 +454,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 
-		if isMember {
+		// V-A: a fund-holding retiring/draining-gen committee member must ALSO emit
+		// readiness — even when churned OUT of the current election — so the
+		// migration sweep of that gen can still reach threshold (else C-A/V-A
+		// freeze: >1/3 of the old committee churns out → migration can never sign).
+		// Deterministic on-chain set; empty/inert unless VaultRotationV2Enabled AND a
+		// retiring/draining BTC gen exists. Widens the convergent gossip set, does
+		// NOT replace it (not GV-H8).
+		retiringEligible := tssMgr.retiringGenSignerSet(bh).has(selfAccount)
+
+		if isMember || retiringEligible {
 			for targetBlock := range gossipTargets {
 				blocksUntil := targetBlock - bh
 				inSettlePeriod := blocksUntil <= DEFAULT_SETTLE_BLOCKS
@@ -473,12 +482,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// active consensus floor for the target — it could not participate anyway.
 				floor := tssMgr.scheduler.TssMinimumConsensusVersion(targetBlock)
 				belowFloor := !consensusversion.RunningVersion().MeetsConsensusMin(floor)
-				if belowFloor && !inSettlePeriod && !alreadySent {
+				// V-A / V5-6: a retiring-gen signer is EXEMPT from the current floor —
+				// the migration signs the OLD key with the OLD committee's protocol, so
+				// a current-network floor bump must not silence it (that would re-freeze
+				// the migration). It still emits its running version; each sign type's
+				// party filter applies the appropriate floor.
+				effectiveBelowFloor := belowFloor && !retiringEligible
+				if effectiveBelowFloor && !inSettlePeriod && !alreadySent {
 					log.Verbose("skipping readiness attestation; running version below active floor",
 						"targetBlock", targetBlock, "floor", floor.Format())
 				}
 
-				if !belowFloor && !inSettlePeriod && !alreadySent {
+				if !effectiveBelowFloor && !inSettlePeriod && !alreadySent {
 					att, err := tssMgr.signReadyAttestation(targetBlock)
 					if err != nil {
 						log.Warn("failed to sign readiness attestation",
@@ -1141,12 +1156,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// included, keeping the signing party set version-homogeneous (live, not the stale
 			// election snapshot). The floor is the deterministic election-active version at bh.
 			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
+			// V-A / V5-6: for a migration sign of a fund-holding retiring/draining
+			// gen, its committee is EXEMPT from the CURRENT version floor — the OLD
+			// key's protocol is fixed at its keygen epoch, so a current-network floor
+			// bump must not silence the old committee. Scoped to retiring-gen signs
+			// (action.KeyId in the retiring set) so an active-key sign still enforces
+			// the current floor. Deterministic on-chain set; inert unless v2 + a
+			// retiring gen exists.
+			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
+			isRetiringSign := signRetiringSet.keyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
 			signReadyAccounts := make(map[string]bool, len(signAttMap))
 			for account, att := range signAttMap {
 				if att.Version().MeetsConsensusMin(minSignVer) {
+					signReadyAccounts[account] = true
+				} else if isRetiringSign && signRetiringSet.has(account) {
 					signReadyAccounts[account] = true
 				}
 			}
