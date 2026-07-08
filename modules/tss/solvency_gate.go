@@ -40,10 +40,12 @@ func (tssMgr *TssManager) btcKeysignFrozen(keyId string) bool {
 		return false
 	}
 
-	// V-8 (OPEN — resolve before relying on halt-then-evacuate): when a dedicated
-	// migration/evacuation keysign key exists, whitelist it here so funds can
-	// still be swept to a successor vault while the halt is up. None exists at
-	// cc069b3f, so a halt currently also freezes an emergency evacuation keysign.
+	// V-8 (RESOLVED in S3): btcKeysignFrozen reports the raw FLAG state for a BTC
+	// vault key. The V-8 evacuation exemption — allowing a PROVEN successor-scoped
+	// migration sweep to sign even while the halt is up — is applied by the
+	// caller btcSignRefused (output_scoping.go), which only reaches this check
+	// when the sign is NOT such a sweep. Keeping this function FLAG-pure lets the
+	// M1.1a solvency semantics stay independently unit-tested.
 
 	// FLAG — deterministic governance freeze (the only live M1.1a gate input).
 	return tssMgr.scheduler != nil && tssMgr.scheduler.BtcKeysignHalted()
