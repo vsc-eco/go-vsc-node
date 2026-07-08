@@ -157,6 +157,14 @@ func (t TxVscCallContract) ExecuteTx(
 		contract_execution_context.WithTryCatch(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
+		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on the
+		// chain-active vault-rotation-v2 flag so the contract-execution output
+		// format changes only at a coordinated height (fork-safe rolling deploy;
+		// byte-identical when off). se is the StateEngine interface here, so read
+		// the flag through SystemConfig() rather than the concrete sconf field.
+		contract_execution_context.WithVaultRotationV2(
+			se.SystemConfig() != nil && se.SystemConfig().ConsensusParams().VaultRotationV2Enabled(t.Self.BlockHeight),
+		),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)

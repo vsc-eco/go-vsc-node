@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ed25519"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"vsc-node/lib/btcvault"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -240,6 +242,78 @@ func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
 		tssLog.Warn(msg, args...)
 	} else {
 		tssLog.Debug(msg, args...)
+	}
+}
+
+// vaultCheckSigDigest recomputes the BRK-2 canonical check-signature message M
+// for a BTC-vault keyId, using the generation encoded in the keyId and the
+// key's OWN pubkey. It is the single derivation shared by the enqueue (N-c) and
+// the verify/mark (N-d) so both sites bind identical bytes. Returns (nil, false)
+// unless vault-rotation-v2 is active at bh AND keyId is a BTC-vault key with a
+// valid 33-byte pubkey — the caller then does nothing (fail-safe: no enqueue /
+// no flag, never a wrong one). Deterministic: every input is on-chain
+// (consensus flag, config-derived BTC contract id, committed pubkey), so all
+// honest nodes compute the same M or all skip.
+func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) ([]byte, bool) {
+	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+		return nil, false
+	}
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
+		return nil, false
+	}
+	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+	if !ok {
+		return nil, false
+	}
+	pub, err := hex.DecodeString(pubKeyHex)
+	if err != nil || len(pub) != 33 {
+		return nil, false
+	}
+	return btcvault.CheckSigMessage(keyId, gen, pub), true
+}
+
+// maybeEnqueueVaultCheckSig (BRK-2 / brick council FS3-1) enqueues the canonical
+// check-signature request the moment a v2 BTC-vault key flips created->active.
+// The fresh committee must PRODUCE and on-chain-verify a signature with the new
+// key before the contract's attestPrimaryKey will activate the vault generation
+// — otherwise funds could route into an agreed-but-UNSIGNABLE vault and custody
+// collapses to the single CSV backup key. Deterministic in-ProcessBlock write
+// (all nodes emit the identical tss_requests row at this block); the sign then
+// flows through the EXISTING FindUnsignedRequests -> SignDispatcher ->
+// vsc.tss_sign path, admitted by the S3 scopeCheckSig verdict. No-op
+// (byte-identical) when the rotation flag is off. Fail-safe: a missing enqueue
+// only means the vault never activates (a clean, recoverable freeze), never a
+// wrong activation.
+func (se *StateEngine) maybeEnqueueVaultCheckSig(keyInfo tss_db.TssKey, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyInfo.Id, keyInfo.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if err := se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		KeyId: keyInfo.Id,
+		Msg:   hex.EncodeToString(m),
+	}); err != nil {
+		tssLog.Warn("BRK-2: failed to enqueue vault check-signature", "keyId", keyInfo.Id, "err", err)
+	} else {
+		se.tssLogSync(bh, "BRK-2 vault check-signature enqueued", "keyId", keyInfo.Id)
+	}
+}
+
+// maybeMarkVaultCheckSig (BRK-2) sets SignatureVerified on a BTC-vault key when
+// the just-verified signature is over the canonical check-message M for that key
+// (recomputed from keyId + the key's OWN committed pubkey). Because M is
+// domain-separated it can never equal a real BTC sighash, so a genuine
+// withdrawal/migration signature never trips this — only the deliberate
+// check-sign does. Deterministic (on-chain inputs, recomputed identically on all
+// nodes). No-op when the rotation flag is off or the message is not M.
+func (se *StateEngine) maybeMarkVaultCheckSig(keyId string, key tss_db.TssKey, msg []byte, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyId, key.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if bytes.Equal(msg, m) {
+		se.tssKeys.SetSignatureVerified(keyId)
 	}
 }
 
@@ -1367,6 +1441,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Status: tss_db.SignComplete,
 											})
 											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "ecdsa")
+											// BRK-2: if this verified sig is over the canonical
+											// check-message M for this key, mark it signature-verified
+											// (the contract's attestPrimaryKey gate). Domain-separated
+											// M can never equal a real BTC sighash, so a genuine
+											// withdrawal/migration sig never trips this.
+											se.maybeMarkVaultCheckSig(sigPack.KeyId, *keyCache[sigPack.KeyId], msgBytes, txSelf.BlockHeight)
 										}
 									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
 										pk := ed25519.PublicKey(publicKey)
@@ -1524,6 +1604,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								}
 								se.tssLogSync(block.BlockNumber, "key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
+								// BRK-2 (check-SIGNATURE-before-activate, deploy
+								// precondition g): the instant a v2 BTC-vault key becomes
+								// node-active, enqueue its canonical check-signature so the
+								// fresh committee must PROVE signability before the contract
+								// activates the vault generation. Inert (no enqueue) until
+								// the rotation flag is pinned. See the helper.
+								se.maybeEnqueueVaultCheckSig(keyInfo, block.BlockNumber)
 							} else if newKey {
 								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {

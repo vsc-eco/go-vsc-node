@@ -57,6 +57,18 @@ type contractExecutionContext struct {
 	// across binaries. Set once per tx by the state engine and propagated into
 	// nested calls.
 	tryCatchActive bool
+
+	// vaultRotationV2Active gates the BRK-2 SignatureVerified 4th field appended
+	// to TssGetKey's output. That return string feeds deterministic contract
+	// execution whose state writes ARE hashed into the consensus state root, so
+	// the format change is CONSENSUS-relevant and MUST be gated exactly like
+	// tryCatchActive: the state engine computes it per-tx from the
+	// height-addressable VaultRotationV2Enabled flag and plumbs it in via
+	// WithVaultRotationV2 (propagated into nested calls). Appending the field
+	// unconditionally would fork a rolling deploy (upgraded vs not-yet-upgraded
+	// nodes emit different strings) and break historical re-execution. False =>
+	// TssGetKey returns the byte-identical legacy 3-field string.
+	vaultRotationV2Active bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -161,6 +173,15 @@ func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 // coordinated version floor.
 func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
+}
+
+// WithVaultRotationV2 enables the BRK-2 SignatureVerified 4th field in
+// TssGetKey. The state engine sets this from the chain-active
+// VaultRotationV2Enabled flag so the new contract-execution output format
+// activates only at a coordinated height (mirror of WithTryCatch; see the
+// vaultRotationV2Active field doc for the fork-avoidance rationale).
+func WithVaultRotationV2(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.vaultRotationV2Active = active }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -653,7 +674,10 @@ func (ctx *contractExecutionContext) ContractCall(
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
 				WithPendulumApplier(ctx.pendulumApplier),
-				WithTryCatch(ctx.tryCatchActive))
+				WithTryCatch(ctx.tryCatchActive),
+				// Propagate the BRK-2 gate so a nested contract call sees the same
+				// TssGetKey output format as the top-level tx (fork-safe at depth).
+				WithVaultRotationV2(ctx.vaultRotationV2Active))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
@@ -768,6 +792,20 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 	if status == tss_db.TssKeyActive || status == tss_db.TssKeyDeprecated || status == "deleted" {
 		res += "," + tssKey.PublicKey
 		res += "," + string(tssKey.Algo)
+		// BRK-2 (D1, activation-gated): expose the check-signature flag as a 4th
+		// CSV field so the contract's attestPrimaryKey can require a produced +
+		// verified signature before activating a vault generation. Appended ONLY
+		// when vault-rotation-v2 is chain-active; otherwise the return is the
+		// byte-identical legacy 3-field string (no rolling-deploy fork, no
+		// historical-re-exec break). Backward-compatible: existing callers read
+		// parts[0]/[1]/[2] and ignore extra fields.
+		if ctx.vaultRotationV2Active {
+			if tssKey.SignatureVerified {
+				res += ",1"
+			} else {
+				res += ",0"
+			}
+		}
 	}
 
 	return result.Ok(res)
