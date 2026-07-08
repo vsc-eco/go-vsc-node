@@ -3,6 +3,7 @@ package tss
 import (
 	"encoding/base64"
 	"math/big"
+	"strconv"
 
 	"vsc-node/lib/btcvault"
 	"vsc-node/modules/db/vsc/elections"
@@ -102,7 +103,11 @@ func computeRetiringSignerSet(d retiringSignerDeps) retiringSignerSet {
 			if bv.Bit(midx) == 1 {
 				// Any election carrying the member is a valid verification target;
 				// a mismatch (rotated BLS key) only costs a retry (documented on the
-				// method below). Keep the highest-gen election for the member.
+				// method below). If a member sits in more than one retiring gen's
+				// committee, LAST-WRITE-WINS in "v" registry iteration order — which
+				// is deterministic across nodes (same committed blob), so the choice
+				// is arbitrary-but-identical everywhere. (Council INFO: not
+				// "highest-gen"; do not rely on a gen-ordering guarantee here.)
 				out.signerElection[member.Account] = *commitElection
 			}
 		}
@@ -146,4 +151,54 @@ func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) retiringSignerSet {
 			return tssMgr.electionDb.GetElection(epoch)
 		},
 	})
+}
+
+// retiringGenSignerSetCached is the memoized accessor used ONLY on the untrusted
+// ready_gossip receive path (V-A council A3): that handler runs once per message
+// from any peer, and an uncached retiringGenSignerSet does a contract-state
+// datalayer read per message, which — sharing the pubsub semaphore with
+// consensus-critical TSS messages — a cheap flood could exploit to starve
+// signature collection once v2 is live. Caching per target height collapses that
+// to at most one read per height regardless of message volume.
+//
+// It short-circuits (no cache touch, no read) while VaultRotationV2Enabled is
+// false, so it is byte-identical / allocation-parity with the inert path today.
+// The cache is node-local and holds a DETERMINISTIC value (the committed vault
+// state at bh), so it never affects consensus; the mutex is never held across the
+// datalayer read.
+func (tssMgr *TssManager) retiringGenSignerSetCached(bh uint64) retiringSignerSet {
+	if tssMgr.sconf == nil || !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+		return retiringSignerSet{
+			signerElection: map[string]elections.ElectionResult{},
+			keyIds:         map[string]bool{},
+		}
+	}
+	key := strconv.FormatUint(bh, 10)
+
+	tssMgr.retiringSetCacheMu.Lock()
+	if s, ok := tssMgr.retiringSetCache[key]; ok {
+		tssMgr.retiringSetCacheMu.Unlock()
+		return s
+	}
+	tssMgr.retiringSetCacheMu.Unlock()
+
+	// Compute OUTSIDE the lock — the datalayer read may be slow, and blocking the
+	// cache mutex on it would defeat the purpose. A bounded first-miss herd
+	// (capped by the pubsub concurrency limit) may each compute once; all
+	// subsequent messages for this height hit the cache.
+	s := tssMgr.retiringGenSignerSet(bh)
+
+	tssMgr.retiringSetCacheMu.Lock()
+	if tssMgr.retiringSetCache == nil {
+		tssMgr.retiringSetCache = map[string]retiringSignerSet{}
+	}
+	// Bound the cache: only a few target heights are ever in flight at once, so
+	// clear it wholesale if it somehow grows past a small cap (forces a recompute,
+	// never unbounded memory). Cheaper + simpler than per-entry height eviction.
+	if len(tssMgr.retiringSetCache) > 64 {
+		tssMgr.retiringSetCache = map[string]retiringSignerSet{}
+	}
+	tssMgr.retiringSetCache[key] = s
+	tssMgr.retiringSetCacheMu.Unlock()
+	return s
 }

@@ -252,8 +252,10 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	// readiness attesters for a migration sweep, even when churned out of the
 	// current election. Deterministic on-chain set (gated on v2; empty → inert), so
 	// every node accepts the same widened attester set and verifies each against the
-	// election that carries its BLS key.
-	retiringSet := s.tssMgr.retiringGenSignerSet(targetBlock)
+	// election that carries its BLS key. CACHED per target height (council A3):
+	// this runs once per untrusted gossip message, so the underlying contract-state
+	// read must not be per-message.
+	retiringSet := s.tssMgr.retiringGenSignerSetCached(targetBlock)
 
 	// Build a set of valid election members for cheap pre-filtering
 	// before the expensive BLS signature verification.
