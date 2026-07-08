@@ -43,9 +43,12 @@ type btcVaultView struct {
 // these from the TssManager.
 type btcScopeDeps struct {
 	contractId string
-	// readKey resolves a single contract state key at bh, deterministically
-	// (production: TssManager.readContractStateKey → GetLastOutput pinned to bh).
-	readKey func(contractID string, bh uint64, key string) ([]byte, bool)
+	// readKey reads a contract state key from a SINGLE already-resolved contract
+	// output (production: TssManager.contractStateReaderAt resolves GetLastOutput
+	// + the state databin ONCE, at the pinned bh, and every key read here hits
+	// that one databin). Resolving once — rather than re-running GetLastOutput per
+	// key — keeps the gate cheap under the global TSS lock (methodology F-1).
+	readKey func(key string) ([]byte, bool)
 	// findKey returns a keyId's COMMITTED tss_keys entry (production:
 	// TssManager.tssKeys.FindKey — BLS-threshold-verified write path).
 	findKey func(id string) (tss_db.TssKey, error)
@@ -77,11 +80,11 @@ const (
 // the benign pre-fold case (allow gen-0 only), whereas a PRESENT-but-corrupt
 // registry must fail closed — it is exactly the state a lying/compromised
 // contract would write to try to disable NN#1.
-func (d btcScopeDeps) resolveVaultView(bh uint64) (*btcVaultView, vaultResolveResult) {
+func (d btcScopeDeps) resolveVaultView() (*btcVaultView, vaultResolveResult) {
 	if d.contractId == "" {
 		return nil, vaultAbsent
 	}
-	rawV, ok := d.readKey(d.contractId, bh, "v")
+	rawV, ok := d.readKey("v")
 	if !ok || len(rawV) == 0 {
 		return nil, vaultAbsent
 	}
@@ -97,8 +100,18 @@ func (d btcScopeDeps) resolveVaultView(bh uint64) (*btcVaultView, vaultResolveRe
 		byKeyId:    make(map[string]btcvault.Vault, len(vaults)),
 	}
 	activeCount := 0
-	for _, v := range vaults {
+	for i := range vaults {
+		v := vaults[i]
 		keyId := d.contractId + "-" + btcvault.VaultKeyName(v.Generation)
+		// Duplicate generation → the two entries alias onto the SAME map key.
+		// Last-write-wins could hide a Retiring entry behind an Active one at the
+		// same keyId, making evaluateScope return scopeAllow for the reconstructable
+		// retiring key — a fail-open (methodology money-math HIGH). Honest state
+		// never reuses a generation (monotonic, corr-F1); a duplicate = corrupt →
+		// fail closed.
+		if _, dup := view.byKeyId[keyId]; dup {
+			return nil, vaultUnresolvable
+		}
 		view.byKeyId[keyId] = v
 		if v.Status == btcvault.VaultStatusActive {
 			view.successorKeyId = keyId
@@ -127,8 +140,8 @@ const (
 // evaluateScope applies S3 output scoping for a BTC-vault keyId whose sign
 // request carries sighash, at bh. It is the pure, deterministic core of
 // btcSignRefused, split out so it is unit-testable via btcScopeDeps.
-func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte, bh uint64) scopeVerdict {
-	view, res := d.resolveVaultView(bh)
+func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte) scopeVerdict {
+	view, res := d.resolveVaultView()
 	switch res {
 	case vaultAbsent:
 		// Pre-fold / not-yet-folded: the ONLY legitimate BTC vault key is the
@@ -155,7 +168,7 @@ func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte, bh uint64) sco
 			// where a user's own funds go) — deliberately NOT output-scoped.
 			return scopeAllow
 		case v.Status == btcvault.VaultStatusRetiring || v.Status == btcvault.VaultStatusDraining:
-			if d.retiringSignPaysSuccessor(sighash, view, bh) {
+			if d.retiringSignPaysSuccessor(sighash, view) {
 				return scopeSuccessorSweep
 			}
 			return scopeRefuse
@@ -198,13 +211,17 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 	// to pre-S3).
 	verdict := scopeAllow
 	if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+		btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
 		deps := btcScopeDeps{
-			contractId: tssMgr.sconf.OracleParams().ContractId("BTC"),
-			readKey:    tssMgr.readContractStateKey,
-			findKey:    tssMgr.tssKeys.FindKey,
-			mainnet:    tssMgr.sconf.OnMainnet(),
+			contractId: btcContract,
+			// Resolve the contract's committed output at bh ONCE; every "v"/"va"/
+			// "p"/"d-<txid>" read reuses that one databin (F-1: no per-key
+			// GetLastOutput, bounded work under the TSS lock).
+			readKey: tssMgr.contractStateReaderAt(btcContract, bh),
+			findKey: tssMgr.tssKeys.FindKey,
+			mainnet: tssMgr.sconf.OnMainnet(),
 		}
-		verdict = deps.evaluateScope(keyId, sighash, bh)
+		verdict = deps.evaluateScope(keyId, sighash)
 	}
 
 	// Combine with the M1.1a solvency halt (FLAG) + the V-8 evacuation exemption.
@@ -234,7 +251,7 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 // sign we cannot PROVE is a successor sweep must not be issued. Worst case is a
 // liveness freeze of a legitimate-but-unverifiable sweep (recoverable), never a
 // theft.
-func (d btcScopeDeps) retiringSignPaysSuccessor(sighash []byte, view *btcVaultView, bh uint64) bool {
+func (d btcScopeDeps) retiringSignPaysSuccessor(sighash []byte, view *btcVaultView) bool {
 	// Successor primary from COMMITTED tss_keys (C-C guard) — must be present +
 	// active (the check-signature gate / activation guarantees an active
 	// successor can actually sign).
@@ -252,7 +269,7 @@ func (d btcScopeDeps) retiringSignPaysSuccessor(sighash []byte, view *btcVaultVi
 	}
 
 	// Pending spends live in consensus contract state ("p" registry + "d-"<txid>).
-	rawP, ok := d.readKey(view.contractId, bh, "p")
+	rawP, ok := d.readKey("p")
 	if !ok {
 		return false
 	}
@@ -261,7 +278,7 @@ func (d btcScopeDeps) retiringSignPaysSuccessor(sighash []byte, view *btcVaultVi
 		return false
 	}
 	for _, txid := range txids {
-		rawSD, ok := d.readKey(view.contractId, bh, "d-"+txid)
+		rawSD, ok := d.readKey("d-" + txid)
 		if !ok {
 			continue
 		}
