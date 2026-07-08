@@ -192,8 +192,71 @@ func TestEvaluateScope_ActiveGenUnrestricted(t *testing.T) {
 func TestEvaluateScope_InertWhenNoRegistry(t *testing.T) {
 	f := newScopeFixture(t)
 	delete(f.state, "v")
+	// Registry ABSENT (pre-fold): the legacy gen-0 "main" key signs as today.
 	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeAllow {
-		t.Fatalf("no registry (inert): got %v, want scopeAllow", got)
+		t.Fatalf("no registry, gen-0 main (inert): got %v, want scopeAllow", got)
+	}
+	// But a higher-generation keyId cannot exist without a registry → fail closed.
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+		t.Fatalf("no registry, mainv1: got %v, want scopeRefuse (cannot exist without a registry)", got)
+	}
+}
+
+// TestEvaluateScope_UnresolvableRegistryFailsClosed — council B1/C-FS-1/A-F1: a
+// PRESENT-but-corrupt vault registry must FAIL CLOSED (refuse), never fail open.
+// A lying/compromised contract writing a malformed / 0-active / 2+-active "v"
+// must NOT be able to disable output scoping for a retiring key.
+func TestEvaluateScope_UnresolvableRegistryFailsClosed(t *testing.T) {
+	// Two Active gens (ambiguous successor).
+	f := newScopeFixture(t)
+	f.state["v"] = marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
+		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
+	)
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+		t.Fatalf("two-active registry: got %v, want scopeRefuse (unresolvable, fail closed)", got)
+	}
+	// Zero Active gens (no successor to sweep to).
+	f.state["v"] = marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusRetiring},
+	)
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+		t.Fatalf("zero-active registry: got %v, want scopeRefuse", got)
+	}
+	// Malformed blob (length not a multiple of VaultEntrySize).
+	f.state["v"] = make([]byte, btcvault.VaultEntrySize+7)
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+		t.Fatalf("malformed registry: got %v, want scopeRefuse", got)
+	}
+	// A malformed registry must freeze the ACTIVE gen too (cannot classify) —
+	// safe recoverable freeze, never a fail-open.
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+		t.Fatalf("malformed registry, active-gen keyId: got %v, want scopeRefuse", got)
+	}
+}
+
+// TestBtcSignGateDecision_V8 — the halt × scope decision, including the V-8
+// exemption: a proven successor-scoped sweep issues even while the solvency
+// halt FLAG is up (the honest evacuation must complete), while everything else
+// freezes under the halt.
+func TestBtcSignGateDecision_V8(t *testing.T) {
+	cases := []struct {
+		name    string
+		verdict scopeVerdict
+		halted  bool
+		refuse  bool
+	}{
+		{"refuse, no halt", scopeRefuse, false, true},
+		{"refuse, halt", scopeRefuse, true, true},
+		{"allow, no halt", scopeAllow, false, false},
+		{"allow, halt -> M1.1a freeze", scopeAllow, true, true},
+		{"sweep, no halt", scopeSuccessorSweep, false, false},
+		{"sweep, halt -> V-8 exempt, issue", scopeSuccessorSweep, true, false},
+	}
+	for _, tc := range cases {
+		if got := btcSignGateDecision(tc.verdict, tc.halted); got != tc.refuse {
+			t.Fatalf("%s: btcSignGateDecision(%v,%v)=%v want %v", tc.name, tc.verdict, tc.halted, got, tc.refuse)
+		}
 	}
 }
 
@@ -268,25 +331,3 @@ func TestEvaluateScope_UnknownAndNonFundHoldingGen(t *testing.T) {
 	}
 }
 
-func TestEvaluateScope_TwoActiveFailsClosed(t *testing.T) {
-	f := newScopeFixture(t)
-	// Corrupt registry with two Active gens: no unambiguous successor →
-	// resolveVaultView returns false → no view. There is no resolvable retiring
-	// gen, so scopeAllow (the M1.1a halt still applies downstream); the key point
-	// is that NO retiring sweep is ever declared valid without a single successor.
-	f.state["v"] = marshalRegistry(
-		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
-		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
-	)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeAllow {
-		t.Fatalf("two-active corrupt registry: got %v, want scopeAllow (no resolvable view)", got)
-	}
-	// And a genuinely retiring gen under an unresolvable view still cannot be a
-	// successor sweep — verify via a registry with a retiring gen but zero active.
-	f.state["v"] = marshalRegistry(
-		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusRetiring},
-	)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got == scopeSuccessorSweep {
-		t.Fatalf("zero-active registry must never declare a successor sweep")
-	}
-}
