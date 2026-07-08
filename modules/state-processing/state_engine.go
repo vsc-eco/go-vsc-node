@@ -352,48 +352,56 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	se.refreshChainConsensusCache()
 
 	// --- Key lifecycle: deprecation and retirement ---
-	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
-		currentEpoch := electionData.Epoch
+	// BRK-5 (brick council FS-1/FS-2): FREEZE the deprecation/retirement clock
+	// while the chain is processing-suspended. A suspend blocks renewKey (a
+	// non-recovery contract op), so deprecating a key it cannot renew forces an
+	// un-curable freeze (a fund-holding gen's key stops signing with no in-suspend
+	// cure); the chain is halted anyway. Deterministic (on-chain suspend flag,
+	// refreshed just above). Resumes normally when the suspend lifts.
+	if !se.chainProcessingSuspended() {
+		if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
+			currentEpoch := electionData.Epoch
 
-		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-			for _, k := range deprecating {
-				k.Status = tss_db.TssKeyDeprecated
-				if tss_db.KeyRetirementEnabled {
-					k.DeprecatedHeight = int64(block.BlockNumber)
+			// Phase 1: deprecate active keys that have reached their expiry epoch.
+			if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+				for _, k := range deprecating {
+					k.Status = tss_db.TssKeyDeprecated
+					if tss_db.KeyRetirementEnabled {
+						k.DeprecatedHeight = int64(block.BlockNumber)
+					}
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
 				}
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key deprecated",
-					"keyId",
-					k.Id,
-					"expiryEpoch",
-					k.ExpiryEpoch,
-					"blockHeight",
-					block.BlockNumber,
-				)
 			}
 		}
-	}
 
-	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
-	if tss_db.KeyRetirementEnabled {
-		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
-			for _, k := range retiring {
-				k.Status = tss_db.TssKeyRetired
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key retired",
-					"keyId",
-					k.Id,
-					"deprecatedHeight",
-					k.DeprecatedHeight,
-					"blockHeight",
-					block.BlockNumber,
-				)
+		// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+		if tss_db.KeyRetirementEnabled {
+			if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+				for _, k := range retiring {
+					k.Status = tss_db.TssKeyRetired
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key retired",
+						"keyId",
+						k.Id,
+						"deprecatedHeight",
+						k.DeprecatedHeight,
+						"blockHeight",
+						block.BlockNumber,
+					)
+				}
 			}
 		}
-	}
+	} // BRK-5: close the processing-suspended key-lifecycle-freeze guard
 
 	blockInfo := struct {
 		BlockHeight uint64
@@ -1559,7 +1567,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									continue
 								}
 								keyInfo.Epoch = commitment.Epoch
-								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								// BRK-8 (brick council FS3-2 / L-1): a RESHARE re-keys an
+								// IN-USE active key — extend its expiry too (like activation
+								// does), so an actively-reshared key does NOT deprecate mid-
+								// life on the fixed epoch clock (the manual-renew time-bomb).
+								// A key that STOPS resharing still deprecates at its last-
+								// reshare expiry. Deterministic (commitment.Epoch + Epochs are
+								// on-chain). reshare only (a v2 keygen for an already-active
+								// keyId is rejected above; a legacy no-expiry key has Epochs==0
+								// → unchanged).
+								if commitment.Type == "reshare" && keyInfo.Epochs > 0 {
+									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
+								}
+								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
