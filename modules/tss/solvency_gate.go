@@ -167,6 +167,44 @@ func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key
 	return raw, true
 }
 
+// contractStateReaderAt resolves the contract's committed output at bh ONCE
+// (a single GetLastOutput + one state databin) and returns a reader closure over
+// its keys. A multi-key consumer — the S3 output-scoping gate reads "v"/"va"/"p"
+// plus one "d-<txid>" per pending spend — thus pays ONE GetLastOutput instead of
+// one per key, bounding the work done under the global TSS lock (methodology
+// F-1). The returned reader is ALWAYS non-nil: if the output can't be resolved
+// (contract not deployed / no output at bh) it always misses, so the gate sees
+// an absent registry (inert) rather than erroring. NOTE: the underlying
+// datalayer GetRaw has no per-read timeout; contract-state leaves at a processed
+// bh are local, so a network stall is an edge — a context-bounded GetRaw is a
+// tracked hardening (needs a datalayer API that takes a context).
+func (tssMgr *TssManager) contractStateReaderAt(contractID string, bh uint64) func(key string) ([]byte, bool) {
+	miss := func(string) ([]byte, bool) { return nil, false }
+	if tssMgr.contractState == nil || tssMgr.da == nil {
+		return miss
+	}
+	output, err := tssMgr.contractState.GetLastOutput(contractID, bh)
+	if err != nil || output.StateMerkle == "" {
+		return miss
+	}
+	stateCid, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return miss
+	}
+	databin := datalayer.NewDataBinFromCid(tssMgr.da, stateCid)
+	return func(key string) ([]byte, bool) {
+		keyCid, err := databin.Get(key)
+		if err != nil || keyCid == nil {
+			return nil, false
+		}
+		raw, err := tssMgr.da.GetRaw(*keyCid)
+		if err != nil {
+			return nil, false
+		}
+		return raw, true
+	}
+}
+
 // parseSupplySats interprets the contract's Supply value ("s") as an integer
 // number of satoshis. The exact on-chain encoding lives in the BTC mapping
 // contract (not in this repo), so this is intentionally conservative: it
