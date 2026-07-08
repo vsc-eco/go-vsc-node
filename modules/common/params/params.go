@@ -301,6 +301,24 @@ type ConsensusParams struct {
 	//       CONFIRM, not build; gate the next rotation on a pending unconfirmed
 	//       sweep) and the contract `pause` exempts the in-flight migration confirm
 	//       path (else a pause strands a sweep) — tracked S2 items, must be built.
+	//   (g) the check-SIGNATURE-before-activate ceremony (M1.3b) is built — the new
+	//       generation's activation must gate on a PRODUCED + consensus-verified
+	//       test signature, not just keygen agreement (attestPrimaryKey), or funds
+	//       can route into an agreed-but-UNSIGNABLE new vault (brick council FS3-1).
+	//   (h) ★ CRITICAL for S5: fund-gated retirement must delete a generation's
+	//       shares ONLY on SPV-proven ZERO L1 balance — NEVER on the contract
+	//       registry being empty. delete-at-build (item f) can leave a stranded
+	//       gen reading registry-empty while funds are still on L1; a registry-
+	//       emptiness retire would then destroy its shares = PERMANENT LOSS (brick
+	//       council FS5-1). Today safe only because KeyRetirementEnabled=false makes
+	//       all deletion dead code; S5 must preserve the SPV-zero gate.
+	//   (i) MaxBlockRetention (contract) is raised ≥ CSV backup timelock + max reorg
+	//       depth — else a pending sweep or a CSV-backup recovery outlasts header
+	//       retention and becomes unverifiable/unreconcilable (FS1/FS2/FS4/FS5 H-3).
+	//   (j) under ProcessingSuspended the unconditional epoch deprecation clock must
+	//       NOT deprecate a fund-holding gen while renewKey is blocked (freeze the
+	//       clock for fund-holding gens, or allow-list renewKey during suspend) —
+	//       else a long suspend forces an un-curable deprecation (FS1-FS2).
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
