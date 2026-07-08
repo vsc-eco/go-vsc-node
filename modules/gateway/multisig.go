@@ -73,6 +73,10 @@ type MultiSig struct {
 
 	electionPeerIDs   atomic.Pointer[map[string]bool]
 	lastElectionEpoch uint64
+
+	// solvency is the v0.6.0 vault-solvency monitor (brief fix 1); nil unless the
+	// operator opts in via VSC_SOLVENCY_MONITOR. Node-local, off the consensus path.
+	solvency *SolvencyMonitor
 }
 
 func (ms *MultiSig) Init() error {
@@ -93,6 +97,19 @@ func (ms *MultiSig) Init() error {
 			log.Info("requeued action", "id", a.Id, "to", a.To, "amount", a.Amount, "asset", a.Asset, "type", a.Type, "block", a.BlockHeight)
 		}
 	}
+
+	// v0.6.0 vault protections (brief fix 1): construct the solvency monitor,
+	// fully wired — the LiabilitySource sums expected liability from the L2 ledger
+	// balance snapshot (ms.balanceDb), and the HaltTrigger broadcasts a node-signed
+	// vsc.halt (ms.broadcastHalt). It stays OFF unless the operator sets
+	// VSC_SOLVENCY_MONITOR, and even when enabled it alarms before it halts and
+	// degrades on missing data — so it cannot spuriously halt.
+	ms.solvency = NewSolvencyMonitorFromEnv(
+		ms.sconf.GatewayWallet(),
+		ms.accountClient,
+		newLedgerLiabilitySource(ms.balanceDb),
+		ms.broadcastHalt,
+	)
 	return nil
 }
 
@@ -196,6 +213,13 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	// bh+20 < *headHeight is the same predicate without the underflow.
 	if bh+20 < *headHeight {
 		return
+	}
+
+	// v0.6.0 fix 1: solvency sampling runs on EVERY node (not just the slot
+	// leader, so it sits above the leader gate below) — any honest node that sees
+	// a depleted real balance can independently trip. Off the consensus path.
+	if ms.solvency != nil && bh%ms.solvency.interval == 0 {
+		go ms.solvency.Check(bh)
 	}
 
 	if ms.electionPeerIDs.Load() == nil || bh%ACTION_INTERVAL == 0 {
@@ -414,6 +438,16 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	if bh%ACTION_INTERVAL != 0 {
 		return signingPackage{}, errors.New("invalid slot")
 	}
+	// v0.6.0 vault protections (brief fix 2, committee-churn freeze): while an
+	// outbound halt is active, do NOT rotate the gateway multisig authority.
+	// Rotation rebuilds the signing set from the current committee; performing it
+	// mid-halt would let an attacker churn honest cosigners out (or a colluding
+	// subset in) exactly during the response window. Deferring rotation keeps the
+	// existing authority intact until the halt expires or is lifted — the freeze
+	// is a safe no-op that simply postpones the next rotation.
+	if ms.outboundHalted(bh) {
+		return signingPackage{}, errOutboundHalted
+	}
 	electionResult, err := ms.electionDb.GetElectionByHeight(bh)
 
 	if err != nil {
@@ -599,9 +633,195 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	}, nil
 }
 
+// errOutboundHalted is returned by executeActions while an outbound halt is
+// active; TickActions treats it like any other "nothing to do" and skips the
+// broadcast, so no gateway action tx is assembled.
+var errOutboundHalted = errors.New("outbound halted")
+
+// outboundHalted reports whether the gateway OUTBOUND path is frozen at bh by an
+// active outbound-halt entry (v0.6.0 vault protections, brief fixes 1 & 3). The
+// verdict is deterministic on-chain state (height-addressable halt entries), so
+// every cosigner reproduces the identical decision → identical batch → CID. It
+// is inert below the 0.6.0 floor, keeping pre-activation gateway behavior
+// byte-identical.
+func (ms *MultiSig) outboundHalted(bh uint64) bool {
+	if ms.se == nil {
+		return false
+	}
+	if !consensusversion.OutboundHaltActive(ms.se.ActiveConsensusVersion(bh)) {
+		return false
+	}
+	return ms.se.OutboundHaltedAt(bh)
+}
+
+// Value-scaled outbound delay tiers (v0.6.0 vault protections, brief fix 4).
+// Amounts are raw ledger integer units — HBD/HIVE carry 3 decimals, so 1_000 =
+// 1.000 coin. Blocks are ~3s. The curve is monotonic (bigger value → longer
+// wait) and FIXED IN CODE (not a votable parameter), so governance cannot vote
+// the floor to zero — sidestepping THORChain's votable-governance mistake. These
+// magnitudes are a starting calibration; the intended source of truth is the
+// flow-data sizing in the hot/cold design doc, and they are candidates to move to
+// ConsensusParams if the network wants them tunable behind the version gate.
+const (
+	outboundDelayTier1Amount = int64(1_000_000)   // 1,000 coin: below this, dust-fast (no delay)
+	outboundDelayTier2Amount = int64(10_000_000)  // 10,000 coin
+	outboundDelayTier3Amount = int64(100_000_000) // 100,000 coin
+
+	outboundDelayTier1Blocks = uint64(200)  // ~10 min  (1,000–10,000)
+	outboundDelayTier2Blocks = uint64(1200) // ~1 h     (10,000–100,000)
+	outboundDelayTier3Blocks = uint64(3600) // ~3 h     (>= 100,000, vault-sized)
+)
+
+// outboundDelayBlocks returns the minimum age (in L1 blocks) a withdrawal of the
+// given amount must reach before it is eligible for a gateway batch. Dust is
+// fast; vault-sized spends wait hours — the window in which the minority halt and
+// off-chain recovery act. Deterministic pure function → identical on every
+// cosigner.
+//
+// KNOWN LIMITATIONS (see VAULT-PROTECTIONS-HANDOVER.md), both intentional given
+// the brief scopes fix 4 as a per-outbound speed bump backed by the aggregate
+// solvency halt (fix 1):
+//   - Per-TOKEN-AMOUNT, not per-value: HBD and HIVE share thresholds, so a
+//     value-equal HIVE drain can land in a lower tier than the HBD equivalent.
+//   - Splittable: a large drain chunked below tier 1 gets no delay; the
+//     aggregate drain is what the solvency halt is meant to catch.
+func outboundDelayBlocks(amount int64) uint64 {
+	switch {
+	case amount < outboundDelayTier1Amount:
+		return 0
+	case amount < outboundDelayTier2Amount:
+		return outboundDelayTier1Blocks
+	case amount < outboundDelayTier3Amount:
+		return outboundDelayTier2Blocks
+	default:
+		return outboundDelayTier3Blocks
+	}
+}
+
+// outboundDelayActive reports whether the value-scaled outbound delay is in force
+// at bh (inert below the 0.6.0 floor, keeping pre-activation selection identical).
+func (ms *MultiSig) outboundDelayActive(bh uint64) bool {
+	if ms.se == nil {
+		return false
+	}
+	return consensusversion.OutboundDelayActive(ms.se.ActiveConsensusVersion(bh))
+}
+
+// isCommitteeMember reports whether `account` is in the committee active at bh.
+// Used as a pre-flight before broadcasting a solvency vsc.halt so a non-member
+// node doesn't post an op executeHalt will silently ignore. Direct account match
+// (both are plain Hive accounts); the on-chain executeHalt does the authoritative
+// normalized membership check.
+func (ms *MultiSig) isCommitteeMember(account string, bh uint64) bool {
+	if ms.electionDb == nil {
+		return false
+	}
+	elec, err := ms.electionDb.GetElectionByHeight(bh)
+	if err != nil {
+		return false
+	}
+	for _, mbr := range elec.Members {
+		if mbr.Account == account {
+			return true
+		}
+	}
+	return false
+}
+
+// broadcastHalt is the solvency monitor's HaltTrigger (brief fix 1): it
+// broadcasts a vsc.halt op signed by THIS node's OWN active key (required_auths =
+// the node's Hive account). Because the node is a committee member, executeHalt
+// accepts it as a single-node outbound halt — so a node-local, non-deterministic
+// solvency detection produces a deterministic on-chain effect every node then
+// processes identically. Signs+broadcasts via the same node-active-keyed
+// hiveCreator the announcements module uses; the gateway multisig wallet is not
+// involved. Duration is omitted so executeHalt applies the default window.
+func (ms *MultiSig) broadcastHalt(bh uint64, reason string) {
+	account := ms.identity.Get().HiveUsername
+	if account == "" {
+		log.Error("solvency: cannot broadcast vsc.halt — node identity has no Hive username", "bh", bh)
+		return
+	}
+	// Don't broadcast below the 0.6.0 floor: executeHalt ignores vsc.halt there, so
+	// it would only waste RC on a permanently-ineffective op.
+	if ms.se == nil || !consensusversion.OutboundHaltActive(ms.se.ActiveConsensusVersion(bh)) {
+		log.Warn("solvency: NOT broadcasting vsc.halt — outbound-halt feature inactive at this height", "bh", bh)
+		return
+	}
+	// executeHalt only honors a setter that is a CURRENT committee member. If this
+	// node's account isn't in the active committee the op is a silent on-chain
+	// no-op, so skip it and surface the misconfiguration rather than log a false
+	// 'halt broadcast' success.
+	if !ms.isCommitteeMember(account, bh) {
+		log.Error("solvency: node account is NOT in the active committee — a solvency vsc.halt "+
+			"would be ignored on-chain; NOT broadcasting (check identity vs elected witness account)",
+			"account", account, "bh", bh)
+		return
+	}
+	// Body matches vsc.halt's parsed fields (state_engine.TxHalt JSON tags);
+	// Duration is omitted so executeHalt applies the default window.
+	body, err := json.Marshal(struct {
+		Reason string `json:"reason,omitempty"`
+	}{Reason: reason})
+	if err != nil {
+		log.Error("solvency: failed to marshal vsc.halt body", "err", err, "bh", bh)
+		return
+	}
+	op := ms.hiveCreator.CustomJson([]string{account}, []string{}, "vsc.halt", string(body))
+	tx := ms.hiveCreator.MakeTransaction([]hivego.HiveOperation{op})
+	if err := ms.hiveCreator.PopulateSigningProps(&tx, nil); err != nil {
+		log.Error("solvency: PopulateSigningProps for vsc.halt failed", "err", err, "bh", bh)
+		return
+	}
+	sig, err := ms.hiveCreator.Sign(tx)
+	if err != nil {
+		log.Error("solvency: signing vsc.halt failed", "err", err, "bh", bh)
+		return
+	}
+	tx.AddSig(sig)
+	txId, err := ms.hiveCreator.Broadcast(tx)
+	if err != nil {
+		log.Error("solvency: broadcasting vsc.halt failed", "err", err, "bh", bh)
+		return
+	}
+	log.Error("SOLVENCY HALT: vsc.halt broadcast from node account",
+		"account", account, "reason", reason, "txId", txId, "bh", bh)
+}
+
+// selectEligibleActions applies the v0.6.0 value-scaled outbound delay (when
+// active) and the MaxGatewayActionBatch cap TOGETHER, returning the oldest
+// actions eligible to settle this tick. A withdrawal is eligible only once it has
+// aged >= the delay its value warrants; stake/unstake savings-netting is never
+// delayed. The cap is applied to the ELIGIBLE set, not the raw fetch, so a run of
+// under-aged withdrawals at the front of the queue cannot occupy the batch window
+// and starve newer eligible actions. Pure + deterministic: every cosigner
+// reproduces the identical selection from the same sorted input.
+func selectEligibleActions(actions []ledgerDb.ActionRecord, delayActive bool, bh uint64) []ledgerDb.ActionRecord {
+	selected := make([]ledgerDb.ActionRecord, 0, ledgerDb.MaxGatewayActionBatch)
+	for _, action := range actions {
+		if delayActive && action.Type == "withdraw" &&
+			bh < action.BlockHeight+outboundDelayBlocks(action.Amount) {
+			continue // under-aged: leave pending, re-select on a later tick
+		}
+		selected = append(selected, action)
+		if len(selected) >= ledgerDb.MaxGatewayActionBatch {
+			break
+		}
+	}
+	return selected
+}
+
 func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	if bh%ACTION_INTERVAL != 0 {
 		return signingPackage{}, errors.New("invalid slot")
+	}
+	// v0.6.0 vault protections (brief fixes 1 & 3): while an outbound halt is
+	// active, assemble NOTHING — no withdrawal batch and no vsc.actions settlement
+	// header is built, signed, or broadcast, so the outbound path is fully frozen.
+	// Deterministic across cosigners; unpaid actions stay pending and resume on
+	// the next tick once the halt expires or is lifted.
+	if ms.outboundHalted(bh) {
+		return signingPackage{}, errOutboundHalted
 	}
 	actionFilter := []string{
 		"withdraw", "stake", "unstake",
@@ -615,14 +835,22 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	if len(actions) == 0 {
 		return signingPackage{}, errors.New("no actions to process")
 	}
-	// review7 C11-a: bound the per-batch action count so a flood of queued
-	// actions cannot make this build an unbounded ops slice / oversized L1
-	// multisig tx. GetPendingActions is already SetLimit-bounded at the DB
-	// layer (C11-b); this is the in-memory backstop, and uses the same
-	// deterministic cap so every cosigner reproduces the identical batch. The
-	// remainder is processed on subsequent ticks (sorted by block_height, id).
-	if len(actions) > ledgerDb.MaxGatewayActionBatch {
-		actions = actions[:ledgerDb.MaxGatewayActionBatch]
+	// v0.6.0 fix 4 (value-scaled delay) + review7 C11-a (batch cap), applied
+	// TOGETHER: a withdrawal is eligible only once it has aged >= the delay its
+	// value warrants; under-aged withdrawals are skipped and left pending for a
+	// later tick. Critically the MaxGatewayActionBatch cap is applied to the
+	// ELIGIBLE set, not the raw fetch — so a run of under-aged withdrawals at the
+	// FRONT of the queue cannot occupy the batch/settlement window and starve
+	// newer eligible actions. The DB scans up to MaxGatewayActionScan (a bounded
+	// multiple of the batch), giving the age-filter headroom past a burst of
+	// under-aged withdrawals. Deterministic: every cosigner fetches the identical
+	// sorted window, applies the same age test, and caps identically. (A flood
+	// larger than the scan window only DEFERS newer actions until the oldest
+	// under-aged cohort matures; the proper query-level fix is a persisted
+	// eligible_height — see VAULT-PROTECTIONS-HANDOVER.md.)
+	actions = selectEligibleActions(actions, ms.outboundDelayActive(bh), bh)
+	if len(actions) == 0 {
+		return signingPackage{}, errors.New("no eligible actions to process")
 	}
 
 	ops := []hivego.HiveOperation{}
@@ -633,6 +861,8 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	executedOps := make([]string, 0)
 	for _, action := range actions {
 		// ops = append(ops, ms.createWithdrawOps(action)...)
+		// (value-scaled delay + batch cap already applied to `actions` above; only
+		// stake/unstake savings-netting is gateway-internal and never delayed.)
 
 		executedOps = append(executedOps, action.Id)
 		if action.Type == "withdraw" {

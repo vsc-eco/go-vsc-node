@@ -542,6 +542,14 @@ func (actionsDb *actionsDb) SetStatus(id string, status string) {
 // subsequent ticks in a stable order across all nodes.
 const MaxGatewayActionBatch = 100
 
+// MaxGatewayActionScan bounds the pending-action FETCH window. It is larger than
+// MaxGatewayActionBatch so the gateway's value-scaled outbound delay (v0.6.0 fix
+// 4) can age-filter past a run of under-aged withdrawals at the front of the
+// queue and still reach newer eligible actions — the batch is still capped at
+// MaxGatewayActionBatch AFTER filtering, so this only widens what is scanned, not
+// what is broadcast. Bounded so the query stays a small indexed read.
+const MaxGatewayActionScan = 10 * MaxGatewayActionBatch
+
 func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionRecord, error) {
 	options := options.Find().SetSort(bson.D{
 		{
@@ -552,7 +560,7 @@ func (actionsDb *actionsDb) GetPendingActions(bh uint64, t ...string) ([]ActionR
 			Key:   "id",
 			Value: 1,
 		},
-	}).SetLimit(int64(MaxGatewayActionBatch))
+	}).SetLimit(int64(MaxGatewayActionScan))
 	query := bson.M{
 		"status": "pending",
 		"block_height": bson.M{

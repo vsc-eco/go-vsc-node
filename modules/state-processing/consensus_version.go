@@ -12,7 +12,11 @@ import (
 func isRecoveryAllowlistedCustomJSON(id string) bool {
 	switch id {
 	case "vsc.recovery_require_version", "vsc.recovery_suspend",
-		"vsc.election_result", "vsc.fr_sync":
+		"vsc.election_result", "vsc.fr_sync",
+		// Outbound halt/unhalt (v0.6.0) must remain processable even while the
+		// heavy recovery suspension is active: an emergency outbound freeze and
+		// its recovery-multisig early-lift can't be blocked by the inbound halt.
+		"vsc.halt", "vsc.unhalt":
 		return true
 	default:
 		return false
@@ -40,6 +44,37 @@ func (se *StateEngine) chainProcessingSuspended() bool {
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
 func (se *StateEngine) ProcessingSuspendedForPool() bool {
 	return se.chainProcessingSuspended()
+}
+
+// OutboundHaltedAt reports whether the gateway OUTBOUND path is frozen at the
+// given L1 block height by any active outbound-halt entry (v0.6.0 vault
+// protections; see vault-protections-brief.md fixes 1 & 3). An entry is active
+// iff SetHeight <= height < ExpiryHeight, so the verdict is height-addressable
+// (every cosigner resolves the identical halt state → identical batch → CID at a
+// given gateway tick) and expiry is deterministic — no wall-clock, no explicit
+// un-halt op required. Reads the in-memory consensus cache. Callers must gate this
+// behind consensusversion.OutboundHaltActive(active) so the halt state is never
+// consulted below the 0.6.0 floor and pre-activation replay stays byte-identical.
+func (se *StateEngine) OutboundHaltedAt(height uint64) bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	for _, h := range se.chainConsensusCache.OutboundHalts {
+		if h.SetHeight <= height && height < h.ExpiryHeight {
+			return true
+		}
+	}
+	return false
+}
+
+// ExitsFrozenAt reports whether user-exit and committee-churn paths must be
+// frozen at the given height (v0.6.0 vault protections, brief fix 2): while ANY
+// halt is active — the outbound vault halt (fixes 1 & 3) OR the heavy recovery
+// suspension — an attacker's collateral must not be able to flee during the
+// response window, so downstream slashing / forfeiture still has stake to bite.
+// Call sites MUST gate this behind consensusversion.OutboundHaltActive(active)
+// so pre-0.6.0 replay is byte-identical.
+func (se *StateEngine) ExitsFrozenAt(height uint64) bool {
+	return se.OutboundHaltedAt(height) || se.chainProcessingSuspended()
 }
 
 // forcedActivation returns a copy of the cached recovery override (or nil).

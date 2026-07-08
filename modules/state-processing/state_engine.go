@@ -1002,6 +1002,16 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
 					continue
+				} else if cj.Id == "vsc.halt" {
+					parsedTx := &TxHalt{Self: txSelf}
+					json.Unmarshal(cj.Json, parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
+				} else if cj.Id == "vsc.unhalt" {
+					parsedTx := &TxUnhalt{Self: txSelf}
+					json.Unmarshal(cj.Json, parsedTx)
+					parsedTx.ExecuteTx(se)
+					continue
 				}
 			} //# End parsing system transactions
 		}

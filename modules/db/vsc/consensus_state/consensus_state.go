@@ -51,6 +51,11 @@ type ConsensusState interface {
 	// SetForcedActivation sets (or, with nil, clears) the recovery forced override.
 	SetForcedActivation(ctx context.Context, s *VersionProposal) error
 	SetProcessingSuspended(ctx context.Context, suspended bool) error
+	// SetOutboundHalts replaces the whole active outbound-halt set. Callers read
+	// the cached set, append/prune in memory, then write the result back (the
+	// state engine processes blocks serially, so read-modify-write is safe) —
+	// same discipline as SetVersionProposals.
+	SetOutboundHalts(ctx context.Context, halts []OutboundHalt) error
 	// SetForcedActivationAndClearSuspension is the recovery path: install a Forced
 	// switch and lift the processing halt in one update.
 	SetForcedActivationAndClearSuspension(ctx context.Context, s *VersionProposal) error
@@ -101,6 +106,15 @@ func (c *consensusState) SetForcedActivation(ctx context.Context, s *VersionProp
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		update,
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetOutboundHalts(ctx context.Context, halts []OutboundHalt) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"outbound_halts": halts}},
 		options.Update().SetUpsert(true),
 	)
 	return err

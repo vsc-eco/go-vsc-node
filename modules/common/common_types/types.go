@@ -75,6 +75,11 @@ type StateEngine interface {
 	// height, sourced from the on-chain election (deterministic, height-addressable).
 	// Used to gate consensus-version-coordinated features (e.g. try/catch ICC).
 	ActiveConsensusVersion(blockHeight uint64) consensusversion.Version
+	// ExitsFrozenAt reports whether user-exit / committee-churn paths must be
+	// frozen at a height because an outbound or recovery halt is active (v0.6.0
+	// vault protections, brief fix 2). Callers gate it behind
+	// consensusversion.OutboundHaltActive so pre-0.6.0 replay is byte-identical.
+	ExitsFrozenAt(height uint64) bool
 }
 
 type BlockStatusGetter interface {

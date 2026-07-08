@@ -72,6 +72,13 @@ func (m *MockConsensusState) SetForcedActivation(_ context.Context, s *consensus
 	return nil
 }
 
+func (m *MockConsensusState) SetOutboundHalts(_ context.Context, halts []consensus_state.OutboundHalt) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.OutboundHalts = halts
+	return nil
+}
+
 func (m *MockConsensusState) SetProcessingSuspended(_ context.Context, suspended bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

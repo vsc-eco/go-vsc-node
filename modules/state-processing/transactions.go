@@ -423,6 +423,16 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
+	// v0.6.0 vault protections (brief fix 2): exit-freeze. While a halt is active,
+	// reject L2->L1 withdrawals so value cannot flee during the response window.
+	if exitFrozen(se, t.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "outbound halt active: withdrawals frozen",
+			RcUsed:  50,
+		}
+	}
+
 	amount, err := common.ParseAssetAmount(t.Amount, t.Asset)
 
 	if err != nil {
@@ -592,6 +602,17 @@ func (t *TxUnstakeHbd) ExecuteTx(
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+
+	// v0.6.0 vault protections (brief fix 2): exit-freeze. While a halt is active,
+	// reject HBD unstake so staked collateral cannot be released and withdrawn
+	// during the response window.
+	if exitFrozen(se, t.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "outbound halt active: unstake frozen",
 			RcUsed:  50,
 		}
 	}
@@ -822,6 +843,17 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		return TxResult{
 			Success: false,
 			Ret:     "Invalid to/from",
+			RcUsed:  50,
+		}
+	}
+
+	// v0.6.0 vault protections (brief fix 2): exit-freeze. While a halt is active,
+	// reject consensus unstake so a committee member's bond stays put and remains
+	// slashable for the response window (blocks "drain and flee").
+	if exitFrozen(se, tx.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "outbound halt active: consensus unstake frozen",
 			RcUsed:  50,
 		}
 	}

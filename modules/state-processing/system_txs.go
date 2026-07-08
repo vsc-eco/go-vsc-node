@@ -834,7 +834,7 @@ func (tx *TxElectionResult) ToData() map[string]interface{} {
 // TxProposeConsensusVersion schedules a target major.consensus to switch to at ActivationEpoch.
 // Activation requires the stake-readiness guard to pass at election build (see election-proposer).
 type TxProposeConsensusVersion struct {
-	Self            TxSelf
+	Self            TxSelf `json:"-"` // trusted-envelope only; see TxRecoverySuspend
 	NetId           string `json:"net_id"`
 	Major           uint64 `json:"major"`
 	Consensus       uint64 `json:"consensus"`
@@ -856,7 +856,11 @@ func (tx *TxProposeConsensusVersion) ExecuteTx(se *StateEngine) {
 
 // TxRecoverySuspend sets chain-global processing suspension until recovery_require_version (multisig only).
 type TxRecoverySuspend struct {
-	Self TxSelf
+	// json:"-" so the attacker-controlled body cannot overwrite Self (set from the
+	// trusted Hive envelope) and spoof the recovery-multisig authorization — this
+	// op halts ALL chain processing, so a spoof is a chain-halt-for-anyone on a
+	// network with a configured recovery roster. See the vault-protections review.
+	Self TxSelf `json:"-"`
 }
 
 func (tx TxRecoverySuspend) Type() string {
@@ -873,7 +877,7 @@ func (tx *TxRecoverySuspend) ExecuteTx(se *StateEngine) {
 
 // TxRecoveryRequireVersion clears suspension and sets adopted / minimum version (multisig only).
 type TxRecoveryRequireVersion struct {
-	Self          TxSelf
+	Self          TxSelf `json:"-"` // trusted-envelope only; see TxRecoverySuspend
 	Major         uint64 `json:"major"`
 	Consensus     uint64 `json:"consensus"`
 	NonConsensus  uint64 `json:"non_consensus"`
@@ -891,6 +895,66 @@ func (tx TxRecoveryRequireVersion) TxSelf() TxSelf {
 
 func (tx *TxRecoveryRequireVersion) ExecuteTx(se *StateEngine) {
 	se.executeRecoveryRequireVersion(tx)
+}
+
+// TxHalt (vsc.halt) freezes the gateway OUTBOUND path for a bounded window
+// (v0.6.0 vault protections, brief fix 3). Authorized by ANY ONE current
+// committee member — deliberately not a 2/3 threshold, so a single honest
+// validator can stop outbounds even when outvoted on signing. Additional
+// validators stack (each adds its own entry; the union of active windows keeps
+// the freeze up), and a per-node cooldown bounds griefing. See executeHalt.
+type TxHalt struct {
+	// Self is set from the TRUSTED Hive envelope (signers/height) and MUST NOT be
+	// decodable from the attacker-controlled custom_json body — json:"-" prevents
+	// json.Unmarshal from overwriting Self.RequiredAuths and spoofing the
+	// committee-member authorization in executeHalt (mirrors TxCreateContract etc.).
+	Self TxSelf `json:"-"`
+	// Duration is the requested freeze length in L1 blocks; clamped to
+	// [HaltMinBlocks, HaltMaxBlocks] in the handler (0 → HaltDefaultBlocks).
+	Duration uint64 `json:"duration,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (tx TxHalt) Type() string {
+	return "halt"
+}
+
+func (tx TxHalt) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxHalt) ExecuteTx(se *StateEngine) {
+	se.executeHalt(tx)
+}
+
+// TxUnhalt (vsc.unhalt) lifts an outbound halt EARLY, before its bounded window
+// auto-expires — the safety valve for a malicious / buggy halt (brief fix 3:
+// "a clear un-halt authority so the network can't get stuck halted").
+// Authorized by the recovery multisig (M-of-N), NOT a single node: stopping
+// funds is easy (one node), un-stopping is deliberate, so one bad actor can't
+// both halt and un-halt at will. With HaltTxId set it lifts only that entry
+// (surgical griefer removal, leaving a legitimate solvency halt in place);
+// empty lifts all. It deactivates but RETAINS entries so an un-halted griefer's
+// cooldown still runs — they cannot immediately re-halt. See executeUnhalt.
+type TxUnhalt struct {
+	// Self is set from the TRUSTED Hive envelope; json:"-" prevents the
+	// custom_json body from overwriting Self.RequiredAuths and spoofing the
+	// recovery-multisig authorization in executeUnhalt (see TxHalt).
+	Self     TxSelf `json:"-"`
+	HaltTxId string `json:"halt_tx_id,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+func (tx TxUnhalt) Type() string {
+	return "unhalt"
+}
+
+func (tx TxUnhalt) TxSelf() TxSelf {
+	return tx.Self
+}
+
+func (tx *TxUnhalt) ExecuteTx(se *StateEngine) {
+	se.executeUnhalt(tx)
 }
 
 type TxProposeBlock struct {

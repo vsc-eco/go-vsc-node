@@ -189,3 +189,50 @@ func Version0_5_0Active(active Version) bool {
 func DelegatedStakeActive(active Version) bool {
 	return Version0_5_0Active(active)
 }
+
+// V0_6_0 is the consensus version line at which the OUTBOUND VAULT PROTECTIONS
+// batch activates (see vault-protections-brief.md). Every consensus-affecting
+// change in this batch keys off this single version so the network has ONE
+// coordinated activation, driven by the election floor reaching 0.6.0:
+//   - the outbound-halt primitive (a new consensus-state flag gating the gateway
+//     outbound path) and its single-node vsc.halt op,
+//   - the exit-freeze that rides on any active halt (bond/unstake/withdraw/churn),
+//   - the value-scaled outbound delay, and
+//   - the solvency-halt effect (the on-chain halt an auto-detector triggers).
+//
+// Below the line every rule below is inert and gateway behavior stays
+// byte-identical to 0.5.0, so old and new binaries interoperate until the floor
+// reaches 0.6.0.
+var V0_6_0 = Version{Major: 0, Consensus: 6, NonConsensus: 0}
+
+// Version0_6_0Active reports whether the v0.6.0 batch is in force given the
+// chain-active consensus version. `active` is resolved by the caller from the
+// on-chain election (deterministic, replay-correct).
+func Version0_6_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_6_0)
+}
+
+// OutboundHaltActive reports whether the outbound-halt primitive is in force
+// given the chain-active consensus version: the gateway refuses to select /
+// broadcast outbound withdrawals while an outbound halt is set in consensus
+// state, the vsc.halt op can set it, and the exit-freeze + solvency-halt ride on
+// it. Resolve `active` from the version active at the decision height
+// (StateEngine.ActiveConsensusVersion(bh) at the gateway tick, or the op's block
+// height in the handler); below the line the halt state is never consulted and
+// the gateway path is byte-identical to 0.5.0, so a full reindex of pre-activation
+// history is unchanged.
+func OutboundHaltActive(active Version) bool {
+	return Version0_6_0Active(active)
+}
+
+// OutboundDelayActive reports whether the value-scaled outbound delay is in force
+// (brief fix 4): a gateway withdrawal is eligible for a batch only once it has
+// aged >= the delay its value warrants (near-zero for dust, hours near
+// vault-draining size), enforced at action-SELECTION time off the already-
+// persisted action block height so every cosigner computes identical eligibility
+// and no separate delayed-broadcast queue is needed. Resolve `active` from the
+// version active at the gateway tick (ActiveConsensusVersion(bh)); below the line
+// selection is byte-identical to 0.5.0. Shares the v0.6.0 line with the halt.
+func OutboundDelayActive(active Version) bool {
+	return Version0_6_0Active(active)
+}
