@@ -270,6 +270,8 @@ func TestBtcSignGateDecision_V8(t *testing.T) {
 		{"allow, halt -> M1.1a freeze", scopeAllow, true, true},
 		{"sweep, no halt", scopeSuccessorSweep, false, false},
 		{"sweep, halt -> V-8 exempt, issue", scopeSuccessorSweep, true, false},
+		{"checksig, no halt", scopeCheckSig, false, false},
+		{"checksig, halt -> exempt (moves no funds), issue", scopeCheckSig, true, false},
 	}
 	for _, tc := range cases {
 		if got := btcSignGateDecision(tc.verdict, tc.halted); got != tc.refuse {
@@ -334,6 +336,74 @@ func TestEvaluateScope_MissingAmountFailsClosed(t *testing.T) {
 	}
 }
 
+// pendingRotationRegistry rewrites the fixture's "v" to a mid-rotation state:
+// gen0 is the current Active vault, gen1 is the freshly keygen'd Pending
+// successor whose committee must prove signability (BRK-2). findKey already
+// returns gen1 node-active with successorPub (the keygen-committed / vault-
+// pending window).
+func (f *scopeFixture) pendingRotationRegistry() {
+	f.state["v"] = marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive, CreatedHeight: 1, ActivatedHeight: 2},
+		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusPending, Predecessor: 0, CreatedHeight: 10},
+	)
+}
+
+// TestEvaluateScope_PendingCheckSigAllowed — BRK-2: a Pending gen may sign the
+// ONE canonical check-message M (recomputed from its own committed pubkey), so
+// the fresh committee can prove signability before activation.
+func TestEvaluateScope_PendingCheckSigAllowed(t *testing.T) {
+	f := newScopeFixture(t)
+	f.pendingRotationRegistry()
+	m := btcvault.CheckSigMessage(f.gen1KeyId, 1, f.successorPub)
+	if got := f.deps.evaluateScope(f.gen1KeyId, m); got != scopeCheckSig {
+		t.Fatalf("pending-gen canonical check-sig: got %v, want scopeCheckSig", got)
+	}
+}
+
+// TestEvaluateScope_PendingNonCheckSigRefused — a Pending gen signs NOTHING but
+// its exact M: an arbitrary digest, an M bound to the wrong pubkey, and an M
+// bound to the wrong generation are all refused (no repurposing, no cross-gen
+// replay).
+func TestEvaluateScope_PendingNonCheckSigRefused(t *testing.T) {
+	f := newScopeFixture(t)
+	f.pendingRotationRegistry()
+
+	notM := make([]byte, 32)
+	for i := range notM {
+		notM[i] = byte(i + 1)
+	}
+	if got := f.deps.evaluateScope(f.gen1KeyId, notM); got != scopeRefuse {
+		t.Fatalf("pending-gen arbitrary digest: got %v, want scopeRefuse", got)
+	}
+	// M recomputes against the gen's COMMITTED pubkey (successorPub); an M built
+	// with a different pubkey does not match.
+	if got := f.deps.evaluateScope(f.gen1KeyId, btcvault.CheckSigMessage(f.gen1KeyId, 1, f.retiringPub)); got != scopeRefuse {
+		t.Fatalf("pending-gen M with wrong pubkey: got %v, want scopeRefuse", got)
+	}
+	// Cross-gen replay: an M for gen 2 must not satisfy gen 1's gate.
+	if got := f.deps.evaluateScope(f.gen1KeyId, btcvault.CheckSigMessage(f.gen1KeyId, 2, f.successorPub)); got != scopeRefuse {
+		t.Fatalf("pending-gen M with wrong gen: got %v, want scopeRefuse", got)
+	}
+}
+
+// TestEvaluateScope_PendingCheckSigRequiresCommittedActiveKey — fail closed if
+// the gen's committed tss_keys row is not yet active (we cannot trust its
+// pubkey to recompute M).
+func TestEvaluateScope_PendingCheckSigRequiresCommittedActiveKey(t *testing.T) {
+	f := newScopeFixture(t)
+	f.pendingRotationRegistry()
+	m := btcvault.CheckSigMessage(f.gen1KeyId, 1, f.successorPub)
+	f.deps.findKey = func(id string) (tss_db.TssKey, error) {
+		if id == f.gen1KeyId {
+			return tss_db.TssKey{Id: id, Status: tss_db.TssKeyCreated, PublicKey: hex.EncodeToString(f.successorPub)}, nil
+		}
+		return tss_db.TssKey{Id: id, Status: tss_db.TssKeyActive, PublicKey: hex.EncodeToString(f.retiringPub)}, nil
+	}
+	if got := f.deps.evaluateScope(f.gen1KeyId, m); got != scopeRefuse {
+		t.Fatalf("pending check-sig, committed key not active: got %v, want scopeRefuse", got)
+	}
+}
+
 func TestEvaluateScope_UnknownAndNonFundHoldingGen(t *testing.T) {
 	f := newScopeFixture(t)
 	unknown := scopeContract + "-" + btcvault.VaultKeyName(9)
@@ -348,4 +418,3 @@ func TestEvaluateScope_UnknownAndNonFundHoldingGen(t *testing.T) {
 		t.Fatalf("inactive gen sign: got %v, want scopeRefuse", got)
 	}
 }
-
