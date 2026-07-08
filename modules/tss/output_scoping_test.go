@@ -158,10 +158,7 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 	f.deps = btcScopeDeps{
 		contractId: scopeContract,
 		mainnet:    true,
-		readKey: func(cid string, bh uint64, key string) ([]byte, bool) {
-			if cid != scopeContract {
-				return nil, false
-			}
+		readKey: func(key string) ([]byte, bool) {
 			v, ok := f.state[key]
 			return v, ok
 		},
@@ -177,14 +174,14 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 
 func TestEvaluateScope_SuccessorSweepAllowed(t *testing.T) {
 	f := newScopeFixture(t)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeSuccessorSweep {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeSuccessorSweep {
 		t.Fatalf("valid successor sweep: got %v, want scopeSuccessorSweep", got)
 	}
 }
 
 func TestEvaluateScope_ActiveGenUnrestricted(t *testing.T) {
 	f := newScopeFixture(t)
-	if got := f.deps.evaluateScope(f.gen1KeyId, []byte{0xde, 0xad}, 100); got != scopeAllow {
+	if got := f.deps.evaluateScope(f.gen1KeyId, []byte{0xde, 0xad}); got != scopeAllow {
 		t.Fatalf("active-gen user withdrawal: got %v, want scopeAllow", got)
 	}
 }
@@ -193,11 +190,11 @@ func TestEvaluateScope_InertWhenNoRegistry(t *testing.T) {
 	f := newScopeFixture(t)
 	delete(f.state, "v")
 	// Registry ABSENT (pre-fold): the legacy gen-0 "main" key signs as today.
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeAllow {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeAllow {
 		t.Fatalf("no registry, gen-0 main (inert): got %v, want scopeAllow", got)
 	}
 	// But a higher-generation keyId cannot exist without a registry → fail closed.
-	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("no registry, mainv1: got %v, want scopeRefuse (cannot exist without a registry)", got)
 	}
 }
@@ -213,25 +210,46 @@ func TestEvaluateScope_UnresolvableRegistryFailsClosed(t *testing.T) {
 		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
 		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
 	)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("two-active registry: got %v, want scopeRefuse (unresolvable, fail closed)", got)
 	}
 	// Zero Active gens (no successor to sweep to).
 	f.state["v"] = marshalRegistry(
 		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusRetiring},
 	)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("zero-active registry: got %v, want scopeRefuse", got)
 	}
 	// Malformed blob (length not a multiple of VaultEntrySize).
 	f.state["v"] = make([]byte, btcvault.VaultEntrySize+7)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("malformed registry: got %v, want scopeRefuse", got)
 	}
 	// A malformed registry must freeze the ACTIVE gen too (cannot classify) —
 	// safe recoverable freeze, never a fail-open.
-	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("malformed registry, active-gen keyId: got %v, want scopeRefuse", got)
+	}
+}
+
+// TestEvaluateScope_DuplicateGenerationFailsClosed — methodology money-math HIGH:
+// two entries sharing a Generation alias onto one map key; last-write-wins could
+// hide a Retiring entry behind an Active one, bypassing scoping. resolveVaultView
+// must reject the duplicate (fail closed), so the retiring key is NOT allowed.
+func TestEvaluateScope_DuplicateGenerationFailsClosed(t *testing.T) {
+	f := newScopeFixture(t)
+	// gen 0 appears twice: once Retiring (the reconstructable key), once Active.
+	// A naive map build would leave byKeyId[gen0]=Active → scopeAllow for gen0.
+	f.state["v"] = marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusRetiring},
+		btcvault.Vault{Generation: 0, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
+		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
+	)
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
+		t.Fatalf("duplicate-generation registry, gen-0: got %v, want scopeRefuse (fail closed)", got)
+	}
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash); got != scopeRefuse {
+		t.Fatalf("duplicate-generation registry, gen-1: got %v, want scopeRefuse", got)
 	}
 }
 
@@ -262,7 +280,7 @@ func TestBtcSignGateDecision_V8(t *testing.T) {
 
 func TestEvaluateScope_RetiringSighashNotAPendingSweep(t *testing.T) {
 	f := newScopeFixture(t)
-	if got := f.deps.evaluateScope(f.gen0KeyId, []byte{0x01, 0x02, 0x03}, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, []byte{0x01, 0x02, 0x03}); got != scopeRefuse {
 		t.Fatalf("retiring sign of non-sweep digest: got %v, want scopeRefuse", got)
 	}
 }
@@ -276,7 +294,7 @@ func TestEvaluateScope_RetiringSweepToNonSuccessorRefused(t *testing.T) {
 	f.state["p"] = nil
 	delete(f.state, "d-"+f.validTxid)
 	addPending(f.state, txid, encodeSigningData(txBytes, 0, sh, f.retiringWS, f.amount, true))
-	if got := f.deps.evaluateScope(f.gen0KeyId, sh, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, sh); got != scopeRefuse {
 		t.Fatalf("retiring sweep to non-successor: got %v, want scopeRefuse", got)
 	}
 }
@@ -300,7 +318,7 @@ func TestEvaluateScope_LyingTemplateRecomputeCatch(t *testing.T) {
 	f.state["p"] = nil
 	delete(f.state, "d-"+f.validTxid)
 	addPending(f.state, txid, encodeSigningData(txBytes, 0, f.sweepSigHash, f.retiringWS, f.amount, true))
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("lying decoy template: got %v, want scopeRefuse", got)
 	}
 }
@@ -311,7 +329,7 @@ func TestEvaluateScope_MissingAmountFailsClosed(t *testing.T) {
 	f.state["p"] = nil
 	delete(f.state, "d-"+f.validTxid)
 	addPending(f.state, f.validTxid, encodeSigningData(f.sweepTxBytes, 0, f.sweepSigHash, f.retiringWS, 0, false))
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("missing amount: got %v, want scopeRefuse (fail closed)", got)
 	}
 }
@@ -319,14 +337,14 @@ func TestEvaluateScope_MissingAmountFailsClosed(t *testing.T) {
 func TestEvaluateScope_UnknownAndNonFundHoldingGen(t *testing.T) {
 	f := newScopeFixture(t)
 	unknown := scopeContract + "-" + btcvault.VaultKeyName(9)
-	if got := f.deps.evaluateScope(unknown, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(unknown, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("unknown gen: got %v, want scopeRefuse", got)
 	}
 	f.state["v"] = marshalRegistry(
 		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusInactive},
 		btcvault.Vault{Generation: 1, Primary: f.successorPub, Backup: f.backupPub, Status: btcvault.VaultStatusActive},
 	)
-	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash, 100); got != scopeRefuse {
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("inactive gen sign: got %v, want scopeRefuse", got)
 	}
 }
