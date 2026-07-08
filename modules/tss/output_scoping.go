@@ -52,24 +52,45 @@ type btcScopeDeps struct {
 	mainnet bool
 }
 
-// resolveVaultView reads the BTC vault registry ("v"/"va") at bh. Returns
-// (nil,false) when there is no enforceable v2 vault state — an absent/empty
-// registry (pre-fold single generation, or the contract not yet deployed) is the
-// inert case and behaves byte-identically to pre-v2 (the caller then applies no
-// scoping). A registry present but without exactly one resolvable Active
-// generation also returns false, so the gate fails CLOSED for any retiring-gen
-// sign (see btcSignRefused).
-func (d btcScopeDeps) resolveVaultView(bh uint64) (*btcVaultView, bool) {
+// vaultResolveResult tri-states the vault registry read. The distinction
+// between ABSENT and UNRESOLVABLE is fund-safety-critical (council B1/C-FS-1/
+// A-F1): collapsing both to a single "not ok" fails the gate OPEN on a corrupt
+// registry.
+type vaultResolveResult int
+
+const (
+	// vaultAbsent: the "v" registry is absent/empty — pre-fold single generation,
+	// or the contract not yet deployed/folded. Inert; the caller allows ONLY the
+	// legacy gen-0 key (byte-identical to pre-v2).
+	vaultAbsent vaultResolveResult = iota
+	// vaultResolved: "v" present with exactly one Active generation — view valid.
+	vaultResolved
+	// vaultUnresolvable: "v" PRESENT but malformed, or without a single Active
+	// generation (0 or ≥2). A corrupt/ambiguous registry must NEVER silently
+	// disable output scoping → the caller refuses ALL BTC-vault keysigns (fail
+	// closed, recoverable once the registry is valid).
+	vaultUnresolvable
+)
+
+// resolveVaultView reads the BTC vault registry ("v") at bh and classifies it.
+// The ABSENT vs UNRESOLVABLE distinction is load-bearing: an absent registry is
+// the benign pre-fold case (allow gen-0 only), whereas a PRESENT-but-corrupt
+// registry must fail closed — it is exactly the state a lying/compromised
+// contract would write to try to disable NN#1.
+func (d btcScopeDeps) resolveVaultView(bh uint64) (*btcVaultView, vaultResolveResult) {
 	if d.contractId == "" {
-		return nil, false
+		return nil, vaultAbsent
 	}
 	rawV, ok := d.readKey(d.contractId, bh, "v")
 	if !ok || len(rawV) == 0 {
-		return nil, false
+		return nil, vaultAbsent
 	}
+	// "v" is PRESENT from here on. ANY failure below is UNRESOLVABLE (fail
+	// closed), NEVER treated as absent — otherwise a corrupt/ambiguous "v"
+	// silently disables the output-scoping gate (the council fail-open).
 	vaults, err := btcvault.UnmarshalVaultRegistry(rawV)
 	if err != nil || len(vaults) == 0 {
-		return nil, false
+		return nil, vaultUnresolvable
 	}
 	view := &btcVaultView{
 		contractId: d.contractId,
@@ -85,15 +106,13 @@ func (d btcScopeDeps) resolveVaultView(bh uint64) (*btcVaultView, bool) {
 			activeCount++
 		}
 	}
-	// Contract invariant: exactly one Active generation. If the read state does
-	// not satisfy it (0 or >1), no unambiguous successor can be named → fail
-	// closed. (A 0-active state means no vault can receive a sweep; a >1-active
-	// state is impossible per the contract; either way refusing retiring-gen
-	// signs is the safe outcome.)
+	// Contract invariant: exactly one Active generation (enforced at activation).
+	// A read state that violates it (0 or ≥2) has no unambiguous successor → not
+	// resolvable → fail closed.
 	if activeCount != 1 {
-		return nil, false
+		return nil, vaultUnresolvable
 	}
-	return view, true
+	return view, vaultResolved
 }
 
 // scopeVerdict is the output of the S3 scoping evaluation for a BTC-vault sign.
@@ -109,29 +128,61 @@ const (
 // request carries sighash, at bh. It is the pure, deterministic core of
 // btcSignRefused, split out so it is unit-testable via btcScopeDeps.
 func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte, bh uint64) scopeVerdict {
-	view, ok := d.resolveVaultView(bh)
-	if !ok {
-		// No resolvable v2 vault state → inert / pre-fold → no scoping applied.
-		return scopeAllow
-	}
-	v, known := view.byKeyId[keyId]
-	switch {
-	case !known:
-		return scopeRefuse // a BTC vault keyId not present in the registry
-	case v.Status == btcvault.VaultStatusActive:
-		// The active successor generation signs ordinary user withdrawals, whose
-		// destinations are arbitrary (the contract is the authority on where a
-		// user's own funds go) — deliberately NOT output-scoped.
-		return scopeAllow
-	case v.Status == btcvault.VaultStatusRetiring || v.Status == btcvault.VaultStatusDraining:
-		if d.retiringSignPaysSuccessor(sighash, view, bh) {
-			return scopeSuccessorSweep
+	view, res := d.resolveVaultView(bh)
+	switch res {
+	case vaultAbsent:
+		// Pre-fold / not-yet-folded: the ONLY legitimate BTC vault key is the
+		// legacy gen-0 "main" (byte-identical to pre-v2 signing). A higher-
+		// generation keyId ("mainv<N>") cannot exist without a vault registry, so
+		// a sign for one under an absent registry is anomalous → fail closed.
+		if keyId == d.contractId+"-"+btcvault.VaultKeyName(0) {
+			return scopeAllow
 		}
 		return scopeRefuse
-	default:
-		// pending / inactive / purged: not a fund-holding, signable generation.
+	case vaultUnresolvable:
+		// Registry PRESENT but corrupt / no single Active successor. We cannot
+		// scope safely AND must not let a bad "v" disable the gate → refuse ALL
+		// BTC-vault keysigns (fail closed; recoverable when "v" is valid again).
 		return scopeRefuse
+	case vaultResolved:
+		v, known := view.byKeyId[keyId]
+		switch {
+		case !known:
+			return scopeRefuse // a BTC vault keyId not present in the registry
+		case v.Status == btcvault.VaultStatusActive:
+			// The active successor generation signs ordinary user withdrawals,
+			// whose destinations are arbitrary (the contract is the authority on
+			// where a user's own funds go) — deliberately NOT output-scoped.
+			return scopeAllow
+		case v.Status == btcvault.VaultStatusRetiring || v.Status == btcvault.VaultStatusDraining:
+			if d.retiringSignPaysSuccessor(sighash, view, bh) {
+				return scopeSuccessorSweep
+			}
+			return scopeRefuse
+		default:
+			// pending / inactive / purged: not a fund-holding, signable generation.
+			return scopeRefuse
+		}
 	}
+	return scopeRefuse // unreachable; fail closed
+}
+
+// btcSignGateDecision combines the S3 scope verdict with the M1.1a solvency
+// halt into a final skip-or-issue decision (returns true = skip issuance). Pure,
+// so the V-8 evacuation exemption is unit-testable without a live datalayer.
+//   - scopeRefuse            → always skip (output scoping refused it).
+//   - halted, not a sweep    → skip (the solvency halt freezes issuance).
+//   - halted, scopeSuccessorSweep → ISSUE (V-8: the honest evacuation to the new
+//     vault must complete even during a halt; it is output-proven successor-only).
+//   - not halted, allow/sweep → issue.
+func btcSignGateDecision(verdict scopeVerdict, halted bool) bool {
+	if verdict == scopeRefuse {
+		return true
+	}
+	if halted && verdict != scopeSuccessorSweep {
+		return true
+	}
+	return false
 }
 
 // btcSignRefused is the deterministic pre-issuance gate for a BTC-vault keysign:
@@ -142,8 +193,10 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 		return false // not a BTC vault key: this gate does not apply
 	}
 
-	// S3.2 — output scoping. Only under the (inert-until-pinned) rotation flag.
-	isSuccessorScopedSweep := false
+	// S3.2 — output scoping. Only under the (inert-until-pinned) rotation flag;
+	// otherwise the verdict is scopeAllow (M1.1a-only behaviour, byte-identical
+	// to pre-S3).
+	verdict := scopeAllow
 	if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
 		deps := btcScopeDeps{
 			contractId: tssMgr.sconf.OracleParams().ContractId("BTC"),
@@ -151,24 +204,16 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 			findKey:    tssMgr.tssKeys.FindKey,
 			mainnet:    tssMgr.sconf.OnMainnet(),
 		}
-		switch deps.evaluateScope(keyId, sighash, bh) {
-		case scopeRefuse:
-			log.Warn("BTC keysign refused by output scoping (S3 NN#1)", "keyId", keyId, "bh", bh)
-			return true
-		case scopeSuccessorSweep:
-			isSuccessorScopedSweep = true
-		case scopeAllow:
-			// proceed to the halt check
-		}
+		verdict = deps.evaluateScope(keyId, sighash, bh)
 	}
 
-	// M1.1a solvency halt (deterministic FLAG) + V-8 evacuation whitelist: freeze
-	// BTC keysign issuance when the FLAG is up, EXCEPT a proven successor-scoped
-	// sweep — the honest evacuation to the new vault must proceed even during a
-	// solvency halt (it moves funds within the protocol's custody, independently
-	// output-checked against the committed successor).
-	if tssMgr.btcKeysignFrozen(keyId) && !isSuccessorScopedSweep {
-		log.Warn("BTC keysign frozen by solvency gate; skipping issuance", "keyId", keyId, "bh", bh)
+	// Combine with the M1.1a solvency halt (FLAG) + the V-8 evacuation exemption.
+	if btcSignGateDecision(verdict, tssMgr.btcKeysignFrozen(keyId)) {
+		if verdict == scopeRefuse {
+			log.Warn("BTC keysign refused by output scoping (S3 NN#1)", "keyId", keyId, "bh", bh)
+		} else {
+			log.Warn("BTC keysign frozen by solvency gate; skipping issuance", "keyId", keyId, "bh", bh)
+		}
 		return true
 	}
 	return false
