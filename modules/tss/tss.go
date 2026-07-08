@@ -331,6 +331,16 @@ type TssManager struct {
 	// Per-height (not per-key): readiness is a node property.
 	// Populated by ready_gossip messages received via pubsub.
 	gossipAttestations map[string]map[string]ReadyAttestation
+
+	// retiringSetCache memoizes retiringGenSignerSet per target height so the
+	// UNTRUSTED ready_gossip receive path (one call per message from any peer) does
+	// the underlying contract-state datalayer read at most once per height, not per
+	// message (V-A council A3 — DoS-amplification hardening). Its own mutex (never
+	// held across the datalayer read); a bounded, node-local perf cache — it caches
+	// a deterministic value, so it does not affect consensus. Empty/unused while
+	// VaultRotationV2Enabled is false (the cached accessor short-circuits first).
+	retiringSetCacheMu sync.Mutex
+	retiringSetCache   map[string]retiringSignerSet
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
