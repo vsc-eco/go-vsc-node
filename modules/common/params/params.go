@@ -297,6 +297,21 @@ type ConsensusParams struct {
 	// rotates to neither → the vault FREEZES as the committee churns members out.
 	// Precondition to pin: (a) contract emits fresh-keyId "create" per generation,
 	// (b) old→new migration sweep, (c) old-share destruction — all built + proven.
+	//
+	// ADDITIONAL DEPLOY-ORDERING PRECONDITIONS (S3 methodology, do NOT pin without):
+	//   (d) MaxNewMembersActivationHeight is ALSO pinned/active — the S3.4 V-A
+	//       liveness argument (a churned-out retiring committee can't sign the
+	//       migration) relies on the churn cap slowing membership drift; with the
+	//       cap inert, that mitigation is vacuous. Pin the cap (or ship the V-A
+	//       lifecycle fix) at/before this height.
+	//   (e) OracleParams().ContractId("BTC") is populated — an empty BTC contract
+	//       id makes isBtcVaultKey false, silently disabling S3 output scoping AND
+	//       the M1.1a solvency halt AND the M1.3 reshare-skip TOGETHER (fail-open
+	//       on theft-prevention). Verify it is set on the target network.
+	//   (f) the migration confirm flow is reorg-hardened (delete swept inputs at
+	//       CONFIRM, not build; gate the next rotation on a pending unconfirmed
+	//       sweep) and the contract `pause` exempts the in-flight migration confirm
+	//       path (else a pause strands a sweep) — tracked S2 items, must be built.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
