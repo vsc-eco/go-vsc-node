@@ -135,6 +135,7 @@ const (
 	scopeAllow          scopeVerdict = iota // active/inert-gen sign: proceed (subject to halt)
 	scopeRefuse                             // retiring-gen sign that is NOT a successor sweep, or an unknown/non-fund-holding gen
 	scopeSuccessorSweep                     // retiring-gen sign PROVEN to pay only the successor (V-8: exempt from the halt)
+	scopeCheckSig                           // pending-gen sign PROVEN to be the canonical BRK-2 check-signature M (halt-exempt; moves no funds)
 )
 
 // evaluateScope applies S3 output scoping for a BTC-vault keyId whose sign
@@ -172,8 +173,23 @@ func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte) scopeVerdict {
 				return scopeSuccessorSweep
 			}
 			return scopeRefuse
+		case v.Status == btcvault.VaultStatusPending:
+			// BRK-2 check-sig: a Pending gen holds NO funds and normally signs
+			// nothing. The ONE exception is the canonical check-signature M that
+			// proves the fresh committee can produce a signature with this gen's
+			// key BEFORE the contract activates the vault — otherwise funds could
+			// route into an agreed-but-UNSIGNABLE vault and custody collapses to
+			// the single CSV backup key (brick council FS3-1). Allow ONLY
+			// sighash==M(keyId, gen, committed-pubkey); refuse everything else.
+			// This single deterministic chokepoint BOTH enables the test-sign AND
+			// guarantees a Pending gen signs nothing but M — the test-sign flows
+			// THROUGH the S3 gate, never around it.
+			if d.pendingSignIsCheckSig(keyId, sighash) {
+				return scopeCheckSig
+			}
+			return scopeRefuse
 		default:
-			// pending / inactive / purged: not a fund-holding, signable generation.
+			// inactive / purged: not a fund-holding, signable generation.
 			return scopeRefuse
 		}
 	}
@@ -192,7 +208,12 @@ func btcSignGateDecision(verdict scopeVerdict, halted bool) bool {
 	if verdict == scopeRefuse {
 		return true
 	}
-	if halted && verdict != scopeSuccessorSweep {
+	// scopeSuccessorSweep AND scopeCheckSig are halt-exempt. The honest
+	// evacuation sweep must complete during a solvency halt (V-8); the BRK-2
+	// check-signature moves no funds at all (a Pending gen holds zero UTXOs and
+	// M is not a BTC transaction), and freezing it would only stall a rotation
+	// that may itself be the response to the halt.
+	if halted && verdict != scopeSuccessorSweep && verdict != scopeCheckSig {
 		return true
 	}
 	return false
@@ -233,7 +254,35 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 		}
 		return true
 	}
+	if verdict == scopeCheckSig {
+		log.Info("BTC keysign is the BRK-2 check-signature for a pending vault generation; issuing", "keyId", keyId, "bh", bh)
+	}
 	return false
+}
+
+// pendingSignIsCheckSig reports whether sighash is the canonical BRK-2
+// check-signature digest M for a Pending vault generation keyId. M is recomputed
+// from the generation parsed out of keyId and that generation's OWN COMMITTED
+// tss_keys pubkey (the C-C guard — never a contract field). The key must already
+// be node-active (its keygen commitment landed, flipping tss_keys
+// created->active — the window the check-sign fires in), else we cannot
+// recompute M and must refuse. Fails CLOSED on any uncertainty (unparseable
+// keyId, missing/inactive committed key, bad pubkey length): a Pending gen that
+// we cannot PROVE is signing exactly M signs nothing.
+func (d btcScopeDeps) pendingSignIsCheckSig(keyId string, sighash []byte) bool {
+	gen, ok := btcvault.VaultGenFromKeyId(d.contractId, keyId)
+	if !ok {
+		return false
+	}
+	k, err := d.findKey(keyId)
+	if err != nil || k.PublicKey == "" || k.Status != tss_db.TssKeyActive {
+		return false
+	}
+	pub, err := hex.DecodeString(k.PublicKey)
+	if err != nil || len(pub) != 33 {
+		return false
+	}
+	return bytes.Equal(btcvault.CheckSigMessage(keyId, gen, pub), sighash)
 }
 
 // retiringSignPaysSuccessor reports whether sighash is the BIP143 sighash of an
