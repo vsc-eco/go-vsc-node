@@ -1026,15 +1026,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 
 		} else if action.Type == SignAction {
-			// Build Map §5b — BTC keysign emergency halt (M1.1a: FLAG-only).
-			// A pure LOCAL issuance gate: skip issuing this SignAction when the
-			// BTC vault is frozen by the deterministic governance FLAG
-			// (vsc.tss_halt). Placed before any sessionId/commitment/dispatcher
-			// work, so it cannot affect party lists or commitment CIDs (repo
-			// CLAUDE.md TSS Constraints 1-3). Automatic solvency detection that
-			// TRIPS this flag is the deferred M1.1b auto-trip.
-			if tssMgr.btcKeysignFrozen(action.KeyId) {
-				log.Warn("BTC keysign frozen by solvency gate; skipping issuance", "keyId", action.KeyId, "bh", bh)
+			// Build Map §5b + §6 NN#1 — BTC keysign pre-issuance gate.
+			// A pure LOCAL, deterministic issuance gate (skip-or-issue) covering
+			// (a) S3 output scoping: a retiring/draining vault generation's key
+			// may sign ONLY a migration sweep whose outputs pay the committed
+			// successor P2WSH (else theft oracle); and (b) the M1.1a solvency
+			// halt FLAG (vsc.tss_halt) with the V-8 evacuation exemption.
+			// Placed before any sessionId/commitment/dispatcher work, so it can
+			// never affect party lists or commitment CIDs (repo CLAUDE.md TSS
+			// Constraints 1-3). btcSignRefused logs the specific reason.
+			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) {
 				continue
 			}
 
