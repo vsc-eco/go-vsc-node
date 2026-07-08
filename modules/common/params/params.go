@@ -319,6 +319,15 @@ type ConsensusParams struct {
 	//       NOT deprecate a fund-holding gen while renewKey is blocked (freeze the
 	//       clock for fund-holding gens, or allow-list renewKey during suspend) —
 	//       else a long suspend forces an un-curable deprecation (FS1-FS2).
+	//   (k) the fleet runs the BRK-5/BRK-8 binary UNIFORMLY before any Epochs>0 (v2)
+	//       key is minted or reshared — BRK-5 (suspend freezes deprecation) and
+	//       BRK-8 (reshare extends expiry) change consensus key-lifecycle timing
+	//       once Epochs>0; inert on today's legacy Epochs==0 keys (a rolling upgrade
+	//       today is byte-identical), but a heterogeneous fleet would diverge in the
+	//       v2 era. Same all-nodes-same-height discipline as this flag (brick-fix
+	//       determinism lens).
+	// STATUS: (a)-(g) tracked/unbuilt (spine); (h) enforced by the S5 SPV-zero rule;
+	// (i) DONE (MaxBlockRetention=4608, BRK-4a); (j) DONE (BRK-5 suspend-freeze).
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
