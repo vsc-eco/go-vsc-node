@@ -146,5 +146,12 @@ func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64)
 // every real witness). The tss/V-A consumer is unaffected — it compares the bare
 // HiveUsername to bare keys — so only this Hive-namespaced consumer must normalize.
 func bondLockMatches(set vaultrotation.RetiringSignerSet, account string) bool {
+	// L8-01 (FULL-PRUNED): fail CLOSED on a corrupt-"v" (Unresolvable) registry — treat
+	// EVERY member as bond-locked rather than releasing a bond we cannot verify, so a
+	// corrupt-registry window can't let a member holding reconstructable shares unstake.
+	// Deterministic (a corrupt "v" is the identical committed blob on every node) → no fork.
+	if set.Unresolvable {
+		return true
+	}
 	return set.Has(strings.TrimPrefix(account, "hive:"))
 }

@@ -35,6 +35,12 @@ type RetiringSignerSet struct {
 	// to recognise a migration sign and exempt those parties from the CURRENT
 	// version floor — V5-6).
 	KeyIds map[string]bool
+	// Unresolvable is true when "v" was PRESENT but failed to decode (corrupt committed
+	// state). The set is then empty and MUST NOT be read as "nobody retiring": the #11
+	// bond-lock consumer treats Unresolvable as "everybody locked" (fail-closed), while
+	// V-A reads the empty set as a fail-safe freeze. Deterministic — a corrupt "v" is the
+	// identical committed blob on every node. (L8-01, FULL-PRUNED.)
+	Unresolvable bool
 }
 
 // Has reports whether account is a committee member of some fund-holding
@@ -73,11 +79,24 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	}
 	vaults, err := btcvault.UnmarshalVaultRegistry(rawV)
 	if err != nil {
+		// L8-01 (FULL-PRUNED): "v" PRESENT but undecodable = corrupt committed state.
+		// Fail CLOSED (match output_scoping's resolveVaultView, which refuses all keysigns)
+		// by signalling Unresolvable — the #11 bond-lock reads it as everybody-locked
+		// rather than releasing bonds on an empty set. Deterministic (same "v" everywhere).
+		// The absent-"v" case above stays empty+resolvable (pre-rotation, nobody locked).
+		out.Unresolvable = true
 		return out
 	}
 	for i := range vaults {
 		v := vaults[i]
-		if v.Status != btcvault.VaultStatusRetiring && v.Status != btcvault.VaultStatusDraining {
+		// L4-C1 (FULL-PRUNED): include INACTIVE, in lock-step with the contract's
+		// isFundHoldingStatus / AnyFundedSupersededGen / writeOffDust (all of which count
+		// Inactive as fund-holding since S5). Omitting it let a party cheaply re-fund a
+		// just-emptied Inactive gen and escape the #11 bond-lock while still holding
+		// reconstructable shares. Additive + deterministic; V-A signing of an Inactive gen
+		// is independently refused by output_scoping, so this only closes the bond-lock hole.
+		if v.Status != btcvault.VaultStatusRetiring && v.Status != btcvault.VaultStatusDraining &&
+			v.Status != btcvault.VaultStatusInactive {
 			continue
 		}
 		keyId := d.BtcContract + "-" + btcvault.VaultKeyName(v.Generation)
