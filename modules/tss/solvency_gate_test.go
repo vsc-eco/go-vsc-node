@@ -9,15 +9,19 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 )
 
-// fakeSolvencyScheduler is a minimal GetScheduler for the gate tests: only
-// BtcKeysignHalted matters here.
-type fakeSolvencyScheduler struct{ halted bool }
+// fakeSolvencyScheduler is a minimal GetScheduler for the gate tests: the
+// governance FLAG (halted) and the M1.1b contract theft FLAG (theftHalted).
+type fakeSolvencyScheduler struct {
+	halted      bool
+	theftHalted bool
+}
 
 func (f *fakeSolvencyScheduler) GetSchedule(uint64) []stateEngine.WitnessSlot { return nil }
 func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusversion.Version {
 	return consensusversion.Version{}
 }
 func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool { return f.halted }
+func (f *fakeSolvencyScheduler) BtcTheftHalted() bool   { return f.theftHalted }
 
 // TestBtcKeysignFrozen_FlagAndScope covers the deterministic FLAG layer and the
 // BTC-only scoping. The SIGNAL layer stays inert here (MainnetConfig ships an
@@ -33,22 +37,27 @@ func TestBtcKeysignFrozen_FlagAndScope(t *testing.T) {
 	nonBtcKey := "vsc1SomeEthKeyNotBtc-main"
 
 	cases := []struct {
-		name   string
-		halted bool
-		keyId  string
-		want   bool
+		name        string
+		halted      bool // M1.1a governance flag
+		theftHalted bool // M1.1b contract theft flag
+		keyId       string
+		want        bool
 	}{
-		{"flag off, BTC key -> not frozen", false, btcKey, false},
-		{"flag on, BTC key -> frozen", true, btcKey, true},
-		{"flag on, non-BTC key -> not frozen (scope)", true, nonBtcKey, false},
-		{"flag on, empty key -> not frozen", true, "", false},
-		{"flag on, bare contract id (no -suffix) -> not frozen", true, btc, false},
+		{"both flags off, BTC key -> not frozen", false, false, btcKey, false},
+		{"gov flag on, BTC key -> frozen", true, false, btcKey, true},
+		{"gov flag on, non-BTC key -> not frozen (scope)", true, false, nonBtcKey, false},
+		{"gov flag on, empty key -> not frozen", true, false, "", false},
+		{"gov flag on, bare contract id (no -suffix) -> not frozen", true, false, btc, false},
+		// M1.1b: the theft flag freezes independently of the governance flag.
+		{"theft flag on, BTC key -> frozen", false, true, btcKey, true},
+		{"theft flag on, non-BTC key -> not frozen (scope)", false, true, nonBtcKey, false},
+		{"both flags on, BTC key -> frozen", true, true, btcKey, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mgr := &TssManager{sconf: sconf, scheduler: &fakeSolvencyScheduler{halted: tc.halted}}
+			mgr := &TssManager{sconf: sconf, scheduler: &fakeSolvencyScheduler{halted: tc.halted, theftHalted: tc.theftHalted}}
 			if got := mgr.btcKeysignFrozen(tc.keyId); got != tc.want {
-				t.Fatalf("btcKeysignFrozen(%q, halted=%v) = %v, want %v", tc.keyId, tc.halted, got, tc.want)
+				t.Fatalf("btcKeysignFrozen(%q, halted=%v, theftHalted=%v) = %v, want %v", tc.keyId, tc.halted, tc.theftHalted, got, tc.want)
 			}
 		})
 	}

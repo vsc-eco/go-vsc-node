@@ -47,8 +47,17 @@ func (tssMgr *TssManager) btcKeysignFrozen(keyId string) bool {
 	// when the sign is NOT such a sweep. Keeping this function FLAG-pure lets the
 	// M1.1a solvency semantics stay independently unit-tested.
 
-	// FLAG — deterministic governance freeze (the only live M1.1a gate input).
-	return tssMgr.scheduler != nil && tssMgr.scheduler.BtcKeysignHalted()
+	// FLAG — deterministic freeze inputs, BOTH consensus-cache-mirrored (zero I/O here):
+	//  - BtcKeysignHalted: the M1.1a governance vsc.tss_halt flag.
+	//  - BtcTheftHalted:   the M1.1b contract theft flag ("th"), tripped by an SPV-proven
+	//    unauthorised spend of a registered vault UTXO (reportUnauthorizedSpend). Either
+	//    one freezes; the V-8 evacuation + BRK-2 check-sig exemptions in output_scoping.go
+	//    apply to both (the honest successor-sweep must still complete during a theft halt
+	//    to rescue remaining funds from the thief).
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return tssMgr.scheduler.BtcKeysignHalted() || tssMgr.scheduler.BtcTheftHalted()
 }
 
 // isBtcVaultKey reports whether keyId is the BTC vault's TSS key for the

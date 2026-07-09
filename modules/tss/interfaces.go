@@ -55,4 +55,8 @@ type GetScheduler interface {
 	// BtcKeysignHalted reports whether governance has frozen BTC TSS keysign via
 	// vsc.tss_halt (Build Map §5b). Read by the solvency gate before issuing a sign.
 	BtcKeysignHalted() bool
+	// BtcTheftHalted reports whether the BTC mapping contract's deterministic theft-halt
+	// flag ("th", M1.1b SPV-proven auto-trip) is set — mirrored into the consensus cache
+	// each block. Read by the solvency gate alongside BtcKeysignHalted (either freezes).
+	BtcTheftHalted() bool
 }
