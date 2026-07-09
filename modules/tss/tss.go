@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/big"
 	"slices"
 	"strconv"
@@ -678,12 +677,20 @@ type ScoreMap struct {
 	BannedNodes map[string]bool
 }
 
-func (tss *TssManager) BlameScore() ScoreMap {
+// BlameScore computes the banned-node set from on-chain blame data, anchored on the
+// election for the PROCESSED height bh (passed in as initialElection). It previously read
+// GetElectionByHeight(MaxInt64-1) — "the latest election, right now" — which two nodes
+// racing a just-landed election (the async block-consumer race, consumer.go:45-57) could
+// resolve differently, yielding divergent BannedNodes, divergent party lists, and an
+// SSID-mismatch consensus fork (Constraint 2/3). RunActions passes the SAME currentElection
+// it already resolved via GetElectionByHeight(bh) (tss.go), so the ban set is deterministic
+// and byte-consistent with the party lists it filters. No behavior change when the latest
+// election IS the one at bh (the common, non-race case).
+func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) ScoreMap {
 	weightMap := make(map[string]int)
 	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
-	initialElection, err := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
-	if err != nil || initialElection.Members == nil {
+	if initialElection.Members == nil {
 		return ScoreMap{BannedNodes: make(map[string]bool)}
 	}
 
@@ -941,7 +948,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		return
 	}
 
-	blameMap := tssMgr.BlameScore()
+	blameMap := tssMgr.BlameScore(currentElection)
 
 	log.Info(
 		"running actions",
@@ -963,25 +970,60 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			participants := make([]Participant, 0)
 
 			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
-			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
-			var isBlame bool
-			bitset := big.NewInt(0)
-			if err == nil {
-				if int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
-					bitBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
-					bitset.SetBytes(bitBytes)
-					isBlame = true
+			// Blame exclusion for a keygen RETRY: decode each blame in the BLAME_EXPIRE
+			// window against the blame's OWN epoch election — setToCommitment encodes bit
+			// positions via GetElection(epoch).Members, so a blame must be decoded against
+			// GetElection(blame.Epoch), NOT currentElection. Decoding against currentElection
+			// (the prior behavior) is "Known Bug on Main #1": wrong members are excluded once
+			// the election membership drifts between the blame's epoch and now. This mirrors
+			// the already-shipped reshare/sign fix (CHANGE 4/4b): >33%
+			// (TSS_BLAME_THRESHOLD_PERCENT) of the window's blame commitments must name an
+			// account to exclude it, so a single manufactured blame can't drop a healthy node.
+			// A fresh keyId has no blames in the window → blamedAccounts empty → inert.
+			keyIdStr := action.KeyId
+			var blameExpireBlock uint64
+			if bh > BLAME_EXPIRE {
+				blameExpireBlock = bh - BLAME_EXPIRE
+			}
+			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, 100,
+			)
+			if blameErr != nil {
+				log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
+			}
+			blameCount := make(map[string]int) // account → number of blames naming this account
+			blameOpportunities := 0            // total blame commitments in window (denominator)
+			for _, blame := range allBlames {
+				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+				if blameElection == nil || blameElection.Members == nil {
+					log.Warn("keygen blame election missing, skipping blame entry",
+						"blameEpoch", blame.Epoch, "sessionId", sessionId)
+					continue
+				}
+				blameOpportunities++
+				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+				bBits := new(big.Int).SetBytes(blameBytes)
+				for bidx, member := range blameElection.Members {
+					if bBits.Bit(bidx) == 1 {
+						blameCount[member.Account]++
+					}
+				}
+			}
+			blamedAccounts := make(map[string]bool)
+			if blameOpportunities > 0 {
+				for account, count := range blameCount {
+					if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+						blamedAccounts[account] = true
+					}
 				}
 			}
 
 			excludedAccounts := make([]string, 0)
-			for idx, member := range currentElection.Members {
-				if isBlame {
-					if bitset.Bit(idx) == 1 {
-						excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
-						continue
-					}
+			for _, member := range currentElection.Members {
+				if blamedAccounts[member.Account] {
+					excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
+					continue
 				}
 				//if node is banned
 				if blameMap.BannedNodes[member.Account] {
@@ -1011,10 +1053,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				participantAccounts,
 				"excluded",
 				excludedAccounts,
-				"hasBlame",
-				isBlame,
-				"lastBlameHeight",
-				lastBlame.BlockHeight,
+				"blamedCount",
+				len(blamedAccounts),
+				"blameCommitments",
+				blameOpportunities,
 			)
 
 			if len(participants) < 2 {
