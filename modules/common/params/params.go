@@ -279,6 +279,21 @@ type ConsensusParams struct {
 	// point-in-time read.
 	BondInclusionSampleCount int `json:"bondInclusionSampleCount,omitempty"`
 
+	// PendulumGeometryV2Height gates the pendulum geometry retune (equilibrium
+	// s_eq 0.5→1.0, cliff c 1.0→3.0, and the derived §9 redirect band — see
+	// incentive-pendulum/params.go GeometryAt) on a Hive L1 block height. Below it
+	// the ORIGINAL curve (GeometryV1, c=1.0) drives the node-bucket swap-fee
+	// accrual so pre-retune blocks replay byte-identically; at/after it the current
+	// GeometryV2 (c=3.0). The geometry is a per-block accrual input, so this is an
+	// L1 HEIGHT (not an election epoch) — it must switch at the exact block the
+	// network adopted the retune, mid-epoch if that is where it landed. 0 == always
+	// v2 (no gate), the correct default for a chain that was NEVER on the original
+	// curve (fresh devnet / a network that adopted v2 from genesis). MUST be a
+	// fixed network-wide constant identical on every node (reindex or not): a value
+	// at/below an already-processed block that does not match where the live chain
+	// actually switched diverges live vs reindex.
+	PendulumGeometryV2Height uint64 `json:"pendulumGeometryV2Height,omitempty"`
+
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
 	// the bond inclusion gate admits in a single election. The maturity window

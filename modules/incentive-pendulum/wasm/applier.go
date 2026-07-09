@@ -72,6 +72,14 @@ type Config struct {
 	// after it the bounded fee is active. 0 = always active (no gate) — the
 	// testnet/devnet default. Mainnet sets params.PENDULUM_FEE_FIX_HEIGHT.
 	ActivationHeight uint64
+	// GeometryV2Height gates the pendulum geometry retune (equilibrium s_eq /
+	// cliff c / §9 redirect band) on a Hive L1 block height. Below it the applier
+	// resolves the ORIGINAL curve (pendulum.GeometryV1, c=1.0) so pre-retune
+	// blocks replay their node-bucket accrual byte-for-byte; at/after it the
+	// current pendulum.GeometryV2 (c=3.0). 0 = always v2 (no gate) — the default
+	// for chains that were never on the original curve. Sourced per-network from
+	// ConsensusParams.PendulumGeometryV2Height.
+	GeometryV2Height uint64
 }
 
 // DefaultConfig returns the production defaults: PDF stabilizer, 25% network
@@ -236,12 +244,19 @@ func (a *Applier) ApplySwapFees(
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
+	// Height-resolved economic curve: below cfg.GeometryV2Height the ORIGINAL
+	// geometry (c=1.0) is used so pre-retune blocks replay byte-identically; at/
+	// above it (and when GeometryV2Height==0) the current retuned curve. Feeds
+	// the fee multiplier's s_eq, the "exacerbates" hint, and the node/LP split —
+	// every geometry input to the pendulum:nodes accrual (see pendulum.GeometryAt).
+	geom := pendulum.GeometryAt(blockHeight, a.cfg.GeometryV2Height)
+
 	stab := a.cfg.Stabilizer
-	if !exacerbatesFromSnapshot(sBps, assetIn == "hbd") {
+	if !exacerbatesFromSnapshot(sBps, assetIn == "hbd", geom) {
 		// PDF §5: non-exacerbating swaps push at 0.7×.
 		stab.PushBps = pendulum.BpsScale * 70 / 100
 	}
-	multiplierBps, err := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab)
+	multiplierBps, err := pendulum.StabilizerMultiplierBps(sBps, rTradeBps, stab, geom)
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
@@ -327,7 +342,7 @@ func (a *Applier) ApplySwapFees(
 		a.consensusAt(blockHeight).MeetsConsensusMin(pendulum.LPFloorActivation) {
 		maxNodeBps = pendulum.MaxNodeShareBps(a.cfg.MinFractionBps)
 	}
-	fNodeBps, fNodeProtocolBps := splitFractionsBps(T, V, E, P, sBps, maxNodeBps)
+	fNodeBps, fNodeProtocolBps := splitFractionsBps(T, V, E, P, sBps, maxNodeBps, geom)
 
 	// 10. Per-pot splits (LP gets floor, node side gets residual for exact conservation).
 	scale := big.NewInt(pendulum.BpsScale)
@@ -459,8 +474,8 @@ func tradeRatioBps(x, X int64) (int64, error) {
 // equilibrium target s_eq (the point the StabilizerMultiplier penalizes
 // deviations from). At exactly s = s_eq any nonzero swap exacerbates by
 // definition.
-func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
-	target := pendulum.TargetSBps
+func exacerbatesFromSnapshot(sBps int64, hbdIn bool, geom pendulum.Geometry) bool {
+	target := geom.TargetSBps
 	switch {
 	case sBps == target:
 		return true
@@ -482,10 +497,10 @@ func exacerbatesFromSnapshot(sBps int64, hbdIn bool) bool {
 // the under-secured / degenerate cliffs — is capped at it. The caller passes
 // BpsScale when the floor is inactive, so all caps become no-ops and the result
 // is byte-identical to the pre-floor split.
-func splitFractionsBps(T, V, E, P *big.Int, sBps int64, maxNodeBps int64) (int64, int64) {
+func splitFractionsBps(T, V, E, P *big.Int, sBps int64, maxNodeBps int64, geom pendulum.Geometry) (int64, int64) {
 	scale := big.NewInt(pendulum.BpsScale)
 
-	cE := pendulum.CliffTimesE(E)
+	cE := geom.CliffTimesE(E)
 	if V.Cmp(cE) >= 0 {
 		// Under-secured cliff: route to nodes, but never past the LP floor.
 		return maxNodeBps, maxNodeBps
@@ -520,9 +535,9 @@ func splitFractionsBps(T, V, E, P *big.Int, sBps int64, maxNodeBps int64) (int64
 	// → route to nodes (fNodeProtocol=maxNodeBps, i.e. BpsScale absent the LP
 	// floor) to shed it. Edges are the safe-band edges (params.go).
 	fNodeProtocol := fNode
-	if sBps < pendulum.RedirectLoBps {
+	if sBps < geom.RedirectLoBps {
 		fNodeProtocol = 0
-	} else if sBps > pendulum.RedirectHiBps {
+	} else if sBps > geom.RedirectHiBps {
 		fNodeProtocol = maxNodeBps
 	}
 	return fNode, fNodeProtocol

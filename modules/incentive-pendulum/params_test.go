@@ -84,3 +84,44 @@ func TestParams_FaithfulnessAtOldTarget(t *testing.T) {
 		t.Errorf("safe-hi at old target = %d, want ≈ 7000 (0.70)", hi)
 	}
 }
+
+// TestGeometry_V1V2_And_Gate pins the two height-resolved curves and the
+// activation-height selector — the contract the replay gate depends on.
+// GeometryV1 MUST reproduce the ORIGINAL (pre-a26684a4) geometry byte-for-byte
+// (c=1.0, 0.30/0.70 band) or pre-retune history re-derives wrong; GeometryV2
+// MUST equal the current package-level constants so selecting it is a no-op
+// versus the ungated behavior.
+func TestGeometry_V1V2_And_Gate(t *testing.T) {
+	// V1 = the original curve (s_eq=0.5, c=1.0, 0.30/0.70 safe band).
+	if GeometryV1.TargetSBps != 5_000 {
+		t.Errorf("V1 TargetSBps = %d, want 5000", GeometryV1.TargetSBps)
+	}
+	if GeometryV1.CliffSBps != 10_000 {
+		t.Errorf("V1 CliffSBps = %d, want 10000 (c=1.0)", GeometryV1.CliffSBps)
+	}
+	if GeometryV1.RedirectLoBps < 2_998 || GeometryV1.RedirectLoBps > 3_002 {
+		t.Errorf("V1 RedirectLoBps = %d, want ≈ 3000 (0.30)", GeometryV1.RedirectLoBps)
+	}
+	if GeometryV1.RedirectHiBps < 6_998 || GeometryV1.RedirectHiBps > 7_002 {
+		t.Errorf("V1 RedirectHiBps = %d, want ≈ 7000 (0.70)", GeometryV1.RedirectHiBps)
+	}
+
+	// V2 = the current retune, and MUST match the package-level constants so a
+	// GeometryV2 selection is byte-identical to the pre-gate code path.
+	if GeometryV2.TargetSBps != TargetSBps || GeometryV2.CliffSBps != CliffSBps ||
+		GeometryV2.RedirectLoBps != RedirectLoBps || GeometryV2.RedirectHiBps != RedirectHiBps {
+		t.Fatalf("V2 %+v must equal package consts (target=%d cliff=%d lo=%d hi=%d)",
+			GeometryV2, TargetSBps, CliffSBps, RedirectLoBps, RedirectHiBps)
+	}
+
+	// Selector: 0 = always v2 (no gate); positive = v1 below, v2 at/above.
+	if GeometryAt(9_999_999, 0) != GeometryV2 {
+		t.Error("v2Height=0 must resolve v2 at every height")
+	}
+	if GeometryAt(99, 100) != GeometryV1 {
+		t.Error("below the gate must resolve v1")
+	}
+	if GeometryAt(100, 100) != GeometryV2 || GeometryAt(101, 100) != GeometryV2 {
+		t.Error("at/above the gate must resolve v2")
+	}
+}

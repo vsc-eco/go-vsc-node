@@ -2845,6 +2845,10 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	if sconf.OnMainnet() {
 		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
 	}
+	// Height-gate the pendulum geometry retune (s_eq/cliff/redirect) per-network
+	// from ConsensusParams: below this height the applier uses the ORIGINAL curve
+	// so pre-retune history replays byte-identically. 0 = always the current curve.
+	pendulumCfg.GeometryV2Height = sconf.ConsensusParams().PendulumGeometryV2Height
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
 			computer:          se.pendulumGeometry,

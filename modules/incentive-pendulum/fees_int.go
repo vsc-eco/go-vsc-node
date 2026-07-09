@@ -66,8 +66,9 @@ func DefaultStabilizerParamsBps() StabilizerParamsBps {
 }
 
 // StabilizerMultiplierBps returns m(s, r) = 1 + K · |s − s_eq| · (1 + r/R0) · push,
-// capped at p.CapBps, where s_eq = TargetSBps is the equilibrium target. All
-// inputs and the result use the bps scale.
+// capped at p.CapBps, where s_eq = geom.TargetSBps is the equilibrium target
+// (height-resolved via pendulum.GeometryAt — a retune must not shift s_eq for
+// pre-activation history). All inputs and the result use the bps scale.
 //
 // Each chained product is a MulDivFloor through BpsScale, so the multiplier
 // accumulates at most ~3 bps of integer-floor rounding. The cap clamps the
@@ -79,13 +80,13 @@ func DefaultStabilizerParamsBps() StabilizerParamsBps {
 // (governance parameters or contract-supplied reserves orders of magnitude
 // outside the realistic range) and silently disabling the stabilizer would
 // charge the wrong fee.
-func StabilizerMultiplierBps(sBps, rBps int64, p StabilizerParamsBps) (int64, error) {
+func StabilizerMultiplierBps(sBps, rBps int64, p StabilizerParamsBps, geom Geometry) (int64, error) {
 	r0 := p.R0Bps
 	if r0 <= 0 {
 		r0 = 1
 	}
 
-	diff := sBps - TargetSBps
+	diff := sBps - geom.TargetSBps
 	if diff < 0 {
 		diff = -diff
 	}

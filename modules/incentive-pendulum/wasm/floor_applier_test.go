@@ -27,11 +27,11 @@ func TestSplitFractionsBpsFloorCapsCliff(t *testing.T) {
 	T := big.NewInt(1_000_000)
 	sBps := int64(4 * pendulum.BpsScale)
 
-	if fN, fP := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale); fN != pendulum.BpsScale || fP != pendulum.BpsScale {
+	if fN, fP := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale, pendulum.GeometryV2); fN != pendulum.BpsScale || fP != pendulum.BpsScale {
 		t.Fatalf("floor off: got (%d,%d), want (10000,10000)", fN, fP)
 	}
 	maxNode := pendulum.MaxNodeShareBps(1_000) // 10% LP floor → node ceiling 9000
-	if fN, fP := splitFractionsBps(T, V, E, P, sBps, maxNode); fN != 9_000 || fP != 9_000 {
+	if fN, fP := splitFractionsBps(T, V, E, P, sBps, maxNode, pendulum.GeometryV2); fN != 9_000 || fP != 9_000 {
 		t.Fatalf("floor on: got (%d,%d), want (9000,9000)", fN, fP)
 	}
 }
@@ -46,7 +46,7 @@ func TestSplitFractionsBpsFloorCapsHighS(t *testing.T) {
 	T := big.NewInt(1_000_000)
 	sBps := int64(29_000)
 
-	fNodeOff, fProtoOff := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale)
+	fNodeOff, fProtoOff := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale, pendulum.GeometryV2)
 	if fNodeOff <= 9_000 {
 		t.Fatalf("floor off: raw node fraction %d should exceed 9000 in this regime", fNodeOff)
 	}
@@ -55,7 +55,7 @@ func TestSplitFractionsBpsFloorCapsHighS(t *testing.T) {
 	}
 
 	maxNode := pendulum.MaxNodeShareBps(1_000)
-	if fNodeOn, fProtoOn := splitFractionsBps(T, V, E, P, sBps, maxNode); fNodeOn != maxNode || fProtoOn != maxNode {
+	if fNodeOn, fProtoOn := splitFractionsBps(T, V, E, P, sBps, maxNode, pendulum.GeometryV2); fNodeOn != maxNode || fProtoOn != maxNode {
 		t.Fatalf("floor on: got (%d,%d), want (%d,%d)", fNodeOn, fProtoOn, maxNode, maxNode)
 	}
 }
@@ -69,8 +69,8 @@ func TestSplitFractionsBpsFloorNoOpInHealthyBand(t *testing.T) {
 	T := big.NewInt(1_000_000)
 	sBps := int64(pendulum.BpsScale)
 
-	offN, offP := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale)
-	onN, onP := splitFractionsBps(T, V, E, P, sBps, pendulum.MaxNodeShareBps(1_000))
+	offN, offP := splitFractionsBps(T, V, E, P, sBps, pendulum.BpsScale, pendulum.GeometryV2)
+	onN, onP := splitFractionsBps(T, V, E, P, sBps, pendulum.MaxNodeShareBps(1_000), pendulum.GeometryV2)
 	if onN != offN || onP != offP {
 		t.Fatalf("floor must be a no-op below the ceiling: off=(%d,%d) on=(%d,%d)", offN, offP, onN, onP)
 	}

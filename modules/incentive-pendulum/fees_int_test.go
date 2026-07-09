@@ -59,7 +59,7 @@ func TestCLPFeeInt_ZeroOrNegativeInputs(t *testing.T) {
 func TestStabilizerMultiplierBps_AtEquilibrium(t *testing.T) {
 	// At s = s_eq = 1.0 (10000 bps), |s - s_eq| = 0, so m == 1 regardless of r.
 	p := DefaultStabilizerParamsBps()
-	got, err := StabilizerMultiplierBps(10_000, 500, p)
+	got, err := StabilizerMultiplierBps(10_000, 500, p, GeometryV2)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestStabilizerMultiplierBps_OnGrid(t *testing.T) {
 		{12_000, 100, 14_000},   // dev 0.2, r=0.01 → 1 + 0.2·2·1 = 1.4
 	}
 	for _, c := range cases {
-		got, err := StabilizerMultiplierBps(c.sBps, c.rBps, p)
+		got, err := StabilizerMultiplierBps(c.sBps, c.rBps, p, GeometryV2)
 		if err != nil {
 			t.Errorf("sBps=%d rBps=%d: unexpected err: %v", c.sBps, c.rBps, err)
 			continue
@@ -97,7 +97,7 @@ func TestStabilizerMultiplierBps_OnGrid(t *testing.T) {
 func TestStabilizerMultiplierBps_CapEnforced(t *testing.T) {
 	p := DefaultStabilizerParamsBps()
 	// Force a huge raw multiplier with extreme |s−s_eq| and r/r0.
-	got, err := StabilizerMultiplierBps(bpsFromFloat(0.01), bpsFromFloat(10.0), p)
+	got, err := StabilizerMultiplierBps(bpsFromFloat(0.01), bpsFromFloat(10.0), p, GeometryV2)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestStabilizerMultiplierBps_OverflowFromInnerTerm(t *testing.T) {
 	p := DefaultStabilizerParamsBps()
 	p.R0Bps = 1
 	rBps := int64(math.MaxInt64 / 1000) // r·BpsScale overflows
-	if _, err := StabilizerMultiplierBps(7_000, rBps, p); !errors.Is(err, ErrStabilizerOverflow) {
+	if _, err := StabilizerMultiplierBps(7_000, rBps, p, GeometryV2); !errors.Is(err, ErrStabilizerOverflow) {
 		t.Fatalf("expected ErrStabilizerOverflow, got err=%v", err)
 	}
 }
@@ -128,7 +128,7 @@ func TestStabilizerMultiplierBps_OverflowAtFinalAddition(t *testing.T) {
 	p.KBps = math.MaxInt64
 	p.CapBps = 0 // disable cap so tail isn't clamped before the addition
 	// sBps = 20000 → |sBps − s_eq(10000)| = 10000.
-	if _, err := StabilizerMultiplierBps(20_000, 0, p); !errors.Is(err, ErrStabilizerOverflow) {
+	if _, err := StabilizerMultiplierBps(20_000, 0, p, GeometryV2); !errors.Is(err, ErrStabilizerOverflow) {
 		t.Fatalf("expected ErrStabilizerOverflow, got err=%v", err)
 	}
 }

@@ -74,6 +74,63 @@ var (
 	RedirectHiBps = safeHiEdgeBps
 )
 
+// Geometry is the economic curve resolved for a specific chain height. Its root
+// is the equilibrium target s_eq (TargetSBps); the hard cliff c and the §9
+// redirect band derive from it. These are the consensus-critical inputs to the
+// swap-fee accrual — the stabilizer fee multiplier (StabilizerMultiplierBps) and
+// the node/LP split (wasm.splitFractionsBps) — that feed the pendulum:nodes
+// bucket. A retune of these values therefore MUST be activation-height gated
+// (GeometryAt) rather than a bare constant swap, or replaying pre-retune history
+// accrues a different bucket and forks the settlement CID.
+type Geometry struct {
+	TargetSBps    int64
+	CliffSBps     int64
+	RedirectLoBps int64
+	RedirectHiBps int64
+}
+
+// CliffTimesE returns c·E in HBD base units (floor) for this geometry's cliff —
+// the per-geometry counterpart of the package CliffTimesE.
+func (g Geometry) CliffTimesE(E *big.Int) *big.Int {
+	return intmath.MulDivFloor(E, big.NewInt(g.CliffSBps), big.NewInt(BpsScale))
+}
+
+// geometryFrom derives the full curve from the equilibrium target s_eq (bps):
+// cliff c = 2·s_eq² + s_eq, and the §9 redirect band = the safe-growth s-edges.
+func geometryFrom(targetSBps int64) Geometry {
+	cliff := deriveCliffSBps(targetSBps)
+	return Geometry{
+		TargetSBps:    targetSBps,
+		CliffSBps:     cliff,
+		RedirectLoBps: sEdgeForRatio(safeRatioLoBps, cliff),
+		RedirectHiBps: sEdgeForRatio(safeRatioHiBps, cliff),
+	}
+}
+
+// GeometryV1 is the ORIGINAL geometry (s_eq = 0.5, cliff c = 1.0, 0.30/0.70 safe
+// band) — the curve in force before the params retune (a26684a4). GeometryV2 is
+// the current retune (s_eq = 1.0, c = 3.0). By construction GeometryV2's fields
+// equal the package-level TargetSBps / CliffSBps / RedirectLoBps / RedirectHiBps,
+// so selecting GeometryV2 is byte-identical to the pre-gate (ungated) behaviour.
+var (
+	GeometryV1 = geometryFrom(5_000)
+	GeometryV2 = geometryFrom(TargetSBps)
+)
+
+// GeometryAt resolves the geometry active at Hive L1 block height blockHeight.
+// v2Height is the coordinated activation height of the retune
+// (ConsensusParams.PendulumGeometryV2Height): below it the ORIGINAL GeometryV1
+// curve is used so a full reindex reproduces pre-retune node-bucket accrual
+// byte-for-byte; at/above it — and whenever v2Height == 0 (a chain that was
+// always on the retuned curve, e.g. a fresh devnet) — the current GeometryV2
+// curve. A pure function of height, so every node resolves the identical curve.
+func GeometryAt(blockHeight, v2Height uint64) Geometry {
+	if v2Height != 0 && blockHeight < v2Height {
+		return GeometryV1
+	}
+	return GeometryV2
+}
+
 // deriveCliffSBps returns c = 2·s_eq² + s_eq in bps (w = ½ is structural, from
 // the V = 2P geometry). With s in bps: 2·(S/B)²·B + S = 2·S²/B + S.
 func deriveCliffSBps(targetSBps int64) int64 {

@@ -569,7 +569,7 @@ func TestExacerbatesFromSnapshot(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := exacerbatesFromSnapshot(tc.sBps, tc.hbdIn)
+			got := exacerbatesFromSnapshot(tc.sBps, tc.hbdIn, pendulum.GeometryV2)
 			if got != tc.want {
 				t.Fatalf("got %v want %v (s=%d hbdIn=%v)", got, tc.want, tc.sBps, tc.hbdIn)
 			}

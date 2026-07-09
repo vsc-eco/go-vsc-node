@@ -312,6 +312,16 @@ func TestnetConfig() SystemConfig {
 			BondInclusionWindowBlocks:     7_200,
 			BondInclusionActivationHeight: 3_870_000,
 			BondInclusionSampleCount:      8,
+			// Pendulum geometry retune (a26684a4: s_eq 0.5→1.0, cliff c 1.0→3.0) is
+			// height-gated so pre-retune history replays on the ORIGINAL curve
+			// (incentive-pendulum.GeometryV1). The testnet's committed settlements
+			// were all composed under the original geometry, so keep it in force for
+			// every current height (L1 head ~4.6M): this value sits far above the head,
+			// i.e. "the retune is not yet activated on testnet." Lower it to a
+			// coordinated future height (> head, epoch boundary, ≥3d lead) to actually
+			// activate the retune network-wide. Do NOT leave it 0 — 0 means "v2 from
+			// genesis," which is the ungated behavior that forks reindex vs live.
+			PendulumGeometryV2Height: 100_000_000,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
