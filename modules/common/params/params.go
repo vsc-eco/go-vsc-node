@@ -342,29 +342,26 @@ type ConsensusParams struct {
 	//       Also fund FeeSupply — calcVscFee is 0 today, so the BRK-1 build-time fee
 	//       reserve check rejects EVERY sweep (fail-safe can't-start, not stuck-on-L1);
 	//       rotation cannot complete until the migration fee model is funded.
-	//   (m) the #11 bond-lock reads must be FAIL-STOP, not fail-open (council
-	//       determinism HIGH). IsBondLockedRetiringMember drives a CONSENSUS tx
-	//       outcome (TxConsensusUnstake success/reject + the ledger unstake mutation);
-	//       its contract-state / commitment / election reads currently collapse a
-	//       TRANSIENT infra error to "absent → not-locked → ALLOW" (bond_lock.go
-	//       btcContractStateReaderAt + the error-swallow in GetLastOutput/GetElection),
-	//       so two nodes reading differently commit different state roots → FORK.
-	//       Before pinning, make those reads block/retry on an infra error (mirror
-	//       GetElectionInfoOrBlock / review4 #96), concluding "not-locked" ONLY from a
-	//       read that SUCCEEDED and showed genuine (all-nodes-identical) absence — this
-	//       needs fail-stop variants of GetLastOutput/GetElection (both swallow today).
-	//       Two coupled items: the block-new-unstake gate does NOT hold an ALREADY-
-	//       pending unstake a member front-ran before its gen went retiring (council
-	//       F4, reliable not speculative) — land the hold-pending-release (via the
+	//   (m) #11 bond-lock. FAIL-STOP reads: DONE — IsBondLockedRetiringMember drives a
+	//       CONSENSUS tx outcome (TxConsensusUnstake), so its reads now block/retry on
+	//       a TRANSIENT per-node infra error via GetLastOutputStrict/GetElectionStrict
+	//       + blockingRetry (isTransientReadErr treats mongo.ErrNoDocuments as
+	//       deterministic absence; datalayer reads block via the online bitswap
+	//       blockservice), concluding "not-locked" ONLY from a read that SUCCEEDED and
+	//       showed genuine (all-nodes-identical) absence — no fail-open divergence/fork
+	//       (council determinism F2). TWO ITEMS STILL OPEN before pin: (m1) the
+	//       block-new-unstake gate does NOT hold an ALREADY-pending unstake a member
+	//       front-ran before its gen went retiring (council F4, RELIABLE not
+	//       speculative) — land the hold-pending-release (via the
 	//       getPendingActionsByEpochOrBlock maturity path) or the V5-1 withholding
-	//       slash; and a #11 lock RELEASES only when a gen leaves the fund-holding set,
-	//       which is S5's job → S5 (item h) must exist before a member can be locked,
-	//       or the lock is permanent.
+	//       slash; (m2) a #11 lock RELEASES only when a gen leaves the fund-holding
+	//       set, which is S5's job → S5 (item h) must exist before a member can be
+	//       locked, or the lock is permanent.
 	// STATUS: (a)-(e) tracked/unbuilt (spine); (f) DONE (BRK-1/BRK-4b); (g) DONE
 	// (BRK-2 check-sig ceremony); (h) enforced by the S5 SPV-zero rule; (i) DONE
 	// (MaxBlockRetention=4608, BRK-4a); (j) DONE (BRK-5 suspend-freeze); (k) DONE
 	// (BRK-5/8 fleet deploy-order note); (l) tracked (V-1 dust + fee model); (m)
-	// tracked (#11 fail-stop reads + front-run hold-release + S5 lock-release).
+	// fail-stop DONE, (m1) front-run hold-release + (m2) S5 lock-release tracked.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
