@@ -22,7 +22,7 @@ func pubHex(t *testing.T, seed byte) string {
 	return hex.EncodeToString(pub.SerializeCompressed())
 }
 
-// marshalVaultEntry builds one 87-byte entry the same way the contract's
+// marshalVaultEntry builds one VaultEntrySize-byte entry the same way the contract's
 // MarshalVaultRegistry does, so UnmarshalVaultRegistry can be round-tripped.
 func marshalVaultEntry(v Vault) []byte {
 	buf := make([]byte, VaultEntrySize)
@@ -34,6 +34,7 @@ func marshalVaultEntry(v Vault) []byte {
 	binary.BigEndian.PutUint32(buf[75:], v.CreatedHeight)
 	binary.BigEndian.PutUint32(buf[79:], v.ActivatedHeight)
 	binary.BigEndian.PutUint32(buf[83:], v.RetiredHeight)
+	binary.BigEndian.PutUint32(buf[87:], v.InactiveHeight) // S5
 	return buf
 }
 
@@ -42,7 +43,7 @@ func TestUnmarshalVaultRegistryRoundTrip(t *testing.T) {
 	b0, _ := hex.DecodeString(pubHex(t, 2))
 	p1, _ := hex.DecodeString(pubHex(t, 3))
 	entries := []Vault{
-		{Generation: 0, Primary: p0, Backup: b0, Status: VaultStatusRetiring, Predecessor: 0, CreatedHeight: 10, ActivatedHeight: 11, RetiredHeight: 0},
+		{Generation: 0, Primary: p0, Backup: b0, Status: VaultStatusInactive, Predecessor: 0, CreatedHeight: 10, ActivatedHeight: 11, RetiredHeight: 12, InactiveHeight: 99},
 		{Generation: 1, Primary: p1, Backup: b0, Status: VaultStatusActive, Predecessor: 0, CreatedHeight: 20, ActivatedHeight: 21, RetiredHeight: 0},
 	}
 	var blob []byte
@@ -56,8 +57,11 @@ func TestUnmarshalVaultRegistryRoundTrip(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d entries, want 2", len(got))
 	}
-	if got[0].Generation != 0 || got[0].Status != VaultStatusRetiring || !bytes.Equal(got[0].Primary, p0) || !bytes.Equal(got[0].Backup, b0) {
+	if got[0].Generation != 0 || got[0].Status != VaultStatusInactive || !bytes.Equal(got[0].Primary, p0) || !bytes.Equal(got[0].Backup, b0) {
 		t.Fatalf("entry0 mismatch: %+v", got[0])
+	}
+	if got[0].RetiredHeight != 12 || got[0].InactiveHeight != 99 {
+		t.Fatalf("entry0 S5 heights mismatch: RetiredHeight=%d InactiveHeight=%d", got[0].RetiredHeight, got[0].InactiveHeight)
 	}
 	if got[1].Generation != 1 || got[1].Status != VaultStatusActive || !bytes.Equal(got[1].Primary, p1) {
 		t.Fatalf("entry1 mismatch: %+v", got[1])

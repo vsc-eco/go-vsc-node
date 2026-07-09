@@ -37,8 +37,14 @@ const (
 
 // VaultEntrySize is the fixed packed width of one vault registry entry, mirror
 // of contract/mapping/types.go VaultEntrySize (4 gen + 33 primary + 33 backup +
-// 1 status + 4 predecessor + 4*3 heights = 87 bytes).
-const VaultEntrySize = 87
+// 1 status + 4 predecessor + 4*4 heights = 91 bytes).
+//
+// ★ MUST equal the contract's VaultEntrySize byte-for-byte (this decodes the
+// contract's "v" state key). S5 grew it 87→91 to carry InactiveHeight; this mirror
+// moved in lock-step. Deploy-order (cross-repo): the contract that writes 91-byte
+// entries and this node that reads them must ship together — a stride mismatch
+// misaligns every entry past the first (and len%stride rejects a mixed blob).
+const VaultEntrySize = 91
 
 // CompressedPubKeyLen is the byte length of a compressed secp256k1 pubkey.
 const CompressedPubKeyLen = 33
@@ -54,6 +60,7 @@ type Vault struct {
 	CreatedHeight   uint32
 	ActivatedHeight uint32
 	RetiredHeight   uint32
+	InactiveHeight  uint32 // S5: BTC height the gen went DRAINING→INACTIVE (purge-grace anchor)
 }
 
 // UnmarshalVaultRegistry decodes the contract "v" state key: a contiguous blob
@@ -79,6 +86,7 @@ func UnmarshalVaultRegistry(data []byte) ([]Vault, error) {
 		out[i].CreatedHeight = binary.BigEndian.Uint32(data[off+75:])
 		out[i].ActivatedHeight = binary.BigEndian.Uint32(data[off+79:])
 		out[i].RetiredHeight = binary.BigEndian.Uint32(data[off+83:])
+		out[i].InactiveHeight = binary.BigEndian.Uint32(data[off+87:])
 	}
 	return out, nil
 }
