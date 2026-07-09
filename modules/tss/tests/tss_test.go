@@ -77,6 +77,7 @@ func (mes *MockElectionSystem) TssMinimumConsensusVersion(uint64) consensusversi
 }
 
 func (mes *MockElectionSystem) BtcKeysignHalted() bool { return false }
+func (mes *MockElectionSystem) BtcTheftHalted() bool   { return false }
 
 type nodeComponents struct {
 	agg            *aggregate.Aggregate

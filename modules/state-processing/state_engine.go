@@ -424,6 +424,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	se.BlockHeight = int(block.BlockNumber)
 	se.refreshChainConsensusCache()
+	// M1.1b: mirror the BTC mapping contract's SPV-proven theft-halt flag ("th") into the
+	// consensus cache, so the TSS keysign gate freezes on a detected drain as cheaply +
+	// robustly as it does on the governance vsc.tss_halt flag. Deterministic + fail-safe;
+	// inert on networks with no BTC contract configured.
+	se.refreshBtcTheftHalt(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
 	// BRK-5 (brick council FS-1/FS-2): FREEZE the deprecation/retirement clock

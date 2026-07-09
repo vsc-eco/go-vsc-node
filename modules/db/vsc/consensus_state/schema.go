@@ -26,6 +26,17 @@ type ChainConsensusState struct {
 	// cleared) — provenance/observability only.
 	BtcKeysignHaltHeight uint64 `bson:"btc_keysign_halt_height"`
 
+	// BtcTheftHalted mirrors the BTC mapping contract's deterministic theft-halt flag
+	// ("th", set by the permissionless SPV-proven reportUnauthorizedSpend op — M1.1b
+	// auto-trip). Refreshed each block from the contract's committed output, so like
+	// BtcKeysignHalted every node converges on the identical value; the BTC solvency gate
+	// (modules/tss/solvency_gate.go) freezes keysign while EITHER flag is set. This is the
+	// deterministic auto-trip complement to the governance vsc.tss_halt flag above.
+	BtcTheftHalted bool `bson:"btc_theft_halted"`
+	// BtcTheftHaltHeight records the block height the theft halt was last (un)set —
+	// provenance/observability only.
+	BtcTheftHaltHeight uint64 `bson:"btc_theft_halt_height"`
+
 	// ScheduledActivation is the pending epoch-scheduled version switch (set by
 	// vsc.propose_consensus_version, or Forced by recovery_require_version). It is
 	// resolved into the election at its activation epoch once the stake-readiness guard passes.

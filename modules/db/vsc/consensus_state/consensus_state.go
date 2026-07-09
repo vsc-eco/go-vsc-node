@@ -49,6 +49,8 @@ type ConsensusState interface {
 	// SetBtcKeysignHalt sets/clears the BTC TSS keysign halt flag (vsc.tss_halt,
 	// Build Map §5b). height is the block the halt was set (0 when clearing).
 	SetBtcKeysignHalt(ctx context.Context, halted bool, height uint64) error
+	// SetBtcTheftHalt sets/clears the M1.1b contract theft-halt mirror flag (btc_theft_halted).
+	SetBtcTheftHalt(ctx context.Context, halted bool, height uint64) error
 	// SetForcedActivationAndClearSuspension is the recovery path: schedule a Forced
 	// switch and lift the processing halt in one update.
 	SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error
@@ -111,6 +113,15 @@ func (c *consensusState) SetBtcKeysignHalt(ctx context.Context, halted bool, hei
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		bson.M{"$set": bson.M{"btc_keysign_halted": halted, "btc_keysign_halt_height": height}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetBtcTheftHalt(ctx context.Context, halted bool, height uint64) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"btc_theft_halted": halted, "btc_theft_halt_height": height}},
 		options.Update().SetUpsert(true),
 	)
 	return err
