@@ -128,10 +128,14 @@ func TestShouldSkipReshareForVaultRotation(t *testing.T) {
 		// Flag OFF (real MainnetConfig, activation height 0): NEVER skip — inert.
 		{"flag off, BTC key -> never skip (inert)", base, btcKey, 1 << 40, false},
 		{"flag off, sibling key -> never skip", base, siblingKey, 1 << 40, false},
-		// Flag ON: skip ONLY the BTC vault key, and only at/after the height.
-		{"flag on, below height, BTC key -> not yet", onCfg, btcKey, 99, false},
-		{"flag on, at height, BTC key -> skip", onCfg, btcKey, 100, true},
-		{"flag on, above height, BTC key -> skip", onCfg, btcKey, 200, true},
+		// Flag ON: the guard short-circuits below the activation height and for
+		// non-BTC keys (no vault-state read). With nil deps here the retiring set is
+		// empty, so a BTC key that reaches the read is treated as the ACTIVE/only gen
+		// (not superseded) and RESHARES (L9-1) — the superseded-skip discrimination is
+		// covered by TestSkipReshareForSupersededGen below (needs a populated set).
+		{"flag on, below height, BTC key -> guard short-circuits", onCfg, btcKey, 99, false},
+		{"flag on, at height, BTC active/only gen -> reshares (L9-1)", onCfg, btcKey, 100, false},
+		{"flag on, above height, BTC active/only gen -> reshares (L9-1)", onCfg, btcKey, 200, false},
 		{"flag on, sibling key -> keep resharing (per-keyId)", onCfg, siblingKey, 200, false},
 		{"flag on, empty key -> not BTC -> keep", onCfg, "", 200, false},
 	}
@@ -140,6 +144,45 @@ func TestShouldSkipReshareForVaultRotation(t *testing.T) {
 			mgr := &TssManager{sconf: tc.sconf}
 			if got := mgr.shouldSkipReshareForVaultRotation(tc.keyId, tc.bh); got != tc.want {
 				t.Fatalf("shouldSkipReshareForVaultRotation(%q, bh=%d) = %v, want %v", tc.keyId, tc.bh, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSkipReshareForSupersededGen is the L9-1 core: given the shared retiring
+// predicate's KeyIds (superseded = retiring/draining/inactive gens), reshare is
+// skipped IFF the key is one of those — the ACTIVE gen (never in the set) always
+// reshares so its signer set follows committee churn instead of freezing. This is
+// the discrimination the datalayer-backed shouldSkip wraps; the set itself is
+// proven by TestComputeRetiringSignerSet.
+func TestSkipReshareForSupersededGen(t *testing.T) {
+	activeKey := "btcContract-main"    // gen 0, ACTIVE — must keep resharing
+	retiringKey := "btcContract-mainv1" // gen 1, superseded — skip reshare
+	drainingKey := "btcContract-mainv2" // gen 2, superseded — skip reshare
+
+	// Populated set: gens 1 and 2 are superseded (fund-holding retiring/draining/
+	// inactive); the active gen 0 is absent.
+	superseded := map[string]bool{retiringKey: true, drainingKey: true}
+
+	cases := []struct {
+		name  string
+		set   map[string]bool
+		keyId string
+		want  bool
+	}{
+		{"active gen not in superseded set -> reshares (L9-1 no-freeze)", superseded, activeKey, false},
+		{"retiring gen in set -> skip reshare", superseded, retiringKey, true},
+		{"draining gen in set -> skip reshare", superseded, drainingKey, true},
+		// Empty set (no rotation in progress, or a corrupt/absent "v" collapsing the
+		// set): NOTHING is skipped -> everything reshares (fail-SAFE liveness).
+		{"empty set, active gen -> reshares", map[string]bool{}, activeKey, false},
+		{"empty set, would-be superseded gen -> reshares (fail-safe)", map[string]bool{}, retiringKey, false},
+		{"nil set -> reshares (no panic)", nil, retiringKey, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skipReshareForSupersededGen(tc.set, tc.keyId); got != tc.want {
+				t.Fatalf("skipReshareForSupersededGen(%v, %q) = %v, want %v", tc.set, tc.keyId, got, tc.want)
 			}
 		})
 	}

@@ -72,17 +72,47 @@ func (tssMgr *TssManager) isBtcVaultKey(keyId string) bool {
 }
 
 // shouldSkipReshareForVaultRotation reports whether the BlockTick reshare loop
-// must skip emitting a ReshareAction for keyId at height bh, because under
-// vault-rotation-v2 the BTC vault key rotates by FRESH KEYGEN, not reshare
-// (Build Map §7 N1, U-1). PER-KEYID and never loop-level: true ONLY for the BTC
-// vault key AND only once the rotation flag is active — every other chain shares
-// this reshare loop and keeps resharing. Pure function of bh + config (the flag
-// activation height + the BTC contract prefix), so every node makes the identical
-// decision at the identical height (no divergent session/party-list). Inert
-// (always false) until VaultRotationV2Enabled flips. Extracted from the tss.go
-// reshare loop so the load-bearing skip decision is directly unit-testable.
+// must skip emitting a ReshareAction for keyId at height bh.
+//
+// L9-1 (FULL-PRUNED 2026-07-09): skip reshare ONLY for a SUPERSEDED
+// (retiring/draining/inactive) BTC-vault generation — NOT the ACTIVE gen. Old
+// gens are drained + replaced by FRESH KEYGEN (the vault-rotation-v2 cure for the
+// immortal-pubkey reconstruction attack), so resharing them is pointless and only
+// prolongs their reconstructable d. But the ACTIVE gen's signing committee is
+// pinned to its keygen committee; if it never reshares, that committee only
+// SHRINKS as members churn out of the election, and once it drops below threshold
+// ordinary user withdrawals FREEZE with no auto-trigger to rotate. Resharing the
+// active gen is Magi's canonical custody-key-follows-churn mechanism (identical to
+// every other chain's vault key) and does NOT worsen the reconstruction posture —
+// the active key is reconstructable by its current committee regardless (the
+// accepted §3.5 residual, bounded by the eventual fresh-keygen rotation).
+//
+// The superseded-gen set is the SHARED vaultrotation predicate (single source of
+// truth, lock-step with V-A signing eligibility + #11 bond-lock): keyId is skipped
+// IFF it is one of retiringGenSignerSet's KeyIds. The ACTIVE gen is never in that
+// set → always reshares. Deterministic in the committed "v" at bh. On a corrupt/
+// absent "v" the set is empty → nothing is skipped → EVERYTHING reshares: a
+// fail-SAFE liveness direction (keys stay signable; the active gen — the freeze
+// target — is unaffected since it is never in the set either way), and identical
+// on every node (a corrupt "v" is the same committed blob everywhere). The reshare
+// action is a per-node participation decision reconciled by 2/3 BLS + retry, not a
+// CID-committing consensus output, so any residual superseded-gen divergence on a
+// degraded "v" is fail-and-retry, never a fork. Inert (always false) until
+// VaultRotationV2Enabled flips.
 func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uint64) bool {
-	return tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) && tssMgr.isBtcVaultKey(keyId)
+	if !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) || !tssMgr.isBtcVaultKey(keyId) {
+		return false
+	}
+	return skipReshareForSupersededGen(tssMgr.retiringGenSignerSet(bh).KeyIds, keyId)
+}
+
+// skipReshareForSupersededGen is the pure L9-1 decision, split out so it is
+// directly unit-testable without a live datalayer (the superseded-gen set itself is
+// proven by TestComputeRetiringSignerSet): skip reshare IFF keyId is a superseded
+// (retiring/draining/inactive) generation — i.e. present in the shared retiring
+// predicate's KeyIds. The ACTIVE gen is never in that set, so it always reshares.
+func skipReshareForSupersededGen(supersededKeyIds map[string]bool, keyId string) bool {
+	return supersededKeyIds[keyId]
 }
 
 // observeBtcSolvencyInsolvent compares the vault's real L1 balance against the

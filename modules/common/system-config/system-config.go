@@ -227,8 +227,13 @@ func MainnetConfig() SystemConfig {
 			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
 			// majority flip. Set to 1 (most conservative — governance-TUNABLE; a
 			// ~16-node committee still onboards ≥1 established node per ~5-min
-			// election). LIVE now: enforcement is inert until bondActive, and
-			// BondInclusionActivationHeight (107454300, above) is already passed.
+			// election). NOT LIVE YET (L8-02, FULL-PRUNED 2026-07-09):
+			// EffectiveMaxNewMembers gates on TWO preconditions — bondActive
+			// (satisfied: BondInclusionActivationHeight 107454300 above is passed) AND
+			// MaxNewMembersActivationHeight > 0. The latter is 0 below, so
+			// EffectiveMaxNewMembers returns 0 and the cap is DEAD CODE today; it
+			// activates only once governance pins the activation height. (The earlier
+			// "LIVE now" comment here was wrong — it accounted only for bondActive.)
 			// DEPLOY CONSTRAINT: compile-time consensus param, no version gate — ALL
 			// nodes must run this value at the same election or they compute
 			// divergent member sets. Coordinate the upgrade (testnet/devnet/mocknet

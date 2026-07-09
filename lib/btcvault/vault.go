@@ -127,9 +127,16 @@ func VaultKeyName(gen uint32) string {
 }
 
 // IsFundHoldingStatus mirrors contract/mapping/vault_lifecycle.go
-// isFundHoldingStatus: the {Active, Retiring, Draining} set whose keys must stay
-// signable. A Retiring/Draining gen is exactly the one whose keysign the node
-// must output-scope to the successor.
+// isFundHoldingStatus: the {Active, Retiring, Draining, Inactive} set — a gen that
+// holds, or could still hold, reconstructable value. INACTIVE IS INCLUDED (L4-C1,
+// FULL-PRUNED 2026-07-09): a drained gen keeps its reconstructable shares until
+// PURGE and is re-fundable (writeOffDust / AnyFundedSupersededGen / the #11
+// bond-lock predicate all count it), so the node's view must match the contract's
+// exactly — omitting it was a stale mirror. NOTE this is the RE-FUNDABILITY notion,
+// NOT signability: an Inactive gen's keysign is independently REFUSED by
+// output_scoping (a drained gen may hold shares but must never sign), so including
+// it here does not make an Inactive key signable.
 func IsFundHoldingStatus(s VaultStatus) bool {
-	return s == VaultStatusActive || s == VaultStatusRetiring || s == VaultStatusDraining
+	return s == VaultStatusActive || s == VaultStatusRetiring ||
+		s == VaultStatusDraining || s == VaultStatusInactive
 }
