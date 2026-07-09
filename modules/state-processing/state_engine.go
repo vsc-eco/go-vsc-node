@@ -2328,6 +2328,25 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range records {
+		// #11 F4 (front-run hold-release): a matured consensus_unstake whose BONDED
+		// account is still a bond-locked retiring committee member is HELD — not paid
+		// out and not marked complete, so it stays pending and is re-attempted next
+		// slot; it releases automatically once the member's generation drains (it
+		// leaves the fund-holding set). The funds are DEFERRED, never lost — this
+		// closes the front-run where a member unstakes just before its gen goes
+		// retiring (its bond is already debited, but it still holds the key's TSS
+		// share via V-A eligibility, so holding the payout keeps the pull to finish
+		// the migration). Consensus-safe: IsBondLockedRetiringMember is the SAME
+		// fail-stop predicate this slot already uses (council F2), so every node holds
+		// or releases the identical set. INERT when vault-rotation-v2 is off (returns
+		// false → normal release). The bonded account is From (carried in Params by
+		// the unstake action); the record's To is only the payout destination. A
+		// pre-this-change record has no "from" → treated as not-locked (inert).
+		if from, ok := record.Params["from"].(string); ok && from != "" &&
+			se.IsBondLockedRetiringMember(from, endBlock) {
+			continue
+		}
+
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{

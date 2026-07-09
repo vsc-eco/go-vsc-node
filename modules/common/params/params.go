@@ -349,19 +349,21 @@ type ConsensusParams struct {
 	//       deterministic absence; datalayer reads block via the online bitswap
 	//       blockservice), concluding "not-locked" ONLY from a read that SUCCEEDED and
 	//       showed genuine (all-nodes-identical) absence — no fail-open divergence/fork
-	//       (council determinism F2). TWO ITEMS STILL OPEN before pin: (m1) the
-	//       block-new-unstake gate does NOT hold an ALREADY-pending unstake a member
-	//       front-ran before its gen went retiring (council F4, RELIABLE not
-	//       speculative) — land the hold-pending-release (via the
-	//       getPendingActionsByEpochOrBlock maturity path) or the V5-1 withholding
-	//       slash; (m2) a #11 lock RELEASES only when a gen leaves the fund-holding
-	//       set, which is S5's job → S5 (item h) must exist before a member can be
-	//       locked, or the lock is permanent.
+	//       (council determinism F2). (m1) FRONT-RUN hold-release: DONE — the
+	//       matured-consensus_unstake release path (state_engine.go) HOLDS (defers,
+	//       never loses) a payout whose BONDED account (carried as Params["from"] on
+	//       the unstake action) is still a bond-locked retiring committee member, via
+	//       the same fail-stop predicate; it releases automatically once the gen
+	//       drains. So a member cannot cash out its bond ahead of finishing the
+	//       migration (it still holds the key's TSS share via V-A). ONE ITEM STILL
+	//       OPEN: (m2) a #11 lock/hold RELEASES only when a gen leaves the
+	//       fund-holding set, which is S5's job → S5 (item h) must exist before a
+	//       member can be locked, else the lock/hold is permanent.
 	// STATUS: (a)-(e) tracked/unbuilt (spine); (f) DONE (BRK-1/BRK-4b); (g) DONE
 	// (BRK-2 check-sig ceremony); (h) enforced by the S5 SPV-zero rule; (i) DONE
 	// (MaxBlockRetention=4608, BRK-4a); (j) DONE (BRK-5 suspend-freeze); (k) DONE
 	// (BRK-5/8 fleet deploy-order note); (l) tracked (V-1 dust + fee model); (m)
-	// fail-stop DONE, (m1) front-run hold-release + (m2) S5 lock-release tracked.
+	// fail-stop + (m1) front-run hold-release DONE; (m2) S5 lock-release tracked.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
