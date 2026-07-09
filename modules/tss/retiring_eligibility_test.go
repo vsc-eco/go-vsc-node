@@ -8,6 +8,7 @@ import (
 	"vsc-node/lib/btcvault"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
+	"vsc-node/modules/vaultrotation"
 )
 
 // bitsetB64 encodes a committee bitset (set bits at the given member indices) the
@@ -42,35 +43,35 @@ func TestComputeRetiringSignerSet(t *testing.T) {
 		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusRetiring},
 		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
 	)
-	deps := retiringSignerDeps{
-		btcContract: scopeContract,
-		readKey: func(k string) ([]byte, bool) {
+	deps := vaultrotation.RetiringSignerDeps{
+		BtcContract: scopeContract,
+		ReadKey: func(k string) ([]byte, bool) {
 			if k == "v" {
 				return reg, true
 			}
 			return nil, false
 		},
-		getCommitment: func(keyId string) (tss_db.TssCommitment, error) {
+		GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
 			// gen0's committee = election members at indices 0 and 2.
 			return tss_db.TssCommitment{Epoch: 5, Commitment: bitsetB64(0, 2)}, nil
 		},
-		getElection: func(epoch uint64) *elections.ElectionResult {
+		GetElection: func(epoch uint64) *elections.ElectionResult {
 			return vaElection(epoch, "alice", "bob", "carol")
 		},
 	}
 
-	set := computeRetiringSignerSet(deps)
-	if !set.has("alice") || !set.has("carol") {
-		t.Fatalf("expected alice+carol (bits 0,2) eligible, got %v", set.signerElection)
+	set := vaultrotation.ComputeRetiringSignerSet(deps)
+	if !set.Has("alice") || !set.Has("carol") {
+		t.Fatalf("expected alice+carol (bits 0,2) eligible, got %v", set.SignerElection)
 	}
-	if set.has("bob") {
+	if set.Has("bob") {
 		t.Fatalf("bob (bit 1, not in gen0 committee) must NOT be eligible")
 	}
-	if !set.keyIds[gen0KeyId] {
-		t.Fatalf("expected gen0 keyId %q in the retiring keyId set, got %v", gen0KeyId, set.keyIds)
+	if !set.KeyIds[gen0KeyId] {
+		t.Fatalf("expected gen0 keyId %q in the retiring keyId set, got %v", gen0KeyId, set.KeyIds)
 	}
 	// The stored verification election must be the commitment's epoch election.
-	if e := set.signerElection["alice"]; e.Epoch != 5 {
+	if e := set.SignerElection["alice"]; e.Epoch != 5 {
 		t.Fatalf("alice verification election epoch = %d, want 5", e.Epoch)
 	}
 }
@@ -90,19 +91,19 @@ func TestComputeRetiringSignerSet_InertCases(t *testing.T) {
 	elec := func(epoch uint64) *elections.ElectionResult { return vaElection(epoch, "alice") }
 
 	// Empty BTC contract → inert.
-	if s := computeRetiringSignerSet(retiringSignerDeps{btcContract: "", readKey: readV(nil), getCommitment: commit, getElection: elec}); len(s.signerElection) != 0 {
+	if s := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{BtcContract: "", ReadKey: readV(nil), GetCommitment: commit, GetElection: elec}); len(s.SignerElection) != 0 {
 		t.Fatal("empty contract must yield an empty set")
 	}
 	// No "v" registry → inert.
-	empty := retiringSignerDeps{btcContract: scopeContract, readKey: func(string) ([]byte, bool) { return nil, false }, getCommitment: commit, getElection: elec}
-	if s := computeRetiringSignerSet(empty); len(s.signerElection) != 0 {
+	empty := vaultrotation.RetiringSignerDeps{BtcContract: scopeContract, ReadKey: func(string) ([]byte, bool) { return nil, false }, GetCommitment: commit, GetElection: elec}
+	if s := vaultrotation.ComputeRetiringSignerSet(empty); len(s.SignerElection) != 0 {
 		t.Fatal("absent registry must yield an empty set")
 	}
 	// Active-only registry (no retiring/draining gen) → inert.
 	activeOnly := marshalRegistry(
 		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
 	)
-	if s := computeRetiringSignerSet(retiringSignerDeps{btcContract: scopeContract, readKey: readV(activeOnly), getCommitment: commit, getElection: elec}); len(s.signerElection) != 0 || len(s.keyIds) != 0 {
+	if s := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{BtcContract: scopeContract, ReadKey: readV(activeOnly), GetCommitment: commit, GetElection: elec}); len(s.SignerElection) != 0 || len(s.KeyIds) != 0 {
 		t.Fatal("active-only registry must yield an empty set")
 	}
 }
