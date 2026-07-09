@@ -130,9 +130,37 @@ func TestV0_5_0Gates(t *testing.T) {
 		}
 	}
 
+	// (RunningVersion pin now lives in TestV0_6_0Gates — the newest line.)
+}
+
+// TestV0_6_0Gates pins the v0.6.0 outbound-vault-protections batch: every v0.6.0
+// gate is inert at/below 0.5.x and active at/above 0.6.0, keyed off the single
+// V0_6_0 line. As the newest line it also pins that the shipped binary runs the
+// version it implements (so the election floor can rise to it).
+func TestV0_6_0Gates(t *testing.T) {
+	below := []Version{
+		{Major: 0, Consensus: 0},
+		{Major: 0, Consensus: 5},
+		{Major: 0, Consensus: 5, NonConsensus: 9}, // 0.5.x is still below the line
+	}
+	atOrAbove := []Version{
+		{Major: 0, Consensus: 6},
+		{Major: 0, Consensus: 6, NonConsensus: 7}, // non_consensus ignored
+		{Major: 0, Consensus: 9},
+	}
+	for _, v := range below {
+		if Version0_6_0Active(v) || OutboundHaltActive(v) || OutboundDelayActive(v) {
+			t.Errorf("a v0.6.0 gate is active at %s, want inert (below the line)", v.Format())
+		}
+	}
+	for _, v := range atOrAbove {
+		if !Version0_6_0Active(v) || !OutboundHaltActive(v) || !OutboundDelayActive(v) {
+			t.Errorf("a v0.6.0 gate is inert at %s, want active (at/above the line)", v.Format())
+		}
+	}
 	// The shipped binary must run the version it implements, so the floor can rise.
-	if RunningVersion().Cmp(V0_5_0) != 0 {
-		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.5.0 gates)",
-			RunningVersion().Format(), V0_5_0.Format())
+	if RunningVersion().Cmp(V0_6_0) != 0 {
+		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.6.0 gates)",
+			RunningVersion().Format(), V0_6_0.Format())
 	}
 }

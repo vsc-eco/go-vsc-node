@@ -77,9 +77,18 @@ import (
 //     unchanged. Below the line all three behaviors are inert and the legacy
 //     hive_consensus-holder paths run byte-identically, so old and new binaries
 //     interoperate until activation.
+//   - 0.6.0 — the Consensus 5→6 bump gates the OUTBOUND VAULT PROTECTIONS batch, all
+//     activated together when the election floor reaches 0.6.0 (consensusversion.V0_6_0):
+//     the single-node halt (vsc.halt) + recovery-multisig un-halt (vsc.unhalt), the
+//     exit-freeze on the withdraw/unstake/consensus_unstake handlers + gateway key
+//     rotation, and the value-scaled outbound delay at gateway action selection. The
+//     solvency auto-halt monitor is node-local/off-consensus and opt-in, so it is not
+//     part of the coordinated floor. Below the line the halt state is never consulted,
+//     exits are never frozen, and gateway selection is byte-identical, so old and new
+//     binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 5
+	currentConsensus    uint64 = 6
 	currentNonConsensus uint64 = 0
 )
 
