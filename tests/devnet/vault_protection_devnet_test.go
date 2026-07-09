@@ -14,6 +14,7 @@ import (
 // outboundHaltDoc mirrors the consensus_state.OutboundHalt fields we assert on.
 type outboundHaltDoc struct {
 	Account      string `bson:"account"`
+	Reason       string `bson:"reason"`
 	SetHeight    uint64 `bson:"set_height"`
 	ExpiryHeight uint64 `bson:"expiry_height"`
 }
