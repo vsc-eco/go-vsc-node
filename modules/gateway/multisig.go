@@ -56,6 +56,9 @@ type MultiSig struct {
 	electionDb    elections.Elections
 	witnessDb     witnesses.Witnesses
 	balanceDb     ledgerDb.Balances
+	// ledgerRecords feeds the solvency monitor's protocol-held-HIVE accounting
+	// (slash reserve + pending-burn rows are excluded from the balance snapshot).
+	ledgerRecords ledgerDb.Ledger
 	hiveConsumer  *blockconsumer.HiveConsumer
 
 	service libp2p.PubSubService[p2pMessage]
@@ -100,14 +103,16 @@ func (ms *MultiSig) Init() error {
 
 	// v0.6.0 vault protections (brief fix 1): construct the solvency monitor,
 	// fully wired — the LiabilitySource sums expected liability from the L2 ledger
-	// balance snapshot (ms.balanceDb), and the HaltTrigger broadcasts a node-signed
-	// vsc.halt (ms.broadcastHalt). It stays OFF unless the operator sets
-	// VSC_SOLVENCY_MONITOR, and even when enabled it alarms before it halts and
-	// degrades on missing data — so it cannot spuriously halt.
+	// balance snapshot (ms.balanceDb) plus the protocol-held slash residual
+	// (ms.ledgerRecords: reserve + pending-burn rows the snapshot excludes), and
+	// the HaltTrigger broadcasts a node-signed vsc.halt (ms.broadcastHalt). It
+	// stays OFF unless the operator sets VSC_SOLVENCY_MONITOR, and even when
+	// enabled it alarms before it halts and degrades on missing data — so it
+	// cannot spuriously halt.
 	ms.solvency = NewSolvencyMonitorFromEnv(
 		ms.sconf.GatewayWallet(),
 		ms.accountClient,
-		newLedgerLiabilitySource(ms.balanceDb),
+		newLedgerLiabilitySource(ms.balanceDb, ms.ledgerRecords),
 		ms.broadcastHalt,
 	)
 	return nil
@@ -1344,6 +1349,7 @@ func New(
 	electionDb elections.Elections,
 	ledgerActions ledgerDb.BridgeActions,
 	balanceDb ledgerDb.Balances,
+	ledgerRecords ledgerDb.Ledger,
 	hiveCreator hive.HiveTransactionCreator,
 	hiveConsumer *blockconsumer.HiveConsumer,
 	p2p *libp2p.P2PServer,
@@ -1359,6 +1365,7 @@ func New(
 		electionDb:    electionDb,
 		ledgerActions: ledgerActions,
 		balanceDb:     balanceDb,
+		ledgerRecords: ledgerRecords,
 		hiveCreator:   hiveCreator,
 		hiveConsumer:  hiveConsumer,
 		p2p:           p2p,

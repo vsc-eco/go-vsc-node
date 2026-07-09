@@ -263,6 +263,7 @@ func main() {
 		electionDb,
 		actionsDb,
 		balanceDb,
+		ledgerDbImpl,
 		&hiveCreator,
 		blockConsumer,
 		p2p,

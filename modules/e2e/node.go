@@ -231,6 +231,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		electionDb,
 		actionsDb,
 		balanceDb,
+		ledgerDb,
 		&txCreator,
 		blockConsumer,
 		p2p,

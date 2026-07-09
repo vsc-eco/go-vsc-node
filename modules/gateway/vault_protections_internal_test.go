@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"vsc-node/lib/test_utils"
+	"vsc-node/modules/common/params"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledgerSystem "vsc-node/modules/ledger-system"
 
 	"github.com/vsc-eco/hivego"
 )
@@ -228,6 +230,11 @@ func TestSolvencyMonitor_DegradesWhenLiabilityUnavailable(t *testing.T) {
 	}
 }
 
+// emptyLedgerDb is a MockLedgerDb with no rows — protocol-held HIVE = 0.
+func emptyLedgerDb() *test_utils.MockLedgerDb {
+	return &test_utils.MockLedgerDb{LedgerRecords: make(map[string][]ledgerDb.LedgerRecord)}
+}
+
 // TestLedgerLiabilitySource_SumsBackedBalances: the real liability source sums
 // HBD(+savings) and HIVE(+consensus) across every account's balance record.
 func TestLedgerLiabilitySource_SumsBackedBalances(t *testing.T) {
@@ -235,7 +242,7 @@ func TestLedgerLiabilitySource_SumsBackedBalances(t *testing.T) {
 		"a": {{Account: "a", HBD: 1000, HBD_SAVINGS: 500, Hive: 200, HIVE_CONSENSUS: 50}},
 		"b": {{Account: "b", HBD: 300, Hive: 0, HIVE_CONSENSUS: 100}},
 	}}
-	src := newLedgerLiabilitySource(bdb)
+	src := newLedgerLiabilitySource(bdb, emptyLedgerDb())
 
 	if hbd, ok := src.ExpectedLiability("hbd", 10); !ok || hbd != 1800 { // (1000+500)+(300+0)
 		t.Fatalf("hbd liability = %d, ok=%v; want 1800,true", hbd, ok)
@@ -252,12 +259,110 @@ func TestLedgerLiabilitySource_SumsBackedBalances(t *testing.T) {
 // the monitor degrades rather than trip on missing data.
 func TestLedgerLiabilitySource_ErrorDegrades(t *testing.T) {
 	bdb := &test_utils.MockBalanceDb{GetAllErr: errors.New("mongo down")}
-	src := newLedgerLiabilitySource(bdb)
+	src := newLedgerLiabilitySource(bdb, emptyLedgerDb())
 	if _, ok := src.ExpectedLiability("hbd", 1); ok {
 		t.Fatal("a GetAll error must surface as ok=false")
 	}
-	if newLedgerLiabilitySource(nil) != nil {
+	if newLedgerLiabilitySource(nil, emptyLedgerDb()) != nil {
 		t.Fatal("nil balanceDb must yield a nil source")
+	}
+}
+
+// TestLedgerLiabilitySource_CountsProtocolHeldHive: the HIVE leg adds the slash
+// residual held on the protocol accounts (reserve credits net of payout debits,
+// pending-burn credits net of releases), height-bounded, ignoring marker rows and
+// unrelated types — value that left the balance snapshot while the physical HIVE
+// stayed on the gateway.
+func TestLedgerLiabilitySource_CountsProtocolHeldHive(t *testing.T) {
+	bdb := &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledgerDb.BalanceRecord{
+		"a": {{Account: "a", Hive: 200, HIVE_CONSENSUS: 50}}, // snapshot: 250
+	}}
+	ldb := &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledgerDb.LedgerRecord{
+		params.ProtocolSlashReserveAccount: {
+			// landed slash residual + a promoted one
+			{Id: "s1#reserve", Amount: 500, Asset: "hive", BlockHeight: 5, Type: ledgerSystem.LedgerTypeSafetySlashReserve},
+			{Id: "s2#promoted", Amount: 300, Asset: "hive", BlockHeight: 6, Type: ledgerSystem.LedgerTypeSafetySlashReserve},
+			// governance payout drew down 200 (paired recipient credit re-enters the snapshot)
+			{Id: "p1#debit", Amount: -200, Asset: "hive", BlockHeight: 7, Type: ledgerSystem.LedgerTypeReservePayoutDebit},
+			// beyond the query height — must be excluded
+			{Id: "s3#future", Amount: 9999, Asset: "hive", BlockHeight: 100, Type: ledgerSystem.LedgerTypeSafetySlashReserve},
+		},
+		params.ProtocolSlashPendingBurnAccount: {
+			// one live in-flight residual...
+			{Id: "s4#pending", Amount: 250, Asset: "hive", BlockHeight: 5, Type: ledgerSystem.LedgerTypeSafetySlashHiveBurnPending},
+			// ...and one fully cancelled (credit + release net to 0; marker is 0)
+			{Id: "s5#pending", Amount: 400, Asset: "hive", BlockHeight: 5, Type: ledgerSystem.LedgerTypeSafetySlashHiveBurnPending},
+			{Id: "s5#pending#cancel_release", Amount: -400, Asset: "hive", BlockHeight: 6, Type: ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease},
+			{Id: "s5#pending#cancelled_marker", Amount: 0, Asset: "hive", BlockHeight: 6, Type: ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingCancelled},
+		},
+	}}
+	src := newLedgerLiabilitySource(bdb, ldb)
+
+	// 250 (snapshot) + [500+300-200] (reserve) + [250+400-400] (pending) = 1100
+	if hive, ok := src.ExpectedLiability("hive", 10); !ok || hive != 1100 {
+		t.Fatalf("hive liability = %d, ok=%v; want 1100,true", hive, ok)
+	}
+	// The HBD leg never touches the protocol accounts.
+	if hbd, ok := src.ExpectedLiability("hbd", 10); !ok || hbd != 0 {
+		t.Fatalf("hbd liability = %d, ok=%v; want 0,true", hbd, ok)
+	}
+}
+
+// TestLedgerLiabilitySource_HiveDegradesWithoutLedgerDb: with no ledger-records
+// reader the HIVE leg degrades (ok=false — a partial figure must never be
+// compared) while the HBD leg keeps working.
+func TestLedgerLiabilitySource_HiveDegradesWithoutLedgerDb(t *testing.T) {
+	bdb := &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledgerDb.BalanceRecord{
+		"a": {{Account: "a", HBD: 1000, Hive: 200}},
+	}}
+	src := newLedgerLiabilitySource(bdb, nil)
+	if _, ok := src.ExpectedLiability("hive", 10); ok {
+		t.Fatal("hive leg must degrade without a ledger-records reader")
+	}
+	if hbd, ok := src.ExpectedLiability("hbd", 10); !ok || hbd != 1000 {
+		t.Fatalf("hbd leg must keep working: got %d, ok=%v", hbd, ok)
+	}
+}
+
+// TestSolvencyMonitor_HiveShortfallHalts wires the REAL liability source
+// end-to-end on the HIVE leg: expected 700 liquid+bonded + 300 slash reserve =
+// 1000 HIVE vs observed 900 → a real 100 HIVE drain trips the halt after
+// confirmations. Without the reserve term this drain would sit exactly inside
+// the slash-created gap and never alarm.
+func TestSolvencyMonitor_HiveShortfallHalts(t *testing.T) {
+	bdb := &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledgerDb.BalanceRecord{
+		"a": {{Account: "a", Hive: 500_000, HIVE_CONSENSUS: 200_000}}, // 700.000 HIVE
+	}}
+	ldb := &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledgerDb.LedgerRecord{
+		params.ProtocolSlashReserveAccount: {
+			{Id: "s1#reserve", Amount: 300_000, Asset: "hive", BlockHeight: 1, Type: ledgerSystem.LedgerTypeSafetySlashReserve}, // 300.000 HIVE
+		},
+	}}
+	acct := hivego.AccountData{
+		HbdBalance: "0.000 HBD", SavingsHbdBalance: "0.000 HBD",
+		Balance: "900.000 HIVE", SavingsBalance: "0.000 HIVE",
+	}
+	fired := 0
+	m := newTestMonitor(SolvencyHalt, acct, newLedgerLiabilitySource(bdb, ldb), func(_ uint64, _ string) { fired++ })
+	m.Check(1)
+	m.Check(2)
+	if fired != 0 {
+		t.Fatalf("halt fired early (fired=%d)", fired)
+	}
+	m.Check(3)
+	if fired != 1 {
+		t.Fatalf("expected one halt on the hive leg, got %d", fired)
+	}
+
+	// Solvent counterpart: observed covers liquid + bonded + reserve exactly.
+	acct.Balance = "1000.000 HIVE"
+	fired = 0
+	m2 := newTestMonitor(SolvencyHalt, acct, newLedgerLiabilitySource(bdb, ldb), func(_ uint64, _ string) { fired++ })
+	for i := uint64(1); i <= 5; i++ {
+		m2.Check(i)
+	}
+	if fired != 0 {
+		t.Fatalf("solvent hive leg must not halt (fired=%d)", fired)
 	}
 }
 
@@ -270,7 +375,7 @@ func TestSolvencyMonitor_WithLedgerLiability_Halts(t *testing.T) {
 	}}
 	acct := hivego.AccountData{HbdBalance: "800.000 HBD", SavingsHbdBalance: "0.000 HBD", Balance: "0.000 HIVE", SavingsBalance: "0.000 HIVE"}
 	fired := 0
-	m := newTestMonitor(SolvencyHalt, acct, newLedgerLiabilitySource(bdb), func(_ uint64, _ string) { fired++ })
+	m := newTestMonitor(SolvencyHalt, acct, newLedgerLiabilitySource(bdb, emptyLedgerDb()), func(_ uint64, _ string) { fired++ })
 	m.Check(1)
 	m.Check(2)
 	m.Check(3)

@@ -8,7 +8,9 @@ import (
 	"sync/atomic"
 
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	ledgerSystem "vsc-node/modules/ledger-system"
 )
 
 // Automatic vault-solvency halt (v0.6.0 vault protections, brief fix 1).
@@ -44,11 +46,9 @@ const (
 // figure is unavailable (not wired / transient error) and the monitor degrades to
 // no action rather than risk a false halt on missing data.
 //
-// INTEGRATION SEAM: a correct, cheap total-liability aggregate is the
-// High-invasiveness "cross-account liability accounting" the brief calls out.
-// Until a ledger-backed implementation is injected here, the monitor has no
-// expected figure to compare against and stays inert. This is the one remaining
-// wiring point for fix 1.
+// The ledger-backed implementation (fix 1's cross-account liability accounting)
+// is ledgerLiabilitySource, wired in MultiSig.Init. The interface stays as the
+// seam so tests can substitute a fake and future assets can plug in.
 type LiabilitySource interface {
 	ExpectedLiability(asset string, blockHeight uint64) (int64, bool)
 }
@@ -59,13 +59,21 @@ type LiabilitySource interface {
 // nil means alarm-only even in SolvencyHalt mode.
 type HaltTrigger func(bh uint64, reason string)
 
-// solvencyAssets are the gateway-backed assets whose solvency is tracked. Only
-// HBD is tracked: its L2 liability Σ(HBD+HBD_SAVINGS) maps unambiguously to the
-// observed liquid+savings HBD balance. The HIVE leg is intentionally NOT tracked
-// until the consensus-staked-HIVE ↔ observed-balance mapping is confirmed (see
-// ledgerLiabilitySource) — including it could report a permanent false shortfall.
-// Tracking a single asset also means one balance-collection scan per cycle.
-var solvencyAssets = []string{"hbd"}
+// solvencyAssets are the gateway-backed assets whose solvency is tracked. Both
+// legs map unambiguously to observed on-chain buckets:
+//
+//	hbd:  L2 liability Σ(HBD+HBD_SAVINGS) ↔ observed liquid+savings HBD. L2
+//	      "staking" HBD physically IS moving it into Hive savings (the gateway
+//	      emits TransferToSavings for the net stake), so both buckets are covered.
+//	hive: L2 liability Σ(Hive+HIVE_CONSENSUS) + protocol-held slash residual ↔
+//	      observed liquid(+savings) HIVE. Verified against the ledger flow:
+//	      consensus_stake/unstake are LEDGER-ONLY bucket moves — consensus_stake
+//	      writes no ActionRecord, and consensus_unstake's action is settled by the
+//	      state engine as a ledger credit at the release epoch, never by the
+//	      gateway (its batch filter is withdraw/stake/unstake). The gateway never
+//	      powers up or savings-moves HIVE, so ALL physical HIVE — liquid, bonded,
+//	      and slashed-into-reserve — sits in the gateway's liquid L1 balance.
+var solvencyAssets = []string{"hbd", "hive"}
 
 // SolvencyMonitor holds the per-node detection state. Its methods are safe for
 // the goroutine BlockTick launches per sample.
@@ -299,31 +307,39 @@ func parseHiveAmount(s, asset string) (int64, bool) {
 
 // ledgerLiabilitySource is the real LiabilitySource (brief fix 1's cross-account
 // liability accounting): it sums the gateway's expected on-chain holdings from
-// the L2 ledger balance snapshot. Per asset:
+// the L2 ledger balance snapshot, plus (for HIVE) the protocol-held slash
+// residual the snapshot excludes. Per asset:
 //
 //	hbd  = Σ(HBD + HBD_SAVINGS)      L2 HBD (liquid + staked-in-savings) is backed
 //	                                 by the gateway's HBD liquid + savings balance.
 //	hive = Σ(Hive + HIVE_CONSENSUS)  L2 HIVE (liquid + consensus-staked) is backed
-//	                                 by the gateway's HIVE holdings.
+//	     + protocolHeldHive          by the gateway's LIQUID balance — verified:
+//	                                 consensus_stake/unstake never move HIVE at L1
+//	                                 (ledger-only bucket moves; the unstake action
+//	                                 settles as a state-engine ledger credit, not a
+//	                                 gateway op), and the gateway never powers up
+//	                                 or savings-moves HIVE.
 //
 // Balances.GetAll scans the whole balance collection, so the monitor samples it
 // on a long interval (default SYNC_INTERVAL ~6h), off the consensus path. The
 // figure is a heuristic tripwire compared within the gap tolerance, not a
 // consensus value, so a slightly-stale snapshot is acceptable.
 //
-// NOTE for review: the hive↔HIVE_CONSENSUS backing (whether consensus-staked
-// HIVE sits in the gateway's liquid/savings balance the observed read covers, or
-// in a separate vesting bucket it does not) should be confirmed against the
-// staking model before relying on the HIVE leg; the HBD leg is unambiguous.
+// Known under-count (safe direction): HIVE in a consensus_unstake maturation
+// window (bond already debited, release not yet credited) is in neither bucket,
+// so expected dips below observed — surplus, which can never false-halt.
 type ledgerLiabilitySource struct {
 	balanceDb ledgerDb.Balances
+	// ledgerRecords reads the protocol slash accounts' meta rows (excluded from
+	// the balance snapshot). nil degrades the HIVE leg only; HBD is unaffected.
+	ledgerRecords ledgerDb.Ledger
 }
 
-func newLedgerLiabilitySource(balanceDb ledgerDb.Balances) *ledgerLiabilitySource {
+func newLedgerLiabilitySource(balanceDb ledgerDb.Balances, ledgerRecords ledgerDb.Ledger) *ledgerLiabilitySource {
 	if balanceDb == nil {
 		return nil
 	}
-	return &ledgerLiabilitySource{balanceDb: balanceDb}
+	return &ledgerLiabilitySource{balanceDb: balanceDb, ledgerRecords: ledgerRecords}
 }
 
 func (s *ledgerLiabilitySource) ExpectedLiability(asset string, blockHeight uint64) (int64, bool) {
@@ -343,6 +359,66 @@ func (s *ledgerLiabilitySource) ExpectedLiability(asset string, blockHeight uint
 			total += r.Hive + r.HIVE_CONSENSUS
 		default:
 			return 0, false
+		}
+	}
+	if asset == "hive" {
+		// Slash residual leaves the balance snapshot (protocol-meta rows) but the
+		// physical HIVE stays on the gateway account. Without this term every
+		// finalized slash would open a permanent expected<observed gap that masks
+		// a REAL shortfall of the same size.
+		held, ok := s.protocolHeldHive(blockHeight)
+		if !ok {
+			return 0, false // degrade the HIVE leg; never compare a partial figure
+		}
+		total += held
+	}
+	return total, true
+}
+
+// protocolHeldHive sums slash-residual HIVE held on the protocol accounts at a
+// height — value that left user/node balance records (the rows are
+// IsProtocolMetaLedgerType, excluded from the snapshot) while the physical HIVE
+// remained in the gateway's L1 balance:
+//
+//	reserve  = Σ SafetySlashReserve (credits) + Σ ReservePayoutDebit (negative)
+//	           — mirrors ledgerSystem.ReserveAvailable, height-bounded. A payout's
+//	           paired recipient credit is spendable and re-enters the snapshot, so
+//	           the payout is conserved across the two terms.
+//	pending  = Σ SafetySlashHiveBurnPending (credits) + Σ ...PendingRelease
+//	           (negative on cancel or maturity-promotion) — live in-flight
+//	           residual; markers are Amount=0 rows and excluded by op-type.
+//
+// Every slashed unit is in exactly one of {re-credited bond, pending, reserve}:
+// the reverse path caps bond re-credits by the amount committed here (see
+// applySafetySlashReverse's headroom), so this can never double-count against
+// the snapshot's HIVE_CONSENSUS. ok=false on any read error — the monitor
+// degrades rather than act on a partial figure (never blocks: unlike the
+// consensus-path readers of these rows, the monitor must not fail-stop).
+func (s *ledgerLiabilitySource) protocolHeldHive(blockHeight uint64) (int64, bool) {
+	if s.ledgerRecords == nil {
+		return 0, false
+	}
+	var total int64
+	for _, q := range []struct {
+		account string
+		opTypes []string
+	}{
+		{params.ProtocolSlashReserveAccount, []string{
+			ledgerSystem.LedgerTypeSafetySlashReserve,
+			ledgerSystem.LedgerTypeReservePayoutDebit,
+		}},
+		{params.ProtocolSlashPendingBurnAccount, []string{
+			ledgerSystem.LedgerTypeSafetySlashHiveBurnPending,
+			ledgerSystem.LedgerTypeSafetySlashHiveBurnPendingRelease,
+		}},
+	} {
+		recs, err := s.ledgerRecords.GetLedgerRange(q.account, 0, blockHeight, "hive",
+			ledgerDb.LedgerOptions{OpType: q.opTypes})
+		if err != nil || recs == nil {
+			return 0, false
+		}
+		for _, r := range *recs {
+			total += r.Amount
 		}
 	}
 	return total, true
