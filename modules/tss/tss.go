@@ -30,6 +30,7 @@ import (
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	stateEngine "vsc-node/modules/state-processing"
+	"vsc-node/modules/vaultrotation"
 
 	ecKeyGen "github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
 	btss "github.com/bnb-chain/tss-lib/v3/tss"
@@ -340,7 +341,7 @@ type TssManager struct {
 	// a deterministic value, so it does not affect consensus. Empty/unused while
 	// VaultRotationV2Enabled is false (the cached accessor short-circuits first).
 	retiringSetCacheMu sync.Mutex
-	retiringSetCache   map[string]retiringSignerSet
+	retiringSetCache   map[string]vaultrotation.RetiringSignerSet
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
@@ -471,7 +472,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Deterministic on-chain set; empty/inert unless VaultRotationV2Enabled AND a
 		// retiring/draining BTC gen exists. Widens the convergent gossip set, does
 		// NOT replace it (not GV-H8).
-		retiringEligible := tssMgr.retiringGenSignerSet(bh).has(selfAccount)
+		retiringEligible := tssMgr.retiringGenSignerSet(bh).Has(selfAccount)
 
 		if isMember || retiringEligible {
 			for targetBlock := range gossipTargets {
@@ -1174,7 +1175,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// the current floor. Deterministic on-chain set; inert unless v2 + a
 			// retiring gen exists.
 			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
-			isRetiringSign := signRetiringSet.keyIds[action.KeyId]
+			isRetiringSign := signRetiringSet.KeyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
@@ -1182,7 +1183,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			for account, att := range signAttMap {
 				if att.Version().MeetsConsensusMin(minSignVer) {
 					signReadyAccounts[account] = true
-				} else if isRetiringSign && signRetiringSet.has(account) {
+				} else if isRetiringSign && signRetiringSet.Has(account) {
 					signReadyAccounts[account] = true
 				}
 			}
