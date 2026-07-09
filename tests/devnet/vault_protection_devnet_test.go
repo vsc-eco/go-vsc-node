@@ -47,6 +47,43 @@ func (d *Devnet) Halt(witness int, durationBlocks uint64, reason string) (string
 	return d.BroadcastCustomJSON("vsc.halt", []string{acct}, payload, d.cfg.InitminerWIF)
 }
 
+// Unhalt broadcasts a vsc.unhalt signed by a recovery-multisig roster account
+// (empty haltTxId lifts all active halts).
+func (d *Devnet) Unhalt(rosterWitness int, haltTxId string) (string, error) {
+	acct := d.witnessAccount(rosterWitness)
+	payload := map[string]interface{}{}
+	if haltTxId != "" {
+		payload["halt_tx_id"] = haltTxId
+	}
+	return d.BroadcastCustomJSON("vsc.unhalt", []string{acct}, payload, d.cfg.InitminerWIF)
+}
+
+// pendingActionAmounts returns the amounts of all still-pending gateway actions of
+// a type on a node — used to observe the value-scaled outbound delay (a delayed
+// withdrawal stays pending; a fast one settles out).
+func (d *Devnet) pendingActionAmounts(ctx context.Context, node int, actionType string) ([]int64, error) {
+	cli, err := d.mongoClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cur, err := cli.Database(d.nodeDbName(node)).Collection("ledger_actions").
+		Find(ctx, bson.M{"status": "pending", "type": actionType})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []int64
+	for cur.Next(ctx) {
+		var a struct {
+			Amount int64 `bson:"amount"`
+		}
+		if cur.Decode(&a) == nil {
+			out = append(out, a.Amount)
+		}
+	}
+	return out, nil
+}
+
 // TestVaultProtectionOutboundHaltDevnet exercises brief fixes 2+3 on a real
 // multi-node devnet with consensus 0.6.0 pinned active:
 //   - a single committee member's vsc.halt is applied DETERMINISTICALLY on every
@@ -191,4 +228,167 @@ func haltActiveAt(halts []outboundHaltDoc, account string, height uint64) bool {
 		}
 	}
 	return false
+}
+
+// TestVaultProtectionSuiteDevnet extends devnet coverage to fix 4 (value-scaled
+// delay), halt stacking, and the vsc.unhalt safety valve — all in one devnet run:
+//   - Fix 4: a large withdrawal is HELD (its gateway action stays pending) while a
+//     dust withdrawal settles out.
+//   - Fix 3 stacking: two committee members' halts coexist in consensus_state.
+//   - vsc.unhalt: the recovery multisig lifts BOTH halts EARLY, before their window
+//     would auto-expire.
+func TestVaultProtectionSuiteDevnet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping devnet integration test in short mode")
+	}
+
+	cfg := tssTestConfig()
+	cfg.SkipFunding = false
+	if cfg.SysConfigOverrides.ConsensusParams == nil {
+		cfg.SysConfigOverrides.ConsensusParams = &params.ConsensusParams{}
+	}
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorMajor = 0
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 6
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
+	// Recovery roster for vsc.unhalt: threshold 1, one witness account — keeps
+	// devnet signing single-sig; VerifyRecoveryMultisig's M-of-N path is identical.
+	cfg.SysConfigOverrides.ConsensusParams.RecoveryMultisigAccounts = []string{cfg.WitnessPrefix + "2"}
+	cfg.SysConfigOverrides.ConsensusParams.RecoveryMultisigThreshold = 1
+
+	d, ctx := startDevnetNoKey(t, cfg, 25*time.Minute)
+	for n := 1; n <= cfg.Nodes; n++ {
+		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		err := d.waitForElectionEpoch(nctx, n, 1, 8*time.Minute)
+		cancel()
+		if err != nil {
+			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
+		}
+	}
+
+	const A = 1
+	userA := d.witnessAccount(A)
+	userAFull := "hive:" + userA
+
+	// ===================== Fix 4: value-scaled outbound delay =====================
+	// Use HIVE: devnet witnesses are funded with 10000 TESTS (vs only 100 TBD), and
+	// the value-scaled delay is amount-based (asset-agnostic), so HIVE gives room
+	// for a tier-1 (>=1000-coin) withdrawal.
+	retryBroadcast(t, "deposit", func() (string, error) { return d.Deposit(ctx, A, "2500.000", "hive") })
+	if !waitBalancePositive(t, d, ctx, 1, userAFull, "hive", 3*time.Minute) {
+		t.Fatal("deposit never credited")
+	}
+	// large: 1500 coin -> tier-1 (~200-block delay); dust: 500 coin -> no delay.
+	// Match by the tier-1 threshold (robust to any withdraw fee): a pending
+	// withdraw action >= tier-1 is the "large" (held), one < tier-1 is the "dust".
+	const tier1 = int64(1_000_000)
+	hasLarge := func(amts []int64) bool {
+		for _, a := range amts {
+			if a >= tier1 {
+				return true
+			}
+		}
+		return false
+	}
+	hasDust := func(amts []int64) bool {
+		for _, a := range amts {
+			if a > 0 && a < tier1 {
+				return true
+			}
+		}
+		return false
+	}
+	retryBroadcast(t, "withdraw-large", func() (string, error) { return d.Withdraw(A, userA, "1500.000", "hive", "large-delayed") })
+	retryBroadcast(t, "withdraw-dust", func() (string, error) { return d.Withdraw(A, userA, "500.000", "hive", "dust-fast") })
+
+	// Phase 1: wait for the large withdrawal's action to be created and observed
+	// pending (the ops take a few blocks to process — the previous run's assertion
+	// misfired by checking before anything was pending). The large has a ~200-block
+	// delay so it stays pending for minutes once created.
+	largeSeen := false
+	deadline := time.Now().Add(4 * time.Minute)
+	for time.Now().Before(deadline) {
+		amts, _ := d.pendingActionAmounts(ctx, 1, "withdraw")
+		if hasLarge(amts) {
+			largeSeen = true
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if !largeSeen {
+		t.Fatal("large withdrawal action never appeared pending (op not processed?)")
+	}
+
+	// Phase 2: the dust (0-delay) must settle OUT while the large (tier-1 delay)
+	// stays pending — the value-scaling proof. If the large clears within this
+	// window (well under its ~200-block delay), fix 4 is broken.
+	delayProven := false
+	deadline = time.Now().Add(4 * time.Minute)
+	for time.Now().Before(deadline) {
+		amts, _ := d.pendingActionAmounts(ctx, 1, "withdraw")
+		if !hasLarge(amts) {
+			t.Fatal("delay FAILED: the large withdrawal cleared pending — not held by its value-scaled delay")
+		}
+		if !hasDust(amts) {
+			delayProven = true
+			t.Log("value-scaled delay holds: dust settled while the large withdrawal is still pending")
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if !delayProven {
+		t.Fatal("delay inconclusive: dust never settled while large held (gateway slow?)")
+	}
+
+	// ================ Fix 3 stacking + vsc.unhalt (safety valve) ==================
+	const window = uint64(600) // long enough it won't auto-expire during the test
+	retryBroadcast(t, "halt-m1", func() (string, error) { return d.Halt(1, window, "m1") })
+	retryBroadcast(t, "halt-m3", func() (string, error) { return d.Halt(3, window, "m3") })
+	m1, m3 := d.witnessAccount(1), d.witnessAccount(3)
+
+	var expiry1 uint64
+	stacked := false
+	deadline = time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		halts, _ := d.getOutboundHalts(ctx, 1)
+		has1, has3 := false, false
+		for _, h := range halts {
+			if h.Account == m1 {
+				has1, expiry1 = true, h.ExpiryHeight
+			}
+			if h.Account == m3 {
+				has3 = true
+			}
+		}
+		if has1 && has3 {
+			stacked = true
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if !stacked {
+		t.Fatal("two validators' halts never stacked in consensus_state")
+	}
+	t.Logf("stacking holds: both %s and %s halts active (m1 window expiry=%d)", m1, m3, expiry1)
+
+	// Recovery multisig lifts BOTH halts EARLY (well before the window expiry).
+	retryBroadcast(t, "unhalt", func() (string, error) { return d.Unhalt(2, "") })
+
+	lifted := false
+	deadline = time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		h, _ := d.getLastProcessedBlock(ctx, 1)
+		halts, _ := d.getOutboundHalts(ctx, 1)
+		if h > 0 && !haltActiveAt(halts, m1, h) && !haltActiveAt(halts, m3, h) {
+			if h >= expiry1 {
+				t.Fatalf("unhalt did not lift EARLY: height %d already past window expiry %d", h, expiry1)
+			}
+			lifted = true
+			t.Logf("vsc.unhalt lifted both halts EARLY at height %d (window expiry was %d)", h, expiry1)
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if !lifted {
+		t.Fatal("recovery-multisig vsc.unhalt never lifted the stacked halts")
+	}
 }
