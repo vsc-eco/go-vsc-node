@@ -832,6 +832,23 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
+	// #11 bond-lock-until-drained: a witness whose committee holds a fund-holding
+	// retiring/draining BTC-vault key's shares cannot unstake its consensus bond
+	// until that generation is drained — otherwise the churning old committee banks
+	// its keygen reward, leaves, and drops the retiring key below threshold so the
+	// migration can never sign (C-A/V-A permanent freeze, no attacker). Deterministic
+	// (consensus state at height, via the same predicate as tss signing eligibility);
+	// inert unless vault-rotation-v2 is chain-active AND a retiring gen exists → the
+	// gate is byte-identical / never fires on mainnet today. The member re-submits
+	// after the migration drains its generation.
+	if se.IsBondLockedRetiringMember(tx.From, tx.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "consensus bond is locked: your committee holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
+			RcUsed:  50,
+		}
+	}
+
 	// review4 HIGH #96 (fail-stop): the unstake lock epoch comes from an
 	// election read. The prior read swallowed the DB error and returned a
 	// zero-value epoch, so a transient failure on one node would lock the
