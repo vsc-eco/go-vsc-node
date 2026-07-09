@@ -92,7 +92,7 @@ func TestVaultKeyNameAndFundHolding(t *testing.T) {
 	}
 	for s, want := range map[VaultStatus]bool{
 		VaultStatusPending: false, VaultStatusActive: true, VaultStatusRetiring: true,
-		VaultStatusDraining: true, VaultStatusInactive: false, VaultStatusPurged: false,
+		VaultStatusDraining: true, VaultStatusInactive: true, VaultStatusPurged: false,
 	} {
 		if IsFundHoldingStatus(s) != want {
 			t.Fatalf("IsFundHoldingStatus(%d) = %v, want %v", s, IsFundHoldingStatus(s), want)

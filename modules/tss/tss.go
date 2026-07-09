@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -806,7 +807,15 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 	}
 
 	slices.SortFunc(sortedArray, func(a, b score) int {
-		return b.Score - a.Score
+		// L2-1 (FULL-PRUNED): total order. Score-only is non-total over the map-range
+		// build of sortedArray, so when the ban cap truncates at a Score TIE two nodes
+		// could ban DIFFERENT accounts -> divergent BannedNodes -> divergent party list
+		// -> SSID/CID fork. Break ties on Account (deterministic, unique) so the truncated
+		// set is byte-identical on every node.
+		if a.Score != b.Score {
+			return b.Score - a.Score
+		}
+		return strings.Compare(a.Account, b.Account)
 	})
 
 	bannedNodes := make(map[string]bool)
