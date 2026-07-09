@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"strings"
 	datalayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -86,5 +87,17 @@ func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64)
 			return se.electionDb.GetElection(epoch)
 		},
 	})
-	return set.Has(account)
+	return bondLockMatches(set, account)
+}
+
+// bondLockMatches applies the account-namespace normalization required by the
+// consensus-unstake call site (#11 council F1). A consensus_unstake carries
+// tx.From in "hive:<account>" form (the handler rejects anything else), but the
+// retiring-committee set is keyed by BARE election account names
+// (elections.ElectionMember.Account, e.g. "alice"). Without stripping the prefix
+// the map lookup can never hit and the whole gate is dead code (returns false for
+// every real witness). The tss/V-A consumer is unaffected — it compares the bare
+// HiveUsername to bare keys — so only this Hive-namespaced consumer must normalize.
+func bondLockMatches(set vaultrotation.RetiringSignerSet, account string) bool {
+	return set.Has(strings.TrimPrefix(account, "hive:"))
 }
