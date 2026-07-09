@@ -85,6 +85,27 @@ func (m *MockContractStateDb) GetLastOutput(contractId string, height uint64) (c
 	return lastOutput, nil
 }
 
+// GetLastOutputStrict mirrors the production strict variant: a genuine absence
+// (no output <= height) returns mongo.ErrNoDocuments (deterministic), never a
+// swallowed empty output — so the #11 bond-lock fail-stop path can tell absence
+// from a transient error.
+func (m *MockContractStateDb) GetLastOutputStrict(contractId string, height uint64) (contracts.ContractOutput, error) {
+	var lastOutput contracts.ContractOutput
+	found := false
+	for _, output := range m.Outputs {
+		if output.ContractId == contractId && uint64(output.BlockHeight) <= height {
+			if !found || output.BlockHeight > lastOutput.BlockHeight {
+				lastOutput = output
+				found = true
+			}
+		}
+	}
+	if !found {
+		return contracts.ContractOutput{}, mongo.ErrNoDocuments
+	}
+	return lastOutput, nil
+}
+
 func (m *MockContractStateDb) GetOutput(outputId string) *contracts.ContractOutput {
 	result := m.Outputs[outputId]
 	return &result

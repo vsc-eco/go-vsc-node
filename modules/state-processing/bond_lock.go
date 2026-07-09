@@ -1,6 +1,8 @@
 package state_engine
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	datalayer "vsc-node/lib/datalayer"
 	"vsc-node/modules/db/vsc/elections"
@@ -8,6 +10,7 @@ import (
 	"vsc-node/modules/vaultrotation"
 
 	"github.com/ipfs/go-cid"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // #11 bond-lock-until-drained.
@@ -27,35 +30,58 @@ import (
 // the tss layer uses for signing eligibility, so a member is signing-eligible IFF it
 // is bond-locked — never one without the other.
 
-// btcContractStateReaderAt mirrors the tss-module reader (solvency_gate.go): resolve
-// the BTC mapping contract's committed output at height ONCE and return a key-reader
-// over its state databin. Always non-nil; it simply MISSES (→ an inert, absent
-// registry) if the output can't be resolved, so a bond-lock query fails OPEN
-// (unstake allowed) on a resolution error rather than wrongly locking a bond on
-// infra trouble. (Same un-timeouted-GetRaw tracked-hardening note as the tss reader;
-// contract-state leaves at a processed height are local.)
-func (se *StateEngine) btcContractStateReaderAt(contractID string, height uint64) func(key string) ([]byte, bool) {
+// isTransientReadErr classifies a consensus-read error for the bond-lock fail-stop.
+// A mongo.ErrNoDocuments is a DETERMINISTIC absence — every node sees it identically,
+// so concluding "not present" from it cannot diverge/fork — hence it is NOT transient.
+// Any OTHER non-nil error is a per-node infra blip that MUST block/retry (else a
+// divergent read → divergent unstake outcome → fork). The ErrNoDocuments exclusion is
+// load-bearing in BOTH directions: fail to exclude it and blockingRetry loops FOREVER
+// on a genuinely-absent generation → a network halt.
+func isTransientReadErr(err error) bool {
+	return err != nil && !errors.Is(err, mongo.ErrNoDocuments)
+}
+
+// btcContractStateReaderAtStrict is the FAIL-STOP contract-state reader for the #11
+// bond-lock CONSENSUS path (council F2). It resolves the BTC mapping contract's
+// committed output at height and returns a key-reader over its state databin, but —
+// unlike the tss-side reader, which feeds a LOCAL keysign decision that tolerates
+// divergence via fail-and-retry — it distinguishes a TRANSIENT per-node Mongo error
+// (sets *transient so the caller blocks/retries → all nodes converge, no fork) from a
+// DETERMINISTIC condition that is identical on every node (genuine absence, or a
+// parse/decode error of committed content-addressed state), which is an inert miss
+// (fail-open, all nodes agree — safe, no divergence). The datalayer reads
+// (databin/GetRaw) BLOCK-and-fetch via the online bitswap blockservice, so a
+// non-local leaf never silently fails open — it blocks (network-wide unavailability
+// stalls processing, never forks); an actual datalayer error is a deterministic
+// corruption → inert miss.
+func (se *StateEngine) btcContractStateReaderAtStrict(contractID string, height uint64, transient *error) func(key string) ([]byte, bool) {
 	miss := func(string) ([]byte, bool) { return nil, false }
 	if se.contractState == nil || se.da == nil {
 		return miss
 	}
-	output, err := se.contractState.GetLastOutput(contractID, height)
-	if err != nil || output.StateMerkle == "" {
-		return miss
-	}
-	stateCid, err := cid.Parse(output.StateMerkle)
+	output, err := se.contractState.GetLastOutputStrict(contractID, height)
 	if err != nil {
-		return miss
+		if isTransientReadErr(err) {
+			*transient = err // per-node Mongo blip → the caller blocks/retries
+		}
+		return miss // ErrNoDocuments = deterministic absence; a transient result is discarded + retried
+	}
+	if output.StateMerkle == "" {
+		return miss // deterministic: the contract has no state yet
+	}
+	stateCid, perr := cid.Parse(output.StateMerkle)
+	if perr != nil {
+		return miss // committed StateMerkle is identical on all nodes → deterministic, fail-open
 	}
 	databin := datalayer.NewDataBinFromCid(se.da, stateCid)
 	return func(key string) ([]byte, bool) {
-		keyCid, err := databin.Get(key)
-		if err != nil || keyCid == nil {
-			return nil, false
+		keyCid, gerr := databin.Get(key)
+		if gerr != nil || keyCid == nil {
+			return nil, false // datalayer blocks for non-local; an error here is deterministic corruption
 		}
-		raw, err := se.da.GetRaw(*keyCid)
-		if err != nil {
-			return nil, false
+		raw, rerr := se.da.GetRaw(*keyCid)
+		if rerr != nil {
+			return nil, false // deterministic
 		}
 		return raw, true
 	}
@@ -63,12 +89,15 @@ func (se *StateEngine) btcContractStateReaderAt(contractID string, height uint64
 
 // IsBondLockedRetiringMember reports whether account is a committee member of a
 // fund-holding retiring/draining BTC-vault generation at height (see the package
-// doc above). DETERMINISTIC — every input is consensus state pinned to height (the
-// BTC vault registry, each retiring gen's keygen/reshare commitment bitset, and the
-// commitment's epoch election), fed through the SAME shared predicate as tss V-A, so
-// all honest nodes reach the identical verdict for a consensus unstake tx. Empty /
-// false (inert) unless VaultRotationV2Enabled(height) AND a retiring/draining BTC
-// gen exists → byte-identical no-op on mainnet today.
+// doc). It drives a CONSENSUS tx outcome (TxConsensusUnstake success/reject + the
+// ledger unstake mutation), so it is FAIL-STOP (council F2): a per-node transient
+// read error must NOT fail-open (→ a divergent unstake result → fork). blockingRetry
+// re-reads until every underlying read either SUCCEEDS or shows a genuine
+// (all-nodes-identical) absence — only then is the verdict committed; a persistent
+// infra failure stalls the slot network-wide (recoverable), never forks. Fed through
+// the SAME shared predicate as tss V-A (signing-eligible IFF bond-locked). Empty /
+// false (inert) unless VaultRotationV2Enabled(height) AND a retiring/draining BTC gen
+// exists → byte-identical no-op on mainnet today.
 func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64) bool {
 	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(height) {
 		return false
@@ -77,17 +106,35 @@ func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64)
 	if btcContract == "" {
 		return false
 	}
-	set := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
-		BtcContract: btcContract,
-		ReadKey:     se.btcContractStateReaderAt(btcContract, height),
-		GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
-			return se.tssCommitments.GetCommitmentByHeight(keyId, height, "reshare", "keygen")
-		},
-		GetElection: func(epoch uint64) *elections.ElectionResult {
-			return se.electionDb.GetElection(epoch)
-		},
+	var locked bool
+	blockingRetry(fmt.Sprintf("bondLock(%s,%d)", account, height), func() error {
+		var transient error
+		reader := se.btcContractStateReaderAtStrict(btcContract, height, &transient)
+		set := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
+			BtcContract: btcContract,
+			ReadKey:     reader,
+			GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
+				c, cerr := se.tssCommitments.GetCommitmentByHeight(keyId, height, "reshare", "keygen")
+				if isTransientReadErr(cerr) {
+					transient = cerr // per-node blip -> block/retry
+				}
+				return c, cerr // ErrNoDocuments (deterministic absence) → the predicate skips this gen
+			},
+			GetElection: func(epoch uint64) *elections.ElectionResult {
+				el, eerr := se.electionDb.GetElectionStrict(epoch)
+				if isTransientReadErr(eerr) {
+					transient = eerr // per-node blip -> block/retry
+				}
+				return el // nil (deterministic absence) → the predicate skips this gen
+			},
+		})
+		if transient != nil {
+			return transient // block/retry until infra recovers; the set is discarded
+		}
+		locked = bondLockMatches(set, account)
+		return nil
 	})
-	return bondLockMatches(set, account)
+	return locked
 }
 
 // bondLockMatches applies the account-namespace normalization required by the
