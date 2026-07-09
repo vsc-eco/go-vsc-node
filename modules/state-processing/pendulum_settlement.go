@@ -400,10 +400,85 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		return nil, false
 	}
 	if !bytes.Equal(expectedBytes, actualBytes) {
-		return fmt.Errorf("settlement byte mismatch (expected %d bytes, got %d)",
-			len(expectedBytes), len(actualBytes)), true
+		// Diagnostic: name the field(s) that diverge so an operator can localise a
+		// replay divergence WITHOUT another instrumented rebuild — a differing
+		// bucket_hbd points at the pendulum bucket (seed / accrual / a dropped
+		// historical settlement), a differing per-account distribution or a
+		// residual/total points at the committee-bond inputs (ledger state). The
+		// refuse-to-apply behaviour is unchanged; this only enriches the error the
+		// caller already logs.
+		return fmt.Errorf("settlement byte mismatch (expected %d bytes, got %d): %s",
+			len(expectedBytes), len(actualBytes), diffSettlementRecords(*expected, rec)), true
 	}
 	return nil, true
+}
+
+// diffSettlementRecords formats the fields that differ between a re-derived
+// settlement (exp) and the on-chain record (got). Diagnostic only — it builds a
+// log string and never affects state or the byte compare above. Accounts are
+// iterated in the records' existing (Account-sorted) order for stable output.
+func diffSettlementRecords(exp, got pendulumsettlement.SettlementRecord) string {
+	var b strings.Builder
+	addU := func(field string, e, g uint64) {
+		if e != g {
+			fmt.Fprintf(&b, " %s(exp=%d got=%d)", field, e, g)
+		}
+	}
+	addI := func(field string, e, g int64) {
+		if e != g {
+			fmt.Fprintf(&b, " %s(exp=%d got=%d)", field, e, g)
+		}
+	}
+	addU("epoch", exp.Epoch, got.Epoch)
+	addU("prev_epoch", exp.PrevEpoch, got.PrevEpoch)
+	addU("snapshot_from", exp.SnapshotRangeFrom, got.SnapshotRangeFrom)
+	addU("snapshot_to", exp.SnapshotRangeTo, got.SnapshotRangeTo)
+	addI("bucket_hbd", exp.BucketBalanceHBD, got.BucketBalanceHBD)
+	addI("total_distributed_hbd", exp.TotalDistributedHBD, got.TotalDistributedHBD)
+	addI("residual_hbd", exp.ResidualHBD, got.ResidualHBD)
+
+	gotDist := make(map[string]int64, len(got.Distributions))
+	for _, d := range got.Distributions {
+		gotDist[d.Account] = d.HBDAmt
+	}
+	expDist := make(map[string]int64, len(exp.Distributions))
+	for _, d := range exp.Distributions {
+		expDist[d.Account] = d.HBDAmt
+		if g, ok := gotDist[d.Account]; !ok {
+			fmt.Fprintf(&b, " dist[%s](exp=%d got=<absent>)", d.Account, d.HBDAmt)
+		} else if g != d.HBDAmt {
+			fmt.Fprintf(&b, " dist[%s](exp=%d got=%d)", d.Account, d.HBDAmt, g)
+		}
+	}
+	for _, d := range got.Distributions {
+		if _, ok := expDist[d.Account]; !ok {
+			fmt.Fprintf(&b, " dist[%s](exp=<absent> got=%d)", d.Account, d.HBDAmt)
+		}
+	}
+
+	gotReduc := make(map[string]int, len(got.RewardReductions))
+	for _, r := range got.RewardReductions {
+		gotReduc[r.Account] = r.Bps
+	}
+	expReduc := make(map[string]int, len(exp.RewardReductions))
+	for _, r := range exp.RewardReductions {
+		expReduc[r.Account] = r.Bps
+		if g, ok := gotReduc[r.Account]; !ok {
+			fmt.Fprintf(&b, " reduc[%s](exp=%d got=<absent>)", r.Account, r.Bps)
+		} else if g != r.Bps {
+			fmt.Fprintf(&b, " reduc[%s](exp=%d got=%d)", r.Account, r.Bps, g)
+		}
+	}
+	for _, r := range got.RewardReductions {
+		if _, ok := expReduc[r.Account]; !ok {
+			fmt.Fprintf(&b, " reduc[%s](exp=<absent> got=%d)", r.Account, r.Bps)
+		}
+	}
+
+	if b.Len() == 0 {
+		return "fields equal (CBOR ordering/encoding difference only)"
+	}
+	return "differing fields:" + b.String()
 }
 
 // pendulumSettlementTxID is the deterministic ledger-record id prefix used to
