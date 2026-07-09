@@ -75,6 +75,13 @@ type StateEngine interface {
 	// height, sourced from the on-chain election (deterministic, height-addressable).
 	// Used to gate consensus-version-coordinated features (e.g. try/catch ICC).
 	ActiveConsensusVersion(blockHeight uint64) consensusversion.Version
+	// IsBondLockedRetiringMember reports whether account is a committee member of a
+	// fund-holding retiring/draining BTC-vault generation at height (#11
+	// bond-lock-until-drained). Deterministic (consensus state at height, via the
+	// shared vaultrotation predicate). False/inert unless vault-rotation-v2 is
+	// chain-active AND a retiring gen exists. A consensus_unstake by such a member
+	// is rejected until its generation drains.
+	IsBondLockedRetiringMember(account string, height uint64) bool
 }
 
 type BlockStatusGetter interface {
