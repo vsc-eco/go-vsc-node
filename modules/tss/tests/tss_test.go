@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"runtime"
@@ -3172,6 +3173,14 @@ func TestBlameScore(t *testing.T) {
 
 	mes := &MockElectionSystem{WitnessNames: []string{"node-a", "node-b", "node-c", "node-d"}}
 	node, tssMgr := makeBlameNode(mes)
+	// currentElec mirrors BlameScore's former internal GetElectionByHeight(MaxInt64-1) read
+	// (BlameScore now takes the election as a param, pinned to bh by RunActions). Each subtest
+	// stores its elections first, so this returns the same latest election BlameScore used to
+	// fetch itself — preserving the exact prior test semantics.
+	currentElec := func() elections.ElectionResult {
+		el, _ := node.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+		return el
+	}
 
 	go test_utils.RunPlugin(t, node.agg)
 	time.Sleep(3 * time.Second)
@@ -3227,7 +3236,7 @@ func TestBlameScore(t *testing.T) {
 
 		storeElectionsWithGracePeriodBypass(10)
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if len(result.BannedNodes) != 0 {
 			t.Errorf("Expected no banned nodes, got %v", result.BannedNodes)
@@ -3250,7 +3259,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-tx-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf("Expected node-a to be banned (100%% failure rate), got BannedNodes=%v", result.BannedNodes)
@@ -3280,7 +3289,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-tx-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if len(result.BannedNodes) != 0 {
 			t.Errorf("Expected no bans (33%% failure rate < 60%% threshold), got BannedNodes=%v", result.BannedNodes)
@@ -3321,7 +3330,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-tx-9",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if result.BannedNodes["node-d"] {
 			t.Errorf("Expected node-d exempt from ban (grace period), got BannedNodes=%v", result.BannedNodes)
@@ -3344,7 +3353,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(2), TxId: "blame-tx-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-c"] {
 			t.Errorf("Expected node-c to be banned (100%% blame rate), got BannedNodes=%v", result.BannedNodes)
@@ -3371,7 +3380,7 @@ func TestBlameScore(t *testing.T) {
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-b"] {
 			t.Errorf(
@@ -3406,7 +3415,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-mix-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf(
@@ -3437,7 +3446,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-thresh-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf("Expected node-a to be banned, got BannedNodes=%v", result.BannedNodes)
@@ -3527,7 +3536,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(1, 2), TxId: "blame-below-6",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		// All 3 nodes (a, b, c) exceed the 60% threshold, but ban cap (maxBans=2)
 		// should prevent banning all 3. Exactly 2 should be banned.
@@ -3581,7 +3590,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-grace3-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-d"] {
 			t.Errorf(
@@ -3625,7 +3634,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-grace2-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if result.BannedNodes["node-d"] {
 			t.Errorf(
@@ -3660,7 +3669,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(1), TxId: "blame-multi-ep-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-b"] {
 			t.Errorf(

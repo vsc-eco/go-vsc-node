@@ -79,7 +79,7 @@ func TestBlameScore_CorruptedBase64(t *testing.T) {
 		},
 	})
 
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// Should not panic, and no node should be banned from corrupt data
 	assert.Empty(t, result.BannedNodes,
@@ -96,7 +96,7 @@ func TestBlameScore_EmptyElectionInWindow(t *testing.T) {
 
 	mgr := newBlameScoreMgr(current, []elections.ElectionResult{emptyElection}, map[uint64][]tss_db.TssCommitment{})
 
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// Should not panic
 	assert.NotNil(t, result.BannedNodes)
@@ -124,7 +124,7 @@ func TestBlameScore_AllNodesBanned(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// Systemic blames are skipped — no individual node should be banned
 	for _, acct := range accounts {
@@ -157,7 +157,7 @@ func TestBlameScore_BanCap(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// alice: score=2 (blamed in epoch 10 and 1), weight=4 → 50% → not banned
 	assert.Empty(t, result.BannedNodes, "No node exceeds 60%% in this setup")
@@ -177,7 +177,7 @@ func TestBlameScore_BanCap(t *testing.T) {
 	// maxBans=2, so both alice and bob can be banned.
 
 	mgr2 := newBlameScoreMgr(current, prev, blames2)
-	result2 := mgr2.BlameScore()
+	result2 := mgr2.BlameScore(current)
 
 	assert.True(t, result2.BannedNodes["alice"], "Alice at 100%% should be banned")
 	assert.True(t, result2.BannedNodes["bob"], "Bob at 100%% should be banned")
@@ -207,7 +207,7 @@ func TestBlameScore_BanCap(t *testing.T) {
 	// 4 candidates but maxBans=3 → only 3 can be banned
 
 	mgr3 := newBlameScoreMgr(current10, prev10, blames3)
-	result3 := mgr3.BlameScore()
+	result3 := mgr3.BlameScore(current10)
 
 	bannedCount := 0
 	for _, acct := range []string{"alice", "bob", "carol", "dave"} {
@@ -245,7 +245,7 @@ func TestBlameScore_SystemicBlameFiltered(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// alice: score=1 (only the individual blame counts), weight=1
 	// 1 > 1*60/100 = 1 > 0 → banned
@@ -288,7 +288,7 @@ func TestBlameScore_ExactBanThreshold(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// alice: weight = 5 (5 non-systemic blame commits across epochs she's in), score = 3
 	// 3 > 5*60/100 = 3 > 3 → FALSE (not strictly greater)
@@ -317,7 +317,7 @@ func TestBlameScore_GracePeriodWithEpochGaps(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// carol's epochsSinceFirst = 100 - 99 = 1, which is < 3 grace period
 	assert.False(t, result.BannedNodes["carol"],
@@ -348,7 +348,7 @@ func TestBlameScore_ManyEpochsAccumulation(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// alice blamed in all epochs → 100% failure → banned
 	assert.True(t, result.BannedNodes["alice"],
@@ -379,7 +379,7 @@ func TestBlameScore_MultipleBlamesPerEpoch(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	// alice: weight from epoch 10 = 3 (3 blames, so 3 opportunities), score = 3
 	// epoch 7 and 4 have 0 blames so weight doesn't increase from those
@@ -389,10 +389,12 @@ func TestBlameScore_MultipleBlamesPerEpoch(t *testing.T) {
 }
 
 func TestBlameScore_ElectionLookupFailure(t *testing.T) {
-	// If GetElectionByHeight fails, BlameScore should return empty ban list.
+	// If the election has no members (missing/empty), BlameScore returns an empty ban
+	// list rather than panicking. (Previously exercised a failed GetElectionByHeight read;
+	// BlameScore now takes the election directly, so pass an empty one for the same check.)
 	mgr := &TssManager{
 		electionDb: &test_utils.MockElectionDb{
-			ElectionsByHeight: map[uint64]elections.ElectionResult{}, // empty - will fail
+			ElectionsByHeight: map[uint64]elections.ElectionResult{},
 		},
 		tssCommitments: &test_utils.MockTssCommitmentsDb{
 			Commitments: make(map[string]tss_db.TssCommitment),
@@ -400,7 +402,7 @@ func TestBlameScore_ElectionLookupFailure(t *testing.T) {
 		metrics: &Metrics{BlameCount: make(map[string]int64)},
 	}
 
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(elections.ElectionResult{})
 
 	assert.NotNil(t, result.BannedNodes)
 	assert.Empty(t, result.BannedNodes,
@@ -437,7 +439,7 @@ func TestBlameScore_TimeoutVsErrorClassification(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	require.NotNil(t, result)
 	// Both timeout and error blames should contribute to the total score.
@@ -457,7 +459,7 @@ func TestBlameScore_NoBlameMeansNoBan(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, map[uint64][]tss_db.TssCommitment{})
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	assert.Empty(t, result.BannedNodes, "No blames should mean no bans")
 }
@@ -478,7 +480,7 @@ func TestBlameScore_NodeNotInCurrentElection(t *testing.T) {
 	}
 
 	mgr := newBlameScoreMgr(current, prev, blames)
-	result := mgr.BlameScore()
+	result := mgr.BlameScore(current)
 
 	assert.False(t, result.BannedNodes["carol"],
 		"Carol is not in current election and should not be scored/banned")
