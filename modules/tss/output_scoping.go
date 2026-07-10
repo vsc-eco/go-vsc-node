@@ -73,6 +73,16 @@ const (
 	// disable output scoping → the caller refuses ALL BTC-vault keysigns (fail
 	// closed, recoverable once the registry is valid).
 	vaultUnresolvable
+	// vaultGenesisPending: "v" has EXACTLY ONE generation, Pending, zero Active — the
+	// fresh-genesis bootstrap. The pending gen holds NO funds; its ONLY legitimate sign
+	// is its own BRK-2 check-signature M (which is a canonical domain-tagged message, not
+	// a BTC tx, and moves nothing). Admitting ONLY that one sign lets genesis activate.
+	// WITHOUT this, evaluateScope's check-sig admission (only reachable via vaultResolved,
+	// which requires activeCount==1) is UNREACHABLE at genesis, so the check-sig is
+	// refused → SignatureVerified never lands → attestPrimaryKey never passes → genesis
+	// can NEVER activate: a chicken-and-egg deadlock (devnet-found HIGH, 2026-07-10). Every
+	// OTHER keyId, and any ≥2-gen / corrupt / non-Pending registry, still fails closed.
+	vaultGenesisPending
 )
 
 // resolveVaultView reads the BTC vault registry ("v") at bh and classifies it.
@@ -121,8 +131,14 @@ func (d btcScopeDeps) resolveVaultView() (*btcVaultView, vaultResolveResult) {
 	}
 	// Contract invariant: exactly one Active generation (enforced at activation).
 	// A read state that violates it (0 or ≥2) has no unambiguous successor → not
-	// resolvable → fail closed.
+	// resolvable → fail closed. EXCEPTION: the fresh-genesis bootstrap — exactly one
+	// generation, Pending, zero Active — is not "corrupt", it is the state a brand-new
+	// vault sits in while its check-signature is produced. It resolves ONLY its own
+	// check-sig (see vaultGenesisPending), never a fund-moving sign.
 	if activeCount != 1 {
+		if len(vaults) == 1 && vaults[0].Status == btcvault.VaultStatusPending {
+			return view, vaultGenesisPending
+		}
 		return nil, vaultUnresolvable
 	}
 	return view, vaultResolved
@@ -157,6 +173,17 @@ func (d btcScopeDeps) evaluateScope(keyId string, sighash []byte) scopeVerdict {
 		// Registry PRESENT but corrupt / no single Active successor. We cannot
 		// scope safely AND must not let a bad "v" disable the gate → refuse ALL
 		// BTC-vault keysigns (fail closed; recoverable when "v" is valid again).
+		return scopeRefuse
+	case vaultGenesisPending:
+		// Fresh-genesis bootstrap (exactly one Pending gen, zero Active). Admit ONLY
+		// that gen's own BRK-2 check-signature M — a canonical message, not a BTC tx,
+		// moving no funds — so the vault can activate. Refuse everything else (a Pending
+		// gen holds no funds and must sign nothing but M). This is the SAME chokepoint
+		// as the vaultResolved Pending branch, made reachable for the 0-Active genesis.
+		v, known := view.byKeyId[keyId]
+		if known && v.Status == btcvault.VaultStatusPending && d.pendingSignIsCheckSig(keyId, sighash) {
+			return scopeCheckSig
+		}
 		return scopeRefuse
 	case vaultResolved:
 		v, known := view.byKeyId[keyId]
