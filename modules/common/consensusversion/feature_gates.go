@@ -225,6 +225,16 @@ func OutboundHaltActive(active Version) bool {
 	return Version0_6_0Active(active)
 }
 
+// MajoritySavingsActive reports whether the gateway's fractional-reserve sync
+// keeps only a flow-sized liquid "hot float" and sweeps the MAJORITY of HBD/HIVE
+// (including consensus-bond-backing HIVE) into Hive savings behind the ~3-day
+// withdrawal timelock — the collusion-ceiling lever from the hot/cold design.
+// Below the line the legacy "1/3 to savings" behavior runs byte-identically, so a
+// full reindex of pre-activation history is unchanged. Shares the v0.6.0 line.
+func MajoritySavingsActive(active Version) bool {
+	return Version0_6_0Active(active)
+}
+
 // OutboundDelayActive reports whether the value-scaled outbound delay is in force
 // (brief fix 4): a gateway withdrawal is eligible for a batch only once it has
 // aged >= the delay its value warrants (near-zero for dust, hours near

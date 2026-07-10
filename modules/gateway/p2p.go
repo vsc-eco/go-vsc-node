@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	libp2p "vsc-node/modules/p2p"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -148,7 +149,20 @@ func (s p2pSpec) HandleMessage(ctx context.Context, from peer.ID, msg p2pMessage
 				return nil
 			}
 
-			err = s.ms.waitCheckBh(SYNC_INTERVAL, signReq.BlockHeight)
+			// The v0.6.0 proactive low-water reorder emits fr_sync on OFF-SYNC action
+			// ticks, so a cosigner must accept ACTION_INTERVAL-aligned heights too
+			// (SYNC_INTERVAL is a multiple of ACTION_INTERVAL, so regular sync ticks
+			// still pass). This does NOT weaken validation: below the fr_sync branch
+			// the cosigner independently re-derives syncBalance(bh) and only signs on
+			// an exact TxId match, and syncBalance's own freshness/low-water gate
+			// decides whether anything is emitted at that height at all. Below the
+			// 0.6.0 floor the check stays SYNC_INTERVAL — unchanged.
+			frInterval := SYNC_INTERVAL
+			if s.ms.se != nil &&
+				consensusversion.MajoritySavingsActive(s.ms.se.ActiveConsensusVersion(signReq.BlockHeight)) {
+				frInterval = ACTION_INTERVAL
+			}
+			err = s.ms.waitCheckBh(frInterval, signReq.BlockHeight)
 
 			if err != nil {
 				return nil

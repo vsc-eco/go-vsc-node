@@ -360,6 +360,24 @@ type ConsensusParams struct {
 	// (kills junk/poison well before the hard deadline). 0 falls back to
 	// DefaultVersionProposalFastFailEpochs.
 	VersionProposalFastFailEpochs uint64 `json:"versionProposalFastFailEpochs,omitempty"`
+
+	// Majority-to-savings (v0.6.0) hot-float calibration. Network-uniform (like
+	// every other consensus param). Each falls back to its Default* below when
+	// unset (0), so an unconfigured network is byte-identical to the original code
+	// constants. These size how much of each asset the gateway keeps LIQUID; the
+	// rest is swept to Hive savings behind the ~3-day timelock.
+	HotFloatWindowBlocks       uint64 `json:"hotFloatWindowBlocks,omitempty"`
+	HotFloatRefillLeadBlocks   uint64 `json:"hotFloatRefillLeadBlocks,omitempty"`
+	HotFloatSafetyNum          int64  `json:"hotFloatSafetyNum,omitempty"`
+	HotFloatSafetyDen          int64  `json:"hotFloatSafetyDen,omitempty"`
+	HotFloatFloorHBD           int64  `json:"hotFloatFloorHbd,omitempty"`
+	HotFloatFloorHIVE          int64  `json:"hotFloatFloorHive,omitempty"`
+	SavingsWithdrawDelayBlocks uint64 `json:"savingsWithdrawDelayBlocks,omitempty"`
+	// HotFloatLowWaterBps is the proactive-reorder trigger: when an asset's
+	// projected liquid float falls below this fraction (basis points) of its target
+	// hot float, the gateway bypasses the ~6h sync cadence and starts a refill
+	// unstake NOW (v0.6.0). 0 falls back to DefaultHotFloatLowWaterBps.
+	HotFloatLowWaterBps uint64 `json:"hotFloatLowWaterBps,omitempty"`
 }
 
 // DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
@@ -489,6 +507,80 @@ func (cp ConsensusParams) VersionProposalFastFail() uint64 {
 		return DefaultVersionProposalFastFailEpochs
 	}
 	return cp.VersionProposalFastFailEpochs
+}
+
+// Majority-to-savings hot-float calibration defaults (byte-identical to the
+// original gateway code constants). Used when a network pins no explicit value.
+const (
+	DefaultHotFloatWindowBlocks       uint64 = 7 * 24 * 60 * 60 / 3 // 201_600 (~7d)
+	DefaultHotFloatRefillLeadBlocks   uint64 = 3 * 24 * 60 * 60 / 3 // 86_400 (~3d)
+	DefaultHotFloatSafetyNum          int64  = 2
+	DefaultHotFloatSafetyDen          int64  = 1
+	DefaultHotFloatFloorHBD           int64  = 100_000   // 100 HBD
+	DefaultHotFloatFloorHIVE          int64  = 1_000_000 // 1000 HIVE
+	DefaultSavingsWithdrawDelayBlocks uint64 = 3 * 24 * 60 * 60 / 3 // 86_400 (~3d)
+	DefaultHotFloatLowWaterBps        uint64 = 5000               // refill when float < 50% of target
+)
+
+// HotFloatWindow is the trailing window over which withdrawal outflow is measured.
+func (cp ConsensusParams) HotFloatWindow() uint64 {
+	if cp.HotFloatWindowBlocks == 0 {
+		return DefaultHotFloatWindowBlocks
+	}
+	return cp.HotFloatWindowBlocks
+}
+
+// HotFloatRefillLead is the savings-refill lead the float must bridge.
+func (cp ConsensusParams) HotFloatRefillLead() uint64 {
+	if cp.HotFloatRefillLeadBlocks == 0 {
+		return DefaultHotFloatRefillLeadBlocks
+	}
+	return cp.HotFloatRefillLeadBlocks
+}
+
+// HotFloatSafety returns the burst safety factor as num/den (den never 0).
+func (cp ConsensusParams) HotFloatSafety() (int64, int64) {
+	num, den := cp.HotFloatSafetyNum, cp.HotFloatSafetyDen
+	if num == 0 {
+		num = DefaultHotFloatSafetyNum
+	}
+	if den == 0 {
+		den = DefaultHotFloatSafetyDen
+	}
+	return num, den
+}
+
+// HotFloatFloor is the per-asset minimum liquid float (raw ledger units).
+func (cp ConsensusParams) HotFloatFloor(asset string) int64 {
+	if asset == "hive" {
+		if cp.HotFloatFloorHIVE == 0 {
+			return DefaultHotFloatFloorHIVE
+		}
+		return cp.HotFloatFloorHIVE
+	}
+	if cp.HotFloatFloorHBD == 0 {
+		return DefaultHotFloatFloorHBD
+	}
+	return cp.HotFloatFloorHBD
+}
+
+// SavingsWithdrawDelay is Hive's savings-withdraw maturation delay (in blocks)
+// used to age out in-flight reserve unstakes.
+func (cp ConsensusParams) SavingsWithdrawDelay() uint64 {
+	if cp.SavingsWithdrawDelayBlocks == 0 {
+		return DefaultSavingsWithdrawDelayBlocks
+	}
+	return cp.SavingsWithdrawDelayBlocks
+}
+
+// HotFloatLowWater returns the proactive-reorder trigger fraction as num/den:
+// refill when projected float < target * num/den. Den is 10000 (basis points).
+func (cp ConsensusParams) HotFloatLowWater() (int64, int64) {
+	bps := cp.HotFloatLowWaterBps
+	if bps == 0 {
+		bps = DefaultHotFloatLowWaterBps
+	}
+	return int64(bps), 10000
 }
 
 // BondInclusionActive reports whether the bond inclusion-window maturity gate

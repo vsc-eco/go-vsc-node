@@ -3,10 +3,12 @@ package gateway
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -35,7 +37,7 @@ func TestSelectEligibleActions_AgesWithdrawals(t *testing.T) {
 		mkWithdraw("big-fresh", 100_000_000, bh),                         // tier3 → held
 		mkWithdraw("big-aged", 100_000_000, bh-outboundDelayTier3Blocks), // aged exactly → eligible
 	}
-	sel := selectEligibleActions(actions, true, bh)
+	sel := selectEligibleActions(actions, true, bh, nil)
 	if !hasAction(sel, "dust") || !hasAction(sel, "big-aged") || hasAction(sel, "big-fresh") {
 		t.Fatalf("unexpected selection: %v", sel)
 	}
@@ -53,7 +55,7 @@ func TestSelectEligibleActions_NoStarvation(t *testing.T) {
 	for i := 0; i < 5; i++ { // eligible stake-netting behind them (never delayed)
 		actions = append(actions, ledgerDb.ActionRecord{Id: fmt.Sprintf("stake-%03d", i), Status: "pending", Amount: 10, Asset: "hbd", Type: "stake", BlockHeight: bh})
 	}
-	sel := selectEligibleActions(actions, true, bh)
+	sel := selectEligibleActions(actions, true, bh, nil)
 	if len(sel) != 5 {
 		t.Fatalf("under-aged withdrawals starved eligible actions: got %d eligible, want 5", len(sel))
 	}
@@ -72,7 +74,7 @@ func TestSelectEligibleActions_CapAppliedToEligible(t *testing.T) {
 	for i := 0; i < ledgerDb.MaxGatewayActionBatch*2; i++ {
 		actions = append(actions, mkWithdraw(fmt.Sprintf("w-%05d", i), 999_999, bh)) // dust → all eligible
 	}
-	if got := len(selectEligibleActions(actions, true, bh)); got != ledgerDb.MaxGatewayActionBatch {
+	if got := len(selectEligibleActions(actions, true, bh, nil)); got != ledgerDb.MaxGatewayActionBatch {
 		t.Fatalf("cap not applied to eligible set: got %d want %d", got, ledgerDb.MaxGatewayActionBatch)
 	}
 }
@@ -82,8 +84,26 @@ func TestSelectEligibleActions_CapAppliedToEligible(t *testing.T) {
 func TestSelectEligibleActions_DelayInactivePassesAll(t *testing.T) {
 	const bh = uint64(5000)
 	actions := []ledgerDb.ActionRecord{mkWithdraw("big-fresh", 100_000_000, bh)}
-	if got := len(selectEligibleActions(actions, false, bh)); got != 1 {
+	if got := len(selectEligibleActions(actions, false, bh, nil)); got != 1 {
 		t.Fatalf("delay-inactive must pass the fresh large withdrawal, got %d", got)
+	}
+}
+
+// TestSelectEligibleActions_LiquidCoverageHolds: with a liquid budget (majority-
+// to-savings active), a withdrawal that exceeds the remaining liquid is HELD while
+// smaller ones that fit still settle; stake/unstake are never coverage-gated.
+func TestSelectEligibleActions_LiquidCoverageHolds(t *testing.T) {
+	const bh = uint64(5000)
+	actions := []ledgerDb.ActionRecord{
+		mkWithdraw("a-1000", 1_000_000, bh),                                                                  // fits budget 1500 -> 500 left
+		mkWithdraw("b-1000", 1_000_000, bh),                                                                  // 1000 > 500 remaining -> HELD
+		mkWithdraw("c-400", 400_000, bh),                                                                     // 400 <= 500 remaining -> 100 left
+		{Id: "stake-x", Status: "pending", Amount: 9_999_999, Asset: "hbd", Type: "stake", BlockHeight: bh}, // never coverage-gated
+	}
+	budget := map[string]int64{"hbd": 1_500_000}
+	sel := selectEligibleActions(actions, false, bh, budget) // delay off: only coverage gates
+	if !hasAction(sel, "a-1000") || hasAction(sel, "b-1000") || !hasAction(sel, "c-400") || !hasAction(sel, "stake-x") {
+		t.Fatalf("coverage/hold wrong: %v (want a-1000 + c-400 + stake-x; b-1000 held)", sel)
 	}
 }
 
@@ -116,6 +136,82 @@ func TestOutboundDelayBlocks(t *testing.T) {
 			t.Fatalf("curve not monotonic at %d: %d < %d", a, d, prev)
 		}
 		prev = d
+	}
+}
+
+// hotFloatLedgerMock wraps the shared MockLedgerDb but implements the otherwise-
+// stubbed GetLedgersTsRange with production-equivalent filtering (account = from
+// OR owner; txTypes; asset; [from,to] block range; offset/limit) so hotFloat's
+// windowed outflow sum can be unit-tested. Scoped to this test — no shared-mock risk.
+type hotFloatLedgerMock struct {
+	*test_utils.MockLedgerDb
+	recs []ledgerDb.LedgerRecord
+}
+
+func (m *hotFloatLedgerMock) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
+	var out []ledgerDb.LedgerRecord
+	for _, r := range m.recs {
+		if account != nil && r.From != *account && r.Owner != *account {
+			continue
+		}
+		if len(txTypes) > 0 && !slices.Contains(txTypes, r.Type) {
+			continue
+		}
+		if asset != nil && r.Asset != string(*asset) {
+			continue
+		}
+		if fromBlock != nil && r.BlockHeight < *fromBlock {
+			continue
+		}
+		if toBlock != nil && r.BlockHeight > *toBlock {
+			continue
+		}
+		out = append(out, r)
+	}
+	if offset >= len(out) {
+		return nil, nil
+	}
+	end := len(out)
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return out[offset:end], nil
+}
+
+// TestHotFloat_ScalesOutflow pins the flow-sizing arithmetic that devnet never
+// exercised (fresh chains hit the floor): the float = withdrawal outflow over the
+// trailing window, rescaled to the 3-day refill lead × the safety factor, floored.
+// Only in-window, matching-asset, "withdraw" records count.
+func TestHotFloat_ScalesOutflow(t *testing.T) {
+	const bh = uint64(300_000) // > hotFloatWindowBlocks so the window is fully open
+	seed := []ledgerDb.LedgerRecord{
+		{Type: "withdraw", Asset: "hbd", Amount: -5_000_000, Owner: "hive:a", BlockHeight: 150_000},  // in window
+		{Type: "withdraw", Asset: "hbd", Amount: -5_000_000, Owner: "hive:b", BlockHeight: 250_000},  // in window
+		{Type: "withdraw", Asset: "hbd", Amount: -9_000_000, Owner: "hive:c", BlockHeight: 50_000},   // BEFORE window -> excluded
+		{Type: "deposit", Asset: "hbd", Amount: -9_000_000, Owner: "hive:d", BlockHeight: 200_000},   // wrong type -> excluded
+		{Type: "withdraw", Asset: "hive", Amount: -9_000_000, Owner: "hive:e", BlockHeight: 200_000}, // wrong asset -> excluded
+	}
+	cfg := systemconfig.MocknetConfig() // unset hot-float params -> Default* (== former consts)
+	ms := &MultiSig{sconf: cfg, ledgerRecords: &hotFloatLedgerMock{MockLedgerDb: &test_utils.MockLedgerDb{}, recs: seed}}
+
+	// gross = 10,000,000; target = 10,000,000 * 86400/201600 * 2 = 8,571,428 (> floor).
+	got, ok := ms.hotFloat("hbd", bh)
+	if !ok {
+		t.Fatal("hotFloat returned ok=false on a healthy ledger")
+	}
+	want := (int64(10_000_000) * int64(params.DefaultHotFloatRefillLeadBlocks) / int64(params.DefaultHotFloatWindowBlocks)) * params.DefaultHotFloatSafetyNum / params.DefaultHotFloatSafetyDen
+	if got != want {
+		t.Fatalf("hotFloat scaling wrong: got %d want %d", got, want)
+	}
+	if got <= params.DefaultHotFloatFloorHBD {
+		t.Fatalf("test misconfigured: scaled float %d should exceed the floor %d", got, params.DefaultHotFloatFloorHBD)
+	}
+
+	// Tiny outflow -> below the floor -> returns the floor.
+	msLow := &MultiSig{sconf: cfg, ledgerRecords: &hotFloatLedgerMock{MockLedgerDb: &test_utils.MockLedgerDb{},
+		recs: []ledgerDb.LedgerRecord{{Type: "withdraw", Asset: "hbd", Amount: -1000, Owner: "hive:a", BlockHeight: 200_000}}}}
+	if got, ok := msLow.hotFloat("hbd", bh); !ok || got != params.DefaultHotFloatFloorHBD {
+		t.Fatalf("hotFloat floor not applied: got %d ok=%v want %d", got, ok, params.DefaultHotFloatFloorHBD)
 	}
 }
 

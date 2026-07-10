@@ -498,12 +498,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					log.Debug("vsc.fr_sync", "opVal", opVal)
 
 					frSync := struct {
-						StakedAmount   int64 `json:"stake_amt"`
-						UnstakedAmount int64 `json:"unstake_amt"`
+						StakedAmount       int64 `json:"stake_amt"`
+						UnstakedAmount     int64 `json:"unstake_amt"`
+						HiveStakedAmount   int64 `json:"hive_stake_amt"`
+						HiveUnstakedAmount int64 `json:"hive_unstake_amt"`
 					}{}
 					json.Unmarshal(cj.Json, &frSync)
 
-					log.Verbose("frSync", "stakeAmt", frSync.StakedAmount, "unstakeAmt", frSync.UnstakedAmount)
+					log.Verbose("frSync", "stakeAmt", frSync.StakedAmount, "unstakeAmt", frSync.UnstakedAmount,
+						"hiveStakeAmt", frSync.HiveStakedAmount, "hiveUnstakeAmt", frSync.HiveUnstakedAmount)
 
 					amt, ok := frSyncLedgerAmount(frSync.StakedAmount, frSync.UnstakedAmount)
 					if !ok {
@@ -528,6 +531,34 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Type:  "fr_sync",
 					}); err != nil {
 						log.Error("fr_sync: ledger write failed", "txId", tx.TransactionID, "amount", amt, "err", err)
+					}
+
+					// HIVE leg (v0.6.0 majority-to-savings). Only ingested at/above the
+					// consensus floor, so pre-activation replay is byte-identical — the
+					// gateway never emits hive_* fields below it. Same GV-H9 negative-
+					// amount reject; a distinct sub-index (1) keeps the ledger Id unique
+					// from the HBD leg (0) of the same fr_sync tx. Asset "hive_savings"
+					// folds into BalanceRecord.HIVE_SAVINGS on system:fr_balance.
+					if (frSync.HiveStakedAmount != 0 || frSync.HiveUnstakedAmount != 0) &&
+						consensusversion.MajoritySavingsActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+						hiveAmt, hok := frSyncLedgerAmount(frSync.HiveStakedAmount, frSync.HiveUnstakedAmount)
+						if !hok {
+							log.Warn(
+								"fr_sync: rejecting HIVE leg with negative amount(s)",
+								"txId", tx.TransactionID,
+								"hive_stake_amt", frSync.HiveStakedAmount,
+								"hive_unstake_amt", frSync.HiveUnstakedAmount,
+							)
+						} else if err := se.LedgerState.LedgerDb.StoreLedger(ledgerDb.LedgerRecord{
+							Id:          MakeTxId(tx.TransactionID, 1),
+							Amount:      hiveAmt,
+							BlockHeight: blockInfo.BlockHeight + 1,
+							Owner:       params.FR_VIRTUAL_ACCOUNT,
+							Asset:       "hive_savings",
+							Type:        "fr_sync",
+						}); err != nil {
+							log.Error("fr_sync: HIVE ledger write failed", "txId", tx.TransactionID, "amount", hiveAmt, "err", err)
+						}
 					}
 				}
 
@@ -2255,7 +2286,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 	}
 
-	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
+	assets := []string{"hbd", "hive", "hbd_savings", "hive_savings", "hive_consensus"}
 
 	//Cleanup!
 	for _, k := range distinctAccounts {
@@ -2274,6 +2305,8 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				ledgerBalances[asset] = balanceR.Hive
 			} else if asset == "hbd_savings" {
 				ledgerBalances[asset] = balanceR.HBD_SAVINGS
+			} else if asset == "hive_savings" {
+				ledgerBalances[asset] = balanceR.HIVE_SAVINGS
 			} else if asset == "hive_consensus" {
 				ledgerBalances[asset] = balanceR.HIVE_CONSENSUS
 			} else {
@@ -2359,6 +2392,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			HIVE_CONSENSUS: ledgerBalances["hive_consensus"],
 			HBD:            ledgerBalances["hbd"],
 			HBD_SAVINGS:    ledgerBalances["hbd_savings"],
+			HIVE_SAVINGS:   ledgerBalances["hive_savings"],
 			HBD_AVG:        hbdAvg,
 		}
 

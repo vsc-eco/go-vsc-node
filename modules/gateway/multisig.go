@@ -266,6 +266,13 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 		if bh%ACTION_INTERVAL == 0 {
 			log.Debug("running actions", "bh", bh)
 			go ms.TickActions(bh)
+			// v0.6.0 proactive reorder: on off-sync action ticks, poke syncBalance so
+			// its low-water bypass can start a refill early. Below 0.6.0 this never
+			// fires, so the sync cadence is exactly the SYNC_INTERVAL trigger below.
+			if bh%SYNC_INTERVAL != 0 && ms.se != nil &&
+				consensusversion.MajoritySavingsActive(ms.se.ActiveConsensusVersion(bh)) {
+				go ms.TickSyncFr(bh)
+			}
 		}
 		if bh%SYNC_INTERVAL == 0 {
 			go ms.TickSyncFr(bh)
@@ -712,6 +719,57 @@ func (ms *MultiSig) outboundDelayActive(bh uint64) bool {
 	return consensusversion.OutboundDelayActive(ms.se.ActiveConsensusVersion(bh))
 }
 
+// Flow-sized hot-float sizing (v0.6.0 majority-to-savings). The gateway keeps only
+// ~this much of each asset LIQUID to service withdrawals; everything above it is
+// swept to Hive savings behind the ~3-day withdrawal timelock. All inputs are
+// ledger-derived so every cosigner computes the identical target. The sizing knobs
+// (window, refill lead, safety factor, floors, savings-withdraw delay) are
+// network-uniform ConsensusParams — governance-tunable behind the version gate —
+// each falling back to its params.Default* (byte-identical to the former code
+// constants) when a network pins no value. Source of truth for calibration is the
+// flow-data sizing in hot-cold-gateway-design.md.
+
+// hotFloat returns the DETERMINISTIC target liquid balance for asset at bh: gross
+// withdrawal outflow over the calibrated window, rescaled to the refill lead and
+// multiplied by the safety factor, floored. ok=false on a ledger read error — the
+// caller then skips the sync rather than resize on bad data. The sum is
+// order-independent, so pagination order does not affect determinism.
+func (ms *MultiSig) hotFloat(asset string, bh uint64) (int64, bool) {
+	cp := ms.sconf.ConsensusParams()
+	floor := cp.HotFloatFloor(asset)
+	window := cp.HotFloatWindow()
+	if ms.ledgerRecords == nil || bh <= window {
+		return floor, true // no ledger / not enough history — keep the floor
+	}
+	from, to := bh-window, bh
+	a := ledgerDb.Asset(asset)
+	var gross int64
+	for offset := 0; ; {
+		recs, err := ms.ledgerRecords.GetLedgersTsRange(nil, nil, []string{"withdraw"}, &a, &from, &to, offset, 1000)
+		if err != nil {
+			return 0, false
+		}
+		for _, r := range recs {
+			if r.Amount < 0 {
+				gross -= r.Amount
+			} else {
+				gross += r.Amount
+			}
+		}
+		if len(recs) < 1000 {
+			break
+		}
+		offset += len(recs)
+	}
+	// gross is bounded by supply, so gross*lead can't overflow int64 in practice.
+	num, den := cp.HotFloatSafety()
+	target := (gross * int64(cp.HotFloatRefillLead()) / int64(window)) * num / den
+	if target < floor {
+		target = floor
+	}
+	return target, true
+}
+
 // isCommitteeMember reports whether `account` is in the committee active at bh.
 // Used as a pre-flight before broadcasting a solvency vsc.halt so a non-member
 // node doesn't post an op executeHalt will silently ignore. Direct account match
@@ -801,12 +859,26 @@ func (ms *MultiSig) broadcastHalt(bh uint64, reason string) {
 // under-aged withdrawals at the front of the queue cannot occupy the batch window
 // and starve newer eligible actions. Pure + deterministic: every cosigner
 // reproduces the identical selection from the same sorted input.
-func selectEligibleActions(actions []ledgerDb.ActionRecord, delayActive bool, bh uint64) []ledgerDb.ActionRecord {
+func selectEligibleActions(actions []ledgerDb.ActionRecord, delayActive bool, bh uint64, liquid map[string]int64) []ledgerDb.ActionRecord {
 	selected := make([]ledgerDb.ActionRecord, 0, ledgerDb.MaxGatewayActionBatch)
 	for _, action := range actions {
-		if delayActive && action.Type == "withdraw" &&
-			bh < action.BlockHeight+outboundDelayBlocks(action.Amount) {
-			continue // under-aged: leave pending, re-select on a later tick
+		if action.Type == "withdraw" {
+			if delayActive && bh < action.BlockHeight+outboundDelayBlocks(action.Amount) {
+				continue // under-aged (value-scaled delay): leave pending, re-select later
+			}
+			// v0.6.0 majority-to-savings coverage/hold: when a liquid budget is
+			// supplied (feature active), a withdrawal that exceeds the remaining
+			// liquid for its asset is HELD — the reorder refills the float from
+			// savings and it settles on a later tick. Without this the batch's L1
+			// transfer would overdraft the (now small) liquid balance and fail the
+			// WHOLE batch. Deterministic: budget is ledger-derived, actions are in
+			// deterministic (block_height, id) order. nil budget => pre-0.6.0, no gate.
+			if liquid != nil {
+				if action.Amount > liquid[action.Asset] {
+					continue // insufficient liquid: hold this withdrawal
+				}
+				liquid[action.Asset] -= action.Amount
+			}
 		}
 		selected = append(selected, action)
 		if len(selected) >= ledgerDb.MaxGatewayActionBatch {
@@ -814,6 +886,131 @@ func selectEligibleActions(actions []ledgerDb.ActionRecord, delayActive bool, bh
 		}
 	}
 	return selected
+}
+
+// liquidBudget returns the per-asset DETERMINISTIC liquid balance the gateway can
+// pay out this tick, or (nil, true) when majority-to-savings is inactive (pre-0.6.0
+// selection unchanged). liquid = Σ(non-system user <asset>) − reserve, where the
+// reserve is the fr_sync-managed savings on system:fr_balance (user hbd_savings
+// cancels: it is in both the total and the savings). Conservative — on-chain ≥ this
+// (interest only adds surplus) — so a "covered" withdrawal can always be paid.
+// ok=false on a balance-read error, so the caller skips the tick rather than risk
+// an overdraft. (TODO perf: a full GetAll per action tick is heavy on mainnet —
+// see MAJORITY-SAVINGS-NOTES.md; replace with a sum-aggregate or a tracked counter.)
+func (ms *MultiSig) liquidBudget(bh uint64) (map[string]int64, bool) {
+	if ms.se == nil || !consensusversion.MajoritySavingsActive(ms.se.ActiveConsensusVersion(bh)) {
+		return nil, true // inactive: no coverage gate
+	}
+	recs, err := ms.balanceDb.GetAll(bh)
+	if err != nil {
+		return nil, false // active but read failed: skip rather than overdraft
+	}
+	var userHbd, userHive, reserveHbd, reserveHive int64
+	for _, r := range recs {
+		if strings.HasPrefix(r.Account, "system:") {
+			if r.Account == "system:fr_balance" {
+				reserveHbd += r.HBD_SAVINGS
+				reserveHive += r.HIVE_SAVINGS
+			}
+			continue
+		}
+		userHbd += r.HBD
+		// HIVE backing = liquid + consensus bonds (all physically gateway-held);
+		// mirrors the totalHive the HIVE sweep targets.
+		userHive += r.Hive + r.HIVE_CONSENSUS
+	}
+	// A withdrawal DEBITS L2 when its op is processed but its HBD/HIVE only leaves
+	// the gateway on settlement — so a pending (delayed or coverage-held) withdrawal
+	// is still physically liquid. Add it back, or the estimate under-counts liquid
+	// during the debit->settle window and wrongly holds payable withdrawals.
+	pendHbd, ok1 := ms.sumPendingWithdrawals("hbd")
+	pendHive, ok2 := ms.sumPendingWithdrawals("hive")
+	if !ok1 || !ok2 {
+		return nil, false
+	}
+	// Subtract in-flight (unmatured) savings withdrawals. syncBalance debits the
+	// reserve the instant it UNstakes, but Hive holds the HBD in savings for ~3 days
+	// before it becomes liquid. Over that window the reserve under-states parked
+	// funds, so without this the estimate would over-count liquid and could
+	// authorize an L1 overdraft (the whole batch would then fail). Each unstake
+	// ages out of the window exactly as its cash matures, so a held withdrawal
+	// becomes payable right when the funds land. (HBD only until P3 mirrors HIVE.)
+	inflightHbd, ok3 := ms.inflightUnstakes("hbd_savings", bh)
+	inflightHive, ok4 := ms.inflightUnstakes("hive_savings", bh)
+	if !ok3 || !ok4 {
+		return nil, false
+	}
+	liq := map[string]int64{
+		"hbd":  userHbd + pendHbd - reserveHbd - inflightHbd,
+		"hive": userHive + pendHive - reserveHive - inflightHive,
+	}
+	if liq["hbd"] < 0 {
+		liq["hbd"] = 0
+	}
+	if liq["hive"] < 0 {
+		liq["hive"] = 0
+	}
+	return liq, true
+}
+
+// inflightUnstakes returns the magnitude of savings withdrawals the gateway has
+// UNstaked (via fr_sync) but that have not yet matured to liquid — the sum of
+// negative fr_sync ledger deltas on the FR virtual account over the trailing
+// savingsWithdrawDelayBlocks. Deterministic (order-independent sum over a fixed
+// block window). savingsAsset is the reserve asset key, e.g. "hbd_savings".
+func (ms *MultiSig) inflightUnstakes(savingsAsset string, bh uint64) (int64, bool) {
+	if ms.ledgerRecords == nil {
+		return 0, true
+	}
+	delay := ms.sconf.ConsensusParams().SavingsWithdrawDelay()
+	var from uint64
+	if bh > delay {
+		from = bh - delay
+	}
+	to := bh
+	acct := "system:fr_balance"
+	a := ledgerDb.Asset(savingsAsset)
+	var inflight int64
+	for offset := 0; ; {
+		recs, err := ms.ledgerRecords.GetLedgersTsRange(&acct, nil, []string{"fr_sync"}, &a, &from, &to, offset, 1000)
+		if err != nil {
+			return 0, false
+		}
+		for _, r := range recs {
+			if r.Amount < 0 { // an unstake: still in-flight within the window
+				inflight -= r.Amount
+			}
+		}
+		if len(recs) < 1000 {
+			break
+		}
+		offset += len(recs)
+	}
+	return inflight, true
+}
+
+// sumPendingWithdrawals returns the total amount of all still-pending withdrawal
+// actions for an asset — HBD/HIVE that debited L2 but has not yet settled on L1,
+// so it is still liquid in the gateway. Deterministic (order-independent sum).
+func (ms *MultiSig) sumPendingWithdrawals(asset string) (int64, bool) {
+	status := "pending"
+	a := ledgerDb.Asset(asset)
+	types := []string{"withdraw"}
+	var sum int64
+	for offset := 0; ; {
+		recs, err := ms.ledgerActions.GetActionsRange(nil, nil, nil, types, &a, &status, nil, nil, offset, 1000)
+		if err != nil {
+			return 0, false
+		}
+		for _, r := range recs {
+			sum += r.Amount
+		}
+		if len(recs) < 1000 {
+			break
+		}
+		offset += len(recs)
+	}
+	return sum, true
 }
 
 func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
@@ -853,7 +1050,11 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	// larger than the scan window only DEFERS newer actions until the oldest
 	// under-aged cohort matures; the proper query-level fix is a persisted
 	// eligible_height — see VAULT-PROTECTIONS-HANDOVER.md.)
-	actions = selectEligibleActions(actions, ms.outboundDelayActive(bh), bh)
+	liquid, ok := ms.liquidBudget(bh)
+	if !ok {
+		return signingPackage{}, errors.New("liquid budget unavailable; skipping actions")
+	}
+	actions = selectEligibleActions(actions, ms.outboundDelayActive(bh), bh, liquid)
 	if len(actions) == 0 {
 		return signingPackage{}, errors.New("no eligible actions to process")
 	}
@@ -1039,14 +1240,12 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 	//This account is considered a "virtual" account.
 	balRecord, _ := ms.balanceDb.GetBalanceRecord("system:fr_balance", bh)
 
-	if balRecord != nil {
-		// audit GV-L6: guard the bh-SYNC_INTERVAL subtract — on a fresh chain
-		// (bh < SYNC_INTERVAL) it underflows to ~MaxUint64, making the freshness
-		// check always false and bypassing the "no sync to process" guard.
-		if bh < SYNC_INTERVAL || balRecord.BlockHeight > bh-SYNC_INTERVAL {
-			return signingPackage{}, errors.New("no sync to process")
-		}
-	}
+	// Freshness gate: a normal sync runs at most every SYNC_INTERVAL. The decision
+	// is DEFERRED until the float is measured below, so a v0.6.0 proactive low-water
+	// refill can bypass it (GetAll is now a single aggregate, so measuring first is
+	// cheap). GV-L6: guard the bh-SYNC_INTERVAL subtract — on a fresh chain
+	// (bh < SYNC_INTERVAL) it underflows to ~MaxUint64.
+	fresh := balRecord != nil && (bh < SYNC_INTERVAL || balRecord.BlockHeight > bh-SYNC_INTERVAL)
 
 	stakedBal := int64(0)
 	if balRecord != nil {
@@ -1060,6 +1259,11 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 		return signingPackage{}, errors.New("balance enumeration failed")
 	}
 	topBalances := make([]int64, 0)
+	// v0.6.0 majority-to-savings HIVE leg: the gateway physically holds ALL user
+	// HIVE — liquid (Hive) AND consensus-bond backing (HIVE_CONSENSUS) — since
+	// consensus stake/unstake are ledger-only bucket moves. Sum both for the sweep.
+	totalHive := int64(0)
+	hiveAccounts := 0
 	for _, record := range balRecords {
 		//Don't include any system balances
 		if !strings.HasPrefix(record.Account, "system:") {
@@ -1067,6 +1271,11 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 			balList[record.Account] = record.HBD
 
 			topBalances = append(topBalances, int64(record.HBD))
+
+			if hb := record.Hive + record.HIVE_CONSENSUS; hb > 0 {
+				totalHive += hb
+				hiveAccounts++
+			}
 
 			// fmt.Println("syncBalance - appending", record.Account, record.HBD)
 		}
@@ -1085,8 +1294,48 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 		totalBal = totalBal + bal
 	}
 
-	//1/3 of the majority accounts
+	// v0.6.0 proactive reorder: measure each asset's projected liquid float
+	// (backing − reserve) and, if either has fallen below a low-water fraction of its
+	// target, BYPASS the freshness gate to start a refill unstake NOW instead of
+	// waiting up to a full SYNC_INTERVAL. Self-limiting: the fr_sync unstake this run
+	// emits debits the reserve immediately, so next tick the projection is back above
+	// low-water and the bypass stops. hotFloat read errors leave it false (fall back
+	// to the freshness gate). Inert below 0.6.0 -> pre-activation behavior unchanged.
+	proactiveRefill := false
+	if ms.se != nil && consensusversion.MajoritySavingsActive(ms.se.ActiveConsensusVersion(bh)) {
+		hiveReserve := int64(0)
+		if balRecord != nil {
+			hiveReserve = balRecord.HIVE_SAVINGS
+		}
+		lwNum, lwDen := ms.sconf.ConsensusParams().HotFloatLowWater()
+		if hf, ok := ms.hotFloat("hbd", bh); ok && totalBal-stakedBal < hf*lwNum/lwDen {
+			proactiveRefill = true
+		}
+		if hf, ok := ms.hotFloat("hive", bh); ok && hiveAccounts >= 6 && totalHive-hiveReserve < hf*lwNum/lwDen {
+			proactiveRefill = true
+		}
+	}
+	if fresh && !proactiveRefill {
+		return signingPackage{}, errors.New("no sync to process")
+	}
+
+	// Reserve target. Below the 0.6.0 floor: legacy 1/3-to-savings (replay-
+	// identical). At/above 0.6.0: keep only a flow-sized hot float liquid and
+	// sweep the MAJORITY to Hive savings — the un-bypassable timelock on the
+	// reserve (v0.6.0 vault protections). liquid = totalBal - stakeAmt, so
+	// stakeAmt = totalBal - hotFloat.
 	stakeAmt := totalBal / 3
+	if ms.se != nil && consensusversion.MajoritySavingsActive(ms.se.ActiveConsensusVersion(bh)) {
+		hf, ok := ms.hotFloat("hbd", bh)
+		if !ok {
+			return signingPackage{}, errors.New("hot-float unavailable; skipping fr sync")
+		}
+		if hf < totalBal {
+			stakeAmt = totalBal - hf
+		} else {
+			stakeAmt = 0 // the float already covers the whole liability; keep it liquid
+		}
+	}
 
 	var hbdToStake int64
 	var hbdToUnstake int64
@@ -1122,12 +1371,65 @@ func (ms *MultiSig) syncBalance(bh uint64) (signingPackage, error) {
 		op := ms.hiveCreator.TransferFromSavings(ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), unstakeAmtStr, ms.toHiveAssetName("hbd"), "Unstaking "+unstakeAmtStr+" HBD", int(bh+1))
 
 		ops = append(ops, op)
+	} else {
+		// Below the churn minimum: no HBD savings op this tick, so the header MUST
+		// report a zero HBD delta — otherwise (now that the HIVE leg can make `ops`
+		// non-empty) the fr_sync would move the reserve with no matching L1 transfer.
+		hbdToStake, hbdToUnstake = 0, 0
+	}
+
+	// ===== HIVE leg (v0.6.0 majority-to-savings) — mirrors the HBD sweep =====
+	// Parks the majority of the gateway's HIVE (liquid + consensus bonds — the
+	// biggest pile) behind Hive's 3-day savings timelock. HIVE savings earns no
+	// interest but the timelock is identical. Gated on 0.6.0 with its own >=6-holder
+	// guard so pre-activation replay is byte-identical (no hive op, no header delta).
+	var hiveToStake, hiveToUnstake int64
+	if ms.se != nil && consensusversion.MajoritySavingsActive(ms.se.ActiveConsensusVersion(bh)) && hiveAccounts >= 6 {
+		hiveStakedBal := int64(0)
+		if balRecord != nil {
+			hiveStakedBal = balRecord.HIVE_SAVINGS
+		}
+		hf, ok := ms.hotFloat("hive", bh)
+		if !ok {
+			return signingPackage{}, errors.New("hive hot-float unavailable; skipping fr sync")
+		}
+		hiveStakeAmt := int64(0)
+		if hf < totalHive {
+			hiveStakeAmt = totalHive - hf
+		}
+		if hiveStakeAmt > hiveStakedBal {
+			hiveToStake = hiveStakeAmt - hiveStakedBal
+		} else if hiveStakeAmt < hiveStakedBal {
+			hiveToUnstake = hiveStakedBal - hiveStakeAmt
+		}
+
+		if (hiveToStake > 100_000 || hiveStakedBal < 150_000) && hiveToStake != 0 {
+			amtStr, err := common.FormatAssetAmount(hiveToStake, "hive")
+			if err != nil {
+				return signingPackage{}, fmt.Errorf("format hive stake amount: %w", err)
+			}
+			ops = append(ops, ms.hiveCreator.TransferToSavings(
+				ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hive"),
+				"Staking "+amtStr+" HIVE"))
+		} else if (hiveToUnstake > 10_000 || hiveStakedBal < 10_000) && hiveToUnstake != 0 {
+			amtStr, err := common.FormatAssetAmount(hiveToUnstake, "hive")
+			if err != nil {
+				return signingPackage{}, fmt.Errorf("format hive unstake amount: %w", err)
+			}
+			ops = append(ops, ms.hiveCreator.TransferFromSavings(
+				ms.sconf.GatewayWallet(), ms.sconf.GatewayWallet(), amtStr, ms.toHiveAssetName("hive"),
+				"Unstaking "+amtStr+" HIVE", int(bh+1)))
+		} else {
+			hiveToStake, hiveToUnstake = 0, 0 // below churn minimum: no op, no header delta
+		}
 	}
 
 	if len(ops) > 0 {
 		header := map[string]interface{}{
-			"stake_amt":   hbdToStake,
-			"unstake_amt": hbdToUnstake,
+			"stake_amt":        hbdToStake,
+			"unstake_amt":      hbdToUnstake,
+			"hive_stake_amt":   hiveToStake,
+			"hive_unstake_amt": hiveToUnstake,
 		}
 
 		headerBytes, _ := json.Marshal(header)

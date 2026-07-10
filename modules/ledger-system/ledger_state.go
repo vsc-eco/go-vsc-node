@@ -219,6 +219,10 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 		base = balRecord.Hive
 	case "hbd_savings":
 		base = balRecord.HBD_SAVINGS
+	case "hive_savings":
+		// v0.6.0 majority-to-savings HIVE reserve (mirror of hbd_savings): snapshot
+		// base + the sum of hive_savings fr_sync deltas past the snapshot height.
+		base = balRecord.HIVE_SAVINGS
 	case "hive_consensus":
 		// Develop's CRIT-1 path: take the snapshot bond as the base and fall
 		// through to the general sum-all-records-minus-meta fold below, which

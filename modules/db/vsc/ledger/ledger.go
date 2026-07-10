@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"vsc-node/modules/common"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -386,23 +385,37 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 }
 
 func (balances *balances) GetAll(blockHeight uint64) ([]BalanceRecord, error) {
-	distinctAccountZ, err := balances.Distinct(context.Background(), "account", bson.M{})
+	// Single aggregate replacing the former Distinct + one-GetBalanceRecord-PER-
+	// ACCOUNT loop (thousands of Mongo round-trips at mainnet scale, run every
+	// gateway action tick by the coverage check). For each account it takes the
+	// latest snapshot with block_height <= blockHeight — byte-identical to the old
+	// per-account result set (GetBalanceRecord is exactly "latest <= bh"), just
+	// derived in one pass. (account, block_height) is unique per snapshot; the _id
+	// tiebreaker keeps $first fully deterministic regardless.
+	pipe := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{{Key: "block_height", Value: bson.D{{Key: "$lte", Value: blockHeight}}}}}},
+		{{Key: "$sort", Value: bson.D{{Key: "block_height", Value: -1}, {Key: "_id", Value: -1}}}},
+		{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$account"}, {Key: "doc", Value: bson.D{{Key: "$first", Value: "$$ROOT"}}}}}},
+		{{Key: "$replaceRoot", Value: bson.D{{Key: "newRoot", Value: "$doc"}}}},
+	}
+	cursor, err := balances.Aggregate(context.Background(), pipe)
 	if err != nil {
 		return nil, err
 	}
-	distinctAccount := common.ArrayToStringArray(distinctAccountZ)
+	defer cursor.Close(context.Background())
 
 	records := make([]BalanceRecord, 0)
-	for _, act := range distinctAccount {
-		br, err := balances.GetBalanceRecord(act, blockHeight)
-		if err != nil {
-			return nil, err
+	for cursor.Next(context.Background()) {
+		var br BalanceRecord
+		if err := cursor.Decode(&br); err != nil {
+			// Match GetBalanceRecord's M-10 fail-stop on an undecodable row.
+			return nil, fmt.Errorf("GetAll balance record decode failed: %w", err)
 		}
-		if br != nil {
-			records = append(records, *br)
-		}
+		records = append(records, br)
 	}
-
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
 	return records, nil
 }
 

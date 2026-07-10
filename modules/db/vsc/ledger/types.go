@@ -54,6 +54,11 @@ type BalanceRecord struct {
 	HIVE_CONSENSUS    int64  `json:"hive_consensus" bson:"hive_consensus"`
 	HBD               int64  `json:"hbd" bson:"hbd"`
 	HBD_SAVINGS       int64  `json:"hbd_savings" bson:"hbd_savings"`
+	// HIVE_SAVINGS is the gateway's HIVE fractional-reserve parked in Hive savings
+	// (v0.6.0 majority-to-savings). Additive/append-only: a missing bson field on
+	// pre-0.6.0 snapshots decodes to 0, and no `hive_savings` ledger records exist
+	// below the floor, so replay of pre-activation history is byte-identical.
+	HIVE_SAVINGS      int64  `json:"hive_savings" bson:"hive_savings"`
 	HBD_AVG           int64  `json:"hbd_avg" bson:"hbd_avg"`
 	HBD_CLAIM_HEIGHT  uint64 `json:"hbd_claim" bson:"hbd_claim"`
 	HBD_MODIFY_HEIGHT uint64 `json:"hbd_modify" bson:"hbd_modify"`
