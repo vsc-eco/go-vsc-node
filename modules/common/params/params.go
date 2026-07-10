@@ -97,7 +97,7 @@ var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
-var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts
+var RC_HIVE_FREE_AMOUNT int64 = 10_000 // 5 HBD worth of RCs for Hive accounts. Devnet/mocknet raise this in system-config.FromNetwork so ephemeral test accounts (which hold ~0 HBD) can afford the gas of SPV-heavy ops (map/migrate); mainnet/testnet keep this production default.
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract

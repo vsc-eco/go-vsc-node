@@ -63,7 +63,13 @@ func (tssReqs *tssRequests) SetSignedRequest(req TssRequest) error {
 		return nil
 	}
 
-	updateOptions := options.FindOneAndUpdate().SetUpsert(true)
+	// ReturnDocument(After) so an upsert-INSERT returns the newly-inserted doc rather
+	// than the (nonexistent) pre-image — otherwise FindOneAndUpdate reports
+	// mongo.ErrNoDocuments on every successful first enqueue, producing a spurious
+	// "failed to enqueue" WARN even though the write succeeded (devnet-found LOW,
+	// misleading during BRK-2 vault check-sig enqueues). An UPDATE of an existing doc
+	// still returns nil either way.
+	updateOptions := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
 	singeResult := tssReqs.FindOneAndUpdate(context.Background(), bson.M{
 		"key_id": req.KeyId,
 		"msg":    req.Msg,

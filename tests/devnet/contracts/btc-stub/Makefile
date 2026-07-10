@@ -11,7 +11,7 @@ CONTRACTS_DIR	:= contract
 TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
 
-TINYGO_CMD = docker run --rm \
+TINYGO_CMD = docker run --rm -e HOME=/tmp \
     -u $(shell id -u):$(shell id -g) \
     -v $(CURDIR):$(WORKDIR) \
     -w $(WORKDIR) \
