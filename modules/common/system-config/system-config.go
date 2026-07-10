@@ -519,8 +519,13 @@ func FromNetwork(network string) SystemConfig {
 	case "testnet":
 		return TestnetConfig()
 	case "devnet":
+		// Ephemeral test network: accounts hold ~0 HBD, so raise the free-RC allowance
+		// so integration tests can afford the gas of SPV-heavy ops (map/migrate).
+		// Mainnet/testnet keep the params.go production default (10_000).
+		params.RC_HIVE_FREE_AMOUNT = 1_000_000
 		return DevnetConfig()
 	case "mocknet":
+		params.RC_HIVE_FREE_AMOUNT = 1_000_000
 		return MocknetConfig()
 	default:
 		panic(fmt.Errorf("invalid network"))
