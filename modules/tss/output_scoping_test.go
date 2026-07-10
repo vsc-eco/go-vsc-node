@@ -179,6 +179,30 @@ func TestEvaluateScope_SuccessorSweepAllowed(t *testing.T) {
 	}
 }
 
+// TestEvaluateScope_GenesisPendingAdmitsCheckSig proves the fix for the devnet-found
+// HIGH deadlock: a fresh genesis (exactly one Pending gen, zero Active) must ADMIT
+// that gen's own BRK-2 check-signature M (else it can never activate), while still
+// refusing any other sign from it.
+func TestEvaluateScope_GenesisPendingAdmitsCheckSig(t *testing.T) {
+	f := newScopeFixture(t)
+	f.state["v"] = marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: f.retiringPub, Backup: f.backupPub, Status: btcvault.VaultStatusPending, CreatedHeight: 1},
+	)
+	// findKey(gen0KeyId) returns f.retiringPub (fixture default), so M binds to it.
+	m := btcvault.CheckSigMessage(f.gen0KeyId, 0, f.retiringPub)
+	if got := f.deps.evaluateScope(f.gen0KeyId, m); got != scopeCheckSig {
+		t.Fatalf("genesis pending check-sig M: got %v, want scopeCheckSig (deadlock fix)", got)
+	}
+	// A NON-check-sig sign from the same pending gen is still refused (fail-closed).
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
+		t.Fatalf("genesis pending non-M sign: got %v, want scopeRefuse", got)
+	}
+	// A different keyId under genesis-pending is refused too.
+	if got := f.deps.evaluateScope(f.gen1KeyId, m); got != scopeRefuse {
+		t.Fatalf("genesis pending, wrong keyId: got %v, want scopeRefuse", got)
+	}
+}
+
 func TestEvaluateScope_ActiveGenUnrestricted(t *testing.T) {
 	f := newScopeFixture(t)
 	if got := f.deps.evaluateScope(f.gen1KeyId, []byte{0xde, 0xad}); got != scopeAllow {
