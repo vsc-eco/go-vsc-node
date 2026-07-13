@@ -336,6 +336,23 @@ func (m *mockStateStore) MarkTransactionConfirmed(ctx context.Context, txID stri
 	return nil
 }
 
+func (m *mockStateStore) SetConfirmSpendRetry(ctx context.Context, txID string, r database.ConfirmSpendRetry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, ok := m.txs[txID]
+	if !ok || tx.State != database.TxStateSent {
+		return database.ErrTxNotFound
+	}
+	first := r.FirstAttemptAt
+	next := r.NextAttemptAt
+	tx.ConfirmAttempts = r.Attempts
+	tx.FirstConfirmAttemptAt = &first
+	tx.NextConfirmAttemptAt = &next
+	tx.ConfirmAbandoned = r.Abandoned
+	tx.LastConfirmError = r.LastError
+	return nil
+}
+
 func (m *mockStateStore) GetSentTransactionIDs(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -71,6 +71,37 @@ type Transaction struct {
 	SentAtHeight      uint64          `bson:"sentAtHeight,omitempty"`
 	ConfirmedAt       *time.Time      `bson:"confirmedAt,omitempty"`
 	Signatures        []SignatureSlot `bson:"signatures,omitempty"`
+
+	// confirmSpend anti-stuck bookkeeping — populated only while a tx is "sent"
+	// and its confirmSpend contract calls keep failing. Drives exponential
+	// backoff between attempts and give-up after a bounded retry window.
+	ConfirmAttempts       uint64     `bson:"confirmAttempts,omitempty"`
+	FirstConfirmAttemptAt *time.Time `bson:"firstConfirmAttemptAt,omitempty"`
+	NextConfirmAttemptAt  *time.Time `bson:"nextConfirmAttemptAt,omitempty"`
+	ConfirmAbandoned      bool       `bson:"confirmAbandoned,omitempty"`
+	LastConfirmError      string     `bson:"lastConfirmError,omitempty"`
+}
+
+// ConfirmSpendRetry carries the confirmSpend retry bookkeeping to persist after a
+// failed attempt. The retry policy (backoff schedule, give-up window) lives in
+// the mapper; this struct is just the computed result to store.
+type ConfirmSpendRetry struct {
+	Attempts       uint64
+	FirstAttemptAt time.Time
+	NextAttemptAt  time.Time
+	Abandoned      bool
+	LastError      string
+}
+
+// AbandonedConfirmSpend is a projection of a sent tx whose confirmSpend retries
+// were exhausted. It deliberately omits rawTx/signatures so it is safe to expose
+// via the health endpoint.
+type AbandonedConfirmSpend struct {
+	TxID             string     `bson:"_id"                   json:"txId"`
+	ConfirmAttempts  uint64     `bson:"confirmAttempts"       json:"confirmAttempts"`
+	LastConfirmError string     `bson:"lastConfirmError"      json:"lastConfirmError,omitempty"`
+	FirstAttemptAt   *time.Time `bson:"firstConfirmAttemptAt" json:"firstAttemptAt,omitempty"`
+	SentAtHeight     uint64     `bson:"sentAtHeight"          json:"sentAtHeight,omitempty"`
 }
 
 // SignatureSlot represents a signature slot in a transaction

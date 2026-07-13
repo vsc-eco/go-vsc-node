@@ -72,14 +72,16 @@ func mapBotHttpServer(
 }
 
 type healthResponse struct {
-	Status          string                 `json:"status"`
-	BlockHeight     uint64                 `json:"blockHeight"`
-	LastBlockAt     *string                `json:"lastBlockAt"`
-	StaleSecs       *int64                 `json:"staleSecs,omitempty"`
-	PendingSentTxs  int                    `json:"pendingSentTxs"`            // txs broadcast but not yet confirmed
-	PendingUnsigned int                    `json:"pendingUnsigned,omitempty"` // txs awaiting TSS signatures
-	FailedVscTxs    []database.FailedVscTx `json:"failedVscTxs,omitempty"`    // VSC txs that reached FAILED status
-	Issues          []string               `json:"issues,omitempty"`          // specific problems detected
+	Status                 string                           `json:"status"`
+	BlockHeight            uint64                           `json:"blockHeight"`
+	LastBlockAt            *string                          `json:"lastBlockAt"`
+	StaleSecs              *int64                           `json:"staleSecs,omitempty"`
+	PendingSentTxs         int                              `json:"pendingSentTxs"`                   // txs broadcast but not yet confirmed
+	PendingUnsigned        int                              `json:"pendingUnsigned,omitempty"`        // txs awaiting TSS signatures
+	FailedVscTxs           []database.FailedVscTx           `json:"failedVscTxs,omitempty"`           // VSC txs that reached FAILED status
+	StuckConfirmSpends     int                              `json:"stuckConfirmSpends,omitempty"`     // sent txs whose confirmSpend retries were exhausted
+	AbandonedConfirmSpends []database.AbandonedConfirmSpend `json:"abandonedConfirmSpends,omitempty"` // detail (ops-authenticated only)
+	Issues                 []string                         `json:"issues,omitempty"`                 // specific problems detected
 }
 
 func healthHandler(bot *mapper.Bot) http.HandlerFunc {
@@ -151,6 +153,21 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 				resp.FailedVscTxs = failedTxs
 			}
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
+		}
+
+		// Flag confirmSpends that exhausted their retry window — these are stuck
+		// (payload/contract divergence or a prolonged outage) and won't self-heal
+		// without operator action. Detail (txId + last error) is ops-authenticated.
+		abandoned, err := bot.Db.State.GetAbandonedConfirmSpends(ctx)
+		if err != nil {
+			issues = append(issues, "failed to query abandoned confirmSpends: "+err.Error())
+		} else if len(abandoned) > 0 {
+			resp.StuckConfirmSpends = len(abandoned)
+			if authorizedBearer(r.Header.Get("Authorization"), bot.BotConfig.OpsApiKey()) {
+				resp.AbandonedConfirmSpends = abandoned
+			}
+			issues = append(issues, fmt.Sprintf(
+				"%d confirmSpend(s) abandoned after exhausting retries", len(abandoned)))
 		}
 
 		if len(issues) > 0 {

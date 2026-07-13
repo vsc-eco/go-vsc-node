@@ -133,10 +133,12 @@ func main() {
 			if err != nil {
 				bot.L.Error("error deleting expired addresses", "err", err)
 			}
-			// Clean up txs stuck in "sent" state for > 7 days (likely failed broadcasts)
-			_, err = db.State.DeleteOldSentTransactions(ctx, 7*24*time.Hour)
+			// Prune fully-confirmed txs after 7 days. Sent txs (including
+			// stuck/abandoned confirmSpends) and pending txs are never removed —
+			// they stay available for retry and visible for operator attention.
+			_, err = db.State.DeleteOldConfirmedTransactions(ctx, 7*24*time.Hour)
 			if err != nil {
-				bot.L.Error("error deleting old sent transactions", "err", err)
+				bot.L.Error("error deleting old confirmed transactions", "err", err)
 			}
 			lastClear = time.Now()
 		}

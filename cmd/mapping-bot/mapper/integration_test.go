@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -92,6 +94,26 @@ func buildMinimalBlock(t *testing.T) []byte {
 
 	var buf bytes.Buffer
 	require.NoError(t, block.Serialize(&buf))
+	return buf.Bytes()
+}
+
+// buildRawSpendTx builds a serialized (witness-less) spend transaction with one
+// input and the given number of outputs — mirroring the unsigned tx the contract
+// stores in signing data. buildConfirmSpendPayload deserializes this to derive
+// the confirmSpend output indices, so tests that reach it need a real tx here
+// rather than a stub byte.
+func buildRawSpendTx(t *testing.T, numOutputs int) []byte {
+	t.Helper()
+	tx := wire.NewMsgTx(wire.TxVersion)
+	tx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: 0},
+		Sequence:         0xffffffff,
+	})
+	for i := 0; i < numOutputs; i++ {
+		tx.AddTxOut(&wire.TxOut{Value: int64(1000 * (i + 1)), PkScript: []byte{txscript.OP_TRUE}})
+	}
+	var buf bytes.Buffer
+	require.NoError(t, tx.Serialize(&buf))
 	return buf.Bytes()
 }
 
@@ -356,6 +378,51 @@ func TestHandleUnmap_EndToEnd(t *testing.T) {
 	assert.Equal(t, database.TxStatePending, tx.State)
 }
 
+// TestHandleUnmap_AlreadyInChainMarksSent verifies that when the broadcast is
+// rejected because the tx is already confirmed on-chain (Bitcoin Core -27), the
+// bot treats it as a successful send and transitions the tx to "sent" so the
+// normal confirmation path (HandleConfirmations → confirmSpend) can run.
+func TestHandleUnmap_AlreadyInChainMarksSent(t *testing.T) {
+	bot, gql, _, state, _, chainClient := newTestBotWithMocks()
+
+	// Broadcast is rejected: the tx's outputs are already in the UTXO set.
+	chainClient.postTxErr = chain.ErrTxAlreadyInChain
+
+	// A fully-signed pending tx keyed by its real txid (MarkTransactionSent
+	// looks the tx up by the broadcast tx's computed TxID).
+	rawTx := buildRawSpendTx(t, 2)
+	var mtx wire.MsgTx
+	require.NoError(t, mtx.Deserialize(bytes.NewReader(rawTx)))
+	txId := mtx.TxID()
+
+	state.mu.Lock()
+	state.txs[txId] = &database.Transaction{
+		TxID:              txId,
+		State:             database.TxStatePending,
+		RawTx:             rawTx,
+		TotalSignatures:   1,
+		CurrentSignatures: 1,
+		Signatures: []database.SignatureSlot{
+			{Index: 0, SigHash: make([]byte, 32), WitnessScript: []byte{txscript.OP_TRUE}, Signature: []byte{0x30, 0x06}},
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	state.mu.Unlock()
+
+	// No new spends or signatures arriving this cycle.
+	gql.txSpends = map[string]*contractinterface.SigningData{}
+	gql.signatures = map[string]database.SignatureUpdate{}
+
+	bot.HandleUnmap()
+
+	state.mu.Lock()
+	got := state.txs[txId]
+	state.mu.Unlock()
+	require.NotNil(t, got)
+	assert.Equal(t, database.TxStateSent, got.State,
+		"already-in-chain tx should be marked sent, not left pending")
+}
+
 // ---------------------------------------------------------------------------
 // TestHandleConfirmations_EndToEnd
 // ---------------------------------------------------------------------------
@@ -372,7 +439,7 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	sigHash := make([]byte, 32)
 	sigHash[0] = 0xBB
 	require.NoError(t, state.AddPendingTransaction(
-		context.Background(), "txConfirm1", []byte{0x01},
+		context.Background(), "txConfirm1", buildRawSpendTx(t, 2),
 		[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 	))
 	require.NoError(t, state.MarkTransactionSent(context.Background(), "txConfirm1", 100))
@@ -397,6 +464,13 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	calls := caller.getCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
+
+	// Verify: confirmSpend indices are the tx's OUTPUT vouts (what the contract
+	// promotes), not input signature indices. The stored raw tx has 2 outputs.
+	var params ConfirmSpendParams
+	require.NoError(t, json.Unmarshal(calls[0].Payload, &params))
+	assert.Equal(t, []uint32{0, 1}, params.Indices,
+		"indices must be output vouts so the contract can match the change UTXO")
 
 	// Verify: tx is now confirmed in the state store
 	state.mu.Lock()
@@ -690,7 +764,7 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 	for _, txID := range []string{"txA", "txB"} {
 		sigHash := make([]byte, 32)
 		sigHash[0] = txID[2] // use last char as distinguisher
-		require.NoError(t, state.AddPendingTransaction(ctx, txID, []byte{0x01},
+		require.NoError(t, state.AddPendingTransaction(ctx, txID, buildRawSpendTx(t, 2),
 			[]contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0x01}}},
 		))
 		require.NoError(t, state.MarkTransactionSent(ctx, txID, 100))
@@ -724,4 +798,120 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 	assert.Equal(t, database.TxStateConfirmed, state.txs["txA"].State)
 	assert.Equal(t, database.TxStateSent, state.txs["txB"].State)
 	state.mu.Unlock()
+}
+
+// TestConfirmSpendBackoff checks the exponential-backoff schedule: doubling from
+// the base, capped at the max.
+func TestConfirmSpendBackoff(t *testing.T) {
+	cases := []struct {
+		attempts uint64
+		want     time.Duration
+	}{
+		{0, confirmSpendBaseBackoff}, // guarded to 1
+		{1, 1 * time.Minute},
+		{2, 2 * time.Minute},
+		{3, 4 * time.Minute},
+		{4, 8 * time.Minute},
+		{5, 16 * time.Minute},
+		{6, 32 * time.Minute},
+		{7, confirmSpendMaxBackoff}, // 64m capped to 1h
+		{8, confirmSpendMaxBackoff},
+		{100, confirmSpendMaxBackoff}, // large shift stays capped, no overflow
+	}
+	for _, tc := range cases {
+		if got := confirmSpendBackoff(tc.attempts); got != tc.want {
+			t.Errorf("confirmSpendBackoff(%d) = %s, want %s", tc.attempts, got, tc.want)
+		}
+	}
+}
+
+// TestHandleConfirmations_BackoffGateSkips verifies that a confirmed tx whose
+// next-attempt time is in the future is skipped without a confirmSpend call.
+func TestHandleConfirmations_BackoffGateSkips(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
+
+	next := time.Now().UTC().Add(1 * time.Hour)
+	state.mu.Lock()
+	state.txs["txBackoff"] = &database.Transaction{
+		TxID:                 "txBackoff",
+		State:                database.TxStateSent,
+		RawTx:                buildRawSpendTx(t, 2),
+		SentAtHeight:         100,
+		ConfirmAttempts:      3,
+		NextConfirmAttemptAt: &next,
+		CreatedAt:            time.Now().UTC(),
+	}
+	state.mu.Unlock()
+
+	blockBytes := buildMinimalBlock(t)
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	blockHash := block.BlockHash().String()
+	chainClient.rawBlocks[blockHash] = blockBytes
+	chainClient.txDetails["txBackoff"] = chain.TxConfirmationDetails{
+		Confirmed: true, BlockHeight: 500, BlockHash: blockHash, TxIndex: 0,
+	}
+
+	bot.HandleConfirmations()
+
+	assert.Empty(t, caller.getCalls(), "confirmSpend must not be called while backing off")
+	state.mu.Lock()
+	tx := state.txs["txBackoff"]
+	state.mu.Unlock()
+	assert.Equal(t, database.TxStateSent, tx.State)
+	assert.False(t, tx.ConfirmAbandoned)
+}
+
+// TestHandleConfirmations_AbandonsAfterWindow verifies that once the retry window
+// has elapsed, a failing confirmSpend is marked abandoned (and no longer retried).
+func TestHandleConfirmations_AbandonsAfterWindow(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
+	// Make every confirmSpend broadcast fail so callWithRetry returns an error.
+	caller.err = errors.New("simulated confirmSpend rejection")
+
+	first := time.Now().UTC().Add(-13 * time.Hour) // past the 12h give-up window
+	state.mu.Lock()
+	state.txs["txStuck"] = &database.Transaction{
+		TxID:                  "txStuck",
+		State:                 database.TxStateSent,
+		RawTx:                 buildRawSpendTx(t, 2),
+		SentAtHeight:          100,
+		ConfirmAttempts:       5,
+		FirstConfirmAttemptAt: &first,
+		CreatedAt:             time.Now().UTC(),
+	}
+	state.mu.Unlock()
+
+	blockBytes := buildMinimalBlock(t)
+	var block wire.MsgBlock
+	require.NoError(t, block.Deserialize(bytes.NewReader(blockBytes)))
+	blockHash := block.BlockHash().String()
+	chainClient.rawBlocks[blockHash] = blockBytes
+	chainClient.txDetails["txStuck"] = chain.TxConfirmationDetails{
+		Confirmed: true, BlockHeight: 500, BlockHash: blockHash, TxIndex: 0,
+	}
+
+	bot.HandleConfirmations()
+
+	// The confirmSpend was attempted (and failed).
+	calls := caller.getCalls()
+	require.NotEmpty(t, calls)
+	assert.Equal(t, "confirmSpend", calls[0].Action)
+
+	// The tx is now abandoned and surfaced via GetAbandonedConfirmSpends' filter.
+	state.mu.Lock()
+	tx := state.txs["txStuck"]
+	state.mu.Unlock()
+	assert.True(t, tx.ConfirmAbandoned, "tx should be abandoned after the retry window")
+	assert.Equal(t, database.TxStateSent, tx.State, "abandoned tx stays sent for operator visibility")
+	assert.NotEmpty(t, tx.LastConfirmError)
+
+	// A second cycle must NOT re-attempt an abandoned tx.
+	caller.mu.Lock()
+	caller.calls = nil
+	caller.mu.Unlock()
+	bot.HandleConfirmations()
+	assert.Empty(t, caller.getCalls(), "abandoned tx must not be retried")
 }

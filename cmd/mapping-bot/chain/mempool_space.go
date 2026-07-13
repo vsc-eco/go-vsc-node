@@ -3,11 +3,19 @@ package chain
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
+
+// ErrTxAlreadyInChain indicates a broadcast was rejected because the
+// transaction is already present on-chain — its outputs are already in the
+// UTXO set (Bitcoin Core RPC error code -27, RPC_VERIFY_ALREADY_IN_CHAIN).
+// Callers should treat this as "already broadcast" rather than a failure.
+var ErrTxAlreadyInChain = errors.New("transaction already in chain")
 
 // MempoolSpaceClient implements BlockchainClient using the mempool.space REST API.
 // Works for any chain that mempool.space supports (BTC mainnet/testnet, LTC via
@@ -199,7 +207,47 @@ func (m *MempoolSpaceClient) PostTx(rawTx string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if isAlreadyInChain(string(body)) {
+			return fmt.Errorf("%w: %s", ErrTxAlreadyInChain, string(body))
+		}
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
+}
+
+// isAlreadyInChain reports whether a sendrawtransaction error body indicates the
+// transaction is already confirmed on-chain (outputs already in the UTXO set).
+// mempool.space surfaces the node's RPC error verbatim, e.g.:
+//
+//	sendrawtransaction RPC error: {"code":-27,"message":"Transaction outputs already in utxo set"}
+//
+// We match both the RPC error code (-27) and the human-readable messages, since
+// the wording has changed across Bitcoin Core versions ("already in block chain"
+// pre-25, "outputs already in utxo set" after).
+func isAlreadyInChain(body string) bool {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "already in utxo set") ||
+		strings.Contains(lower, "already in block chain") {
+		return true
+	}
+	if code, ok := parseRPCErrorCode(body); ok && code == -27 {
+		return true
+	}
+	return false
+}
+
+// parseRPCErrorCode extracts the "code" field from a JSON RPC error object
+// embedded in an error body, if present.
+func parseRPCErrorCode(body string) (int, bool) {
+	i := strings.IndexByte(body, '{')
+	if i < 0 {
+		return 0, false
+	}
+	var e struct {
+		Code int `json:"code"`
+	}
+	if err := json.Unmarshal([]byte(body[i:]), &e); err != nil {
+		return 0, false
+	}
+	return e.Code, true
 }

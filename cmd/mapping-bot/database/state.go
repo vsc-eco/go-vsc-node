@@ -356,6 +356,61 @@ func (s *StateStore) MarkTransactionConfirmed(ctx context.Context, txID string) 
 	return nil
 }
 
+// SetConfirmSpendRetry persists the confirmSpend retry bookkeeping for a sent tx
+// after a failed attempt (attempt count, first-attempt anchor, next-attempt time,
+// and — once the retry window is exhausted — the abandoned flag). Only applies
+// while the tx is still in the "sent" state; returns ErrTxNotFound otherwise.
+func (s *StateStore) SetConfirmSpendRetry(ctx context.Context, txID string, r ConfirmSpendRetry) error {
+	set := bson.M{
+		"confirmAttempts":       r.Attempts,
+		"firstConfirmAttemptAt": r.FirstAttemptAt,
+		"nextConfirmAttemptAt":  r.NextAttemptAt,
+		"lastConfirmError":      r.LastError,
+	}
+	if r.Abandoned {
+		set["confirmAbandoned"] = true
+	}
+	result, err := s.txCollection.UpdateOne(
+		ctx,
+		bson.M{"_id": txID, "state": TxStateSent},
+		bson.M{"$set": set},
+	)
+	if err != nil {
+		return fmt.Errorf("failed to record confirmSpend retry [txID:%s]: %w", txID, err)
+	}
+	if result.MatchedCount == 0 {
+		return ErrTxNotFound
+	}
+	return nil
+}
+
+// GetAbandonedConfirmSpends returns sent txs whose confirmSpend retries were
+// exhausted (confirmAbandoned=true). The projection excludes rawTx/signatures so
+// the result is safe to expose via the health endpoint.
+func (s *StateStore) GetAbandonedConfirmSpends(ctx context.Context) ([]AbandonedConfirmSpend, error) {
+	opts := options.Find().SetProjection(bson.M{
+		"confirmAttempts":       1,
+		"lastConfirmError":      1,
+		"firstConfirmAttemptAt": 1,
+		"sentAtHeight":          1,
+	})
+	cursor, err := s.txCollection.Find(
+		ctx,
+		bson.M{"state": TxStateSent, "confirmAbandoned": true},
+		opts,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get abandoned confirmSpends: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var out []AbandonedConfirmSpend
+	if err := cursor.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("failed to decode abandoned confirmSpends: %w", err)
+	}
+	return out, nil
+}
+
 // IsTransactionProcessed checks if a transaction has been sent or confirmed
 func (s *StateStore) IsTransactionProcessed(ctx context.Context, txID string) (bool, error) {
 	count, err := s.txCollection.CountDocuments(ctx, bson.M{
@@ -458,15 +513,19 @@ func (s *StateStore) DeleteOldPendingTransactions(ctx context.Context, age time.
 	return result.DeletedCount, nil
 }
 
-// DeleteOldSentTransactions removes sent transactions sent before the given age
-func (s *StateStore) DeleteOldSentTransactions(ctx context.Context, age time.Duration) (int64, error) {
+// DeleteOldConfirmedTransactions removes fully-confirmed transactions confirmed
+// before the given age. Only the terminal "confirmed" state is eligible for
+// pruning: "pending" txs (never broadcast) and "sent" txs — including ones stuck
+// or abandoned mid-confirmSpend — are always retained so they remain available
+// for retry and visible for operator attention.
+func (s *StateStore) DeleteOldConfirmedTransactions(ctx context.Context, age time.Duration) (int64, error) {
 	cutoffTime := time.Now().UTC().Add(-age)
 	result, err := s.txCollection.DeleteMany(ctx, bson.M{
-		"state":  TxStateSent,
-		"sentAt": bson.M{"$lt": cutoffTime},
+		"state":       TxStateConfirmed,
+		"confirmedAt": bson.M{"$lt": cutoffTime},
 	})
 	if err != nil {
-		return 0, fmt.Errorf("failed to delete old sent transactions: %w", err)
+		return 0, fmt.Errorf("failed to delete old confirmed transactions: %w", err)
 	}
 	return result.DeletedCount, nil
 }

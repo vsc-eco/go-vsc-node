@@ -131,7 +131,36 @@ const (
 	// auto-retried — FAILED must be retried manually via /retry so operators
 	// can inspect the failure first.
 	broadcastRetryAttempts = 3
+
+	// confirmSpend anti-stuck guard. When a BTC tx is confirmed on-chain but its
+	// confirmSpend contract call keeps failing (a payload/contract divergence, or
+	// a transient VSC-side outage), HandleConfirmations would otherwise resubmit
+	// it every cycle forever. Instead we retry with exponential backoff and give
+	// up after confirmSpendGiveUpAfter, marking the tx abandoned and surfacing it
+	// on /health. ~12h covers almost all self-correcting outages while keeping the
+	// per-tx attempt count modest (~18 attempts).
+	confirmSpendBaseBackoff = 1 * time.Minute
+	confirmSpendMaxBackoff  = 1 * time.Hour
+	confirmSpendGiveUpAfter = 12 * time.Hour
 )
+
+// confirmSpendBackoff returns the wait before the next confirmSpend attempt given
+// how many attempts have already been made: exponential from confirmSpendBaseBackoff,
+// capped at confirmSpendMaxBackoff.
+func confirmSpendBackoff(attempts uint64) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	shift := attempts - 1
+	if shift > 20 { // guard against shift overflow; cap dominates long before this
+		return confirmSpendMaxBackoff
+	}
+	d := confirmSpendBaseBackoff << shift
+	if d <= 0 || d > confirmSpendMaxBackoff {
+		return confirmSpendMaxBackoff
+	}
+	return d
+}
 
 // ErrRetryThrottled is returned when a retry request is rejected due to throttling.
 var ErrRetryThrottled = errors.New("retry throttled")
@@ -354,6 +383,12 @@ func (b *Bot) postTxWithRetry(rawTx string, maxAttempts int) error {
 		lastErr = b.Chain.Client.PostTx(rawTx)
 		if lastErr == nil {
 			return nil
+		}
+		// The tx is already confirmed on-chain — retrying will only reproduce
+		// the same rejection. Surface it immediately so the caller can mark the
+		// tx sent instead of burning retries and stranding it in "pending".
+		if errors.Is(lastErr, chain.ErrTxAlreadyInChain) {
+			return lastErr
 		}
 		if attempt < maxAttempts {
 			backoff := time.Duration(attempt) * 2 * time.Second

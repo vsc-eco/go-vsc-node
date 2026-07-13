@@ -150,6 +150,68 @@ func TestIsTransactionProcessed_Unknown(t *testing.T) {
 	assert.False(t, processed)
 }
 
+// TestDeleteOldConfirmedTransactions verifies the prune only removes terminal
+// "confirmed" txs and never touches pending or sent (including stuck/abandoned)
+// transactions.
+func TestDeleteOldConfirmedTransactions(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+
+	pendingID := mkTxID("txPending")
+	sentID := mkTxID("txSent")
+	stuckID := mkTxID("txStuck")
+	confirmedID := mkTxID("txDone")
+
+	// pending — never broadcast
+	require.NoError(t, db.State.AddPendingTransaction(ctx, pendingID, []byte{0x01}, makeUnsignedSigHashes(makeSigHash(1))))
+
+	// sent — in flight
+	require.NoError(t, db.State.AddPendingTransaction(ctx, sentID, []byte{0x02}, makeUnsignedSigHashes(makeSigHash(2))))
+	require.NoError(t, db.State.MarkTransactionSent(ctx, sentID, 100))
+
+	// sent + abandoned — stuck confirmSpend
+	require.NoError(t, db.State.AddPendingTransaction(ctx, stuckID, []byte{0x03}, makeUnsignedSigHashes(makeSigHash(3))))
+	require.NoError(t, db.State.MarkTransactionSent(ctx, stuckID, 100))
+	now := time.Now().UTC()
+	require.NoError(t, db.State.SetConfirmSpendRetry(ctx, stuckID, database.ConfirmSpendRetry{
+		Attempts: 18, FirstAttemptAt: now.Add(-13 * time.Hour), NextAttemptAt: now, Abandoned: true, LastError: "stuck",
+	}))
+
+	// confirmed — terminal
+	require.NoError(t, db.State.AddPendingTransaction(ctx, confirmedID, []byte{0x04}, makeUnsignedSigHashes(makeSigHash(4))))
+	require.NoError(t, db.State.MarkTransactionSent(ctx, confirmedID, 100))
+	require.NoError(t, db.State.MarkTransactionConfirmed(ctx, confirmedID))
+
+	// A recently-confirmed tx must survive a 7-day age cutoff.
+	n, err := db.State.DeleteOldConfirmedTransactions(ctx, 7*24*time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "recently-confirmed tx must not be pruned by the age filter")
+
+	// With a cutoff covering now, only the confirmed tx is deleted.
+	n, err = db.State.DeleteOldConfirmedTransactions(ctx, -1*time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the confirmed tx should be deleted")
+
+	processed, err := db.State.IsTransactionProcessed(ctx, confirmedID)
+	require.NoError(t, err)
+	assert.False(t, processed, "confirmed tx should be gone")
+
+	// Pending retained.
+	_, err = db.State.GetPendingTransaction(ctx, pendingID)
+	assert.NoError(t, err, "pending tx must be retained")
+
+	// Sent (in-flight + abandoned) retained.
+	sentIDs, err := db.State.GetSentTransactionIDs(ctx)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{sentID, stuckID}, sentIDs, "sent txs (incl. abandoned) must be retained")
+
+	// The abandoned tx is still surfaced for operator attention.
+	abandoned, err := db.State.GetAbandonedConfirmSpends(ctx)
+	require.NoError(t, err)
+	require.Len(t, abandoned, 1)
+	assert.Equal(t, stuckID, abandoned[0].TxID)
+}
+
 func TestUpdateSignatures_IncrementsCount(t *testing.T) {
 	db := setupTestDB(t)
 	ctx := context.Background()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -66,12 +67,24 @@ func (b *Bot) HandleUnmap() {
 		}
 		for _, tx := range txPairs {
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
+			err := b.postTxWithRetry(tx.RawTx, 3)
+			// "Already in chain" means a broadcast we (or another bot instance)
+			// made earlier already landed the tx. Treat it as a successful send:
+			// mark it sent so HandleConfirmations picks it up and fires
+			// confirmSpend once the confirmation block is ingested — no need to
+			// fast-track anything, the normal confirmation path handles it.
+			if err != nil && !errors.Is(err, chain.ErrTxAlreadyInChain) {
 				b.L.Warn("transaction failed to post after retries", "err", err, "txId", tx.TxId)
 				continue
 			}
+			if errors.Is(err, chain.ErrTxAlreadyInChain) {
+				b.L.Info("tx already on-chain, marking sent", "txId", tx.TxId)
+			}
 			height, _ := b.LastBlock()
-			b.stateDB().MarkTransactionSent(ctx, tx.TxId, height)
+			if err := b.stateDB().MarkTransactionSent(ctx, tx.TxId, height); err != nil &&
+				!errors.Is(err, database.ErrTxNotFound) {
+				b.L.Warn("failed to mark transaction sent", "err", err, "txId", tx.TxId)
+			}
 		}
 	}
 }
@@ -111,6 +124,14 @@ func (b *Bot) HandleConfirmations() {
 
 	for _, dbTx := range sentTxs {
 		txId := dbTx.TxID
+		now := time.Now().UTC()
+
+		// Anti-stuck guard: once the confirmSpend retry window is exhausted we
+		// stop resubmitting. The tx has been escalated (Error log + /health) and
+		// needs operator attention, so don't keep hammering the contract.
+		if dbTx.ConfirmAbandoned {
+			continue
+		}
 
 		details, err := b.Chain.Client.GetTxDetails(txId)
 		if err != nil {
@@ -129,16 +150,23 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
+		// Exponential-backoff gate: after a prior failure we only re-attempt once
+		// the scheduled backoff has elapsed, rather than every cycle.
+		if dbTx.NextConfirmAttemptAt != nil && now.Before(*dbTx.NextConfirmAttemptAt) {
+			continue
+		}
+
 		b.L.Info("tx confirmed on chain, building proof for confirmSpend", "txId", txId)
 
 		payload, err := b.buildConfirmSpendPayload(ctx, dbTx, details)
 		if err != nil {
 			b.L.Warn("failed to build confirmSpend payload", "txId", txId, "error", err)
+			b.recordConfirmSpendFailure(ctx, dbTx, now, "build payload: "+err.Error())
 			continue
 		}
 
 		if _, err := b.callWithRetry(ctx, payload, "confirmSpend", broadcastRetryAttempts); err != nil {
-			b.L.Warn("confirmSpend failed", "txId", txId, "error", err)
+			b.recordConfirmSpendFailure(ctx, dbTx, now, err.Error())
 			continue
 		}
 
@@ -148,6 +176,44 @@ func (b *Bot) HandleConfirmations() {
 		}
 
 		b.L.Info("tx confirmed and confirmSpend called", "txId", txId)
+	}
+}
+
+// recordConfirmSpendFailure applies the exponential-backoff / give-up bookkeeping
+// after a failed confirmSpend attempt for a sent tx, and logs at the appropriate
+// level. Once the retry window (confirmSpendGiveUpAfter) elapses since the first
+// attempt, the tx is marked abandoned so HandleConfirmations stops resubmitting it
+// and it is surfaced on /health for operator attention.
+func (b *Bot) recordConfirmSpendFailure(ctx context.Context, dbTx database.Transaction, now time.Time, errMsg string) {
+	attempts := dbTx.ConfirmAttempts + 1
+	first := now
+	if dbTx.FirstConfirmAttemptAt != nil {
+		first = *dbTx.FirstConfirmAttemptAt
+	}
+	backoff := confirmSpendBackoff(attempts)
+	abandoned := !now.Before(first.Add(confirmSpendGiveUpAfter))
+
+	// Keep the persisted error bounded — it is surfaced verbatim on /health.
+	if len(errMsg) > 500 {
+		errMsg = errMsg[:500]
+	}
+
+	if err := b.stateDB().SetConfirmSpendRetry(ctx, dbTx.TxID, database.ConfirmSpendRetry{
+		Attempts:       attempts,
+		FirstAttemptAt: first,
+		NextAttemptAt:  now.Add(backoff),
+		Abandoned:      abandoned,
+		LastError:      errMsg,
+	}); err != nil {
+		b.L.Warn("failed to record confirmSpend retry state", "txId", dbTx.TxID, "error", err)
+	}
+
+	if abandoned {
+		b.L.Error("confirmSpend abandoned after exhausting retry window; needs operator attention",
+			"txId", dbTx.TxID, "attempts", attempts, "window", confirmSpendGiveUpAfter.String(), "lastError", errMsg)
+	} else {
+		b.L.Warn("confirmSpend failed, backing off",
+			"txId", dbTx.TxID, "attempts", attempts, "nextAttemptIn", backoff.String(), "error", errMsg)
 	}
 }
 
@@ -176,15 +242,27 @@ func (b *Bot) buildConfirmSpendPayload(
 
 	rawTxHex := hex.EncodeToString(dbTx.RawTx)
 
-	// Collect the input indices that correspond to VSC-mapped UTXOs.
-	indices := make([]uint32, 0, len(dbTx.Signatures))
-	seen := make(map[uint32]struct{})
-	for _, sig := range dbTx.Signatures {
-		idx := uint32(sig.Index)
-		if _, ok := seen[idx]; !ok {
-			seen[idx] = struct{}{}
-			indices = append(indices, idx)
-		}
+	// confirmSpend's `indices` are OUTPUT vouts: the contract promotes its own
+	// unconfirmed change UTXOs (identified by txid + vout) to the confirmed pool.
+	// It filters the supplied indices against the change UTXOs it actually tracks
+	// for this txid, so listing every output index is both safe and correct —
+	// only genuine change outputs are promoted; the withdrawal destination output
+	// (untracked) is ignored.
+	//
+	// Previously this sent INPUT signature indices, which only happened to overlap
+	// a change vout for multi-input spends. A single-input withdrawal sent [0]
+	// while its change output sits at vout 1, so nothing matched and the contract
+	// reverted with "no unconfirmed outputs matched the provided indices" —
+	// leaving the tx in "sent" state and resubmitting confirmSpend every cycle
+	// forever. Deriving indices from the tx's actual outputs removes that
+	// divergence between the bot's payload and the on-chain transaction.
+	var msgTx wire.MsgTx
+	if err := msgTx.Deserialize(bytes.NewReader(dbTx.RawTx)); err != nil {
+		return nil, fmt.Errorf("failed to deserialize stored raw tx for confirmSpend indices: %w", err)
+	}
+	indices := make([]uint32, len(msgTx.TxOut))
+	for i := range msgTx.TxOut {
+		indices[i] = uint32(i)
 	}
 
 	params := ConfirmSpendParams{
