@@ -97,7 +97,20 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	pub := kd.PublicKey
 
 	// ---- VL-PEN-15: set-once — register primary, then a DIFFERENT primary must be rejected ----
-	s1 := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, pub, pub))
+	// Under v2 the register is only admitted once the BRK-2 genesis check-sig has landed,
+	// which takes a few blocks — a single unretried call races it and FAILS. Without this
+	// retry the register never succeeds, which also makes the VL-PEN-15 set-once assertion
+	// below VACUOUS (a second register is "rejected" only because the first never landed).
+	reg1 := fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, pub, pub)
+	s1 := ""
+	for i := 0; i < 14; i++ {
+		s1 = vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg1)
+		if isOK(s1) {
+			break
+		}
+		t.Logf("register not yet admitted (awaiting genesis check-sig)... retry %d", i)
+		time.Sleep(15 * time.Second)
+	}
 	record("VL-GP-02b", "registerPublicKey(primary) accepted", isOK(s1), "status="+s1)
 	// a different key (flip last hex char)
 	diff := flipLastHex(pub)
@@ -105,8 +118,16 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	record("VL-PEN-15", "set-once: re-register different primary rejected", !isOK(s2), "status="+s2)
 
 	// ---- VL-GP-11: activateKey (BRK-2 check-sig gated under v2) ----
-	time.Sleep(20 * time.Second) // allow the node's check-sig ceremony to land
-	s3 := vstatus(t, d, ctx, 1, cid, "activateKey", "")
+	// A single sleep races the check-sig ceremony (stage-4/5 retry for the same reason).
+	// If this call loses the race, VL-PEN-10 below also goes vacuous.
+	s3 := ""
+	for i := 0; i < 12; i++ {
+		s3 = vstatus(t, d, ctx, 1, cid, "activateKey", "")
+		if isOK(s3) {
+			break
+		}
+		time.Sleep(15 * time.Second)
+	}
 	record("VL-GP-11", "activateKey after check-sig", isOK(s3), "status="+s3)
 
 	// ---- VL-PEN-10: createKey (gen-1) then a SECOND createKey while pending → reject ----
