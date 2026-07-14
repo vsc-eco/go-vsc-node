@@ -196,6 +196,7 @@ func main() {
 			// At head — still run unmap/confirmations, then sleep before checking again
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			bot.HandleVaultRotation()
 			releaseBlockLease(bot, blockHeight, instanceID)
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
@@ -228,6 +229,11 @@ func main() {
 			defer wg.Done()
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			// Drive the vault-rotation lifecycle (build the next migration tranche /
+			// write off an un-sweepable residual / advance retire→purge). Runs after
+			// confirmations so a sweep that just settled is seen as settled. No-op on a
+			// contract with no vault registry, and internally rate-limited.
+			bot.HandleVaultRotation()
 		}()
 		wg.Wait()
 		releaseBlockLease(bot, blockHeight, instanceID)
