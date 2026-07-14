@@ -327,7 +327,7 @@ func TestnetConfig() SystemConfig {
 			// slashing before mainnet. Same above-head / frozen-past rules as
 			// mainnet apply when closing or appending windows.
 			SafetySlashWindows: []params.HeightWindow{
-				{Start: 3_870_000, End: 0},
+				{Start: 3_870_000, End: 4_769_770},
 			},
 		},
 		oracleParams: params.OracleParams{
