@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/lib/btcvault"
@@ -125,21 +126,39 @@ func (b *Bot) FetchGenUtxoCounts(ctx context.Context) (map[uint32]int, error) {
 	return counts, nil
 }
 
-// HasMigrationSweepInFlight reports whether any pending spend is a migration
-// sweep that has not yet settled ("ms-<txid>" still present). The driver
-// serialises on this: building a second tranche while one is unconfirmed would
-// draw down the fee reserve twice and race the same generation.
-func (b *Bot) HasMigrationSweepInFlight(ctx context.Context, pendingTxIds []string) (bool, error) {
+// InFlightSweepTxIds returns the pending-spend txids that are migration sweeps
+// (an "ms-<txid>" record is still present, i.e. not yet settled). The driver
+// serialises on a non-empty result: building a second tranche while one is
+// unconfirmed would draw down the fee reserve twice and race the same generation.
+// It also drives the stuck-sweep re-drive off this set.
+func (b *Bot) InFlightSweepTxIds(ctx context.Context, pendingTxIds []string) ([]string, error) {
 	if len(pendingTxIds) == 0 {
-		return false, nil
+		return nil, nil
 	}
 	keys := make([]string, len(pendingTxIds))
+	keyToTx := make(map[string]string, len(pendingTxIds))
 	for i, txId := range pendingTxIds {
 		keys[i] = contractinterface.MigrationSweepPrefix + txId
+		keyToTx[keys[i]] = txId
 	}
 	st, err := b.fetchStateHex(ctx, keys)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return len(st) > 0, nil
+	sweeps := make([]string, 0, len(st))
+	for k := range st {
+		sweeps = append(sweeps, keyToTx[k])
+	}
+	return sweeps, nil
+}
+
+// FetchContractHeight reads the contract's committed last BTC height ("h"). The
+// stuck-sweep re-drive clock is measured against this, mirroring the contract's
+// own staleness gate (which compares its LastHeight to the sweep's BuildHeight).
+func (b *Bot) FetchContractHeight(ctx context.Context) (uint64, error) {
+	s, err := b.gql().FetchLastHeight(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(s, 10, 64)
 }

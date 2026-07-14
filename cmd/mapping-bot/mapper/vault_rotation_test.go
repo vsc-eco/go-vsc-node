@@ -192,3 +192,37 @@ func TestNotOwnerLatchesOnce(t *testing.T) {
 		t.Error("the driver must stay disabled once latched")
 	}
 }
+
+// A sweep that never confirms must be re-driven once it has been in flight past the
+// stale window — otherwise it wedges the drain forever. Too-early must NOT redrive
+// (the contract would refuse and it wastes RC); a settled sweep must be forgotten so a
+// recycled txid can't inherit a stale clock.
+func TestNoteSweepsInFlightStaleness(t *testing.T) {
+	firstSeenSweep = map[string]uint64{} // reset process-global state
+
+	// First observation at height 100: records first-seen, nothing stale yet.
+	if stale := noteSweepsInFlight([]string{"sweepA"}, 100); len(stale) != 0 {
+		t.Fatalf("a freshly-seen sweep must not be stale, got %v", stale)
+	}
+	// Still within the window (100 + 12 < 100 + 13): not yet.
+	if stale := noteSweepsInFlight([]string{"sweepA"}, 112); len(stale) != 0 {
+		t.Fatalf("sweep within the stale window must not redrive, got %v", stale)
+	}
+	// At/after the window (>= redriveStaleBlocks later): stale -> redrive.
+	stale := noteSweepsInFlight([]string{"sweepA"}, 113)
+	if len(stale) != 1 || stale[0] != "sweepA" {
+		t.Fatalf("a sweep in flight >= %d blocks must be re-driven, got %v", redriveStaleBlocks, stale)
+	}
+
+	// It settles (no longer in flight): forgotten. A later reappearance of the same txid
+	// starts a FRESH clock, not an immediately-stale one.
+	if stale := noteSweepsInFlight(nil, 120); len(stale) != 0 {
+		t.Fatalf("no in-flight sweeps -> nothing stale, got %v", stale)
+	}
+	if _, ok := firstSeenSweep["sweepA"]; ok {
+		t.Fatal("a settled sweep must be forgotten from the first-seen map")
+	}
+	if stale := noteSweepsInFlight([]string{"sweepA"}, 121); len(stale) != 0 {
+		t.Fatalf("a recycled txid must start a fresh clock, not be instantly stale, got %v", stale)
+	}
+}
