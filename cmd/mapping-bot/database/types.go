@@ -73,8 +73,13 @@ type Transaction struct {
 	Signatures        []SignatureSlot `bson:"signatures,omitempty"`
 
 	// confirmSpend anti-stuck bookkeeping — populated only while a tx is "sent"
-	// and its confirmSpend contract calls keep failing. Drives exponential
-	// backoff between attempts and give-up after a bounded retry window.
+	// and its confirmSpend is being driven to completion. ConfirmSpendVscTxId is
+	// the VSC (L2) tx id of the in-flight confirmSpend, polled across cycles so a
+	// slow-to-finalize but successful confirmSpend is recognized instead of being
+	// re-broadcast (which would revert) and falsely abandoned. The remaining
+	// fields drive exponential backoff between re-broadcasts and give-up after a
+	// bounded retry window.
+	ConfirmSpendVscTxId   string     `bson:"confirmSpendVscTxId,omitempty"`
 	ConfirmAttempts       uint64     `bson:"confirmAttempts,omitempty"`
 	FirstConfirmAttemptAt *time.Time `bson:"firstConfirmAttemptAt,omitempty"`
 	NextConfirmAttemptAt  *time.Time `bson:"nextConfirmAttemptAt,omitempty"`
@@ -82,15 +87,18 @@ type Transaction struct {
 	LastConfirmError      string     `bson:"lastConfirmError,omitempty"`
 }
 
-// ConfirmSpendRetry carries the confirmSpend retry bookkeeping to persist after a
-// failed attempt. The retry policy (backoff schedule, give-up window) lives in
-// the mapper; this struct is just the computed result to store.
+// ConfirmSpendRetry carries the confirmSpend bookkeeping to persist after a
+// broadcast, a failure, or an abandonment. The retry policy (backoff schedule,
+// give-up window) lives in the mapper; this struct is just the computed result
+// to store. VscTxId sets the in-flight confirmSpend tx id (empty clears it, e.g.
+// after a revert so the next eligible cycle re-broadcasts).
 type ConfirmSpendRetry struct {
 	Attempts       uint64
 	FirstAttemptAt time.Time
 	NextAttemptAt  time.Time
 	Abandoned      bool
 	LastError      string
+	VscTxId        string
 }
 
 // AbandonedConfirmSpend is a projection of a sent tx whose confirmSpend retries
@@ -102,6 +110,7 @@ type AbandonedConfirmSpend struct {
 	LastConfirmError string     `bson:"lastConfirmError"      json:"lastConfirmError,omitempty"`
 	FirstAttemptAt   *time.Time `bson:"firstConfirmAttemptAt" json:"firstAttemptAt,omitempty"`
 	SentAtHeight     uint64     `bson:"sentAtHeight"          json:"sentAtHeight,omitempty"`
+	VscTxId          string     `bson:"confirmSpendVscTxId"   json:"confirmSpendVscTxId,omitempty"`
 }
 
 // SignatureSlot represents a signature slot in a transaction

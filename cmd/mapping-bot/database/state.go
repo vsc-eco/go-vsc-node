@@ -370,10 +370,19 @@ func (s *StateStore) SetConfirmSpendRetry(ctx context.Context, txID string, r Co
 	if r.Abandoned {
 		set["confirmAbandoned"] = true
 	}
+	update := bson.M{"$set": set}
+	// VscTxId carries the in-flight confirmSpend tx id: set it when we've just
+	// broadcast (or are still polling) one, unset it once it reverts so the next
+	// eligible cycle re-broadcasts.
+	if r.VscTxId != "" {
+		set["confirmSpendVscTxId"] = r.VscTxId
+	} else {
+		update["$unset"] = bson.M{"confirmSpendVscTxId": ""}
+	}
 	result, err := s.txCollection.UpdateOne(
 		ctx,
 		bson.M{"_id": txID, "state": TxStateSent},
-		bson.M{"$set": set},
+		update,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record confirmSpend retry [txID:%s]: %w", txID, err)
@@ -393,6 +402,7 @@ func (s *StateStore) GetAbandonedConfirmSpends(ctx context.Context) ([]Abandoned
 		"lastConfirmError":      1,
 		"firstConfirmAttemptAt": 1,
 		"sentAtHeight":          1,
+		"confirmSpendVscTxId":   1,
 	})
 	cursor, err := s.txCollection.Find(
 		ctx,

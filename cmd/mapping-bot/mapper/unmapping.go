@@ -89,9 +89,20 @@ func (b *Bot) HandleUnmap() {
 	}
 }
 
-// HandleConfirmations checks all sent transactions against the blockchain.
-// When a tx is confirmed, it builds a merkle proof and calls the mapping
-// contract's confirmSpend action with a ConfirmSpendParams payload.
+// HandleConfirmations drives each broadcast BTC withdrawal to a confirmed
+// on-contract state. For each "sent" tx that has confirmed on-chain it either
+// broadcasts a confirmSpend or, if one is already in flight, polls that VSC tx's
+// status across cycles.
+//
+// The polling model matters: a confirmSpend is a contract call, so it is only
+// "INCLUDED" when its block is ingested and does not reach "CONFIRMED" until the
+// slot executes/finalizes — which routinely takes longer than a single
+// HandleConfirmations pass. Blocking-waiting for CONFIRMED therefore times out
+// even when the confirmSpend succeeds, and a naive re-broadcast then reverts
+// ("no unconfirmed outputs matched" — the change UTXO is already promoted),
+// which would look like a failure and eventually be abandoned. Broadcasting once
+// and polling the recorded VSC tx id avoids both: success is recognized whenever
+// it lands, and we never re-broadcast a confirmSpend that already succeeded.
 func (b *Bot) HandleConfirmations() {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -122,6 +133,23 @@ func (b *Bot) HandleConfirmations() {
 		}
 	}
 
+	// Lazily fetch the contract's pending spends once per cycle — only needed to
+	// disambiguate a reverted confirmSpend (already resolved vs. genuinely failed).
+	var pendingSpends map[string]*contractinterface.SigningData
+	var pendingFetched bool
+	getPending := func() map[string]*contractinterface.SigningData {
+		if !pendingFetched {
+			pendingFetched = true
+			ps, perr := b.gql().FetchTxSpends(ctx)
+			if perr != nil {
+				b.L.Debug("failed to fetch pending spends for confirmSpend check", "error", perr)
+				ps = nil
+			}
+			pendingSpends = ps
+		}
+		return pendingSpends
+	}
+
 	for _, dbTx := range sentTxs {
 		txId := dbTx.TxID
 		now := time.Now().UTC()
@@ -150,8 +178,16 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
-		// Exponential-backoff gate: after a prior failure we only re-attempt once
-		// the scheduled backoff has elapsed, rather than every cycle.
+		// A confirmSpend is already in flight — poll ITS status instead of
+		// broadcasting a duplicate. This branch runs every cycle (no backoff
+		// gate) so success is detected as soon as it finalizes.
+		if dbTx.ConfirmSpendVscTxId != "" {
+			b.pollInFlightConfirmSpend(ctx, dbTx, now, getPending)
+			continue
+		}
+
+		// No confirmSpend in flight. Gate re-broadcasts behind the backoff so a
+		// genuinely-failing confirmSpend isn't hammered every cycle.
 		if dbTx.NextConfirmAttemptAt != nil && now.Before(*dbTx.NextConfirmAttemptAt) {
 			continue
 		}
@@ -165,25 +201,123 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
-		if _, err := b.callWithRetry(ctx, payload, "confirmSpend", broadcastRetryAttempts); err != nil {
-			b.recordConfirmSpendFailure(ctx, dbTx, now, err.Error())
+		vscTxId, err := b.caller().CallContract(ctx, payload, "confirmSpend")
+		if err != nil {
+			b.recordConfirmSpendFailure(ctx, dbTx, now, "broadcast: "+err.Error())
 			continue
 		}
 
-		if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
-			b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
-			continue
-		}
-
-		b.L.Info("tx confirmed and confirmSpend called", "txId", txId)
+		b.recordConfirmSpendBroadcast(ctx, dbTx, now, vscTxId)
+		b.L.Info("confirmSpend broadcast, awaiting confirmation", "txId", txId, "vscTx", vscTxId)
 	}
 }
 
+// pollInFlightConfirmSpend checks the status of the confirmSpend VSC tx recorded
+// for dbTx and advances its state:
+//   - CONFIRMED/PROCESSED → the spend is confirmed on the contract; mark done.
+//   - FAILED → the call reverted. If the spend is no longer pending on the
+//     contract it was already resolved (a prior confirmSpend, or the contract's
+//     own auto-confirmation) → mark done; otherwise record a failure and
+//     re-broadcast on a later cycle.
+//   - anything else / query error → still resolving; keep polling (abandon only
+//     once the overall retry window elapses).
+func (b *Bot) pollInFlightConfirmSpend(
+	ctx context.Context,
+	dbTx database.Transaction,
+	now time.Time,
+	getPending func() map[string]*contractinterface.SigningData,
+) {
+	txId := dbTx.TxID
+	status, err := b.gql().FetchTransactionStatus(ctx, dbTx.ConfirmSpendVscTxId)
+	if err != nil {
+		// Not indexed yet, or a transient query error — keep waiting.
+		b.recordConfirmSpendPending(ctx, dbTx, now, "status query: "+err.Error())
+		return
+	}
+
+	switch status {
+	case "CONFIRMED", "PROCESSED":
+		if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+			b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+			return
+		}
+		b.L.Info("confirmSpend confirmed", "txId", txId, "vscTx", dbTx.ConfirmSpendVscTxId)
+	case "FAILED":
+		// The confirmSpend reverted. If the contract no longer lists this tx as a
+		// pending spend, its change UTXOs were already promoted (by a prior
+		// confirmSpend or the contract's own map-time auto-confirmation), so treat
+		// it as done rather than re-broadcasting a call that can only revert again.
+		if ps := getPending(); ps != nil {
+			if _, stillPending := ps[txId]; !stillPending {
+				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+					return
+				}
+				b.L.Info("confirmSpend already resolved on contract, marking confirmed", "txId", txId)
+				return
+			}
+		}
+		b.recordConfirmSpendFailure(ctx, dbTx, now, "confirmSpend reverted (FAILED)")
+	default:
+		// UNCONFIRMED / INCLUDED — executed inclusion pending finalization.
+		b.recordConfirmSpendPending(ctx, dbTx, now, "awaiting confirmSpend status "+status)
+	}
+}
+
+// recordConfirmSpendBroadcast records a freshly broadcast confirmSpend: it stores
+// the in-flight VSC tx id (polled on subsequent cycles) and anchors the give-up
+// window on the first broadcast. It does not advance the attempt/backoff counter
+// — those track re-broadcasts after failures.
+func (b *Bot) recordConfirmSpendBroadcast(ctx context.Context, dbTx database.Transaction, now time.Time, vscTxId string) {
+	first := now
+	if dbTx.FirstConfirmAttemptAt != nil {
+		first = *dbTx.FirstConfirmAttemptAt
+	}
+	if err := b.stateDB().SetConfirmSpendRetry(ctx, dbTx.TxID, database.ConfirmSpendRetry{
+		Attempts:       dbTx.ConfirmAttempts,
+		FirstAttemptAt: first,
+		NextAttemptAt:  now.Add(confirmSpendBackoff(dbTx.ConfirmAttempts + 1)),
+		VscTxId:        vscTxId,
+	}); err != nil {
+		b.L.Warn("failed to record confirmSpend broadcast", "txId", dbTx.TxID, "error", err)
+	}
+}
+
+// recordConfirmSpendPending is called while an in-flight confirmSpend is still
+// resolving. It writes nothing unless the overall retry window has elapsed, in
+// which case the tx is abandoned (an in-flight tx that never finalizes) and
+// surfaced on /health.
+func (b *Bot) recordConfirmSpendPending(ctx context.Context, dbTx database.Transaction, now time.Time, reason string) {
+	first := now
+	if dbTx.FirstConfirmAttemptAt != nil {
+		first = *dbTx.FirstConfirmAttemptAt
+	}
+	if now.Before(first.Add(confirmSpendGiveUpAfter)) {
+		// Still within the window — keep polling next cycle, nothing to persist.
+		return
+	}
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	if err := b.stateDB().SetConfirmSpendRetry(ctx, dbTx.TxID, database.ConfirmSpendRetry{
+		Attempts:       dbTx.ConfirmAttempts,
+		FirstAttemptAt: first,
+		NextAttemptAt:  now,
+		Abandoned:      true,
+		LastError:      reason,
+		VscTxId:        dbTx.ConfirmSpendVscTxId,
+	}); err != nil {
+		b.L.Warn("failed to record confirmSpend abandonment", "txId", dbTx.TxID, "error", err)
+	}
+	b.L.Error("confirmSpend abandoned; in-flight tx never finalized, needs operator attention",
+		"txId", dbTx.TxID, "vscTx", dbTx.ConfirmSpendVscTxId, "window", confirmSpendGiveUpAfter.String(), "reason", reason)
+}
+
 // recordConfirmSpendFailure applies the exponential-backoff / give-up bookkeeping
-// after a failed confirmSpend attempt for a sent tx, and logs at the appropriate
-// level. Once the retry window (confirmSpendGiveUpAfter) elapses since the first
-// attempt, the tx is marked abandoned so HandleConfirmations stops resubmitting it
-// and it is surfaced on /health for operator attention.
+// after a confirmSpend build/broadcast failure or a reverted (FAILED) call. It
+// clears the in-flight VSC tx id so the next eligible cycle re-broadcasts, and
+// once the retry window (confirmSpendGiveUpAfter) elapses since the first attempt
+// the tx is marked abandoned and surfaced on /health.
 func (b *Bot) recordConfirmSpendFailure(ctx context.Context, dbTx database.Transaction, now time.Time, errMsg string) {
 	attempts := dbTx.ConfirmAttempts + 1
 	first := now
@@ -204,6 +338,7 @@ func (b *Bot) recordConfirmSpendFailure(ctx context.Context, dbTx database.Trans
 		NextAttemptAt:  now.Add(backoff),
 		Abandoned:      abandoned,
 		LastError:      errMsg,
+		VscTxId:        "", // clear so the next eligible cycle re-broadcasts
 	}); err != nil {
 		b.L.Warn("failed to record confirmSpend retry state", "txId", dbTx.TxID, "error", err)
 	}

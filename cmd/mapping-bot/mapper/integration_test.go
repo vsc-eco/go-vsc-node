@@ -458,9 +458,10 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	}
 	chainClient.rawBlocks[blockHash] = blockBytes
 
+	// Cycle 1: broadcasts confirmSpend and records it in flight (not yet confirmed
+	// — a contract call only reaches CONFIRMED after execution/finalization).
 	bot.HandleConfirmations()
 
-	// Verify: contract caller received a "confirmSpend" call
 	calls := caller.getCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
@@ -472,7 +473,16 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	assert.Equal(t, []uint32{0, 1}, params.Indices,
 		"indices must be output vouts so the contract can match the change UTXO")
 
-	// Verify: tx is now confirmed in the state store
+	state.mu.Lock()
+	assert.Equal(t, database.TxStateSent, state.txs["txConfirm1"].State, "still sent while in flight")
+	assert.Equal(t, "mock-tx-id", state.txs["txConfirm1"].ConfirmSpendVscTxId, "in-flight VSC tx recorded")
+	state.mu.Unlock()
+
+	// Cycle 2: polls the in-flight confirmSpend, sees CONFIRMED, marks done —
+	// without broadcasting a second (revert-prone) confirmSpend.
+	bot.HandleConfirmations()
+
+	assert.Len(t, caller.getCalls(), 1, "no second confirmSpend broadcast — only a status poll")
 	state.mu.Lock()
 	tx := state.txs["txConfirm1"]
 	state.mu.Unlock()
@@ -786,14 +796,22 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 	}
 	// txB is not confirmed (zero-value details, Confirmed: false)
 
+	// Cycle 1: only txA (confirmed on-chain) gets a confirmSpend broadcast.
 	bot.HandleConfirmations()
 
-	// Only one confirmSpend call should have been made (for txA)
 	calls := caller.getCalls()
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
 
-	// txA should be confirmed, txB still sent
+	state.mu.Lock()
+	assert.Equal(t, database.TxStateSent, state.txs["txA"].State, "txA in flight after broadcast")
+	assert.Equal(t, "mock-tx-id", state.txs["txA"].ConfirmSpendVscTxId)
+	assert.Equal(t, database.TxStateSent, state.txs["txB"].State)
+	state.mu.Unlock()
+
+	// Cycle 2: txA's in-flight confirmSpend polls CONFIRMED → done; txB still unconfirmed.
+	bot.HandleConfirmations()
+
 	state.mu.Lock()
 	assert.Equal(t, database.TxStateConfirmed, state.txs["txA"].State)
 	assert.Equal(t, database.TxStateSent, state.txs["txB"].State)
@@ -868,7 +886,7 @@ func TestHandleConfirmations_BackoffGateSkips(t *testing.T) {
 func TestHandleConfirmations_AbandonsAfterWindow(t *testing.T) {
 	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
 	gql.lastHeight = "1000"
-	// Make every confirmSpend broadcast fail so callWithRetry returns an error.
+	// Make every confirmSpend broadcast fail so the attempt is recorded as a failure.
 	caller.err = errors.New("simulated confirmSpend rejection")
 
 	first := time.Now().UTC().Add(-13 * time.Hour) // past the 12h give-up window
@@ -914,4 +932,83 @@ func TestHandleConfirmations_AbandonsAfterWindow(t *testing.T) {
 	caller.mu.Unlock()
 	bot.HandleConfirmations()
 	assert.Empty(t, caller.getCalls(), "abandoned tx must not be retried")
+}
+
+// TestHandleConfirmations_RevertedButAlreadyResolved covers the reported race: an
+// in-flight confirmSpend reads FAILED (it reverted), but the spend is no longer
+// pending on the contract — it was already resolved (a prior confirmSpend that we
+// didn't observe finalize, or the contract's own auto-confirmation). The bot must
+// recognize this and mark the tx confirmed instead of re-broadcasting forever.
+func TestHandleConfirmations_RevertedButAlreadyResolved(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
+	gql.txStatuses = map[string]string{"cs-vsc-tx": "FAILED"}
+	// Not present in the contract's pending spends → already resolved.
+	gql.txSpends = map[string]*contractinterface.SigningData{}
+
+	state.mu.Lock()
+	state.txs["txResolved"] = &database.Transaction{
+		TxID:                "txResolved",
+		State:               database.TxStateSent,
+		RawTx:               buildRawSpendTx(t, 2),
+		SentAtHeight:        100,
+		ConfirmSpendVscTxId: "cs-vsc-tx",
+		CreatedAt:           time.Now().UTC(),
+	}
+	state.mu.Unlock()
+
+	chainClient.txDetails["txResolved"] = chain.TxConfirmationDetails{
+		Confirmed: true, BlockHeight: 500, BlockHash: "hash", TxIndex: 0,
+	}
+
+	bot.HandleConfirmations()
+
+	assert.Empty(t, caller.getCalls(), "must not re-broadcast a confirmSpend that already resolved")
+	state.mu.Lock()
+	tx := state.txs["txResolved"]
+	state.mu.Unlock()
+	assert.Equal(t, database.TxStateConfirmed, tx.State)
+}
+
+// TestHandleConfirmations_RevertedStillPending covers a genuine failure: the
+// in-flight confirmSpend reverted AND the spend is still pending on the contract.
+// The bot clears the in-flight id and backs off (re-broadcast happens on a later
+// cycle, not this one).
+func TestHandleConfirmations_RevertedStillPending(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
+	gql.txStatuses = map[string]string{"cs-vsc-tx": "FAILED"}
+	// Still pending on the contract → genuine failure, must not be marked done.
+	gql.txSpends = map[string]*contractinterface.SigningData{
+		"txPendingFail": {Tx: []byte{0x01}},
+	}
+
+	first := time.Now().UTC().Add(-1 * time.Minute)
+	state.mu.Lock()
+	state.txs["txPendingFail"] = &database.Transaction{
+		TxID:                  "txPendingFail",
+		State:                 database.TxStateSent,
+		RawTx:                 buildRawSpendTx(t, 2),
+		SentAtHeight:          100,
+		ConfirmSpendVscTxId:   "cs-vsc-tx",
+		ConfirmAttempts:       2,
+		FirstConfirmAttemptAt: &first,
+		CreatedAt:             time.Now().UTC(),
+	}
+	state.mu.Unlock()
+
+	chainClient.txDetails["txPendingFail"] = chain.TxConfirmationDetails{
+		Confirmed: true, BlockHeight: 500, BlockHash: "hash", TxIndex: 0,
+	}
+
+	bot.HandleConfirmations()
+
+	assert.Empty(t, caller.getCalls(), "no re-broadcast in the same cycle as the failure")
+	state.mu.Lock()
+	tx := state.txs["txPendingFail"]
+	state.mu.Unlock()
+	assert.Equal(t, database.TxStateSent, tx.State)
+	assert.Equal(t, "", tx.ConfirmSpendVscTxId, "in-flight id cleared so a later cycle re-broadcasts")
+	assert.Equal(t, uint64(3), tx.ConfirmAttempts, "failure advances the backoff counter")
+	assert.False(t, tx.ConfirmAbandoned)
 }

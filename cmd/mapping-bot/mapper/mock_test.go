@@ -350,6 +350,7 @@ func (m *mockStateStore) SetConfirmSpendRetry(ctx context.Context, txID string, 
 	tx.NextConfirmAttemptAt = &next
 	tx.ConfirmAbandoned = r.Abandoned
 	tx.LastConfirmError = r.LastError
+	tx.ConfirmSpendVscTxId = r.VscTxId // "" clears it, mirroring the $unset in the real store
 	return nil
 }
 
