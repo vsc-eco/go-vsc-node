@@ -113,15 +113,19 @@ func contractLastHeight(t *testing.T, d *Devnet, ctx context.Context, cid string
 // TestVaultStage4Rotation exercises the CORE blocktrades-fix machinery under v2
 // ENABLED, dodging the fresh-genesis deadlock by pinning the activation height
 // AFTER genesis:
+//
 //   - genesis (block < Hpin, v2-off) → gen-0 active + funded
+//
 //   - wait past Hpin (v2 on)
+//
 //   - rotate: createKey gen-1 → keygen → register → BRK-2 check-sig (ADMITTED now,
 //     because gen-0 Active resolves the vault view) → activateKey → gen-0 Retiring
+//
 //   - migrateVault → migration sweep (gen-0 UTXOs → gen-1 P2WSH); the node signs it
 //     ONLY because NN#1 output-scoping proves every output pays the successor →
 //     assemble → broadcast → confirmSpend settles the migration → gen-0 drains.
 //
-//	VAULT_STAGE4_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultStage4Rotation -timeout 40m ./tests/devnet/
+//     VAULT_STAGE4_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultStage4Rotation -timeout 40m ./tests/devnet/
 func TestVaultStage4Rotation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -246,8 +250,18 @@ func TestVaultStage4Rotation(t *testing.T) {
 // assembles + broadcasts, and confirmSpend-settles the migration.
 func migrateAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, succPrimary, succBackup string) {
 	t.Helper()
+	migrateAndSettleAs(t, d, ctx, 1, cid, retiringKeyId, succPrimary, succBackup)
+}
+
+// migrateAndSettleAs is migrateAndSettle but issues the owner-gated migrateVault call
+// from opNode's identity (hive:<prefix><opNode>). Everything after — TSS signing,
+// broadcast, addBlocks, the permissionless confirmSpend — is identity-independent and
+// stays on node 1. Used to prove an APPOINTED vault operator (not the owner) can drive
+// the drain.
+func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int, cid, retiringKeyId, succPrimary, succBackup string) {
+	t.Helper()
 	before := txSpendIds(t, d, ctx, cid)
-	if s := vstatus(t, d, ctx, 1, cid, "migrateVault", ""); !isOK(s) {
+	if s := vstatus(t, d, ctx, opNode, cid, "migrateVault", ""); !isOK(s) {
 		t.Errorf("CASE VL-GP-06 FAIL — migrateVault rejected status=%s", s)
 		return
 	}
