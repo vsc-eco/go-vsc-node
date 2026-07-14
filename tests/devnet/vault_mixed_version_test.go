@@ -279,7 +279,7 @@ func countHaltFlag(t *testing.T, ctx context.Context, d *Devnet, nodes []int) in
 			Halted bool   `bson:"btc_keysign_halted"`
 			Height uint64 `bson:"btc_keysign_halt_height"`
 		}
-		err := client.Database(d.nodeDbName(node)).Collection("consensus_state").
+		err := client.Database(d.nodeDbName(node)).Collection("chain_consensus_state").
 			FindOne(ctx, bson.M{"_id": "singleton"}).Decode(&doc)
 		if err != nil {
 			t.Logf("  magi-%d: no consensus_state doc (%v)", node, err)
