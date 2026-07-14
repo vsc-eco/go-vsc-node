@@ -103,16 +103,17 @@ func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uin
 	if !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) || !tssMgr.isBtcVaultKey(keyId) {
 		return false
 	}
-	return skipReshareForSupersededGen(tssMgr.retiringGenSignerSet(bh).KeyIds, keyId)
+	return skipReshareForSupersededGen(tssMgr.retiringGenSignerSet(bh).ReshareSkipKeyIds, keyId)
 }
 
 // skipReshareForSupersededGen is the pure L9-1 decision, split out so it is
 // directly unit-testable without a live datalayer (the superseded-gen set itself is
-// proven by TestComputeRetiringSignerSet): skip reshare IFF keyId is a superseded
-// (retiring/draining/inactive) generation — i.e. present in the shared retiring
-// predicate's KeyIds. The ACTIVE gen is never in that set, so it always reshares.
-func skipReshareForSupersededGen(supersededKeyIds map[string]bool, keyId string) bool {
-	return supersededKeyIds[keyId]
+// proven by TestComputeRetiringSignerSet): skip reshare IFF keyId is a NON-ACTIVE
+// generation — retiring/draining/inactive OR the terminal PURGED — i.e. present in the
+// shared predicate's ReshareSkipKeyIds. The ACTIVE gen is never in that set, so it
+// always reshares; a Purged gen IS (so a retired key is never resharen).
+func skipReshareForSupersededGen(reshareSkipKeyIds map[string]bool, keyId string) bool {
+	return reshareSkipKeyIds[keyId]
 }
 
 // observeBtcSolvencyInsolvent compares the vault's real L1 balance against the
