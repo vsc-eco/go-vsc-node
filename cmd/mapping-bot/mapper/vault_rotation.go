@@ -33,6 +33,49 @@ import (
 // empty" states would otherwise re-issue a doomed call on every block.
 const vaultOpMinInterval = 2 * time.Minute
 
+// redriveStaleBlocks mirrors the contract's RedriveStaleBlocks (the L1-block age at
+// which a never-confirming sweep may be re-driven). The contract enforces its own gate;
+// the driver only avoids issuing a redrive it knows the contract will refuse. Kept one
+// block ABOVE the contract value so the driver never races the contract's own boundary.
+const redriveStaleBlocks = 13
+
+// firstSeenSweep tracks the contract height at which the driver first observed each
+// in-flight sweep txid, so it can measure staleness the same way the contract does
+// (contract LastHeight minus the sweep's build height). Process-global, mutex-guarded.
+var (
+	sweepSeenMu    sync.Mutex
+	firstSeenSweep = map[string]uint64{}
+)
+
+// noteSweepsInFlight records first-seen heights for the currently in-flight sweeps and
+// forgets any that have settled (no longer in flight), then returns the txids that are
+// now stale enough to re-drive (in flight since >= redriveStaleBlocks ago).
+func noteSweepsInFlight(inFlight []string, height uint64) []string {
+	sweepSeenMu.Lock()
+	defer sweepSeenMu.Unlock()
+
+	live := make(map[string]struct{}, len(inFlight))
+	var stale []string
+	for _, txId := range inFlight {
+		live[txId] = struct{}{}
+		seen, ok := firstSeenSweep[txId]
+		if !ok {
+			firstSeenSweep[txId] = height
+			continue
+		}
+		if height >= seen && height-seen >= redriveStaleBlocks {
+			stale = append(stale, txId)
+		}
+	}
+	// Forget settled sweeps so a recycled txid can't inherit a stale first-seen.
+	for txId := range firstSeenSweep {
+		if _, ok := live[txId]; !ok {
+			delete(firstSeenSweep, txId)
+		}
+	}
+	return stale
+}
+
 // vaultOpRcLimit is the RC limit attached to the vault ops specifically.
 //
 // The bot ships one global RcLimit for every L2 tx (default 10_000). Vault ops are
@@ -54,7 +97,7 @@ const vaultOpRcLimit uint = 8_000_000
 func (b *Bot) rcLimitFor(action string) uint {
 	configured := b.BotConfig.RcLimit()
 	switch action {
-	case "migrateVault", "retireVault", "writeOffDust":
+	case "migrateVault", "retireVault", "writeOffDust", "redriveSpend":
 		if configured > vaultOpRcLimit {
 			return configured
 		}
@@ -288,10 +331,35 @@ func (b *Bot) HandleVaultRotation() {
 	for txId := range txSpends {
 		pending = append(pending, txId)
 	}
-	inFlight, err := b.HasMigrationSweepInFlight(ctx, pending)
+	inFlightSweeps, err := b.InFlightSweepTxIds(ctx, pending)
 	if err != nil {
 		b.L.Warn("vault rotation: cannot check for an in-flight sweep — skipping this cycle", "error", err)
 		return
+	}
+	inFlight := len(inFlightSweeps) > 0
+
+	// A sweep that was broadcast but never confirms (built at too low a fee) would keep
+	// inFlight true forever and wedge the drain. Re-drive any that have gone stale — the
+	// contract's own staleness gate is the final arbiter, so an early call is simply
+	// refused. Do this BEFORE building a new tranche.
+	if inFlight {
+		if h, herr := b.FetchContractHeight(ctx); herr == nil {
+			for _, txId := range noteSweepsInFlight(inFlightSweeps, h) {
+				if !mayIssueVaultOp(contractId) {
+					break
+				}
+				b.L.Warn("vault rotation: a migration sweep is stuck (unconfirmed past the stale window) — re-driving at a higher fee", "txId", txId)
+				if _, rerr := b.callWithRetry(ctx, json.RawMessage(txId), "redriveSpend", broadcastRetryAttempts); rerr != nil {
+					if isNotOwner(rerr) {
+						b.reportNotOwner(contractId, "redriveSpend")
+					} else {
+						b.L.Warn("vault rotation: redriveSpend of a stuck sweep failed (will retry next cycle)", "txId", txId, "error", rerr)
+					}
+				}
+			}
+		} else {
+			b.L.Debug("vault rotation: cannot read contract height for stuck-sweep detection", "error", herr)
+		}
 	}
 
 	action, stillFunded := decideVaultAction(vaults, counts, inFlight)
