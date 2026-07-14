@@ -107,3 +107,47 @@ func TestComputeRetiringSignerSet_InertCases(t *testing.T) {
 		t.Fatal("active-only registry must yield an empty set")
 	}
 }
+
+// TestComputeRetiringSignerSet_PurgedSkipsReshareButReleasesBond is the regression for
+// the purged-key reshare bug: a PURGED (terminal, fully-retired) generation must be in
+// ReshareSkipKeyIds (so the reshare loop never reshares its retired key) but NOT in
+// KeyIds / SignerElection (so the #11 bond-lock and V-A RELEASE its members — a purged
+// gen is drained + past grace, nothing to sign, no reason to stay bond-locked).
+func TestComputeRetiringSignerSet_PurgedSkipsReshareButReleasesBond(t *testing.T) {
+	gen0KeyId := scopeContract + "-" + btcvault.VaultKeyName(0) // purged
+	gen1KeyId := scopeContract + "-" + btcvault.VaultKeyName(1) // retiring
+	gen2KeyId := scopeContract + "-" + btcvault.VaultKeyName(2) // active
+	reg := marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusPurged},
+		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusRetiring},
+		btcvault.Vault{Generation: 2, Primary: scopePub(4), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+	)
+	deps := vaultrotation.RetiringSignerDeps{
+		BtcContract: scopeContract,
+		ReadKey:     func(k string) ([]byte, bool) { return reg, k == "v" },
+		GetCommitment: func(string) (tss_db.TssCommitment, error) {
+			return tss_db.TssCommitment{Epoch: 5, Commitment: bitsetB64(0)}, nil
+		},
+		GetElection: func(epoch uint64) *elections.ElectionResult { return vaElection(epoch, "alice") },
+	}
+	set := vaultrotation.ComputeRetiringSignerSet(deps)
+
+	// Reshare-skip: purged AND retiring are skipped; the ACTIVE gen is NOT (it reshares).
+	if !set.ReshareSkipKeyIds[gen0KeyId] {
+		t.Errorf("PURGED gen-0 key %q must be in ReshareSkipKeyIds (a retired key must NEVER be reshared)", gen0KeyId)
+	}
+	if !set.ReshareSkipKeyIds[gen1KeyId] {
+		t.Errorf("retiring gen-1 key %q must be in ReshareSkipKeyIds", gen1KeyId)
+	}
+	if set.ReshareSkipKeyIds[gen2KeyId] {
+		t.Errorf("ACTIVE gen-2 key %q must NOT be skipped — the active gen reshares", gen2KeyId)
+	}
+
+	// Bond-lock / V-A: the PURGED gen must be released — NOT in KeyIds, its members NOT locked.
+	if set.KeyIds[gen0KeyId] {
+		t.Errorf("PURGED gen-0 key %q must NOT be in KeyIds — a purged gen's members are released", gen0KeyId)
+	}
+	if !set.KeyIds[gen1KeyId] {
+		t.Errorf("retiring gen-1 key %q must be in KeyIds (still fund-holding)", gen1KeyId)
+	}
+}

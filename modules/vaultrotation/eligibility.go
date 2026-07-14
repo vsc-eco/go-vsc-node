@@ -35,6 +35,14 @@ type RetiringSignerSet struct {
 	// to recognise a migration sign and exempt those parties from the CURRENT
 	// version floor — V5-6).
 	KeyIds map[string]bool
+	// ReshareSkipKeyIds is the set of BTC-vault keyIds the reshare loop must SKIP:
+	// every non-active generation — retiring/draining/inactive AND the terminal
+	// PURGED. It is deliberately SEPARATE from KeyIds: a purged (fully retired) key
+	// must never be reshared (resharing it would resurrect a retired key's shares in
+	// the current committee, defeating the fresh-keygen rotation the PR exists for),
+	// but the bond-lock / V-A consumers must RELEASE a purged gen's members — so
+	// Purged belongs here and NOT in KeyIds. Only the single ACTIVE gen ever reshares.
+	ReshareSkipKeyIds map[string]bool
 	// Unresolvable is true when "v" was PRESENT but failed to decode (corrupt committed
 	// state). The set is then empty and MUST NOT be read as "nobody retiring": the #11
 	// bond-lock consumer treats Unresolvable as "everybody locked" (fail-closed), while
@@ -67,8 +75,9 @@ type RetiringSignerDeps struct {
 // compute the identical result.
 func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	out := RetiringSignerSet{
-		SignerElection: map[string]elections.ElectionResult{},
-		KeyIds:         map[string]bool{},
+		SignerElection:    map[string]elections.ElectionResult{},
+		KeyIds:            map[string]bool{},
+		ReshareSkipKeyIds: map[string]bool{},
 	}
 	if d.BtcContract == "" {
 		return out
@@ -89,6 +98,21 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	}
 	for i := range vaults {
 		v := vaults[i]
+		keyId := d.BtcContract + "-" + btcvault.VaultKeyName(v.Generation)
+
+		// Reshare-skip: any NON-ACTIVE generation must be skipped by the reshare loop —
+		// retiring/draining/inactive AND the terminal PURGED. This closes the purged-key
+		// reshare hole: a purged gen's tss_key stays status:"active" (nothing deactivates it
+		// at purge, and KeyRetirementEnabled=false), so without this it would be picked up by
+		// FindEpochKeys and RESHARED forever — resurrecting a retired key's shares. Only the
+		// single Active gen reshares. Just the keyId string (no committee needed), so it does
+		// not depend on the commitment/election reads below.
+		switch v.Status {
+		case btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining,
+			btcvault.VaultStatusInactive, btcvault.VaultStatusPurged:
+			out.ReshareSkipKeyIds[keyId] = true
+		}
+
 		// L4-C1 (FULL-PRUNED): include INACTIVE, in lock-step with the contract's
 		// isFundHoldingStatus / AnyFundedSupersededGen / writeOffDust (all of which count
 		// Inactive as fund-holding since S5). Omitting it let a party cheaply re-fund a
@@ -99,7 +123,6 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 			v.Status != btcvault.VaultStatusInactive {
 			continue
 		}
-		keyId := d.BtcContract + "-" + btcvault.VaultKeyName(v.Generation)
 		commitment, cerr := d.GetCommitment(keyId)
 		if cerr != nil {
 			continue
