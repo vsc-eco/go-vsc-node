@@ -125,7 +125,29 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 	// aggregate is the primary check; this is the second line — if our own
 	// re-derivation disagrees with what the chain attested, refuse rather
 	// than silently apply a payload we would not have signed.
-	if mismatchErr, ran := se.rederivePendulumSettlement(rec); ran && mismatchErr != nil {
+	//
+	// TESTNET-ONLY HISTORICAL-REPLAY GUARD — do NOT replicate to any other
+	// network. Early testnet history contains settlements composed and 2/3-BLS-
+	// ratified against a HIVE_CONSENSUS bond that a NON-DETERMINISTIC liveness
+	// slash reduced live (an honest producer slashed because its committee was
+	// too slow to attest a block). That slash left no deterministic on-chain
+	// fault, so a from-scratch reindex never reproduces it: re-derivation always
+	// recomputes the pre-slash bond and byte-mismatches the attested record,
+	// freezing every reindex at the first affected epoch (555, L1 ~3,425,393).
+	// Below this pinned L1 height we skip pass 2 and rely on pass 1 (structural
+	// validation — conservation + committee/delegator membership, already run
+	// above) plus the record's own 2/3 BLS aggregate, applying the attested
+	// history as-is. At/above the height, strict re-derivation stays fully in
+	// force for all new epochs. Hardcoded (not config) and testnet-gated so it
+	// can never be enabled on mainnet: mainnet has no such history and this must
+	// never weaken its consensus boundary. blockHeight is the L1 height at which
+	// the carrying election_result confirmed.
+	const testnetReplayNoRederiveBelowHeight = 4769770
+	skipRederive := se.sconf != nil && se.sconf.OnTestnet() && blockHeight < testnetReplayNoRederiveBelowHeight
+	if skipRederive {
+		log.Warn("pendulum settlement: TESTNET replay guard active — skipping re-derivation, applying attested record on structural validation + BLS only",
+			"epoch", rec.Epoch, "block_height", blockHeight, "boundary_height", testnetReplayNoRederiveBelowHeight)
+	} else if mismatchErr, ran := se.rederivePendulumSettlement(rec); ran && mismatchErr != nil {
 		log.Error("pendulum settlement: re-derivation mismatch; refusing to apply",
 			"epoch", rec.Epoch, "err", mismatchErr)
 		return
