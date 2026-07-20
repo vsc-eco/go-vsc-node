@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -364,12 +365,10 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 // its owner) already exists. That is a DETERMINISTIC outcome — every node
 // replaying the same history sees it — so it must be surfaced, not retried:
 // blockingRetry on a deterministic error wedges block processing forever.
+//
+// Classifies by TYPED error (errors.Is), not message text. The prior
+// substring match would silently stop working if any wrapper changed the
+// message, and a mis-classified duplicate is exactly what re-wedges the node.
 func isDuplicateSeatErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "already holds a seat") ||
-		strings.Contains(msg, "one seat per beneficial owner") ||
-		strings.Contains(msg, "E11000")
+	return errors.Is(err, poaseats.ErrSeatExists) || errors.Is(err, poaseats.ErrUboExists)
 }

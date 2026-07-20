@@ -120,6 +120,20 @@ func (p *poaSeats) GetSeatByUbo(uboId string) (Seat, bool, error) {
 	return seat, true, nil
 }
 
+// Sentinel errors so callers can classify a refusal with errors.Is instead of
+// matching message text. A duplicate seat/owner is a DETERMINISTIC refusal
+// (every node replaying the same history reaches it), and the state engine must
+// tell that apart from a transient infra error — retrying a deterministic
+// refusal under blockingRetry wedges block processing forever. Message-substring
+// classification silently breaks the moment a wrapper changes the text; a typed
+// error does not.
+var (
+	// ErrSeatExists: the account already holds a seat.
+	ErrSeatExists = errors.New("poa_seats: account already holds a seat")
+	// ErrUboExists: the beneficial owner already holds a seat.
+	ErrUboExists = errors.New("poa_seats: beneficial owner already holds a seat")
+)
+
 func (p *poaSeats) AdmitSeat(seat Seat) error {
 	seat.Account = NormalizeAccount(seat.Account)
 	if seat.Account == "" {
@@ -134,18 +148,25 @@ func (p *poaSeats) AdmitSeat(seat Seat) error {
 	if _, exists, err := p.GetSeat(seat.Account); err != nil {
 		return err
 	} else if exists {
-		return fmt.Errorf("poa_seats: %s already holds a seat", seat.Account)
+		return fmt.Errorf("%w: %s", ErrSeatExists, seat.Account)
 	}
 
 	if seat.UboId != "" {
 		if held, exists, err := p.GetSeatByUbo(seat.UboId); err != nil {
 			return err
 		} else if exists {
-			return fmt.Errorf("poa_seats: ubo already holds the seat for %s (one seat per beneficial owner)", held.Account)
+			return fmt.Errorf("%w (held by %s)", ErrUboExists, held.Account)
 		}
 	}
 
+	// The unique indexes are the backstop: the checks above race against a
+	// concurrent admission, so a duplicate can still reach InsertOne. Map the
+	// storage-layer E11000 back to the same sentinels so the caller classifies
+	// it identically to the pre-checks.
 	if _, err := p.InsertOne(context.Background(), seat); err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return fmt.Errorf("%w (insert race): %w", ErrSeatExists, err)
+		}
 		return fmt.Errorf("poa_seats: insert %s: %w", seat.Account, err)
 	}
 	return nil
