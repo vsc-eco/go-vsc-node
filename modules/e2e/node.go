@@ -20,6 +20,7 @@ import (
 	governance_db "vsc-node/modules/db/vsc/governance"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rc_db "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -135,6 +136,9 @@ func MakeNode(input MakeNodeInput) *Node {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssKeys := tss_db.NewKeys(vscDb)
 	governanceDb := governance_db.New(vscDb)
+	// POA seat registry — the on-chain allowlist of vetted operator accounts
+	// eligible for election. Inert until the consensus floor reaches 0.7.0.
+	poaSeatsDb := poaseats.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 
@@ -184,6 +188,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		tssCommitments,
 		tssRequests,
 		governanceDb,
+		poaSeatsDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		wasm,
@@ -287,6 +292,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		contractState,
 		rcDb,
 		nonceDb,
+		poaSeatsDb,
 		tssCommitments,
 		tssKeys,
 		tssRequests,
