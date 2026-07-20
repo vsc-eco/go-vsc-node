@@ -91,3 +91,33 @@ func TestNormalizeAccountIsCaseFolding(t *testing.T) {
 		}
 	}
 }
+
+// ★ The mirror image of the ubo_id regression, and just as dangerous.
+//
+// last_seated_height and exit_height are QUERIED BY VALUE: SetSeating filters
+// last_seated_height $lte, SetExit filters exit_height == 0 and
+// last_seated_height $gt 0. A MongoDB value query does not match a document
+// where the field is ABSENT. So if either carried bson omitempty, a freshly
+// admitted seat (both values 0, therefore omitted) would match neither filter:
+// SetSeating would never fire, the seat would never be recorded as seated, and
+// SetExit would never arm the collateral halt — silently, with every in-memory
+// test still green because a Go map has no notion of an absent field.
+func TestQueriedHeightFieldsAreAlwaysStoredEvenWhenZero(t *testing.T) {
+	raw, err := bson.Marshal(poaseats.Seat{Account: "alice", AdmittedHeight: 100})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var doc bson.M
+	if err := bson.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, field := range []string{"last_seated_height", "exit_height"} {
+		v, present := doc[field]
+		if !present {
+			t.Fatalf("%s is absent on a fresh seat — it is filtered BY VALUE, and a Mongo value query never matches an absent field, so the write guarding on it would silently never fire", field)
+		}
+		if n, ok := v.(int64); !ok || n != 0 {
+			t.Fatalf("%s = %#v, want an explicit 0", field, v)
+		}
+	}
+}
