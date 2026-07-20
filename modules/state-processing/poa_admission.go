@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"vsc-node/modules/common/consensusversion"
@@ -32,12 +33,42 @@ import (
 //     would scatter across per-tx proposals and the threshold could never be
 //     reached.
 //
-// WHY THE THRESHOLD IS THE THEFT THRESHOLD: admission at ceil(2/3) of seats is
-// SELF-PROTECTING. A coalition below 2/3 cannot vote accomplices in to REACH
-// 2/3, and a coalition already at 2/3 gains nothing by admitting more — it
-// already controls the vault. That property holds only while the seat set cannot
-// SHRINK, which is why there is no removal op anywhere in this build and why the
-// seat gate is placed so it can never starve the committee.
+// ★ THE "SELF-PROTECTING" CLAIM IS FALSE AS A MULTI-ROUND PROPERTY. READ THIS
+// BEFORE RELYING ON THE THRESHOLD.
+//
+// The design (and an earlier version of this comment) asserted that admission at
+// ceil(2/3) of seats can never be a ladder to capture, because "a coalition
+// below 2/3 cannot vote accomplices in to reach 2/3". That is true for ONE
+// round and false for the sequence, and the sequence is what an attacker runs.
+//
+// The reason is arithmetic, not implementation: required(W) = ceil(2W/3) grows
+// by 0 or 1 when a seat is added, while a coalition that seats an accomplice
+// grows by exactly 1. So the external votes needed per round is non-increasing,
+// and it bottoms out at ONE:
+//
+//   13 of 20 seats (65%, below the 70% threshold)
+//     -> 1 external vote seats an accomplice
+//     -> 14 of 21, and required(21) = 14
+//     -> the coalition is now permanently self-sufficient, and 14/21 is the
+//        theft threshold. One vote converted a minority into vault control.
+//
+//   Even 1 of 3 reaches control in 3 rounds at 1 external vote each.
+//
+// Nothing between rounds resets this: no cooldown, no re-vetting, and the same
+// single duped or compromised seat can supply that one vote every round. The
+// churn cap limits admissions to one per election, so this costs TIME (and is
+// visible on-chain while it happens) — it does not cost more votes.
+//
+// WHAT WOULD ACTUALLY FIX IT is a design decision, not a code tweak, and is NOT
+// implemented here: the admission threshold must EXCEED the theft threshold
+// (e.g. ceil(3/4) of seats), so that any coalition able to pass an admission
+// already controls the vault and therefore gains nothing from admitting. That
+// buys safety at the cost of giving a >25% minority a veto on growth.
+//
+// What the threshold DOES still give, and what remains true: a coalition with
+// ZERO external support cannot grow at all, admission is rate-limited to one
+// seat per election and is publicly visible, and the set cannot SHRINK (there is
+// no removal op anywhere in this build), so capture by subtraction is closed.
 //
 // WHAT THIS DOES NOT DO: it does not vet anybody. The chain enforces that a UBO
 // string is present and unique. It cannot and does not verify that the string is
@@ -228,7 +259,18 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 		AdmittedHeight: blockHeight,
 		AdmittedTxId:   txID,
 	}
-	if err := se.poaSeats.AdmitSeat(seat); err != nil {
+	// Fail-stop on infra, surface deterministic refusals. An admission that
+	// crossed the threshold on every node must be WRITTEN on every node, or the
+	// registries diverge on a membership decision.
+	var admitErr error
+	blockingRetry(fmt.Sprintf("poaSeats.AdmitSeat(vote,%s,%d)", prop.Candidate, blockHeight), func() error {
+		admitErr = se.poaSeats.AdmitSeat(seat)
+		if admitErr != nil && isDuplicateSeatErr(admitErr) {
+			return nil
+		}
+		return admitErr
+	})
+	if err := admitErr; err != nil {
 		// The registry refused (a race against another admission for the same
 		// account or owner). Leave the proposal OPEN rather than marking it
 		// applied: nothing was seated, and marking it applied would record an

@@ -52,7 +52,23 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 	if se.poaSeats == nil {
 		return
 	}
-	if !consensusversion.PoaSeatGateActive(se.ActiveConsensusVersion(blockHeight)) {
+	// ★ RESOLVE THE VERSION FROM THE ELECTION BEING PROCESSED, not from
+	// ActiveConsensusVersion(blockHeight).
+	//
+	// GetElectionByHeight filters block_height $lt height, and the election we
+	// are processing was just stored AT this height — so ActiveConsensusVersion
+	// here resolves to the PREVIOUS election, the very same row prevElection
+	// points at. Using it above while the transition check below tests the same
+	// row for the OPPOSITE verdict is a contradiction that can never be
+	// satisfied: bootstrap would never fire on any node at any epoch, the
+	// registry would stay empty forever, and the batch would sit permanently
+	// inert while flat weight and the churn cap still applied — the exact
+	// "worse than either regime" hybrid this build guards against elsewhere.
+	//
+	// Taking the version from elecResult is also the more honest reading: the
+	// question is "is the election I am processing under POA rules", and that
+	// election carries its own version.
+	if !consensusversion.PoaSeatGateActive(elections.ResultVersion(elecResult)) {
 		return
 	}
 
@@ -265,7 +281,16 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 	// simply retries at the next ratified election, when the committee has
 	// recovered. Seeding a bad set is unrecoverable; declining to seed is not.
 	if minMembers := se.sconf.ConsensusParams().MinMembers; minMembers > 0 && len(members) < minMembers {
-		log.Error("poa: bootstrap REFUSED — the first post-activation committee is below MinMembers, and seeding it would permanently found the operator set on a degraded committee that then holds a 2/3 veto over widening it. Registry stays empty (gate inert); will retry at the next ratified election",
+		// NOTE, and this is a real limitation rather than a retry: the
+		// transition detector keys off the PREVIOUS election being below the
+		// POA line, so once this election passes, no later election is
+		// recognised as the transition and bootstrap will NOT fire again. The
+		// chain is unaffected (the seat gate stays inert and candidacy
+		// continues exactly as today) but POA does not activate, and bringing
+		// it up then needs an operator-driven seeding path that this build does
+		// NOT provide. Deliberate: silently re-seeding from whatever committee
+		// exists later is how nodes diverge.
+		log.Error("poa: bootstrap REFUSED — the first post-activation committee is below MinMembers, and seeding it would permanently found the operator set on a degraded committee that then holds a 2/3 veto over widening it. Registry stays empty and the seat gate stays INERT. This election was the activation transition, so bootstrap will NOT retry: POA will not come up without operator intervention",
 			"epoch", elecResult.Epoch, "height", blockHeight,
 			"members", len(members), "min_members", minMembers)
 		return
@@ -286,11 +311,24 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 	seeded := make([]string, 0, len(accounts))
 	var failed []string
 	for _, acct := range accounts {
-		err := se.poaSeats.AdmitSeat(poaseats.Seat{
-			Account:          acct,
-			AdmittedHeight:   blockHeight,
-			Bootstrap:        true,
-			LastSeatedHeight: blockHeight,
+		// Fail-stop like every other registry write on this path. This is the
+		// once-ever seeding burst, so a transient DB blip here desyncs one
+		// node's registry from its peers permanently — and because bootstrap
+		// only fires at the transition, nothing ever re-runs it.
+		var err error
+		blockingRetry(fmt.Sprintf("poaSeats.AdmitSeat(bootstrap,%s,%d)", acct, blockHeight), func() error {
+			err = se.poaSeats.AdmitSeat(poaseats.Seat{
+				Account:          acct,
+				AdmittedHeight:   blockHeight,
+				Bootstrap:        true,
+				LastSeatedHeight: blockHeight,
+			})
+			// A duplicate-key error is DETERMINISTIC (every node sees it) and
+			// must not be retried forever; only infra errors are transient.
+			if err != nil && isDuplicateSeatErr(err) {
+				return nil
+			}
+			return err
 		})
 		if err != nil {
 			log.Error("poa: bootstrap seat write failed", "account", acct, "height", blockHeight, "err", err)
@@ -320,4 +358,18 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		"height", blockHeight,
 		"seats", len(seeded),
 		"accounts", strings.Join(seeded, ","))
+}
+
+// isDuplicateSeatErr reports whether a seat write failed because the seat (or
+// its owner) already exists. That is a DETERMINISTIC outcome — every node
+// replaying the same history sees it — so it must be surfaced, not retried:
+// blockingRetry on a deterministic error wedges block processing forever.
+func isDuplicateSeatErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already holds a seat") ||
+		strings.Contains(msg, "one seat per beneficial owner") ||
+		strings.Contains(msg, "E11000")
 }
