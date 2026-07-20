@@ -78,11 +78,11 @@ func (m *MockPoaSeatsDb) AdmitSeat(seat poaseats.Seat) error {
 		return errors.New("mock: refusing to admit at height 0")
 	}
 	if _, exists := m.Seats[seat.Account]; exists {
-		return fmt.Errorf("mock: %s already holds a seat", seat.Account)
+		return fmt.Errorf("%w: %s", poaseats.ErrSeatExists, seat.Account)
 	}
 	if seat.UboId != "" {
 		if held, exists, _ := m.GetSeatByUbo(seat.UboId); exists {
-			return fmt.Errorf("mock: ubo already holds the seat for %s", held.Account)
+			return fmt.Errorf("%w (held by %s)", poaseats.ErrUboExists, held.Account)
 		}
 	}
 	m.Seats[seat.Account] = seat

@@ -137,7 +137,7 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 
 	// Electorate: the seats as of THIS block. Also the eligibility check — only a
 	// seated operator votes on admission.
-	electorate, seatAccounts, ok := se.poaSeatElectorate(blockHeight)
+	electorate, ok := se.poaSeatElectorate(blockHeight)
 	if !ok {
 		return
 	}
@@ -145,7 +145,6 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 		log.Debug("vsc.admit_vote: voter holds no seat; ignoring", "tx", txID, "voter", voter)
 		return
 	}
-	_ = seatAccounts
 
 	// Already-seated candidate, or a UBO that already holds a seat: the vote is
 	// moot. Checked BEFORE opening a proposal so a duplicate never accumulates
@@ -213,7 +212,7 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 	// open: seats admitted mid-window would raise the bar for a vote already
 	// cast, and — worse — a shrinking committee would lower it. Same discipline
 	// as the reserve-payout path.
-	snapshot, _, ok := se.poaSeatElectorate(prop.CreationBlock)
+	snapshot, ok := se.poaSeatElectorate(prop.CreationBlock)
 	if !ok {
 		return
 	}
@@ -288,24 +287,24 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 // ok=false means "could not resolve" and every caller ABORTS on it rather than
 // proceeding with a partial electorate: a short electorate lowers the ceil(2/3)
 // bar, so a transient read failure could otherwise let a minority admit a seat.
-func (se *StateEngine) poaSeatElectorate(height uint64) ([]governance.Member, []string, bool) {
+func (se *StateEngine) poaSeatElectorate(height uint64) ([]governance.Member, bool) {
 	if se.poaSeats == nil {
-		return nil, nil, false
+		return nil, false
 	}
 	seats, err := se.poaSeats.GetSeatsAtHeight(height)
 	if err != nil {
 		log.Error("poa: seat electorate read failed; refusing to tally against a partial set",
 			"height", height, "err", err)
-		return nil, nil, false
+		return nil, false
 	}
 	if len(seats) == 0 {
-		return nil, nil, false
+		return nil, false
 	}
 	accounts := make([]string, 0, len(seats))
 	for _, s := range seats {
 		accounts = append(accounts, poaseats.NormalizeAccount(s.Account))
 	}
-	return governance.SeatElectorate(accounts), accounts, true
+	return governance.SeatElectorate(accounts), true
 }
 
 // PoaAdmitVoteActive reports whether the admission op is dispatched at height.
