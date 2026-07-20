@@ -41,6 +41,13 @@ type Proposal struct {
 	Recipient string `bson:"recipient,omitempty"`
 	Reason    string `bson:"reason,omitempty"`
 
+	// admit_seat payload (POA). Candidate is the account being voted into the
+	// seat registry; UboId names the beneficial owner behind it, and is part of
+	// the proposal id rather than loose payload so a coalition cannot gather
+	// approvals for one owner and then seat a different one.
+	Candidate string `bson:"candidate,omitempty"`
+	UboId     string `bson:"ubo_id,omitempty"`
+
 	// shared
 	Amount int64 `bson:"amount,omitempty"` // sats
 }
