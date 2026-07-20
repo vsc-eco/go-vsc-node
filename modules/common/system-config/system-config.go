@@ -267,6 +267,17 @@ func MainnetConfig() SystemConfig {
 			SafetySlashWindows: []params.HeightWindow{
 				{Start: 107454300, End: 107565100},
 			},
+
+			// POA admission batch (consensus 0.7.0). Inert until the election
+			// version floor reaches 0.7.0 — these values are only read once
+			// consensusversion.Version0_7_0Active is true, so shipping them is a
+			// no-op on the live chain. ~3 days each at 3s/block: the admit-vote
+			// window is the operator-specified deliberation period, and the exit
+			// halt must exceed (BTC theft-detection latency + slash-execution
+			// time) — SPV detection is minutes, so 3 days is ample margin.
+			PoaAdmitVoteWindowBlocks:    86400,
+			PoaExitHaltBlocks:           86400,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -366,6 +377,14 @@ func TestnetConfig() SystemConfig {
 			SafetySlashWindows: []params.HeightWindow{
 				{Start: 3_870_000, End: 0},
 			},
+
+			// POA admission batch (consensus 0.7.0), scaled to testnet's 3600-block
+			// election interval so an admission and an exit-halt each span a couple
+			// of elections rather than mainnet's ~12. Inert until the floor reaches
+			// 0.7.0.
+			PoaAdmitVoteWindowBlocks:    7200,
+			PoaExitHaltBlocks:           7200,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -448,6 +467,14 @@ func DevnetConfig() SystemConfig {
 			SafetySlashWindows: []params.HeightWindow{
 				{Start: 1, End: 0},
 			},
+
+			// POA admission batch (consensus 0.7.0), scaled to devnet's 40-block
+			// election interval: 120 blocks = 3 elections, so a devnet test can
+			// actually observe a window open, a vote cross it, and an exit-halt
+			// expire inside one run.
+			PoaAdmitVoteWindowBlocks:    120,
+			PoaExitHaltBlocks:           120,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		tssParams: params.DefaultTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
@@ -502,6 +529,13 @@ func MocknetConfig() SystemConfig {
 			// Principal safety slashing. Empty = INERT; the in-process e2e harness
 			// and internal unit tests pin their own schedule via an sconf override.
 			SafetySlashWindows: nil,
+
+			// POA admission batch (consensus 0.7.0). Short windows so in-process
+			// unit tests can drive a full admit -> seat -> exit -> release cycle
+			// without minutes of simulated height.
+			PoaAdmitVoteWindowBlocks:    120,
+			PoaExitHaltBlocks:           120,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		tssParams: params.MocknetTssParams,
 	}

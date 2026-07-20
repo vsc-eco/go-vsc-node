@@ -772,6 +772,16 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err := se.electionDb.StoreElection(elecResult); err != nil {
 				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
 			}
+
+			// POA seat maintenance runs off the RATIFIED election, at the one
+			// point every node executes exactly once per epoch from identical
+			// inputs. It seeds the seat registry on first activation (so the
+			// seat gate can never activate against an empty registry and empty
+			// the committee) and records which seats were in the set and which
+			// just left — the "when did this account leave" fact the collateral
+			// exit-halt is counted from, which exists nowhere else in the
+			// codebase. Inert unless the POA batch is active.
+			se.applyPoaSeatMaintenance(elecResult, tx.Self.BlockHeight)
 			log.Info("election processed",
 				"epoch", tx.Epoch,
 				"proposer", elecResult.Proposer,

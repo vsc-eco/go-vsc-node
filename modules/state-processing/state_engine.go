@@ -35,6 +35,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -89,6 +90,13 @@ type StateEngine struct {
 	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
 	// governance (the handlers no-op when nil).
 	governanceDb governance_db.Governance
+
+	// poaSeats is the POA seat registry (the on-chain allowlist of vetted
+	// operator accounts eligible for election). Nil on paths that do not
+	// process POA — every POA code path checks for nil and no-ops, exactly like
+	// governanceDb above, so a harness that does not wire it keeps pre-POA
+	// behaviour rather than panicking.
+	poaSeats poaseats.PoaSeats
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
@@ -2913,6 +2921,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	governanceDb governance_db.Governance,
+	poaSeatsDb poaseats.PoaSeats,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
@@ -2968,6 +2977,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
 		governanceDb:   governanceDb,
+		poaSeats:       poaSeatsDb,
 
 		consensusState:   consensusStateDb,
 		consensusRuntime: NewConsensusRuntime(),

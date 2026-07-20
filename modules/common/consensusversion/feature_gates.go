@@ -119,3 +119,96 @@ func GovernanceActionsActive(active Version) bool {
 func SafetySlashBurnDelay7dActive(active Version) bool {
 	return Version0_3_0Active(active)
 }
+
+// V0_7_0 is the consensus version line at which the POA ADMISSION batch
+// activates: the seat registry gate on candidacy, the vsc.admit_vote op, flat
+// seat-weight, the churn cap, and the collateral exit-halt. Every
+// consensus-affecting change in the batch keys off this one version so the
+// network has ONE coordinated activation, driven by the election floor reaching
+// 0.7.0.
+//
+// Why 0.7.0 and not 0.4.0: the version line is a FLEET-WIDE namespace, not a
+// per-branch one. 0.4.0/0.5.0 are taken by the delegated-consensus-stake batch
+// on origin/develop and 0.6.0 by the vault-protection batch on
+// origin/feat/vault-protection. Reusing a taken line would mean that, after a
+// merge, one floor rise silently activates two unrelated batches at once — the
+// exact coordinated-activation property this mechanism exists to provide. 0.7.0
+// is the first line free across all three branches (verified by grepping
+// V0_[0-9]+_[0-9]+ on each).
+var V0_7_0 = Version{Major: 0, Consensus: 7, NonConsensus: 0}
+
+// Version0_7_0Active reports whether the POA admission batch is in force given
+// the chain-active consensus version. `active` is resolved by the caller from
+// on-chain state (deterministic, replay-correct). Below the line every POA rule
+// is inert and behavior stays byte-identical, so old and new binaries
+// interoperate until the floor reaches 0.7.0.
+func Version0_7_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_7_0)
+}
+
+// PoaAdmissionOpsActive reports whether the POA admission op (vsc.admit_vote) is
+// dispatched. Resolve `active` from the version active at the OP's block height
+// (StateEngine.ActiveConsensusVersion(blockHeight)), exactly as
+// GovernanceActionsActive does for the witness-vote governance trio it is
+// modelled on; below the line the op is ignored on every node, so a full reindex
+// reproduces historical state.
+func PoaAdmissionOpsActive(active Version) bool {
+	return Version0_7_0Active(active)
+}
+
+// PoaSeatGateActive reports whether election candidacy is restricted to ratified
+// POA seats (an allowlist), rather than being open to any sufficiently staked
+// witness.
+//
+// Resolve `active` from the PRIOR ratified election's version — NOT the version
+// this election is about to adopt. Two reasons, both load-bearing: it keeps the
+// gate out of the version-rise readiness loop (no circular dependency), and it
+// gives the network one full epoch after the floor crosses 0.7.0 before the gate
+// bites. That epoch of slack is not cosmetic — the structurally identical H-6
+// strict-key admission gate starved the mainnet committee below the floor at
+// epoch 1699 and halted elections; it is still disabled today (see
+// WitnessKeyStrictActive above). A membership gate is the highest-consequence
+// change shape in this codebase and is treated accordingly: this gate is also
+// inert while the registry is empty, and it runs BEFORE the bond floor guard so
+// it can never be the last membership-shrinking step.
+func PoaSeatGateActive(active Version) bool {
+	return Version0_7_0Active(active)
+}
+
+// PoaFlatWeightActive reports whether every ratified seat carries exactly
+// params.PoaSeatWeight of election weight, instead of weight tracking the
+// account's HIVE_CONSENSUS bond 1:1. Stake keeps its other roles (the MinStake
+// eligibility floor, the bond-maturity window, the established-member grace, and
+// being the slashable bond) — only its role as consensus WEIGHT is removed, so
+// a 2/3 threshold means two-thirds of SEATS rather than two-thirds of stake.
+//
+// Resolve `active` from the prior ratified election's version, for the same
+// determinism reason as PoaSeatGateActive: the weight map is an input to the
+// election CID, so every signer regenerating the election must resolve the
+// identical verdict or the CIDs diverge and BLS cannot aggregate.
+func PoaFlatWeightActive(active Version) bool {
+	return Version0_7_0Active(active)
+}
+
+// PoaChurnCapActive reports whether the per-election new-member churn cap is in
+// force via the POA batch. The pre-existing cap (ConsensusParams
+// MaxNewMembersPerElection) is gated on MaxNewMembersActivationHeight, which is
+// 0 — inert — on every shipped network, so it is dead code today. Activating it
+// off this version gate instead means no future height has to be pinned, which
+// removes the documented mis-pin footgun (a bare cap value lets old-binary
+// cap=0 and new-binary cap=N nodes compute different member sets for the same
+// election). A pinned MaxNewMembersActivationHeight still wins where present.
+//
+// Resolve `active` from the prior ratified election's version.
+func PoaChurnCapActive(active Version) bool {
+	return Version0_7_0Active(active)
+}
+
+// PoaExitHaltActive reports whether the collateral exit-halt binds: a seat's
+// consensus bond stays unwithdrawable until PoaExitHaltBlocks after it LEAVES
+// the elected set. Resolve `active` from the version active at the height the
+// halt is evaluated (StateEngine.ActiveConsensusVersion(height)) so a held or
+// released payout recomputes identically on replay.
+func PoaExitHaltActive(active Version) bool {
+	return Version0_7_0Active(active)
+}

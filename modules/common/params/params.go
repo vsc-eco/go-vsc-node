@@ -97,7 +97,7 @@ var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
-var RC_HIVE_FREE_AMOUNT int64 = 10_000 // 5 HBD worth of RCs for Hive accounts. Devnet/mocknet raise this in system-config.FromNetwork so ephemeral test accounts (which hold ~0 HBD) can afford the gas of SPV-heavy ops (map/migrate); mainnet/testnet keep this production default.
+var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts. Devnet/mocknet raise this in system-config.FromNetwork so ephemeral test accounts (which hold ~0 HBD) can afford the gas of SPV-heavy ops (map/migrate); mainnet/testnet keep this production default.
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
@@ -446,6 +446,91 @@ type ConsensusParams struct {
 	// decision changes ledger state, so this is a fixed network-wide constant
 	// every node shares. 0 falls back to DefaultGovernanceProposalExpiryBlocks.
 	GovernanceProposalExpiryBlocks uint64 `json:"governanceProposalExpiryBlocks,omitempty"`
+
+	// ---- POA admission batch (consensus version 0.7.0) ----
+	//
+	// These four are consensus-critical ELECTION/LEDGER inputs, but unlike
+	// BondInclusion*/VaultRotationV2*/MaxNewMembers* they carry NO dedicated
+	// activation height: the whole POA batch activates off the chain-active
+	// consensus version (consensusversion.Version0_7_0Active), which is the
+	// repo's preferred idiom — a feature cannot switch on before a stake
+	// supermajority attests it is RUNNING code that implements it, so a laggard
+	// is excluded from the committee rather than silently forking across a
+	// height gap. See modules/common/consensusversion/feature_gates.go.
+
+	// PoaAdmitVoteWindowBlocks is how long a vsc.admit_vote proposal stays open
+	// to collect seat approvals, in L1 blocks (~3 days at 3s/block on mainnet).
+	// A proposal that has not crossed the ceil(2/3) seat threshold by
+	// openHeight+this is closed and the candidate is not seated. 0 falls back to
+	// DefaultPoaAdmitVoteWindowBlocks.
+	PoaAdmitVoteWindowBlocks uint64 `json:"poaAdmitVoteWindowBlocks,omitempty"`
+
+	// PoaExitHaltBlocks is the collateral exit-halt: how long after a seat LEAVES
+	// the elected set its consensus bond stays unwithdrawable, in L1 blocks (~3
+	// days at 3s/block on mainnet). It closes "steal, leave the set, pull the
+	// collateral and run" — the halt must exceed (theft-detection latency +
+	// slash-execution time). It composes as a MAX with the existing 5-epoch
+	// unstake maturity, it does not replace it. 0 falls back to
+	// DefaultPoaExitHaltBlocks.
+	PoaExitHaltBlocks uint64 `json:"poaExitHaltBlocks,omitempty"`
+
+	// PoaMaxNewMembersPerElection is the POA churn cap: how many NEW members a
+	// single election may admit once the POA batch is active. It exists because
+	// MaxNewMembersPerElection is gated on MaxNewMembersActivationHeight, which
+	// is 0 (inert) on every shipped network — so the pre-existing cap is dead
+	// code today. This one activates off the version gate instead, so no future
+	// height has to be pinned (and mis-pinning it cannot split the member set).
+	// If MaxNewMembersActivationHeight is ever pinned, that value wins and this
+	// is not consulted. 0 falls back to DefaultPoaMaxNewMembersPerElection.
+	PoaMaxNewMembersPerElection int `json:"poaMaxNewMembersPerElection,omitempty"`
+}
+
+// POA admission batch defaults (used when a network pins no explicit value).
+const (
+	// ~3 days at 3s/block.
+	DefaultPoaAdmitVoteWindowBlocks uint64 = 3 * 28800
+	// ~3 days at 3s/block. Must exceed theft-detection + slash-execution latency.
+	DefaultPoaExitHaltBlocks uint64 = 3 * 28800
+	// One new seat per election interval: a suspicious admission wave is visible
+	// and reactable rather than atomic.
+	DefaultPoaMaxNewMembersPerElection int = 1
+)
+
+// PoaSeatWeight is the consensus weight of one ratified POA seat. It is a
+// CONSTANT, deliberately not configurable: the whole point of flat seat-weight
+// is that no per-network knob can reintroduce stake-proportional weight (a whale
+// holding >=2/3 of stake otherwise holds >=2/3 of forging weight, which is the
+// capture vector POA exists to close). 1 keeps every ceil(2W/3) threshold in the
+// codebase exact on small integers — with 20 seats, 2/3 resolves to 14.
+const PoaSeatWeight uint64 = 1
+
+// EffectivePoaAdmitVoteWindow is the admit-vote window in force, falling back to
+// the default when a network pins nothing. Pure function of config — every node
+// resolves it identically.
+func (cp ConsensusParams) EffectivePoaAdmitVoteWindow() uint64 {
+	if cp.PoaAdmitVoteWindowBlocks == 0 {
+		return DefaultPoaAdmitVoteWindowBlocks
+	}
+	return cp.PoaAdmitVoteWindowBlocks
+}
+
+// EffectivePoaExitHalt is the collateral exit-halt in force, falling back to the
+// default when a network pins nothing. Pure function of config.
+func (cp ConsensusParams) EffectivePoaExitHalt() uint64 {
+	if cp.PoaExitHaltBlocks == 0 {
+		return DefaultPoaExitHaltBlocks
+	}
+	return cp.PoaExitHaltBlocks
+}
+
+// EffectivePoaMaxNewMembers is the POA churn cap in force. A negative pin is
+// treated as "unset" rather than as a cap of 0 (which would mean "admit nobody,
+// ever" — a silent liveness stop), so a mis-signed config cannot wedge admission.
+func (cp ConsensusParams) EffectivePoaMaxNewMembers() int {
+	if cp.PoaMaxNewMembersPerElection <= 0 {
+		return DefaultPoaMaxNewMembersPerElection
+	}
+	return cp.PoaMaxNewMembersPerElection
 }
 
 // DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
