@@ -121,3 +121,18 @@ func TestQueriedHeightFieldsAreAlwaysStoredEvenWhenZero(t *testing.T) {
 		}
 	}
 }
+
+// The write path (governance.NormalizeAccount) lowercases BEFORE stripping the
+// prefix. This helper must do the same, or the two disagree on precisely the
+// mixed-case inputs that case-handling exists for: stripping first is
+// case-sensitive, so "HIVE:alice" would keep its prefix here and normalise to
+// "hive:alice" while the write path produced "alice" — a silent membership
+// mismatch, which in the election path means an excluded operator and in the
+// maintenance path means a wrongly-armed collateral halt.
+func TestNormalizeAccountMatchesTheWritePathOnMixedCasePrefixes(t *testing.T) {
+	for _, in := range []string{"HIVE:alice", "Hive:Alice", "hive:ALICE", "  HIVE:ALICE  "} {
+		if got := poaseats.NormalizeAccount(in); got != "alice" {
+			t.Fatalf("NormalizeAccount(%q) = %q, want alice — the read path disagrees with the write path on a mixed-case prefix", in, got)
+		}
+	}
+}
