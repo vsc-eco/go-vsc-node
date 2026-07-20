@@ -129,8 +129,13 @@ func (s Seat) Seated() bool {
 // account names at L1, so this is defence in depth rather than a live bug; the
 // point is that the safety of a membership comparison must not rest on an
 // external invariant that nothing here states or tests.
+// ORDER MATTERS: lowercase FIRST, then strip the prefix — the same order
+// governance.NormalizeAccount uses. Stripping first is case-SENSITIVE, so
+// "HIVE:alice" would keep its prefix and normalise to "hive:alice" here while
+// governance normalises it to "alice": the two helpers would disagree on exactly
+// the input that mixed-case handling exists to cover.
 func NormalizeAccount(account string) string {
-	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(account), "hive:"))
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(account)), "hive:")
 }
 
 // PoaSeats is the seat registry. Note the absence of any Delete/Revoke method:
