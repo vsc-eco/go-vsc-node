@@ -745,6 +745,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if Id == "vsc.reserve_vote" {
 						se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
 					}
+
+					// vsc.admit_vote (POA): a SEATED operator votes a vetted
+					// candidate into the seat registry. Deliberately not
+					// gateway-gated — the electorate is the seated operators
+					// themselves, so any account may broadcast and the handler
+					// decides whether it holds a seat. The extra 0.7.0 check is
+					// what makes this inert until the POA batch activates; the
+					// enclosing 0.3.0 gate is implied by it (consensus 7 >= 3)
+					// and is kept only because this op shares the governance
+					// store and vote engine with the trio above.
+					if Id == "vsc.admit_vote" && se.PoaAdmitVoteActive(blockInfo.BlockHeight) {
+						se.handleAdmitVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
 				}
 			}
 		}
