@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"testing"
 
@@ -91,11 +92,11 @@ func (f *fakeSeats) AdmitSeat(seat poaseats.Seat) error {
 		return errors.New("height 0")
 	}
 	if _, dup := f.seats[seat.Account]; dup {
-		return errors.New("already seated")
+		return fmt.Errorf("%w: %s", poaseats.ErrSeatExists, seat.Account)
 	}
 	if seat.UboId != "" {
 		if _, dup, _ := f.GetSeatByUbo(seat.UboId); dup {
-			return errors.New("ubo already holds a seat")
+			return fmt.Errorf("%w", poaseats.ErrUboExists)
 		}
 	}
 	f.seats[seat.Account] = seat
