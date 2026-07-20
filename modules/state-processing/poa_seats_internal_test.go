@@ -163,14 +163,25 @@ func poaEnv(t *testing.T, chainConsensus uint64) (*StateEngine, *fakeSeats) {
 	}, seats
 }
 
+// ratified builds an election that CARRIES ITS OWN consensus version, because
+// that is what applyPoaSeatMaintenance reads. Defaulting it to the POA line
+// matters: a fixture whose version was 0 would silently skip the whole path and
+// every assertion below would pass vacuously.
 func ratified(epoch uint64, accounts ...string) elections.ElectionResult {
+	return ratifiedAtVersion(7, epoch, accounts...)
+}
+
+func ratifiedAtVersion(consensus, epoch uint64, accounts ...string) elections.ElectionResult {
 	members := make([]elections.ElectionMember, 0, len(accounts))
 	for _, a := range accounts {
 		members = append(members, elections.ElectionMember{Account: a})
 	}
 	return elections.ElectionResult{
 		ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: epoch},
-		ElectionDataInfo:   elections.ElectionDataInfo{Members: members},
+		ElectionDataInfo: elections.ElectionDataInfo{
+			Members:         members,
+			ProtocolVersion: consensus,
+		},
 	}
 }
 
@@ -179,7 +190,7 @@ func ratified(epoch uint64, accounts ...string) elections.ElectionResult {
 // produces the same state as one running the old binary.
 func TestSeatMaintenanceInertBelowActivation(t *testing.T) {
 	se, seats := poaEnv(t, 3) // current mainnet floor
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), nil, 100)
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(3, 10, "alice", "bob"), nil, 100)
 	if len(seats.seats) != 0 {
 		t.Fatalf("wrote %d seats below the activation line — the batch is not inert", len(seats.seats))
 	}
@@ -513,5 +524,56 @@ func TestExitHaltNoOpsWithoutARegistry(t *testing.T) {
 	se := &StateEngine{}
 	if se.IsPoaExitHalted("alice", 100) {
 		t.Fatal("exit-halt fired with no registry wired — every unstake on the network would freeze")
+	}
+}
+
+// ★ THE REGRESSION FOR THE BATCH-WIDE DEAD PATH.
+//
+// applyPoaSeatMaintenance used to resolve its activation check via
+// ActiveConsensusVersion(blockHeight). GetElectionByHeight filters
+// block_height $lt height, and the election being processed is stored AT that
+// height — so that call returned the PREVIOUS election, the same row the
+// transition check tests. The gate demanded that row be at/above the POA line
+// while the transition check demanded it be below: a contradiction no state
+// could satisfy, so bootstrap never fired on any node at any epoch. The
+// registry stayed empty forever, the seat gate stayed inert, and the batch was
+// permanently dead while flat weight still applied.
+//
+// This test models the real relationship — a PREVIOUS election below the line
+// and a CURRENT election at it — which is precisely the shape the old doubles
+// could not express, since they returned one fixed version for every query.
+func TestBootstrapFiresAtTheRealActivationTransition(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+
+	prev := ratifiedAtVersion(3, 10, "alice", "bob", "carol") // pre-POA
+	curr := ratifiedAtVersion(7, 11, "alice", "bob", "carol") // first POA election
+
+	se.applyPoaSeatMaintenance(curr, &prev, 200)
+
+	if len(seats.seats) != 3 {
+		t.Fatalf("registry has %d seats after the activation transition, want 3 — bootstrap did not fire, so the seat gate stays inert forever and the entire POA batch is dead code while flat weight still applies",
+			len(seats.seats))
+	}
+	for _, acct := range []string{"alice", "bob", "carol"} {
+		if seat, ok, _ := seats.GetSeat(acct); !ok || !seat.Bootstrap {
+			t.Fatalf("%s was not seeded as a bootstrap seat", acct)
+		}
+	}
+}
+
+// And the other half of the same contradiction: once past the transition, an
+// empty registry must NOT be re-seeded, because that is the signature of a node
+// that lost its collection rather than one that has not seeded yet.
+func TestBootstrapDoesNotReFireAfterTheTransition(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+
+	prev := ratifiedAtVersion(7, 20, "alice", "bob", "carol") // already POA
+	curr := ratifiedAtVersion(7, 21, "alice", "bob", "carol")
+
+	se.applyPoaSeatMaintenance(curr, &prev, 300)
+
+	if len(seats.seats) != 0 {
+		t.Fatalf("registry re-seeded %d seats past the transition — a node that merely lost its collection would silently rebuild a different registry and diverge from its peers",
+			len(seats.seats))
 	}
 }
