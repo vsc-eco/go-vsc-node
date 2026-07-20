@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -847,6 +848,27 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 			Ret:     "consensus bond is locked: your committee holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
 			RcUsed:  50,
 		}
+	}
+
+	// POA collateral exit-halt (B1). A seat that still holds threshold BTC
+	// shares — or left the set less than PoaExitHaltBlocks ago — cannot walk its
+	// collateral out. That window is what makes the bond a deterrent rather than
+	// a formality: theft cannot be prevented (a threshold signature confirms on
+	// Bitcoin in ~10 minutes whatever Magi does), so it is deterred by
+	// collateral the thief cannot extract before the theft is detected.
+	//
+	// This composes with, and never replaces, the 5-epoch unstake maturity
+	// below: the two are a MAX, enforced again at payout-release time so an
+	// unstake submitted just BEFORE exiting cannot slip out just after.
+	//
+	// Inert below consensus 0.7.0 and for any account with no seat.
+	if se.IsPoaExitHalted(tx.From, tx.Self.BlockHeight) {
+		msg := "consensus bond is locked: POA collateral exit-halt. Your seat is still in the elected set; leave the set (disable your witness) and the halt expires a fixed number of blocks after your exit election"
+		if release, armed := se.PoaExitHaltReleaseHeight(tx.From, tx.Self.BlockHeight); armed {
+			msg = "consensus bond is locked: POA collateral exit-halt runs until block " +
+				strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+		}
+		return TxResult{Success: false, Ret: msg, RcUsed: 50}
 	}
 
 	// review4 HIGH #96 (fail-stop): the unstake lock epoch comes from an

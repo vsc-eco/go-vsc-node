@@ -24,10 +24,12 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/poaseats"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -56,6 +58,12 @@ type electionProposer struct {
 	elections elections.Elections
 	balanceDb ledgerDb.Balances
 	vscBlocks vscBlocks.VscBlocks
+
+	// poaSeats is the POA seat registry consulted when restricting candidacy to
+	// ratified seats. Nil on harnesses that do not wire POA — every read site
+	// treats nil as "gate inert", which keeps pre-POA candidacy behaviour rather
+	// than deleting every candidate.
+	poaSeats poaseats.PoaSeats
 
 	da *datalayer.DataLayer
 
@@ -121,6 +129,7 @@ func New(
 	p2p *libp2p.P2PServer,
 	witnesses witnesses.Witnesses,
 	elections elections.Elections,
+	poaSeats poaseats.PoaSeats,
 	vscBlocks vscBlocks.VscBlocks,
 	balanceDb ledgerDb.Balances,
 	da *datalayer.DataLayer,
@@ -135,6 +144,7 @@ func New(
 		p2p:                 p2p,
 		witnesses:           witnesses,
 		elections:           elections,
+		poaSeats:            poaSeats,
 		vscBlocks:           vscBlocks,
 		balanceDb:           balanceDb,
 		da:                  da,
@@ -513,6 +523,61 @@ func (e *electionProposer) GenerateFullElection(
 		})
 	}
 
+	// ───── POA seat gate (A1) ─────
+	//
+	// Candidacy is restricted to accounts holding a ratified POA seat. Without
+	// it, entry is permissionless: any Hive account can announce itself a
+	// witness, and enough HIVE_CONSENSUS stake is the only remaining gate.
+	//
+	// PLACEMENT IS LOAD-BEARING. This runs BEFORE the stake/bond loop, the churn
+	// cap and the bond floor guard, so the floor guard is still the LAST
+	// membership-shrinking step and can still backfill incumbents if the seated
+	// set comes up short. A membership gate placed after the floor guard is
+	// exactly the shape that starved the mainnet committee at epoch 1699 (H-6
+	// strict key admission, still disabled today).
+	//
+	// THREE INDEPENDENT SAFETY LAYERS, all required:
+	//   1. version-gated on the PRIOR ratified election's version, so the gate
+	//      bites one full epoch after the floor crosses 0.7.0;
+	//   2. INERT while the registry is empty — bootstrap seeding fills it from
+	//      the incumbent committee at the first ratified election after
+	//      activation (state-processing/poa_seats.go), so an empty registry
+	//      means "not seeded yet", never "nobody is eligible";
+	//   3. FAIL-STOP on a read error — returning an error aborts this election
+	//      attempt and the next slot retries, rather than proceeding with a
+	//      partial seat set and deleting legitimate candidates.
+	if consensusversion.PoaSeatGateActive(prevVersion) && e.poaSeats != nil {
+		seats, seatErr := e.poaSeats.GetSeatsAtHeight(blockHeight)
+		if seatErr != nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("poa seat gate: registry read failed at %d: %w", blockHeight, seatErr)
+		}
+		if len(seats) == 0 {
+			log.Error("poa seat gate ACTIVE but the seat registry is EMPTY — gate inert this election; expecting bootstrap seeding at the next ratified election",
+				"block_height", blockHeight)
+		} else {
+			seatSet := make(map[string]struct{}, len(seats))
+			for _, s := range seats {
+				seatSet[s.Account] = struct{}{}
+			}
+			before := len(witnessList)
+			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+				// Witness accounts are bare; seat accounts are normalised to
+				// bare on write. Normalising here too means a future change to
+				// either convention cannot silently empty the committee.
+				_, seated := seatSet[poaseats.NormalizeAccount(w.Account)]
+				return !seated
+			})
+			if dropped := before - len(witnessList); dropped > 0 {
+				log.Info("poa seat gate excluded unseated candidates",
+					"block_height", blockHeight,
+					"seats", len(seats),
+					"candidates_before", before,
+					"excluded", dropped)
+			}
+		}
+	}
+
 	previousElection := e.elections.GetElection(previousEpoch)
 
 	var etype string
@@ -714,6 +779,34 @@ func (e *electionProposer) GenerateFullElection(
 	if nodesWithStake >= uint64(e.sconf.ConsensusParams().MinMembers) || etype == "staked" {
 		pType = "staked"
 		weightMap = stakedMap
+
+		// ───── POA flat seat-weight (A3) ─────
+		//
+		// Every ratified seat carries exactly one unit. Stake keeps every other
+		// role it has — the MinStake eligibility floor, the maturity window, the
+		// established-member grace, and being the slashable bond — but it stops
+		// being consensus WEIGHT. That is the whole point: with weight tracking
+		// stake 1:1, an account holding >=2/3 of stake holds >=2/3 of forging
+		// weight and of the gateway multisig, which is the capture vector POA
+		// exists to close. Flat weight makes "2/3" mean 14 seats of 20.
+		//
+		// This is not a novel code path: pType=="initial" already gives every
+		// member a flat DEFAULT_NEW_NODE_WEIGHT today, and every downstream
+		// consumer is a ratio rule over whatever weights the election carries —
+		// none parse weight VALUES. TSS keygen/keysign thresholds are member
+		// COUNT based (tss_helpers.GetThreshold) and are untouched.
+		//
+		// pType deliberately stays "staked": it is consensus-visible (part of
+		// ElectionData and therefore of the CID) and feeds elections.ResultVersion,
+		// so inventing a third value would ripple into election validation for no
+		// benefit.
+		if consensusversion.PoaFlatWeightActive(prevVersion) {
+			flat := make(map[string]uint64, len(stakedMap))
+			for account := range stakedMap {
+				flat[account] = params.PoaSeatWeight
+			}
+			weightMap = flat
+		}
 	} else {
 		pType = "initial"
 		weightMap = defaultWeightMap
@@ -837,7 +930,35 @@ func (e *electionProposer) GenerateFullElection(
 	// values; cap is compile-time. Inert unless bondActive, staked, cap>0, and
 	// there is a previous election (genesis/bootstrap has no "new" concept).
 	effMaxNew := e.sconf.ConsensusParams().EffectiveMaxNewMembers(blockHeight)
-	if bondActive && pType == "staked" && previousElection != nil && effMaxNew > 0 {
+
+	// ───── POA churn-cap activation (A4) ─────
+	//
+	// The cap above is DEAD CODE on every shipped network: EffectiveMaxNewMembers
+	// requires MaxNewMembersActivationHeight to be pinned and reached, and it is
+	// 0 everywhere — including mainnet, where MaxNewMembersPerElection is 1 but
+	// the height is unset. (Four devnet tests set the cap value and assert on it
+	// while the height stays 0, so they exercise an inert cap.)
+	//
+	// POA activates it off the version gate instead of pinning a height. That
+	// removes the mis-pin footgun documented on the field itself: a bare value
+	// lets old-binary (cap=0) and new-binary (cap=N) nodes compute DIFFERENT
+	// member sets for the same election, which breaks BLS aggregation and stalls
+	// the epoch. A version gate cannot desynchronise that way, because the floor
+	// only rises once a supermajority attests to running the code.
+	//
+	// A pinned MaxNewMembersActivationHeight still wins where present: this only
+	// supplies a cap when the height-gated path yields none.
+	poaChurn := consensusversion.PoaChurnCapActive(prevVersion)
+	if poaChurn && effMaxNew == 0 {
+		effMaxNew = e.sconf.ConsensusParams().EffectivePoaMaxNewMembers()
+	}
+
+	// The pre-existing guard also required bondActive, because the cap was
+	// meaningful only alongside the bond maturity gate. Under POA the cap is
+	// meaningful on its own — it rate-limits SEATS entering the committee, which
+	// is what makes a suspicious admission wave visible and reactable instead of
+	// atomic — so POA admits it independently of bondActive.
+	if (bondActive || poaChurn) && pType == "staked" && previousElection != nil && effMaxNew > 0 {
 		prevMembers := make(map[string]struct{}, len(previousElection.Members))
 		for _, m := range previousElection.Members {
 			prevMembers[strings.TrimPrefix(m.Account, "hive:")] = struct{}{}
@@ -955,7 +1076,18 @@ func (e *electionProposer) GenerateFullElection(
 			selected := selectBondBackfill(cands, bondFloor-len(witnessList))
 			for _, c := range selected {
 				witnessList = append(witnessList, c.witness)
-				weightMap[c.witness.Account] = c.weight
+				// A backfilled incumbent is a seat like any other. Under POA it
+				// must carry the SAME flat weight as everyone else: seating it
+				// at its stake-derived weight would reintroduce a
+				// stake-proportional member into an otherwise flat committee —
+				// a single member whose weight could dwarf every other seat
+				// combined, i.e. the exact capture vector A3 removes, restored
+				// through the liveness patch.
+				if consensusversion.PoaFlatWeightActive(prevVersion) {
+					weightMap[c.witness.Account] = params.PoaSeatWeight
+				} else {
+					weightMap[c.witness.Account] = c.weight
+				}
 			}
 			if len(selected) > 0 {
 				// Restore the deterministic account ordering the members array
@@ -987,6 +1119,15 @@ func (e *electionProposer) GenerateFullElection(
 	)
 
 	distWeight := computeRequiredMemberWeight(totalOptionalWeight, uint64(len(REQUIRED_ELECTION_MEMBERS)))
+
+	// REQUIRED_ELECTION_MEMBERS is empty today, so distWeight is inert — but it
+	// is a weight computed as a SHARE OF THE TOTAL, which under flat seat-weight
+	// would hand a required member many times a normal seat's weight the moment
+	// the list is ever populated. Flattening it here means POA's one-seat-one-vote
+	// property cannot be quietly undone later by adding a required member.
+	if consensusversion.PoaFlatWeightActive(prevVersion) {
+		distWeight = params.PoaSeatWeight
+	}
 
 	// review2 MEDIUM #66: a witness consensus key comes from untrusted L1
 	// account data; a single malformed key must not panic (crash) every

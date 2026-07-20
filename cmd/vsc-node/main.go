@@ -224,6 +224,7 @@ func main() {
 		p2p,
 		witnessesDb,
 		electionDb,
+		poaSeatsDb,
 		vscBlocks,
 		balanceDb,
 		da,
