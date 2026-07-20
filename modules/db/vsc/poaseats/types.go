@@ -51,7 +51,17 @@ type Seat struct {
 	// refused on-chain. The chain enforces UNIQUENESS of this string; it cannot
 	// and does not verify that the string is TRUE — that is the off-chain
 	// KYC/UBO vetting which must happen before a vote is ever cast.
-	UboId string `bson:"ubo_id"`
+	// ★ omitempty IS LOAD-BEARING, not style. The unique index on this field is
+	// SPARSE, and a Mongo sparse index only exempts documents where the field is
+	// ABSENT — an explicitly-stored empty string is indexed like any other value.
+	// Without omitempty every bootstrap seat (which has no vetted owner yet)
+	// would write ubo_id:"" and collide with the previous one, so seeding the
+	// incumbent committee would insert exactly ONE seat and silently drop the
+	// rest. The registry would then be non-empty (so the seat gate's
+	// inert-while-empty guard would not fire) and one seat wide, which starves
+	// the committee below MinMembers and halts elections — the exact failure this
+	// whole bootstrap mechanism exists to prevent.
+	UboId string `bson:"ubo_id,omitempty"`
 
 	// AdmittedHeight is the L1 block at which the admit-vote crossed the
 	// threshold. It is the height-addressing key: a seat is part of the registry
@@ -95,8 +105,18 @@ func (s Seat) Seated() bool {
 // equal regardless of which convention the caller's source used. Election member
 // records are written bare by the current proposer but historical rows carry the
 // prefix, and every existing consumer in the codebase defends the same way.
+// It lowercases for the same reason: seats are WRITTEN through
+// governance.NormalizeAccount (which lowercases) on the admission path, and READ
+// through this helper on the election-gate and seat-maintenance paths. Two
+// helpers disagreeing on case would mean a seat stored as "alice" is looked up
+// as "Alice" and silently matches nothing — excluding an admitted operator from
+// the committee, and recording a currently-seated operator as having EXITED,
+// which arms the collateral halt against an honest node. Hive enforces lowercase
+// account names at L1, so this is defence in depth rather than a live bug; the
+// point is that the safety of a membership comparison must not rest on an
+// external invariant that nothing here states or tests.
 func NormalizeAccount(account string) string {
-	return strings.TrimPrefix(strings.TrimSpace(account), "hive:")
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(account), "hive:"))
 }
 
 // PoaSeats is the seat registry. Note the absence of any Delete/Revoke method:

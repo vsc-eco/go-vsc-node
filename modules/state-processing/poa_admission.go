@@ -52,7 +52,9 @@ import (
 // Every input is L1-ordered and on-chain, so every node reaches the same
 // admit/expire decision during replay.
 func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string, blockHeight uint64) {
-	if se == nil || se.governanceDb == nil || se.poaSeats == nil {
+	if se == nil || se.governanceDb == nil || se.poaSeats == nil || se.sconf == nil {
+		// sconf is required for the net-id check and the vote window; without it
+		// the op cannot be evaluated deterministically, so it is not evaluated.
 		return
 	}
 
@@ -65,15 +67,38 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 		log.Warn("vsc.admit_vote: malformed payload; ignoring", "tx", txID, "err", err)
 		return
 	}
-	if se.sconf != nil && req.NetId != se.sconf.NetId() {
+	if req.NetId != se.sconf.NetId() {
 		log.Debug("vsc.admit_vote: wrong net id; ignoring", "tx", txID, "net_id", req.NetId)
 		return
 	}
 
 	candidate := governance.NormalizeAccount(req.Candidate)
-	uboId := strings.TrimSpace(req.UboId)
+	uboId := canonicalUboId(req.UboId)
 	if candidate == "" {
 		log.Warn("vsc.admit_vote: missing candidate; ignoring", "tx", txID)
+		return
+	}
+
+	// ★ CHARSET VALIDATION IS SECURITY, NOT HYGIENE.
+	//
+	// The proposal id is a hash of candidate || 0x00 || ubo, and that NUL
+	// delimiter is only unambiguous while neither field can CONTAIN a NUL. These
+	// are raw JSON strings — JSON \u0000 decodes to a real NUL byte and passes
+	// straight through both normalisers — so without this check an attacker can
+	// shift the field boundary and make two different (candidate, owner) pairs
+	// hash to the same proposal, pooling votes cast for one pairing into the
+	// admission of another.
+	//
+	// Hive's own account charset is the natural bound for the candidate; the
+	// owner id is an opaque vetting reference, so it is bounded to printable
+	// non-space ASCII and a sane length rather than given a format.
+	if !isPlausibleHiveAccount(candidate) {
+		log.Warn("vsc.admit_vote: candidate is not a syntactically valid Hive account; ignoring",
+			"tx", txID, "candidate", candidate)
+		return
+	}
+	if !isPlausibleUboId(uboId) {
+		log.Warn("vsc.admit_vote: ubo_id contains control characters or is out of bounds; ignoring", "tx", txID)
 		return
 	}
 	if uboId == "" {
@@ -188,9 +213,18 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 		return
 	}
 
+	// ★ SEAT FROM THE PROPOSAL, NOT FROM THIS VOTE.
+	//
+	// Voters approve a PROPOSAL. Seating whatever the crossing vote happens to
+	// have parsed would mean the last voter — not the electorate — decides who
+	// is actually admitted, whenever its locals differ from the proposal's
+	// stored fields for any reason (a hash boundary shift, a future change to
+	// how the id is derived, or simply a bug). Reading the stored fields makes
+	// "what was approved" and "what was written" the same object by
+	// construction, so no divergence between them is even expressible.
 	seat := poaseats.Seat{
-		Account:        candidate,
-		UboId:          uboId,
+		Account:        prop.Candidate,
+		UboId:          prop.UboId,
 		AdmittedHeight: blockHeight,
 		AdmittedTxId:   txID,
 	}
@@ -244,4 +278,60 @@ func (se *StateEngine) poaSeatElectorate(height uint64) ([]governance.Member, []
 // Exposed so the dispatch site reads as one condition.
 func (se *StateEngine) PoaAdmitVoteActive(blockHeight uint64) bool {
 	return consensusversion.PoaAdmissionOpsActive(se.ActiveConsensusVersion(blockHeight))
+}
+
+// canonicalUboId normalises a beneficial-owner id so that "one seat per owner"
+// binds on the OWNER rather than on a spelling of the owner.
+//
+// The uniqueness backstop is a byte-exact Mongo unique index. Without
+// canonicalisation, "UBO-7F3C" and "ubo-7f3c" are two different owners as far
+// as that index is concerned, and the single structural defence against one
+// vetted operator holding several seats is defeated by a shift key. Case-folding
+// is safe here precisely because this is an opaque internal reference minted by
+// the vetting process, not a cryptographic identifier whose case is meaningful.
+func canonicalUboId(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// isPlausibleHiveAccount bounds the candidate to Hive's own account charset:
+// lowercase alphanumerics with '-' and '.' as internal separators, 3..16 chars.
+// It is deliberately a SYNTAX check, not an existence check — whether the
+// account exists is not knowable here, and is anyway the vetting process's job.
+// Its security purpose is to guarantee the string cannot contain the NUL byte
+// that delimits the proposal-id hash, or any other control character.
+func isPlausibleHiveAccount(a string) bool {
+	if len(a) < 3 || len(a) > 16 {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		c := a[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case c == '-' || c == '.':
+			// Never leading or trailing, so an id cannot be padded into a
+			// different-looking-but-equal form.
+			if i == 0 || i == len(a)-1 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isPlausibleUboId bounds the owner id to printable, non-space ASCII of a sane
+// length. The point is not to impose a format on the vetting process's
+// identifiers — it is to guarantee no control byte (above all NUL) can reach the
+// proposal-id hash, where it would let a crafted pair shift the field boundary.
+func isPlausibleUboId(u string) bool {
+	if len(u) == 0 || len(u) > 128 {
+		return false
+	}
+	for i := 0; i < len(u); i++ {
+		if u[i] <= 0x20 || u[i] >= 0x7f {
+			return false
+		}
+	}
+	return true
 }
