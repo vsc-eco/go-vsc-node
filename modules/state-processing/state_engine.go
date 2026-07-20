@@ -2410,6 +2410,25 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			continue
 		}
 
+		// POA collateral exit-halt (B1), same hold-don't-lose shape as the
+		// retiring-member lock directly above.
+		//
+		// THIS SITE IS WHAT MAKES THE HALT REAL. The submission-time check alone
+		// is bypassable by ordering: submit the unstake while still comfortably
+		// seated, then leave the set and let the 5-epoch maturity elapse — the
+		// bond would pay out on schedule with no halt ever applied, because the
+		// halt did not exist at submission time. Re-evaluating at RELEASE time
+		// closes that, and it is why the two enforcement points are not
+		// redundant.
+		//
+		// The payout is HELD (stays pending, retried next slot), never dropped,
+		// and releases automatically once the exit-halt expires. INERT below
+		// consensus 0.7.0 and for accounts with no seat.
+		if from, ok := record.Params["from"].(string); ok && from != "" &&
+			se.IsPoaExitHalted(from, endBlock) {
+			continue
+		}
+
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
