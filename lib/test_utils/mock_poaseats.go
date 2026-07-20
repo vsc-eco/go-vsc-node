@@ -95,6 +95,11 @@ func (m *MockPoaSeatsDb) SetSeating(account string, height uint64) error {
 	if !ok {
 		return nil
 	}
+	// Mirrors the real store's monotonic guard: an older election must never
+	// clear a live exit and release a collateral hold.
+	if s.LastSeatedHeight > height {
+		return nil
+	}
 	s.LastSeatedHeight = height
 	s.ExitHeight = 0
 	m.Seats[acct] = s

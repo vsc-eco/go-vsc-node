@@ -343,3 +343,132 @@ func TestAdmitVotePayloadHasNoRemovalSemantics(t *testing.T) {
 		t.Fatal("the ordinary admission in the same payload did not apply")
 	}
 }
+
+// ───── regressions from the PRUNED pass ─────
+
+// The proposal id is sha256(candidate || NUL || ubo). That delimiter is only
+// unambiguous while neither field can CONTAIN a NUL — and these are raw JSON
+// strings, where a \u0000 escape decodes to a real NUL that passes straight
+// through both normalisers. Without charset validation an attacker shifts the
+// field boundary so two different (candidate, owner) pairs hash to one proposal,
+// pooling votes cast for one pairing into the admission of another.
+func TestAdmitVoteRejectsControlBytesAndBadCharset(t *testing.T) {
+	nul := string(rune(0))
+	rejected := []struct{ name, candidate, ubo string }{
+		{"nul shifts the delimiter left", "newop" + nul + "x", "ubo-new"},
+		{"nul shifts the delimiter right", "newop", "ubo" + nul + "new"},
+		{"space inside the owner id", "newop", "ubo new"},
+		{"outside the hive charset", "new_op", "ubo-new"},
+		{"shorter than a hive account", "ab", "ubo-new"},
+		{"leading separator", "-newop", "ubo-new"},
+		{"trailing separator", "newop-", "ubo-new"},
+		{"empty owner", "newop", ""},
+	}
+	for _, tc := range rejected {
+		se, seats, _ := admitEnv(t, 7, "alice", "bob", "carol")
+		p, _ := json.Marshal(map[string]string{
+			"candidate": tc.candidate, "ubo_id": tc.ubo,
+			"net_id": systemconfig.MocknetConfig().NetId(),
+		})
+		vote(se, tc.candidate, tc.ubo, 100, p, "alice", "bob", "carol")
+		if len(seats.seats) != 3 {
+			t.Fatalf("%s: admitted (candidate=%q ubo=%q) — the proposal-id delimiter is attackable",
+				tc.name, tc.candidate, tc.ubo)
+		}
+	}
+}
+
+// The flip side, and equally load-bearing: case and surrounding whitespace are
+// NORMALISED rather than rejected, and normalisation happens BEFORE the id is
+// derived. So votes that differ only in spelling converge on one proposal
+// instead of splitting the electorate across two that can each never reach 2/3.
+func TestAdmitVoteNormalisesRatherThanSplittingTheElectorate(t *testing.T) {
+	se, seats, _ := admitEnv(t, 7, "alice", "bob", "carol")
+	mk := func(c, u string) []byte {
+		b, _ := json.Marshal(map[string]string{
+			"candidate": c, "ubo_id": u, "net_id": systemconfig.MocknetConfig().NetId(),
+		})
+		return b
+	}
+	// Three voters, three different spellings of the same admission.
+	se.handleAdmitVote(mk("newop", "ubo-new"), "alice", "tx-a", 100)
+	se.handleAdmitVote(mk("NEWOP", "UBO-NEW"), "bob", "tx-b", 101)
+	se.handleAdmitVote(mk("  newop  ", " ubo-new "), "carol", "tx-c", 102)
+
+	seat, ok, _ := seats.GetSeat("newop")
+	if !ok {
+		t.Fatal("three votes spelled differently failed to admit — they split across separate proposals, so the threshold can never be reached")
+	}
+	if seat.Account != "newop" || seat.UboId != "ubo-new" {
+		t.Fatalf("seated (%s,%s), want (newop,ubo-new) — normalisation is not canonical", seat.Account, seat.UboId)
+	}
+}
+
+// Voters approve a PROPOSAL. What gets seated must be the proposal's stored
+// candidate/owner, never whatever the crossing vote happened to parse —
+// otherwise the last voter, not the electorate, decides who is admitted.
+func TestAdmitVoteSeatsTheProposalsCandidate(t *testing.T) {
+	se, seats, gov := admitEnv(t, 7, "alice", "bob", "carol")
+	p := admitPayload(t, "newop", "ubo-new")
+	vote(se, "newop", "ubo-new", 100, p, "alice", "bob")
+
+	prop := gov.proposals[governance.AdmitSeatProposalID("newop", "ubo-new")]
+	seat, ok, _ := seats.GetSeat("newop")
+	if !ok {
+		t.Fatal("threshold met but nothing was seated")
+	}
+	if seat.Account != prop.Candidate || seat.UboId != prop.UboId {
+		t.Fatalf("seated (%s,%s) but the proposal approved (%s,%s) — the crossing vote, not the electorate, decided the admission",
+			seat.Account, seat.UboId, prop.Candidate, prop.UboId)
+	}
+}
+
+// ★ The seat is written from the proposal's STORED fields, so a store that
+// silently drops them seats an empty account and admission never works at all.
+// The production store hand-rolls its $set map, so this is a live hazard, not a
+// hypothetical: this test pins that whatever the store round-trips is enough to
+// seat with.
+func TestAdmitVoteSurvivesAProposalRoundTrip(t *testing.T) {
+	se, seats, gov := admitEnv(t, 7, "alice", "bob", "carol")
+	p := admitPayload(t, "newop", "ubo-new")
+
+	se.handleAdmitVote(p, "alice", "tx-a", 100)
+
+	// Simulate the store round-trip explicitly: re-save what was persisted, then
+	// let the crossing vote read it back.
+	id := governance.AdmitSeatProposalID("newop", "ubo-new")
+	stored, ok, _ := gov.GetProposal(id)
+	if !ok {
+		t.Fatal("no proposal was persisted")
+	}
+	if stored.Candidate == "" || stored.UboId == "" {
+		t.Fatalf("the persisted proposal lost its candidate/owner (candidate=%q ubo=%q) — seating from it would write an empty account and admission would silently never work",
+			stored.Candidate, stored.UboId)
+	}
+	_ = gov.SaveProposal(stored)
+
+	se.handleAdmitVote(p, "bob", "tx-b", 110)
+	if _, seated, _ := seats.GetSeat("newop"); !seated {
+		t.Fatal("admission did not apply after a proposal round-trip")
+	}
+}
+
+// "One seat per owner" binds on a byte-exact unique index, so it only binds on
+// the OWNER if every vote's spelling canonicalises identically — otherwise a
+// shift key defeats the single structural defence against one vetted operator
+// holding several seats.
+func TestAdmitVoteCanonicalisesOwnerId(t *testing.T) {
+	se, seats, _ := admitEnv(t, 7, "alice", "bob", "carol")
+
+	p1 := admitPayload(t, "newop", "UBO-7F3C")
+	vote(se, "newop", "UBO-7F3C", 100, p1, "alice", "bob")
+	if _, ok, _ := seats.GetSeat("newop"); !ok {
+		t.Fatal("first admission did not apply")
+	}
+
+	p2 := admitPayload(t, "newoptwo", "ubo-7f3c")
+	vote(se, "newoptwo", "ubo-7f3c", 200, p2, "alice", "bob", "carol")
+	if _, ok, _ := seats.GetSeat("newoptwo"); ok {
+		t.Fatal("a second seat was admitted for the same owner spelled in different case — the per-owner cap falls to a shift key")
+	}
+}

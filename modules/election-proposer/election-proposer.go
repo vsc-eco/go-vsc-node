@@ -615,6 +615,11 @@ func (e *electionProposer) GenerateFullElection(
 		})
 	}
 
+	// Fetched before the POA seat gate below: the gate's starvation floor is
+	// computed against the PRIOR committee size, the same basis the bond floor
+	// guard uses.
+	previousElection := e.elections.GetElection(previousEpoch)
+
 	// ───── POA seat gate (A1) ─────
 	//
 	// Candidacy is restricted to accounts holding a ratified POA seat. Without
@@ -652,25 +657,64 @@ func (e *electionProposer) GenerateFullElection(
 			for _, s := range seats {
 				seatSet[s.Account] = struct{}{}
 			}
-			before := len(witnessList)
-			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-				// Witness accounts are bare; seat accounts are normalised to
-				// bare on write. Normalising here too means a future change to
-				// either convention cannot silently empty the committee.
+			// Compute the gated list SPECULATIVELY first, so the starvation
+			// guard below can decline to apply it.
+			gated := slices.DeleteFunc(slices.Clone(witnessList), func(w witnesses.Witness) bool {
+				// Witness accounts are bare; seat accounts are normalised on
+				// write. Normalising here too means a future change to either
+				// convention cannot silently empty the committee.
 				_, seated := seatSet[poaseats.NormalizeAccount(w.Account)]
 				return !seated
 			})
-			if dropped := before - len(witnessList); dropped > 0 {
-				log.Info("poa seat gate excluded unseated candidates",
+
+			// ★ STARVATION GUARD. Everything else about this gate is a reason to
+			// believe it will not empty the committee; this is the check that
+			// makes it true regardless of whether those reasons hold.
+			//
+			// It exists because the failure it prevents has already happened
+			// once: the structurally identical H-6 key-admission gate starved the
+			// mainnet committee below the floor at epoch 1699 and halted
+			// elections, and is still disabled today. A gate cannot be allowed to
+			// be the thing that stops block production, so if applying it would
+			// drop the committee under the floor that gateway rotation (>=8
+			// keys), TSS signability and a valid election all require, it is NOT
+			// applied at all — the election proceeds ungated and loudly, which
+			// costs one epoch of permissionless candidacy instead of a stalled
+			// chain.
+			//
+			// The concrete case this catches: a bootstrap that seeded only part
+			// of the committee leaves a registry that is non-empty (so the
+			// empty-registry guard above does not fire) but far too small.
+			// MinMembers, NOT bondCommitteeFloor. bondCommitteeFloor folds in the
+			// hardcoded 8-key gateway floor, which is right for the bond guard but
+			// wrong here: on a 3-node devnet it exceeds the whole network, so the
+			// gate could never apply anywhere and POA would be untestable. Mainnet
+			// already pins MinMembers to 8 *because* of that gateway floor (see the
+			// H-5 note in system-config), so using MinMembers gives 8 on mainnet
+			// and 3 on the test nets — the correct bar on each. MinMembers is also
+			// precisely the bar whose violation aborts HoldElection and stalls the
+			// epoch, which is the outcome this guard exists to prevent.
+			floor := e.sconf.ConsensusParams().MinMembers
+			if len(gated) < floor {
+				log.Error("poa seat gate REFUSED: applying it would starve the committee below the floor — election proceeds UNGATED this epoch. The seat registry is short (likely a partial bootstrap); resolve it before the consensus floor rises further",
 					"block_height", blockHeight,
 					"seats", len(seats),
-					"candidates_before", before,
-					"excluded", dropped)
+					"candidates", len(witnessList),
+					"after_gate", len(gated),
+					"floor", floor)
+			} else {
+				before := len(witnessList)
+				witnessList = gated
+				if dropped := before - len(witnessList); dropped > 0 {
+					log.Info("poa seat gate excluded unseated candidates",
+						"block_height", blockHeight,
+						"seats", len(seats),
+						"candidates_before", before,
+						"excluded", dropped)
+				}
 			}
 		}
 	}
-
-	previousElection := e.elections.GetElection(previousEpoch)
 
 	var etype string
 	var firstElection bool
@@ -892,7 +936,7 @@ func (e *electionProposer) GenerateFullElection(
 		// ElectionData and therefore of the CID) and feeds elections.ResultVersion,
 		// so inventing a third value would ripple into election validation for no
 		// benefit.
-		if consensusversion.PoaFlatWeightActive(prevVersion) {
+		if e.poaActive(prevVersion) {
 			flat := make(map[string]uint64, len(stakedMap))
 			for account := range stakedMap {
 				flat[account] = params.PoaSeatWeight
@@ -985,7 +1029,7 @@ func (e *electionProposer) GenerateFullElection(
 	//
 	// A pinned MaxNewMembersActivationHeight still wins where present: this only
 	// supplies a cap when the height-gated path yields none.
-	poaChurn := consensusversion.PoaChurnCapActive(prevVersion)
+	poaChurn := e.poaActive(prevVersion)
 	if poaChurn && effMaxNew == 0 {
 		effMaxNew = e.sconf.ConsensusParams().EffectivePoaMaxNewMembers()
 	}
@@ -1120,7 +1164,7 @@ func (e *electionProposer) GenerateFullElection(
 				// a single member whose weight could dwarf every other seat
 				// combined, i.e. the exact capture vector A3 removes, restored
 				// through the liveness patch.
-				if consensusversion.PoaFlatWeightActive(prevVersion) {
+				if e.poaActive(prevVersion) {
 					weightMap[c.witness.Account] = params.PoaSeatWeight
 				} else {
 					weightMap[c.witness.Account] = c.weight
@@ -1162,7 +1206,7 @@ func (e *electionProposer) GenerateFullElection(
 	// would hand a required member many times a normal seat's weight the moment
 	// the list is ever populated. Flattening it here means POA's one-seat-one-vote
 	// property cannot be quietly undone later by adding a required member.
-	if consensusversion.PoaFlatWeightActive(prevVersion) {
+	if e.poaActive(prevVersion) {
 		distWeight = params.PoaSeatWeight
 	}
 
@@ -1994,4 +2038,20 @@ func resultJoin[T any](results ...result.Result[T]) (res result.Result[[]T]) {
 		}
 	}
 	return res
+}
+
+// poaActive reports whether the POA election rules apply: the batch is active AND
+// this node actually has the seat registry wired.
+//
+// ★ THE REGISTRY CHECK IS NOT DEFENSIVE BOILERPLATE. Flat seat-weight without
+// the seat gate is strictly WORSE than either regime it sits between: candidacy
+// reverts to "anyone with MinStake", but every such candidate then carries the
+// same weight as a vetted operator — so an attacker buys committee weight at
+// MinStake per seat instead of proportionally, which is cheaper than the
+// stake-weighting POA replaced AND free of the vetting POA adds. Gating every
+// POA election rule on the same condition means the rules can only ever apply as
+// a set: either this node has a registry and enforces seats and flat weight
+// together, or it applies neither and behaves exactly as it does today.
+func (e *electionProposer) poaActive(prevVersion consensusversion.Version) bool {
+	return consensusversion.PoaFlatWeightActive(prevVersion) && e.poaSeats != nil
 }

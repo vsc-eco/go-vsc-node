@@ -160,8 +160,17 @@ func (p *poaSeats) SetSeating(account string, height uint64) error {
 	// releasing it: an operator back in the set holds keys again, so their bond
 	// must be locked again. Grace restores the seat; it never accelerates a
 	// withdrawal.
+	//
+	// ★ MONOTONIC GUARD (last_seated_height <= height). Clearing exit_height is
+	// the one write in this package that RELEASES a collateral hold, so it must
+	// only ever be driven by a NEWER election than the one already recorded.
+	// Without the guard, any path that reprocesses an older election — a replay,
+	// a re-ingested block, a reorg-driven re-execution — would clear a live exit
+	// and let a departing operator's bond out early, which is precisely the
+	// steal-then-withdraw escape the halt exists to close. Safety must not rest
+	// on the caller always invoking this in increasing height order.
 	_, err := p.UpdateOne(context.Background(),
-		bson.M{"account": acct},
+		bson.M{"account": acct, "last_seated_height": bson.M{"$lte": height}},
 		bson.M{"$set": bson.M{"last_seated_height": height, "exit_height": uint64(0)}},
 	)
 	if err != nil {
