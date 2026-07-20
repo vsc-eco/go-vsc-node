@@ -131,6 +131,7 @@ func NewContractTest() ContractTest {
 		&tssCommitments,
 		&tssRequests,
 		nil, // governanceDb
+		nil, // poaSeatsDb
 		nil, // pendulumSettlementsDb
 		nil, // consensusStateDb
 		nil, // wasm
