@@ -32,6 +32,12 @@ const (
 	// reserve and credit a named recipient. The general make-whole mechanism for
 	// matured slashes and theft victims.
 	ProposalReservePayout ProposalType = "reserve_payout"
+	// ProposalAdmitSeat is the POA admission vote: the seated operators vote a
+	// vetted candidate INTO the seat registry (vsc.admit_vote). Entry-only —
+	// there is deliberately no corresponding removal proposal, because signers
+	// being able to vote each other out would let a coalition shrink the set,
+	// and a smaller set is a cheaper capture.
+	ProposalAdmitSeat ProposalType = "admit_seat"
 )
 
 // ProposalStatus is the lifecycle state of a proposal row.
@@ -166,4 +172,41 @@ func ReservePayoutProposalID(recipient string, amount int64, reason, createTxID 
 	h.Write([]byte{0})
 	h.Write([]byte(strings.TrimSpace(createTxID)))
 	return string(ProposalReservePayout) + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// AdmitSeatProposalID derives the deterministic id for a POA seat-admission
+// proposal from (candidate, uboId).
+//
+// Unlike ReservePayoutProposalID this deliberately does NOT fold in a creating
+// tx id. A reserve payout wants two distinct create ops to be two distinct
+// proposals, because their amounts and recipients are chosen and a one-unit
+// difference must not silently merge votes. An admission is the opposite: every
+// seated operator voting "admit alice as UBO X" must converge on ONE proposal,
+// or votes scatter across per-tx proposals and the threshold is never reached by
+// construction. There is no create op — the first vote opens the proposal.
+//
+// The UBO is part of the key, not just the payload, so a vote is a vote for a
+// specific (operator, beneficial owner) pairing. Voting to admit an account is
+// meaningless without saying who is behind it, and folding it in means a
+// coalition cannot gather approvals for one owner and then seat a different one.
+//
+// Fields are null-delimited (a byte that cannot appear in a Hive account) so a
+// crafted ubo id cannot collide with a different candidate.
+func AdmitSeatProposalID(candidate, uboId string) string {
+	h := sha256.New()
+	h.Write([]byte(NormalizeAccount(candidate)))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.TrimSpace(uboId)))
+	return string(ProposalAdmitSeat) + ":" + hex.EncodeToString(h.Sum(nil))
+}
+
+// SeatElectorate builds a one-vote-per-seat electorate. This is what makes the
+// admission threshold a SEAT count rather than a stake fraction: with 20 seats,
+// ceil(2/3) is 14 operators, and no amount of stake changes that.
+func SeatElectorate(accounts []string) []Member {
+	out := make([]Member, 0, len(accounts))
+	for _, a := range accounts {
+		out = append(out, Member{Account: NormalizeAccount(a), Weight: 1})
+	}
+	return out
 }
