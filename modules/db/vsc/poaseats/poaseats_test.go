@@ -22,8 +22,15 @@ func TestNormalizeAccountHandlesEveryPrefixForm(t *testing.T) {
 		"hive:":       "",
 		// Only the leading "hive:" is stripped — an account that merely contains
 		// the substring must survive intact.
-		"hivemind":     "hivemind",
-		"did:key:z6Mk": "did:key:z6Mk",
+		"hivemind": "hivemind",
+		// Case-folded, because the write path (governance.NormalizeAccount) folds
+		// too and the two must agree. NOTE the scope this implies: this helper is
+		// for HIVE ACCOUNT NAMES, which Hive constrains to lowercase at L1. It
+		// must never be pointed at a case-sensitive identifier such as a DID —
+		// folding one would corrupt it. The registry only ever holds Hive
+		// accounts (from witness.Account and RequiredAuths), so that holds today.
+		"Alice":        "alice",
+		"did:key:z6Mk": "did:key:z6mk",
 	}
 	for in, want := range cases {
 		if got := poaseats.NormalizeAccount(in); got != want {

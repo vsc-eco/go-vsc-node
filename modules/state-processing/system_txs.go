@@ -781,7 +781,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			// just left — the "when did this account leave" fact the collateral
 			// exit-halt is counted from, which exists nowhere else in the
 			// codebase. Inert unless the POA batch is active.
-			se.applyPoaSeatMaintenance(elecResult, tx.Self.BlockHeight)
+			se.applyPoaSeatMaintenance(elecResult, prevElection, tx.Self.BlockHeight)
 			log.Info("election processed",
 				"epoch", tx.Epoch,
 				"proposer", elecResult.Proposer,

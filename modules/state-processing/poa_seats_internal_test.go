@@ -32,15 +32,25 @@ func (fakePlugin) Stop() error                  { return nil }
 
 type fakeSeats struct {
 	fakePlugin
-	seats     map[string]poaseats.Seat
+	seats map[string]poaseats.Seat
+	// failReads fails EVERY read (used where the caller must not block).
 	failReads bool
+	// failReadsFor fails the next N reads then recovers, so the fail-stop
+	// (blockingRetry) paths can be exercised without looping forever.
+	failReadsFor int
+	readAttempts int
 }
 
 func newFakeSeats() *fakeSeats { return &fakeSeats{seats: map[string]poaseats.Seat{}} }
 
 func (f *fakeSeats) GetSeatsAtHeight(height uint64) ([]poaseats.Seat, error) {
+	f.readAttempts++
 	if f.failReads {
 		return nil, errors.New("read failure")
+	}
+	if f.failReadsFor > 0 {
+		f.failReadsFor--
+		return nil, errors.New("transient read failure")
 	}
 	out := make([]poaseats.Seat, 0, len(f.seats))
 	for _, s := range f.seats {
@@ -96,6 +106,9 @@ func (f *fakeSeats) SetSeating(account string, height uint64) error {
 	acct := poaseats.NormalizeAccount(account)
 	s, ok := f.seats[acct]
 	if !ok {
+		return nil
+	}
+	if s.LastSeatedHeight > height {
 		return nil
 	}
 	s.LastSeatedHeight, s.ExitHeight = height, 0
@@ -166,7 +179,7 @@ func ratified(epoch uint64, accounts ...string) elections.ElectionResult {
 // produces the same state as one running the old binary.
 func TestSeatMaintenanceInertBelowActivation(t *testing.T) {
 	se, seats := poaEnv(t, 3) // current mainnet floor
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), nil, 100)
 	if len(seats.seats) != 0 {
 		t.Fatalf("wrote %d seats below the activation line — the batch is not inert", len(seats.seats))
 	}
@@ -179,7 +192,7 @@ func TestSeatMaintenanceInertBelowActivation(t *testing.T) {
 // still disabled. Bootstrap seeding is what makes activation safe.
 func TestBootstrapSeedsRegistryFromIncumbentCommittee(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), 100)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 
 	if len(seats.seats) != 3 {
 		t.Fatalf("seeded %d seats, want 3 — an empty registry at activation would empty the committee", len(seats.seats))
@@ -209,14 +222,14 @@ func TestBootstrapSeedsRegistryFromIncumbentCommittee(t *testing.T) {
 // them, wipe voted-in seats and their UBO bindings.
 func TestBootstrapHappensOnlyOnce(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
-	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob", "carol"), 200)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob", "carol", "dave"), nil, 200)
 
-	if len(seats.seats) != 2 {
-		t.Fatalf("registry has %d seats after a second election, want 2 — carol was never voted in and must not be seeded", len(seats.seats))
+	if len(seats.seats) != 3 {
+		t.Fatalf("registry has %d seats after a second election, want 3 — dave was never voted in and must not be seeded", len(seats.seats))
 	}
-	if _, ok, _ := seats.GetSeat("carol"); ok {
-		t.Fatal("carol was seeded by a later election — bootstrap must be a one-time event, otherwise the allowlist is no allowlist at all")
+	if _, ok, _ := seats.GetSeat("dave"); ok {
+		t.Fatal("dave was seeded by a later election — bootstrap must be a one-time event, otherwise the allowlist is no allowlist at all")
 	}
 }
 
@@ -224,9 +237,9 @@ func TestBootstrapHappensOnlyOnce(t *testing.T) {
 // what the 3-day collateral halt is counted from.
 func TestExitHeightRecordedWhenSeatLeavesTheSet(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100) // bootstrap
-	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob"), 200) // both still in
-	se.applyPoaSeatMaintenance(ratified(12, "alice"), 300)        // bob drops out
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100) // bootstrap
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob", "carol"), nil, 200) // all still in
+	se.applyPoaSeatMaintenance(ratified(12, "alice", "carol"), nil, 300)        // bob drops out
 
 	alice, _, _ := seats.GetSeat("alice")
 	if alice.ExitHeight != 0 || alice.LastSeatedHeight != 300 {
@@ -247,10 +260,10 @@ func TestExitHeightRecordedWhenSeatLeavesTheSet(t *testing.T) {
 // permanent seizure of their bond.
 func TestRepeatedAbsenceDoesNotRestartTheHaltClock(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
-	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200) // bob exits at 200
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200) // bob exits at 200
 	for _, h := range []uint64{300, 400, 500} {
-		se.applyPoaSeatMaintenance(ratified(12, "alice"), h)
+		se.applyPoaSeatMaintenance(ratified(12, "alice", "carol"), nil, h)
 	}
 	bob, _, _ := seats.GetSeat("bob")
 	if bob.ExitHeight != 200 {
@@ -263,9 +276,9 @@ func TestRepeatedAbsenceDoesNotRestartTheHaltClock(t *testing.T) {
 // release it — grace restores the seat, it never accelerates a withdrawal.
 func TestReEntryNeedsNoReVoteAndReArmsTheHalt(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
-	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200)        // bob drops (liveness)
-	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob"), 300) // bob returns
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)        // bob drops (liveness)
+	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob", "carol"), nil, 300) // bob returns
 
 	bob, ok, _ := seats.GetSeat("bob")
 	if !ok {
@@ -290,7 +303,7 @@ func TestSeatMaintenanceMatchesPrefixedMemberAccounts(t *testing.T) {
 	_ = seats.SetSeating("bob", 60)
 
 	// Historical election records carry the "hive:" prefix.
-	se.applyPoaSeatMaintenance(ratified(11, "hive:alice", "hive:bob"), 200)
+	se.applyPoaSeatMaintenance(ratified(11, "hive:alice", "hive:bob"), nil, 200)
 
 	for _, acct := range []string{"alice", "bob"} {
 		seat, _, _ := seats.GetSeat(acct)
@@ -304,25 +317,30 @@ func TestSeatMaintenanceMatchesPrefixedMemberAccounts(t *testing.T) {
 	}
 }
 
-// A transient registry read failure must not be read as "no seats". Treated as
-// an empty registry it would trigger a spurious bootstrap that duplicates the
-// committee; treated as "nobody is in the set" it would arm the halt against
-// every operator at once. Either way the correct move is to do nothing.
-func TestReadFailureSkipsMaintenanceEntirely(t *testing.T) {
+// ★ A transient registry read must NOT be treated as "no seats". Read as an
+// empty registry it triggers a spurious bootstrap that duplicates the committee;
+// read as "nobody is in the set" it arms the collateral halt against every
+// operator at once. Both are consensus-divergent. The path therefore RETRIES
+// until the read succeeds rather than proceeding on a partial answer.
+func TestTransientReadIsRetriedNotTreatedAsEmpty(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	seats.seed("alice", "ubo-a", 50, 0)
-	_ = seats.SetSeating("alice", 60)
-	seats.failReads = true
+	seats.seed("alice", "ubo-a", 10, 60)
+	seats.failReadsFor = 3 // fail three times, then recover
 
-	se.applyPoaSeatMaintenance(ratified(11, "bob"), 200)
+	se.applyPoaSeatMaintenance(ratified(11, "alice"), nil, 200)
 
-	seats.failReads = false
+	if seats.readAttempts < 4 {
+		t.Fatalf("read attempted %d times, want >=4 — a transient failure was not retried", seats.readAttempts)
+	}
 	alice, _, _ := seats.GetSeat("alice")
 	if alice.ExitHeight != 0 {
-		t.Fatalf("alice exited at %d off a failed read — a Mongo blip must never arm the collateral halt", alice.ExitHeight)
+		t.Fatalf("alice recorded as exited (%d) — a transient read was treated as an empty member set", alice.ExitHeight)
+	}
+	if alice.LastSeatedHeight != 200 {
+		t.Fatalf("alice lastSeated=%d, want 200 — maintenance did not complete after the read recovered", alice.LastSeatedHeight)
 	}
 	if len(seats.seats) != 1 {
-		t.Fatalf("registry has %d seats after a failed read, want 1 — a failed read triggered a bootstrap", len(seats.seats))
+		t.Fatalf("registry has %d seats — a failed read triggered a bootstrap", len(seats.seats))
 	}
 }
 
@@ -332,12 +350,12 @@ func TestReadFailureSkipsMaintenanceEntirely(t *testing.T) {
 // wrong.
 func TestBootstrapRefusesToSeedFromAnEmptyCommittee(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10), 100)
+	se.applyPoaSeatMaintenance(ratified(10), nil, 100)
 	if len(seats.seats) != 0 {
 		t.Fatalf("seeded %d seats from an empty committee", len(seats.seats))
 	}
 	// Also for members whose accounts normalise to nothing.
-	se.applyPoaSeatMaintenance(ratified(11, "", "hive:"), 200)
+	se.applyPoaSeatMaintenance(ratified(11, "", "hive:"), nil, 200)
 	if len(seats.seats) != 0 {
 		t.Fatalf("seeded %d seats from unusable member accounts", len(seats.seats))
 	}
@@ -346,7 +364,7 @@ func TestBootstrapRefusesToSeedFromAnEmptyCommittee(t *testing.T) {
 // A nil registry (harnesses that do not wire POA) must be a no-op, not a panic.
 func TestSeatMaintenanceNoOpsWithoutARegistry(t *testing.T) {
 	se := &StateEngine{}
-	se.applyPoaSeatMaintenance(ratified(10, "alice"), 100)
+	se.applyPoaSeatMaintenance(ratified(10, "alice"), nil, 100)
 }
 
 // Guards the normalisation contract the whole build depends on.
@@ -452,13 +470,13 @@ func TestExitHaltHoldsOnReadFailure(t *testing.T) {
 // hold, the halt would be an indefinite seizure rather than a delay.
 func TestExitHaltTerminatesForAnOperatorWhoLeaves(t *testing.T) {
 	se, _ := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 
 	if !se.IsPoaExitHalted("bob", 150) {
 		t.Fatal("seated operator's bond is not held")
 	}
 	// bob unstakes; next election drops him.
-	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200)
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)
 	if !se.IsPoaExitHalted("bob", 200) {
 		t.Fatal("bond released the instant bob left — that is exactly the steal-and-run escape the halt closes")
 	}
@@ -472,16 +490,16 @@ func TestExitHaltTerminatesForAnOperatorWhoLeaves(t *testing.T) {
 // a withdrawal.
 func TestReEntryDoesNotShortenTheHalt(t *testing.T) {
 	se, _ := poaEnv(t, 7)
-	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
-	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200)        // bob exits
-	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob"), 250) // bob returns before the window elapsed
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
+	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)        // bob exits
+	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob", "carol"), nil, 250) // bob returns before the window elapsed
 
 	// Had the exit stood, the halt would have lifted at 320. It must not.
 	if !se.IsPoaExitHalted("bob", 400) {
 		t.Fatal("bond released while bob is back in the set — re-entering shortened the halt instead of re-arming it")
 	}
 	// Leaving again starts a fresh window from the NEW exit.
-	se.applyPoaSeatMaintenance(ratified(13, "alice"), 500)
+	se.applyPoaSeatMaintenance(ratified(13, "alice", "carol"), nil, 500)
 	if !se.IsPoaExitHalted("bob", 500+testHalt-1) {
 		t.Fatal("second window not enforced")
 	}

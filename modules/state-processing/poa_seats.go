@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 
@@ -40,12 +41,14 @@ import (
 // applyPoaSeatMaintenance updates the seat registry from a freshly ratified
 // election. Called immediately after StoreElection succeeds.
 //
-// Errors are logged, never fatal: a registry write failure must not abort
-// election processing (that would halt the chain over bookkeeping). The
-// consumers are all fail-closed instead — the seat gate goes inert on an
-// unreadable registry, and the exit-halt holds rather than releases — so a
-// missed write costs safety-side conservatism, never a spurious release.
-func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResult, blockHeight uint64) {
+// Reads and writes here are FAIL-STOP (blockingRetry), because ExitHeight
+// decides whether an unstake is refused or paid: a write that silently fails on
+// one node makes that node compute a different result for the identical tx, and
+// SetExit's idempotency means no later election repairs it. A stalled slot is
+// recoverable; a permanently divergent registry is not. The downstream consumers
+// are additionally fail-closed (the seat gate goes inert on an unreadable or
+// short registry; the exit-halt holds rather than releases).
+func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResult, prevElection *elections.ElectionResult, blockHeight uint64) {
 	if se.poaSeats == nil {
 		return
 	}
@@ -65,36 +68,75 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 		}
 	}
 
-	seats, err := se.poaSeats.GetSeatsAtHeight(blockHeight)
-	if err != nil {
-		// Fail-stop for the caller's purposes: do NOT proceed to seed or to
-		// record exits off a partial read. Seeding off a failed read would
-		// duplicate the whole committee; recording exits off one would arm the
-		// halt against every operator simultaneously.
-		log.Error("poa: seat registry read failed; skipping seat maintenance for this election",
-			"epoch", elecResult.Epoch, "height", blockHeight, "err", err)
-		return
-	}
+	// Fail-stop: never proceed off a PARTIAL read. Seeding from a failed read
+	// would duplicate the whole committee; recording exits from one would arm the
+	// collateral halt against every operator at once. blockingRetry returns only
+	// on success, so `seats` below is always a complete read.
+	var seats []poaseats.Seat
+	blockingRetry(fmt.Sprintf("poaSeats.GetSeatsAtHeight(%d)", blockHeight), func() error {
+		var err error
+		seats, err = se.poaSeats.GetSeatsAtHeight(blockHeight)
+		return err
+	})
 
 	if len(seats) == 0 {
+		// ★ BOOTSTRAP ONLY AT THE TRANSITION, not merely "whenever the registry
+		// looks empty".
+		//
+		// An empty registry has two very different causes. One is "the batch just
+		// activated and nothing has seeded yet" — the case bootstrap exists for.
+		// The other is "this node LOST its registry": poa_seats is not part of
+		// any merklized state and the reindex trigger keys off a hive_blocks
+		// marker, so the collection can be dropped or restored independently of
+		// chain history. Treating those two as the same thing means a node that
+		// loses its registry silently re-seeds from whatever the CURRENT
+		// committee happens to be, and then disagrees with every peer that still
+		// holds the true, continuously-maintained one — a divergence with no
+		// checkpoint or repair path anywhere to catch it.
+		//
+		// The transition is identifiable: it is the ratified election whose
+		// PREDECESSOR was still below the POA line. Anywhere else, an empty
+		// registry is an anomaly, and the safe response is to leave it empty
+		// (which keeps the seat gate inert) and say so loudly.
+		prevBelowPoa := prevElection == nil ||
+			!consensusversion.PoaSeatGateActive(elections.ResultVersion(*prevElection))
+		if !prevBelowPoa {
+			log.Error("poa: seat registry is EMPTY but this is not the activation transition — NOT re-seeding. This node has most likely lost its poa_seats collection and is now inconsistent with its peers; restore it or full-reindex. The seat gate stays inert meanwhile",
+				"epoch", elecResult.Epoch, "height", blockHeight)
+			return
+		}
 		se.bootstrapPoaSeats(elecResult, blockHeight, members)
 		return
 	}
 
+	// ★ THESE WRITES ARE FAIL-STOP, NOT BEST-EFFORT.
+	//
+	// ExitHeight decides whether an unstake is refused or paid. If a write
+	// silently fails on ONE node while succeeding on its peers, that node
+	// computes a different TxResult for the identical transaction — a consensus
+	// divergence on a ledger-affecting decision. And because SetExit is
+	// idempotent-once (the guard that correctly stops the halt clock from
+	// restarting), no later election can repair a wrong or missing first write:
+	// the divergence is PERMANENT, not transient.
+	//
+	// So a failing write blocks the slot until the DB recovers, exactly as every
+	// other consensus-critical read/write in this package does (bond_lock,
+	// safety-slash, the pending-action reads). A stalled slot is recoverable; a
+	// silently divergent registry is not.
 	for _, seat := range seats {
 		if _, inSet := members[seat.Account]; inSet {
-			if err := se.poaSeats.SetSeating(seat.Account, blockHeight); err != nil {
-				log.Error("poa: failed to record seating", "account", seat.Account, "height", blockHeight, "err", err)
-			}
+			blockingRetry(fmt.Sprintf("poaSeats.SetSeating(%s,%d)", seat.Account, blockHeight), func() error {
+				return se.poaSeats.SetSeating(seat.Account, blockHeight)
+			})
 			continue
 		}
 		// Absent from this election. SetExit is a no-op unless the seat had
 		// previously been seated AND has no exit recorded yet, so a seat that
 		// has never been elected never arms a halt, and a seat that exited long
 		// ago does not have its clock restarted by every subsequent election.
-		if err := se.poaSeats.SetExit(seat.Account, blockHeight); err != nil {
-			log.Error("poa: failed to record exit", "account", seat.Account, "height", blockHeight, "err", err)
-		}
+		blockingRetry(fmt.Sprintf("poaSeats.SetExit(%s,%d)", seat.Account, blockHeight), func() error {
+			return se.poaSeats.SetExit(seat.Account, blockHeight)
+		})
 	}
 }
 
@@ -126,6 +168,14 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 	if se.poaSeats == nil {
 		return false
+	}
+	if se.sconf == nil {
+		// Fail CLOSED, and never panic. Sibling gates (IsBondLockedRetiringMember,
+		// SafetySlashActive) guard sconf explicitly because nothing enforces that
+		// sconf and the store it reads are wired together; a security gate that
+		// crashes on a consensus tx-processing path is strictly worse than one
+		// that holds.
+		return true
 	}
 	if !consensusversion.PoaExitHaltActive(se.ActiveConsensusVersion(height)) {
 		return false
@@ -166,7 +216,7 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 // lifts, and whether one is currently armed. Used to put a concrete, checkable
 // number in the refusal message rather than "try again later".
 func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool) {
-	if se.poaSeats == nil {
+	if se.poaSeats == nil || se.sconf == nil {
 		return 0, false
 	}
 	seat, found, err := se.poaSeats.GetSeat(account)
@@ -200,8 +250,42 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		return
 	}
 
-	seeded := make([]string, 0, len(members))
+	// ★ FLOOR CHECK ON WHAT WE ARE ABOUT TO ENSHRINE.
+	//
+	// Seats are append-only and growing the set needs a ceil(2/3) vote FROM THE
+	// SEATS THEMSELVES. So whatever this one election happens to contain becomes
+	// a permanent lower bound on the operator set — and if the transition lands
+	// on an abnormally small committee (a degraded period, a partial outage, a
+	// half-recovered network), POA is permanently founded on that degraded set,
+	// with the survivors holding a 2/3 veto over ever widening it again. There is
+	// no un-seed.
+	//
+	// Refusing to seed leaves the registry empty, which keeps the seat gate inert
+	// and costs nothing but another epoch of permissionless candidacy: bootstrap
+	// simply retries at the next ratified election, when the committee has
+	// recovered. Seeding a bad set is unrecoverable; declining to seed is not.
+	if minMembers := se.sconf.ConsensusParams().MinMembers; minMembers > 0 && len(members) < minMembers {
+		log.Error("poa: bootstrap REFUSED — the first post-activation committee is below MinMembers, and seeding it would permanently found the operator set on a degraded committee that then holds a 2/3 veto over widening it. Registry stays empty (gate inert); will retry at the next ratified election",
+			"epoch", elecResult.Epoch, "height", blockHeight,
+			"members", len(members), "min_members", minMembers)
+		return
+	}
+
+	// ★ ITERATE IN SORTED ORDER, NOT MAP ORDER. Go randomises map iteration per
+	// process, so seeding straight from `members` would apply writes in a
+	// different order on every node. That is invisible while all writes succeed
+	// — but if any subset fails, WHICH seats survive becomes node-dependent, and
+	// nodes then derive different committees from different seat sets and stop
+	// agreeing on elections. Consensus writes are ordered, always.
+	accounts := make([]string, 0, len(members))
 	for acct := range members {
+		accounts = append(accounts, acct)
+	}
+	slices.Sort(accounts)
+
+	seeded := make([]string, 0, len(accounts))
+	var failed []string
+	for _, acct := range accounts {
 		err := se.poaSeats.AdmitSeat(poaseats.Seat{
 			Account:          acct,
 			AdmittedHeight:   blockHeight,
@@ -210,14 +294,27 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		})
 		if err != nil {
 			log.Error("poa: bootstrap seat write failed", "account", acct, "height", blockHeight, "err", err)
+			failed = append(failed, acct)
 			continue
 		}
 		seeded = append(seeded, acct)
 	}
 
-	// Sorted purely so the log line is stable and diffable across nodes; the
-	// registry's own reads are sorted independently.
-	slices.Sort(seeded)
+	// A PARTIAL bootstrap is the dangerous outcome, worse than none at all: the
+	// registry is then non-empty (so the seat gate's inert-while-empty guard
+	// stops protecting) but does not contain the whole committee, so the gate
+	// deletes legitimate members. Shout about it at ERROR level with the exact
+	// accounts, because the operator response — do not let the version floor
+	// rise until this is resolved — is time-critical. The seat gate carries its
+	// own independent starvation guard for exactly this case, so a partial
+	// registry degrades to "gate inert" rather than to a halted chain.
+	if len(failed) > 0 {
+		log.Error("poa: bootstrap seeded only PART of the incumbent committee — the seat gate will refuse to apply while the registry is short; do NOT raise the consensus floor until this is resolved",
+			"height", blockHeight,
+			"seeded", len(seeded),
+			"failed", len(failed),
+			"failed_accounts", strings.Join(failed, ","))
+	}
 	log.Info("poa: seat registry bootstrapped from the incumbent committee",
 		"epoch", elecResult.Epoch,
 		"height", blockHeight,
