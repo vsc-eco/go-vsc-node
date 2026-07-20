@@ -5,6 +5,7 @@ import (
 	"sort"
 	"testing"
 
+	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
 
@@ -142,7 +143,11 @@ func (f *fakeElections) GetElectionByHeight(uint64) (elections.ElectionResult, e
 func poaEnv(t *testing.T, chainConsensus uint64) (*StateEngine, *fakeSeats) {
 	t.Helper()
 	seats := newFakeSeats()
-	return &StateEngine{poaSeats: seats, electionDb: &fakeElections{version: chainConsensus}}, seats
+	return &StateEngine{
+		poaSeats:   seats,
+		electionDb: &fakeElections{version: chainConsensus},
+		sconf:      systemconfig.MocknetConfig(),
+	}, seats
 }
 
 func ratified(epoch uint64, accounts ...string) elections.ElectionResult {
@@ -348,5 +353,147 @@ func TestSeatMaintenanceNoOpsWithoutARegistry(t *testing.T) {
 func TestSeatAccountNormalisationContract(t *testing.T) {
 	if poaseats.NormalizeAccount("hive:alice") != poaseats.NormalizeAccount("alice") {
 		t.Fatal("prefixed and bare forms of the same account do not normalise equal")
+	}
+}
+
+// ───── B1: the collateral exit-halt ─────
+//
+// The halt is what turns the bond from a formality into a deterrent. Theft
+// cannot be PREVENTED — an operator holding threshold shares signs off-protocol
+// and Bitcoin confirms in ~10 minutes whatever Magi does — so it is deterred by
+// collateral the thief cannot extract before the theft is detected. Every test
+// below is about that window actually binding.
+
+// mocknet pins PoaExitHaltBlocks = 120.
+const testHalt = uint64(120)
+
+func TestExitHaltInertBelowActivation(t *testing.T) {
+	se, seats := poaEnv(t, 3)
+	seats.seed("alice", "ubo-a", 10, 100)
+	if se.IsPoaExitHalted("alice", 200) {
+		t.Fatal("exit-halt fired below consensus 0.7.0 — the batch is not inert")
+	}
+}
+
+// An account with no seat is not a POA operator and has no collateral POA has
+// any claim over. Halting it would freeze ordinary users' unstakes.
+func TestExitHaltIgnoresAccountsWithoutASeat(t *testing.T) {
+	se, _ := poaEnv(t, 7)
+	if se.IsPoaExitHalted("randomuser", 200) {
+		t.Fatal("exit-halt fired for an account with no seat — ordinary unstakes would freeze")
+	}
+}
+
+// Admitted but never elected: never held keys, so never had the chance to
+// commit the theft the halt exists to deter.
+func TestExitHaltIgnoresNeverSeatedSeat(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 0) // admitted, never seated
+	if se.IsPoaExitHalted("alice", 200) {
+		t.Fatal("exit-halt fired for a seat that was never elected")
+	}
+}
+
+// ★ Held while STILL SEATED. A thief who steals and simply stays in the set,
+// enjoying the BTC, must not be able to walk the collateral out meanwhile.
+func TestExitHaltHoldsWhileStillSeated(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 100) // seated, no exit recorded
+	for _, h := range []uint64{100, 500, 10_000} {
+		if !se.IsPoaExitHalted("alice", h) {
+			t.Fatalf("bond released at height %d while the seat still holds keys", h)
+		}
+	}
+}
+
+// ★ The window itself: held for exactly PoaExitHaltBlocks after the exit
+// election, then released. Too short and a thief walks the collateral out
+// before detection; never releasing is a seizure, not a halt.
+func TestExitHaltRunsForTheConfiguredWindowThenReleases(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 100)
+	if err := seats.SetExit("alice", 500); err != nil {
+		t.Fatal(err)
+	}
+	release := 500 + testHalt
+
+	for _, h := range []uint64{500, 501, release - 1} {
+		if !se.IsPoaExitHalted("alice", h) {
+			t.Fatalf("bond released at height %d, before the halt expires at %d", h, release)
+		}
+	}
+	for _, h := range []uint64{release, release + 1, release + 10_000} {
+		if se.IsPoaExitHalted("alice", h) {
+			t.Fatalf("bond still held at height %d, after the halt expired at %d — a halt that never lifts is a seizure",
+				h, release)
+		}
+	}
+	got, armed := se.PoaExitHaltReleaseHeight("alice", 500)
+	if !armed || got != release {
+		t.Fatalf("release height = %d (armed=%v), want %d — the refusal message would quote the wrong height", got, armed, release)
+	}
+}
+
+// Fail-closed. The cost of holding on a bad read is a delayed withdrawal; the
+// cost of releasing is a thief's collateral leaving during the detection window.
+func TestExitHaltHoldsOnReadFailure(t *testing.T) {
+	se, seats := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 100)
+	_ = seats.SetExit("alice", 500)
+	seats.failReads = true
+
+	if !se.IsPoaExitHalted("alice", 10_000) {
+		t.Fatal("bond released on an unreadable registry — a Mongo blip would let a thief's collateral out")
+	}
+}
+
+// ★ Termination. An operator who unstakes loses weight, leaves the set at the
+// next election, and their bond releases a bounded time later. If this did not
+// hold, the halt would be an indefinite seizure rather than a delay.
+func TestExitHaltTerminatesForAnOperatorWhoLeaves(t *testing.T) {
+	se, _ := poaEnv(t, 7)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
+
+	if !se.IsPoaExitHalted("bob", 150) {
+		t.Fatal("seated operator's bond is not held")
+	}
+	// bob unstakes; next election drops him.
+	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200)
+	if !se.IsPoaExitHalted("bob", 200) {
+		t.Fatal("bond released the instant bob left — that is exactly the steal-and-run escape the halt closes")
+	}
+	if se.IsPoaExitHalted("bob", 200+testHalt) {
+		t.Fatal("bond never releases after a completed exit window — the halt is a seizure, not a delay")
+	}
+}
+
+// ★ Re-entry must not shorten the halt. A returning operator holds keys again,
+// so their bond is locked again — grace restores the seat, it never accelerates
+// a withdrawal.
+func TestReEntryDoesNotShortenTheHalt(t *testing.T) {
+	se, _ := poaEnv(t, 7)
+	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob"), 100)
+	se.applyPoaSeatMaintenance(ratified(11, "alice"), 200)        // bob exits
+	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob"), 250) // bob returns before the window elapsed
+
+	// Had the exit stood, the halt would have lifted at 320. It must not.
+	if !se.IsPoaExitHalted("bob", 400) {
+		t.Fatal("bond released while bob is back in the set — re-entering shortened the halt instead of re-arming it")
+	}
+	// Leaving again starts a fresh window from the NEW exit.
+	se.applyPoaSeatMaintenance(ratified(13, "alice"), 500)
+	if !se.IsPoaExitHalted("bob", 500+testHalt-1) {
+		t.Fatal("second window not enforced")
+	}
+	if se.IsPoaExitHalted("bob", 500+testHalt) {
+		t.Fatal("second window never expires")
+	}
+}
+
+// A nil registry must be a no-op, not a panic or a blanket freeze.
+func TestExitHaltNoOpsWithoutARegistry(t *testing.T) {
+	se := &StateEngine{}
+	if se.IsPoaExitHalted("alice", 100) {
+		t.Fatal("exit-halt fired with no registry wired — every unstake on the network would freeze")
 	}
 }
