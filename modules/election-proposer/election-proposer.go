@@ -1031,6 +1031,23 @@ func (e *electionProposer) GenerateFullElection(
 			})
 		}
 		churnedOut := selectChurnedOut(newEntrants, effMaxNew)
+
+		// ★ The seat gate's starvation guard runs BEFORE this block, so it
+		// cannot see what the churn cap is about to remove. Deferring entrants
+		// here can therefore re-shrink a committee the guard just approved, back
+		// under MinMembers — which turns "one epoch of open candidacy" into the
+		// stalled epoch the guard exists to prevent. Deferring an entrant is
+		// always safe to SKIP (they simply join this election instead of the
+		// next), so when the cap would breach the floor, it yields.
+		if minMembers := e.sconf.ConsensusParams().MinMembers; len(witnessList)-len(churnedOut) < minMembers {
+			log.Error("poa/bond churn cap SKIPPED this election: deferring these entrants would drop the committee below MinMembers, which stalls the epoch. Admitting them instead — the cap is a rate limit, not a safety property",
+				"block_height", blockHeight,
+				"candidates", len(witnessList),
+				"would_defer", len(churnedOut),
+				"min_members", minMembers)
+			churnedOut = nil
+		}
+
 		if len(churnedOut) > 0 {
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				_, drop := churnedOut[w.Account]
