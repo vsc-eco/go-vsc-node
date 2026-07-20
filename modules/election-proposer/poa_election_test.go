@@ -333,3 +333,99 @@ func TestPoaChurnCapLimitsNewEntrantsPerElection(t *testing.T) {
 		}
 	}
 }
+
+// ★ THE STARVATION GUARD — the single most consequential test in this file.
+//
+// A partial bootstrap (or any short registry) leaves a registry that is
+// NON-empty, so the inert-while-empty guard does not fire, but far too small.
+// Applying the gate then deletes almost every candidate and the committee falls
+// under the floor that gateway rotation, TSS signability and a valid election
+// all require — which is the epoch-1699 halt reintroduced by the mechanism
+// written to prevent it. The gate must decline to apply instead, costing one
+// epoch of permissionless candidacy rather than the chain.
+func TestPoaSeatGateRefusesToStarveTheCommittee(t *testing.T) {
+	seats := test_utils.NewMockPoaSeatsDb()
+	seats.Seed("alice", "ubo-a", 10) // exactly ONE seat: a partial bootstrap
+
+	ep, _ := poaHarness(t, seats, map[string]int64{
+		"alice": 100, "bob": 100, "carol": 100, "dave": 100,
+	})
+	list := []witnesses.Witness{
+		poaWitness(t, "alice", 0x11),
+		poaWitness(t, "bob", 0x22),
+		poaWitness(t, "carol", 0x33),
+		poaWitness(t, "dave", 0x44),
+	}
+	_, data, err := ep.GenerateFullElection(list, 0, consensusversion.V0_7_0, 100)
+	if err != nil {
+		t.Fatalf("GenerateFullElection: %v", err)
+	}
+	if len(data.Members) != 4 {
+		t.Fatalf("members = %v (%d), want all 4 — the gate applied a one-seat registry and starved the committee, which is exactly the halt this guard exists to prevent",
+			memberAccounts(data.Members), len(data.Members))
+	}
+}
+
+// The guard must not become an excuse to never enforce: once the registry is
+// large enough to leave a viable committee, the gate applies normally.
+func TestPoaSeatGateAppliesOnceTheRegistryIsViable(t *testing.T) {
+	seats := test_utils.NewMockPoaSeatsDb()
+	for _, a := range []string{"alice", "bob", "carol", "dave"} {
+		seats.Seed(a, "ubo-"+a, 10)
+	}
+	ep, _ := poaHarness(t, seats, map[string]int64{
+		"alice": 100, "bob": 100, "carol": 100, "dave": 100, "mallory": 999_999,
+	})
+	list := []witnesses.Witness{
+		poaWitness(t, "alice", 0x11),
+		poaWitness(t, "bob", 0x22),
+		poaWitness(t, "carol", 0x33),
+		poaWitness(t, "dave", 0x44),
+		poaWitness(t, "mallory", 0x55),
+	}
+	_, data, err := ep.GenerateFullElection(list, 0, consensusversion.V0_7_0, 100)
+	if err != nil {
+		t.Fatalf("GenerateFullElection: %v", err)
+	}
+	got := memberAccounts(data.Members)
+	if len(got) != 4 {
+		t.Fatalf("members = %v, want the 4 seated accounts", got)
+	}
+	for _, m := range got {
+		if m == "mallory" {
+			t.Fatalf("members = %v — the starvation guard let an unseated witness through even though the committee was viable without it", got)
+		}
+	}
+}
+
+// ★ Flat weight WITHOUT the seat gate is strictly worse than either regime:
+// candidacy reverts to "anyone with MinStake", but every such candidate then
+// carries the same weight as a vetted operator — so committee weight is bought
+// at MinStake per seat instead of proportionally. Every POA election rule must
+// therefore be gated on the registry being present, not on the version alone.
+func TestPoaRulesApplyAsASetOrNotAtAll(t *testing.T) {
+	ep, _ := poaHarness(t, nil, map[string]int64{
+		"alice": 1_000_000, "bob": 100, "carol": 100,
+	})
+	list := []witnesses.Witness{
+		poaWitness(t, "alice", 0x11),
+		poaWitness(t, "bob", 0x22),
+		poaWitness(t, "carol", 0x33),
+	}
+	_, data, err := ep.GenerateFullElection(list, 0, consensusversion.V0_7_0, 100)
+	if err != nil {
+		t.Fatalf("GenerateFullElection: %v", err)
+	}
+	var alice uint64
+	for i, m := range data.Members {
+		if m.Account == "alice" {
+			alice = data.Weights[i]
+		}
+	}
+	if alice == params.PoaSeatWeight {
+		t.Fatal("weights were flattened on a node with no seat registry — candidacy is ungated but weight is flat, so committee weight costs MinStake per seat: cheaper than the stake-weighting POA replaced and free of the vetting it adds")
+	}
+	if alice != 1_000_000 {
+		t.Fatalf("alice weight = %d, want her raw stake — POA rules must apply as a set or not at all", alice)
+	}
+}
