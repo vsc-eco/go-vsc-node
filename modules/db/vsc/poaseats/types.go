@@ -82,7 +82,16 @@ type Seat struct {
 
 	// LastSeatedHeight is the height of the most recent ratified election whose
 	// member set INCLUDED this account. 0 means the seat has never been elected.
-	LastSeatedHeight uint64 `bson:"last_seated_height,omitempty"`
+	// ★ NO omitempty — and for the OPPOSITE reason to UboId above. This field is
+	// QUERIED BY VALUE (SetSeating filters last_seated_height $lte, SetExit
+	// filters $gt 0). In MongoDB a value query does not match a document where
+	// the field is ABSENT — only an explicit null or $exists:false does — so with
+	// omitempty a freshly-admitted seat, whose value is 0 and therefore omitted,
+	// would match NEITHER filter. SetSeating would silently never fire for a
+	// voted-in seat, so it would never be recorded as seated, never acquire an
+	// exit, and never be halted. Storing an explicit 0 is what makes those
+	// queries mean what they say.
+	LastSeatedHeight uint64 `bson:"last_seated_height"`
 
 	// ExitHeight is the height of the first ratified election that EXCLUDED this
 	// account after it had been seated. 0 means "currently seated, or never
@@ -92,7 +101,12 @@ type Seat struct {
 	// did this account leave the set": election records carry no reason, no
 	// status and no departure height, and membership is purely positional. The
 	// collateral exit-halt is counted from here.
-	ExitHeight uint64 `bson:"exit_height,omitempty"`
+	// ★ NO omitempty, same reason: SetExit filters on exit_height == 0 to make
+	// the exit write idempotent-once. With omitempty a fresh seat has no
+	// exit_height field, that filter matches nothing, and NO seat ever gets an
+	// exit recorded — which silently disables the entire collateral exit-halt
+	// while every unit test using an in-memory double still passes.
+	ExitHeight uint64 `bson:"exit_height"`
 }
 
 // Seated reports whether the seat is currently in the elected committee: it has
