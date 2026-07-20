@@ -50,6 +50,7 @@ func TestReview2GenerateFullElectionBadConsensusKey(t *testing.T) {
 		nil,                          // p2p
 		&test_utils.MockWitnessDb{},  // witnesses (unused by GenerateFullElection)
 		&test_utils.MockElectionDb{}, // elections → GetElection nil = first election
+		nil,                          // poaSeats (POA inert)
 		nil,                          // vscBlocks
 		&test_utils.MockBalanceDb{},  // balanceDb → no stake records
 		ct.DataLayer,                 // da

@@ -98,6 +98,84 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 	}
 }
 
+// IsPoaExitHalted reports whether an account's consensus bond is under the POA
+// collateral exit-halt at height.
+//
+// THE ATTACK IT CLOSES: an operator holds threshold BTC shares. They can sign
+// off-protocol and Bitcoin confirms in ~10 minutes regardless of anything Magi
+// does — so theft is not prevented, it is DETERRED, by the collateral they
+// forfeit. That deterrent evaporates if they can steal and pull their collateral
+// out before the theft is detected. The halt parks the bond for
+// PoaExitHaltBlocks counted from the moment they LEAVE the controlling set,
+// which must exceed (theft-detection latency + slash-execution time).
+//
+// It is held while STILL SEATED too, not only after exit. A thief who steals and
+// simply stays in the set, enjoying the BTC, must not be able to walk the
+// collateral out the front door in the meantime.
+//
+// TERMINATION (this is not an indefinite seizure): unstaking drops the account's
+// weight, so it leaves the set at the next election, which records an exit
+// height and starts the clock. An operator who chooses to remain seated remains
+// held — by their own choice, and they can end it at any time by disabling their
+// witness. The refusal message says so.
+//
+// FAIL-CLOSED. An unreadable registry HOLDS rather than releases: the failure
+// mode of holding is a delayed withdrawal, the failure mode of releasing is a
+// thief's collateral leaving during the detection window. Same discipline as
+// bondLockMatches (bond_lock.go), for the same reason.
+func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
+	if se.poaSeats == nil {
+		return false
+	}
+	if !consensusversion.PoaExitHaltActive(se.ActiveConsensusVersion(height)) {
+		return false
+	}
+
+	seat, found, err := se.poaSeats.GetSeat(account)
+	if err != nil {
+		log.Error("poa exit-halt: seat read failed; HOLDING the bond (fail-closed)",
+			"account", account, "height", height, "err", err)
+		return true
+	}
+	if !found {
+		// No seat: nothing POA has any claim over.
+		return false
+	}
+	if seat.LastSeatedHeight == 0 {
+		// Admitted but never elected — never held keys, so never held collateral
+		// hostage to a theft it could not have committed.
+		return false
+	}
+	if seat.ExitHeight == 0 {
+		// Still in the set: holds keys, so holds the bond.
+		return true
+	}
+
+	release := seat.ExitHeight + se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	if release < seat.ExitHeight {
+		// Overflow — only reachable via an absurd configured halt. Hold rather
+		// than wrap to a release height in the past.
+		log.Error("poa exit-halt: release height overflowed; HOLDING",
+			"account", account, "exit_height", seat.ExitHeight)
+		return true
+	}
+	return height < release
+}
+
+// PoaExitHaltReleaseHeight returns the height at which an account's exit-halt
+// lifts, and whether one is currently armed. Used to put a concrete, checkable
+// number in the refusal message rather than "try again later".
+func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool) {
+	if se.poaSeats == nil {
+		return 0, false
+	}
+	seat, found, err := se.poaSeats.GetSeat(account)
+	if err != nil || !found || seat.LastSeatedHeight == 0 || seat.ExitHeight == 0 {
+		return 0, false
+	}
+	return seat.ExitHeight + se.sconf.ConsensusParams().EffectivePoaExitHalt(), true
+}
+
 // bootstrapPoaSeats seeds the registry from the first ratified election observed
 // after the POA batch activates.
 //

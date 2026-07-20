@@ -82,6 +82,19 @@ type StateEngine interface {
 	// chain-active AND a retiring gen exists. A consensus_unstake by such a member
 	// is rejected until its generation drains.
 	IsBondLockedRetiringMember(account string, height uint64) bool
+	// IsPoaExitHalted reports whether an account's consensus bond is under the
+	// POA collateral exit-halt at height: it holds a seat that is still in the
+	// elected set, or left it fewer than PoaExitHaltBlocks ago. Deterministic
+	// (seat registry state at height). False/inert unless consensus 0.7.0 is
+	// active and the account holds a seat. FAIL-CLOSED: an unreadable registry
+	// holds rather than releases, because the cost of a delayed withdrawal is
+	// bounded and the cost of a thief's collateral leaving during the detection
+	// window is not.
+	IsPoaExitHalted(account string, height uint64) bool
+	// PoaExitHaltReleaseHeight returns the height at which an armed exit-halt
+	// lifts, and whether one is armed at all, so a refusal can name a concrete
+	// height instead of "try again later".
+	PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool)
 }
 
 type BlockStatusGetter interface {

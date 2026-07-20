@@ -205,6 +205,7 @@ func MakeNode(input MakeNodeInput) *Node {
 		p2p,
 		witnessesDb,
 		electionDb,
+		poaSeatsDb,
 		vscBlocks,
 		balanceDb,
 		datalayer,
