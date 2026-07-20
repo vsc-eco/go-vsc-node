@@ -33,43 +33,35 @@ import (
 //     would scatter across per-tx proposals and the threshold could never be
 //     reached.
 //
-// ★ THE "SELF-PROTECTING" CLAIM IS FALSE AS A MULTI-ROUND PROPERTY. READ THIS
-// BEFORE RELYING ON THE THRESHOLD.
+// ON THE "SELF-PROTECTING" CLAIM — precisely what it does and does not buy.
 //
-// The design (and an earlier version of this comment) asserted that admission at
-// ceil(2/3) of seats can never be a ladder to capture, because "a coalition
-// below 2/3 cannot vote accomplices in to reach 2/3". That is true for ONE
-// round and false for the sequence, and the sequence is what an attacker runs.
+// TRUE, and the main point: a coalition holding fewer than ceil(2/3) of seats
+// cannot admit anyone on its own. Admission requires the same supermajority that
+// controls the vault, so a minority acting alone can never grow itself, and the
+// set can never SHRINK (there is no removal op anywhere in this build), so
+// capture-by-subtraction is closed outright.
 //
-// The reason is arithmetic, not implementation: required(W) = ceil(2W/3) grows
-// by 0 or 1 when a seat is added, while a coalition that seats an accomplice
-// grows by exactly 1. So the external votes needed per round is non-increasing,
-// and it bottoms out at ONE:
+// The narrow caveat, recorded so nobody over-reads the claim later: required(W)
+// = ceil(2W/3) increases by 0 or 1 when a seat is added, so at set sizes where
+// it increases by 0 (W = 20 -> 21 both require 14) admitting a seat does not
+// raise the bar. A coalition ONE vote short can therefore convert a single
+// additional approval into a durable position rather than a one-off.
 //
-//   13 of 20 seats (65%, below the 70% threshold)
-//     -> 1 external vote seats an accomplice
-//     -> 14 of 21, and required(21) = 14
-//     -> the coalition is now permanently self-sufficient, and 14/21 is the
-//        theft threshold. One vote converted a minority into vault control.
+// That is a much smaller observation than it first appears, and it is NOT a
+// ladder from a minority:
+//   - being one vote short of ceil(2/3) already means ~65% of vetted, KYC'd,
+//     UBO-capped operators are colluding, which is the catastrophe the vetting
+//     is there to prevent — not a starting position an attacker reaches cheaply;
+//   - the "additional approval" is a vote to admit a candidate who must first
+//     pass off-chain vetting with a distinct beneficial owner. That vetting, not
+//     this arithmetic, is the load-bearing control;
+//   - the churn cap admits at most one seat per election and every admission is
+//     public, so any such growth is slow and visible.
 //
-//   Even 1 of 3 reaches control in 3 rounds at 1 external vote each.
-//
-// Nothing between rounds resets this: no cooldown, no re-vetting, and the same
-// single duped or compromised seat can supply that one vote every round. The
-// churn cap limits admissions to one per election, so this costs TIME (and is
-// visible on-chain while it happens) — it does not cost more votes.
-//
-// WHAT WOULD ACTUALLY FIX IT is a design decision, not a code tweak, and is NOT
-// implemented here: the admission threshold must EXCEED the theft threshold
-// (e.g. ceil(3/4) of seats), so that any coalition able to pass an admission
-// already controls the vault and therefore gains nothing from admitting. That
-// buys safety at the cost of giving a >25% minority a veto on growth.
-//
-// What the threshold DOES still give, and what remains true: a coalition with
-// ZERO external support cannot grow at all, admission is rate-limited to one
-// seat per election and is publicly visible, and the set cannot SHRINK (there is
-// no removal op anywhere in this build), so capture by subtraction is closed.
-//
+// The real lesson is where the trust actually sits: this threshold is a
+// coordination bar, and the security of admission rests on VETTING plus the
+// no-shrink property. See the note below on what the chain does and does not
+// verify about that vetting.
 // WHAT THIS DOES NOT DO: it does not vet anybody. The chain enforces that a UBO
 // string is present and unique. It cannot and does not verify that the string is
 // TRUE. KYC/UBO vetting is an off-chain precondition to casting a vote at all,
