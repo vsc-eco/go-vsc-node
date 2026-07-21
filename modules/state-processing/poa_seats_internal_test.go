@@ -414,13 +414,16 @@ func TestExitHaltIgnoresAccountsWithoutASeat(t *testing.T) {
 	}
 }
 
-// Admitted but never elected: never held keys, so never had the chance to
-// commit the theft the halt exists to deter.
-func TestExitHaltIgnoresNeverSeatedSeat(t *testing.T) {
+// ★ RG-1 FIX: an admitted-but-never-seated seat IS halted (armed from
+// admission), because under POA it is electable the moment it holds a seat.
+// This is the seat state a ratification-gap attacker occupies when it unstakes
+// in the window before its first seating; holding it closes the gap. (This test
+// asserted the OPPOSITE before RG-1 was closed.)
+func TestExitHaltHoldsAnAdmittedNeverSeatedSeat(t *testing.T) {
 	se, seats := poaEnv(t, 7)
-	seats.seed("alice", "ubo-a", 10, 0) // admitted, never seated
-	if se.IsPoaExitHalted("alice", 200) {
-		t.Fatal("exit-halt fired for a seat that was never elected")
+	seats.seed("alice", "ubo-a", 10, 0) // admitted, never seated — the RG-1 gap state
+	if !se.IsPoaExitHalted("alice", 200) {
+		t.Fatal("exit-halt did NOT fire for an admitted seat — the ratification gap (RG-1) is open: a member can unstake before its first seating and drain the slashable pool while keeping its seat")
 	}
 }
 

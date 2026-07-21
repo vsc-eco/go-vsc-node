@@ -114,24 +114,22 @@ func TestAdmitAndReservePayoutIdsNeverCollide(t *testing.T) {
 	}
 }
 
-// ---- D. RG-1 CHARACTERIZATION — the KNOWN-OPEN ratification gap ----
+// ---- D. RG-1 CLOSED — the ratification gap ----
 //
-// This test PINS the current (buggy) behaviour so a fix is detectable: a seat
-// that is about to be elected but whose SetSeating has not yet run
-// (LastSeatedHeight == 0) is NOT halted, which is the window a validator uses to
-// move its bond out of the slashable pool. When the gap is closed, this test
-// should be inverted. It is a characterization test, deliberately asserting the
-// wrong-but-current behaviour, and it is labelled so nobody mistakes it for a
-// guarantee.
-func TestRG1_NeverSeatedMemberIsNotHalted_KNOWN_GAP(t *testing.T) {
+// The halt is now armed from ADMISSION, so a seat in the pre-seating window
+// (LastSeatedHeight == 0) — the exact state a ratification-gap attacker occupies
+// when it unstakes before its first seating — IS halted. This is the regression
+// guard for the RG-1 fix: if the never-seated branch ever reverts to
+// not-halted, an admitted member could again drain the slashable pool while
+// keeping its seat. (This test previously PINNED the vulnerable behaviour and
+// was inverted when RG-1 was closed.)
+func TestRG1_AdmittedSeatIsHaltedBeforeFirstSeating(t *testing.T) {
 	se, seats := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 0) // admitted, LastSeatedHeight==0 (the gap state)
 
-	if se.IsPoaExitHalted("alice", 50) {
-		t.Fatal("behaviour changed: a never-seated seat is now halted. If the ratification gap (RG-1) was intentionally closed, INVERT this characterization test.")
+	if !se.IsPoaExitHalted("alice", 50) {
+		t.Fatal("RG-1 REGRESSION: an admitted-but-not-yet-seated seat is not halted — a member can unstake in the generation→ratification window, drain hive_consensus, and keep its committee seat with an unslashable bond. See phase1/FINDING-ratification-gap.md.")
 	}
-	// Documents the consequence: in this state an unstake would be permitted,
-	// which is exactly the RG-1 finding. See phase1/FINDING-ratification-gap.md.
 }
 
 // ---- E. NIL-DEPENDENCY safety — no panic on any partial wiring ----
