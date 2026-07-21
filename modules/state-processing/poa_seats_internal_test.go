@@ -9,6 +9,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
+	"vsc-node/modules/db/vsc/witnesses"
 
 	"github.com/chebyrash/promise"
 )
@@ -135,6 +136,44 @@ func (f *fakeSeats) seed(account, ubo string, admitted, seated uint64) {
 	}
 }
 
+// fakeWitnesses models the election proposer's candidate set for the exit-halt's
+// electability check. By default every account holding a seat is an electable
+// witness (an active operator); disable(acct) simulates the operator winding
+// down (disabling its witness), which is the real action that lets the halt
+// clock start.
+type fakeWitnesses struct {
+	fakePlugin
+	seats    *fakeSeats
+	disabled map[string]bool
+}
+
+func newFakeWitnesses(seats *fakeSeats) *fakeWitnesses {
+	return &fakeWitnesses{seats: seats, disabled: map[string]bool{}}
+}
+func (f *fakeWitnesses) disable(acct string) { f.disabled[poaseats.NormalizeAccount(acct)] = true }
+
+func (f *fakeWitnesses) GetWitnessesAtBlockHeight(bh uint64, _ ...witnesses.SearchOption) ([]witnesses.Witness, error) {
+	out := []witnesses.Witness{}
+	for acct := range f.seats.seats {
+		if f.disabled[poaseats.NormalizeAccount(acct)] {
+			continue
+		}
+		out = append(out, witnesses.Witness{Account: acct, Enabled: true})
+	}
+	return out, nil
+}
+func (f *fakeWitnesses) GetLastestWitnesses(_ ...witnesses.SearchOption) ([]witnesses.Witness, error) {
+	return f.GetWitnessesAtBlockHeight(0)
+}
+func (f *fakeWitnesses) GetWitnessesByPeerId(_ []string, _ ...witnesses.SearchOption) ([]witnesses.Witness, error) {
+	return nil, nil
+}
+func (f *fakeWitnesses) GetWitnessAtHeight(account string, _ *uint64) (*witnesses.Witness, error) {
+	return nil, nil
+}
+func (f *fakeWitnesses) StoreNodeAnnouncement(string) error                    { return nil }
+func (f *fakeWitnesses) SetWitnessUpdate(witnesses.SetWitnessUpdateType) error { return nil }
+
 // fakeElections exists only so ActiveConsensusVersion can resolve a version.
 type fakeElections struct {
 	fakePlugin
@@ -154,14 +193,16 @@ func (f *fakeElections) GetElectionByHeight(uint64) (elections.ElectionResult, e
 }
 
 // poaEnv builds the minimum StateEngine the seat-maintenance path needs.
-func poaEnv(t *testing.T, chainConsensus uint64) (*StateEngine, *fakeSeats) {
+func poaEnv(t *testing.T, chainConsensus uint64) (*StateEngine, *fakeSeats, *fakeWitnesses) {
 	t.Helper()
 	seats := newFakeSeats()
+	wits := newFakeWitnesses(seats)
 	return &StateEngine{
 		poaSeats:   seats,
+		witnessDb:  wits,
 		electionDb: &fakeElections{version: chainConsensus},
 		sconf:      systemconfig.MocknetConfig(),
-	}, seats
+	}, seats, wits
 }
 
 // ratified builds an election that CARRIES ITS OWN consensus version, because
@@ -190,7 +231,7 @@ func ratifiedAtVersion(consensus, epoch uint64, accounts ...string) elections.El
 // writes at all, so an operator running this binary before the floor rises
 // produces the same state as one running the old binary.
 func TestSeatMaintenanceInertBelowActivation(t *testing.T) {
-	se, seats := poaEnv(t, 3) // current mainnet floor
+	se, seats, _ := poaEnv(t, 3) // current mainnet floor
 	se.applyPoaSeatMaintenance(ratifiedAtVersion(3, 10, "alice", "bob"), nil, 100)
 	if len(seats.seats) != 0 {
 		t.Fatalf("wrote %d seats below the activation line — the batch is not inert", len(seats.seats))
@@ -203,7 +244,7 @@ func TestSeatMaintenanceInertBelowActivation(t *testing.T) {
 // identical H-6 key gate starved the mainnet committee at epoch 1699 and is
 // still disabled. Bootstrap seeding is what makes activation safe.
 func TestBootstrapSeedsRegistryFromIncumbentCommittee(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 
 	if len(seats.seats) != 3 {
@@ -233,7 +274,7 @@ func TestBootstrapSeedsRegistryFromIncumbentCommittee(t *testing.T) {
 // seats (doubling an operator's admit-vote weight) or, if it silently replaced
 // them, wipe voted-in seats and their UBO bindings.
 func TestBootstrapHappensOnlyOnce(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob", "carol", "dave"), nil, 200)
 
@@ -248,7 +289,7 @@ func TestBootstrapHappensOnlyOnce(t *testing.T) {
 // The core B1 fact: leaving the ratified set records an exit height, which is
 // what the 3-day collateral halt is counted from.
 func TestExitHeightRecordedWhenSeatLeavesTheSet(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100) // bootstrap
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "bob", "carol"), nil, 200) // all still in
 	se.applyPoaSeatMaintenance(ratified(12, "alice", "carol"), nil, 300)        // bob drops out
@@ -271,7 +312,7 @@ func TestExitHeightRecordedWhenSeatLeavesTheSet(t *testing.T) {
 // interval — the halt would never expire and a temporary lock would become a
 // permanent seizure of their bond.
 func TestRepeatedAbsenceDoesNotRestartTheHaltClock(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200) // bob exits at 200
 	for _, h := range []uint64{300, 400, 500} {
@@ -287,7 +328,7 @@ func TestRepeatedAbsenceDoesNotRestartTheHaltClock(t *testing.T) {
 // re-electable with NO re-vote. Re-entry must re-arm the halt rather than
 // release it — grace restores the seat, it never accelerates a withdrawal.
 func TestReEntryNeedsNoReVoteAndReArmsTheHalt(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)        // bob drops (liveness)
 	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob", "carol"), nil, 300) // bob returns
@@ -308,7 +349,7 @@ func TestReEntryNeedsNoReVoteAndReArmsTheHalt(t *testing.T) {
 // nothing" means every seat is recorded as having exited simultaneously, arming
 // the collateral halt against the entire committee at once.
 func TestSeatMaintenanceMatchesPrefixedMemberAccounts(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 50, 0)
 	seats.seed("bob", "ubo-b", 50, 0)
 	_ = seats.SetSeating("alice", 60)
@@ -335,7 +376,7 @@ func TestSeatMaintenanceMatchesPrefixedMemberAccounts(t *testing.T) {
 // operator at once. Both are consensus-divergent. The path therefore RETRIES
 // until the read succeeds rather than proceeding on a partial answer.
 func TestTransientReadIsRetriedNotTreatedAsEmpty(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 60)
 	seats.failReadsFor = 3 // fail three times, then recover
 
@@ -361,7 +402,7 @@ func TestTransientReadIsRetriedNotTreatedAsEmpty(t *testing.T) {
 // is the safe outcome; the dangerous one is a registry that exists but is
 // wrong.
 func TestBootstrapRefusesToSeedFromAnEmptyCommittee(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10), nil, 100)
 	if len(seats.seats) != 0 {
 		t.Fatalf("seeded %d seats from an empty committee", len(seats.seats))
@@ -398,7 +439,7 @@ func TestSeatAccountNormalisationContract(t *testing.T) {
 const testHalt = uint64(120)
 
 func TestExitHaltInertBelowActivation(t *testing.T) {
-	se, seats := poaEnv(t, 3)
+	se, seats, _ := poaEnv(t, 3)
 	seats.seed("alice", "ubo-a", 10, 100)
 	if se.IsPoaExitHalted("alice", 200) {
 		t.Fatal("exit-halt fired below consensus 0.7.0 — the batch is not inert")
@@ -408,7 +449,7 @@ func TestExitHaltInertBelowActivation(t *testing.T) {
 // An account with no seat is not a POA operator and has no collateral POA has
 // any claim over. Halting it would freeze ordinary users' unstakes.
 func TestExitHaltIgnoresAccountsWithoutASeat(t *testing.T) {
-	se, _ := poaEnv(t, 7)
+	se, _, _ := poaEnv(t, 7)
 	if se.IsPoaExitHalted("randomuser", 200) {
 		t.Fatal("exit-halt fired for an account with no seat — ordinary unstakes would freeze")
 	}
@@ -420,7 +461,7 @@ func TestExitHaltIgnoresAccountsWithoutASeat(t *testing.T) {
 // in the window before its first seating; holding it closes the gap. (This test
 // asserted the OPPOSITE before RG-1 was closed.)
 func TestExitHaltHoldsAnAdmittedNeverSeatedSeat(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 0) // admitted, never seated — the RG-1 gap state
 	if !se.IsPoaExitHalted("alice", 200) {
 		t.Fatal("exit-halt did NOT fire for an admitted seat — the ratification gap (RG-1) is open: a member can unstake before its first seating and drain the slashable pool while keeping its seat")
@@ -430,7 +471,7 @@ func TestExitHaltHoldsAnAdmittedNeverSeatedSeat(t *testing.T) {
 // ★ Held while STILL SEATED. A thief who steals and simply stays in the set,
 // enjoying the BTC, must not be able to walk the collateral out meanwhile.
 func TestExitHaltHoldsWhileStillSeated(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 100) // seated, no exit recorded
 	for _, h := range []uint64{100, 500, 10_000} {
 		if !se.IsPoaExitHalted("alice", h) {
@@ -443,11 +484,15 @@ func TestExitHaltHoldsWhileStillSeated(t *testing.T) {
 // election, then released. Too short and a thief walks the collateral out
 // before detection; never releasing is a seizure, not a halt.
 func TestExitHaltRunsForTheConfiguredWindowThenReleases(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, wits := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 100)
 	if err := seats.SetExit("alice", 500); err != nil {
 		t.Fatal(err)
 	}
+	// She has WOUND DOWN: disabled her witness, so she can no longer be elected
+	// and the release clock governs. (While she remains an electable witness the
+	// bond is held indefinitely — see TestExitHaltHoldsAnElectableWitness.)
+	wits.disable("alice")
 	release := 500 + testHalt
 
 	for _, h := range []uint64{500, 501, release - 1} {
@@ -470,7 +515,7 @@ func TestExitHaltRunsForTheConfiguredWindowThenReleases(t *testing.T) {
 // Fail-closed. The cost of holding on a bad read is a delayed withdrawal; the
 // cost of releasing is a thief's collateral leaving during the detection window.
 func TestExitHaltHoldsOnReadFailure(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 100)
 	_ = seats.SetExit("alice", 500)
 	seats.failReads = true
@@ -480,46 +525,96 @@ func TestExitHaltHoldsOnReadFailure(t *testing.T) {
 	}
 }
 
-// ★ Termination. An operator who unstakes loses weight, leaves the set at the
-// next election, and their bond releases a bounded time later. If this did not
-// hold, the halt would be an indefinite seizure rather than a delay.
-func TestExitHaltTerminatesForAnOperatorWhoLeaves(t *testing.T) {
-	se, _ := poaEnv(t, 7)
+// ★ Termination — but only once the operator can no longer be elected.
+// Dropping from ONE election is not enough: while still an electable witness the
+// bond stays held (that is the F1 re-election-gap protection — a still-electable
+// operator can be re-seated at the next election, so its bond must remain
+// slashable). Release requires (a) it stops being electable AND (b) the window
+// after its exit elapses.
+func TestExitHaltTerminatesOnlyWhenNoLongerElectable(t *testing.T) {
+	se, _, wits := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 
 	if !se.IsPoaExitHalted("bob", 150) {
 		t.Fatal("seated operator's bond is not held")
 	}
-	// bob unstakes; next election drops him.
+	// bob drops from the next election but is STILL an electable witness.
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)
 	if !se.IsPoaExitHalted("bob", 200) {
-		t.Fatal("bond released the instant bob left — that is exactly the steal-and-run escape the halt closes")
+		t.Fatal("bond released the instant bob left — the steal-and-run escape")
+	}
+	// ★ F1: even AFTER the exit window, while bob remains electable the bond is
+	// held — he could be re-seated at any election, so it must stay slashable.
+	if !se.IsPoaExitHalted("bob", 200+testHalt+10_000) {
+		t.Fatal("bond released while bob is still an electable witness — the re-election gap (F1) is open")
+	}
+	// bob genuinely winds down: disables his witness. Now the clock governs.
+	wits.disable("bob")
+	if !se.IsPoaExitHalted("bob", 200+testHalt-1) {
+		t.Fatal("bond released before the window after exit")
 	}
 	if se.IsPoaExitHalted("bob", 200+testHalt) {
-		t.Fatal("bond never releases after a completed exit window — the halt is a seizure, not a delay")
+		t.Fatal("bond never releases even after winding down + full window — a seizure, not a delay")
 	}
 }
 
-// ★ Re-entry must not shorten the halt. A returning operator holds keys again,
-// so their bond is locked again — grace restores the seat, it never accelerates
-// a withdrawal.
+// ★ Re-entry must not shorten the halt, and a still-electable operator is held
+// throughout regardless of the clock.
 func TestReEntryDoesNotShortenTheHalt(t *testing.T) {
-	se, _ := poaEnv(t, 7)
+	se, _, wits := poaEnv(t, 7)
 	se.applyPoaSeatMaintenance(ratified(10, "alice", "bob", "carol"), nil, 100)
 	se.applyPoaSeatMaintenance(ratified(11, "alice", "carol"), nil, 200)        // bob exits
-	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob", "carol"), nil, 250) // bob returns before the window elapsed
+	se.applyPoaSeatMaintenance(ratified(12, "alice", "bob", "carol"), nil, 250) // bob returns
 
-	// Had the exit stood, the halt would have lifted at 320. It must not.
+	// Held while back in the set (electable), regardless of the old exit clock.
 	if !se.IsPoaExitHalted("bob", 400) {
 		t.Fatal("bond released while bob is back in the set — re-entering shortened the halt instead of re-arming it")
 	}
-	// Leaving again starts a fresh window from the NEW exit.
+	// Leaving again and winding down starts a fresh window from the NEW exit.
 	se.applyPoaSeatMaintenance(ratified(13, "alice", "carol"), nil, 500)
+	wits.disable("bob")
 	if !se.IsPoaExitHalted("bob", 500+testHalt-1) {
 		t.Fatal("second window not enforced")
 	}
 	if se.IsPoaExitHalted("bob", 500+testHalt) {
 		t.Fatal("second window never expires")
+	}
+}
+
+// ★ THE F1 REGRESSION GUARD (re-election gap): a seat that was seated, exited,
+// and whose window has fully ELAPSED — but which is STILL an electable witness —
+// must remain held. This is the exact state a re-election attacker occupies in
+// the generation→ratification window; gating on the lagging exit clock alone
+// (the partial fix) let it through.
+func TestExitHaltHoldsAnElectableWitnessAfterWindowElapsed(t *testing.T) {
+	se, seats, wits := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 100) // seated
+	_ = seats.SetExit("alice", 200)       // exited at 200; window would end at 320
+	// alice is STILL an electable witness (default) — she can be re-seated.
+	_ = wits
+	if !se.IsPoaExitHalted("alice", 200+testHalt+5_000) {
+		t.Fatal("RG-1 REGRESSION (F1): an exited-but-still-electable seat released after its window — a re-election attacker can unstake in the next generation→ratification gap and drain the slashable pool while keeping a fresh seat")
+	}
+}
+
+// The bond of a genuinely never-serving admitted operator MUST have a release
+// path (the F2 freeze-forever fix): once it disables its witness (not electable),
+// its bond releases a window after admission.
+func TestNeverSeatedSeatReleasesAfterDisablingWitness(t *testing.T) {
+	se, seats, wits := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 100, 0) // admitted at 100, never seated
+
+	// Still electable → held (RG-1 first-election protection).
+	if !se.IsPoaExitHalted("alice", 150) {
+		t.Fatal("admitted electable seat not held — RG-1 first-election gap open")
+	}
+	// Winds down (never served): disables witness. Releases a window after admission.
+	wits.disable("alice")
+	if !se.IsPoaExitHalted("alice", 100+testHalt-1) {
+		t.Fatal("released before the window after admission")
+	}
+	if se.IsPoaExitHalted("alice", 100+testHalt) {
+		t.Fatal("F2 REGRESSION: a never-served admitted seat that disabled its witness is STILL held — the bond is frozen forever with no release path")
 	}
 }
 
@@ -547,7 +642,7 @@ func TestExitHaltNoOpsWithoutARegistry(t *testing.T) {
 // and a CURRENT election at it — which is precisely the shape the old doubles
 // could not express, since they returned one fixed version for every query.
 func TestBootstrapFiresAtTheRealActivationTransition(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 
 	prev := ratifiedAtVersion(3, 10, "alice", "bob", "carol") // pre-POA
 	curr := ratifiedAtVersion(7, 11, "alice", "bob", "carol") // first POA election
@@ -569,7 +664,7 @@ func TestBootstrapFiresAtTheRealActivationTransition(t *testing.T) {
 // empty registry must NOT be re-seeded, because that is the signature of a node
 // that lost its collection rather than one that has not seeded yet.
 func TestBootstrapDoesNotReFireAfterTheTransition(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 
 	prev := ratifiedAtVersion(7, 20, "alice", "bob", "carol") // already POA
 	curr := ratifiedAtVersion(7, 21, "alice", "bob", "carol")

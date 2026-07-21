@@ -9,7 +9,6 @@ import (
 	governance_db "vsc-node/modules/db/vsc/governance"
 	"vsc-node/modules/db/vsc/poaseats"
 	governance "vsc-node/modules/governance"
-
 )
 
 // FAILURE-STATE SUITE.
@@ -124,7 +123,7 @@ func TestAdmitAndReservePayoutIdsNeverCollide(t *testing.T) {
 // keeping its seat. (This test previously PINNED the vulnerable behaviour and
 // was inverted when RG-1 was closed.)
 func TestRG1_AdmittedSeatIsHaltedBeforeFirstSeating(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 10, 0) // admitted, LastSeatedHeight==0 (the gap state)
 
 	if !se.IsPoaExitHalted("alice", 50) {
@@ -139,9 +138,9 @@ func TestAdmitVoteNoPanicOnNilDependencies(t *testing.T) {
 		"candidate": "x", "ubo_id": "u", "net_id": systemconfig.MocknetConfig().NetId(),
 	})
 	cases := []*StateEngine{
-		{},                                                   // everything nil
-		{poaSeats: newFakeSeats()},                           // no governance, no sconf
-		{governanceDb: newFakeGovernance()},                  // no seats, no sconf
+		{},                                  // everything nil
+		{poaSeats: newFakeSeats()},          // no governance, no sconf
+		{governanceDb: newFakeGovernance()}, // no seats, no sconf
 		{poaSeats: newFakeSeats(), governanceDb: newFakeGovernance()}, // no sconf
 	}
 	for i, se := range cases {
@@ -159,7 +158,7 @@ func TestAdmitVoteNoPanicOnNilDependencies(t *testing.T) {
 // ---- F. DEGENERATE consensus inputs to seat maintenance ----
 
 func TestSeatMaintenanceToleratesDegenerateElectionMembers(t *testing.T) {
-	se, seats := poaEnv(t, 7)
+	se, seats, _ := poaEnv(t, 7)
 
 	// Duplicate accounts, an empty account, and a prefix-only account mixed with
 	// enough real members to clear the MinMembers floor (mocknet=3). Must not
@@ -190,4 +189,3 @@ func TestSeatMaintenanceToleratesDegenerateElectionMembers(t *testing.T) {
 		t.Fatal("an empty account was seeded")
 	}
 }
-
