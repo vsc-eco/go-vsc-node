@@ -9,6 +9,7 @@ import (
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
+	"vsc-node/modules/db/vsc/witnesses"
 )
 
 // POA seat maintenance — the consensus point.
@@ -208,38 +209,56 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 		// No seat: nothing POA has any claim over.
 		return false
 	}
-	if seat.LastSeatedHeight == 0 {
-		// ★ RG-1 FIX: armed from ADMISSION, not from first seating.
-		//
-		// This branch used to return false ("admitted but never elected, never
-		// held keys"). That opened the ratification gap: a seat is elected at
-		// GENERATION height but only marked seated at RATIFICATION, and in the
-		// window between, LastSeatedHeight is still 0. A validator could unstake
-		// in that window — the old branch let it through — draining
-		// hive_consensus (the slashable pool) to ~0 while still becoming a
-		// committee member one block later, defeating the slash deterrent.
-		//
-		// Under POA a seat is ELECTABLE the moment it is admitted (the seat gate
-		// admits any seat holder), so "holds a seat" is the right trigger for the
-		// halt, not "has been seated once". Holding any seat ⇒ held.
-		//
-		// TRADEOFF, flagged for team review: a seat that is admitted but never
-		// elected has its bond held with no timed release (ExitHeight is only set
-		// on a seated→absent transition, which a never-seated seat never makes).
-		// This errs toward holding collateral (safe) over convenience. A
-		// governance release path for a genuinely-never-serving admitted operator
-		// is a follow-up, not a security gap. It cannot re-open RG-1: any release
-		// keyed on admission height would let the gap attacker (who IS an admitted
-		// seat at unstake time) through again, so the never-seated hold must stay
-		// unconditional until a real exit or an explicit governance action.
-		return true
-	}
-	if seat.ExitHeight == 0 {
-		// Still in the set: holds keys, so holds the bond.
+
+	// ★ RG-1 COMPLETE CLOSE (both the first-election AND the re-election gap).
+	//
+	// The halt exists to keep a bond slashable for as long as its operator can
+	// SIGN — i.e., can be in the committee. The seat lifecycle fields
+	// (LastSeatedHeight/ExitHeight) only update at RATIFICATION, so they LAG the
+	// [generation, ratification) window in which an election is decided but not
+	// yet on-chain. Gating solely on those fields left two gaps in that window:
+	//
+	//   - first-election gap: a freshly-admitted seat (LastSeatedHeight==0) about
+	//     to be seated for the first time;
+	//   - re-election gap: a seat that was seated, left, and whose halt window
+	//     has ELAPSED (released), now about to be re-seated.
+	//
+	// In BOTH, the attacker must be an ELECTABLE WITNESS at unstake time (that is
+	// the only way to win the pending election), so electability — not the
+	// lagging seat clock — is the correct trigger. `isElectableWitness` reads the
+	// exact set the election proposer draws candidates from
+	// (GetWitnessesAtBlockHeight + EnabledOnly, deterministic and freshness-
+	// filtered), so if the operator can be put into the next committee, the bond
+	// is held. This is a pure function of on-chain state at `height`.
+	if se.isElectableWitness(account, height) {
 		return true
 	}
 
-	release := seat.ExitHeight + se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	// From here the operator is NOT currently electable (witness disabled or
+	// stale) — it cannot be placed in a future committee, so it is genuinely
+	// winding down and the bond releases on the clock.
+	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+
+	if seat.LastSeatedHeight == 0 {
+		// Never seated AND no longer electable → release after `window` measured
+		// from admission. This is the release path a never-seated seat previously
+		// LACKED (the F2 freeze-forever): an admitted operator who never served
+		// disables its witness and, one window later, may withdraw. It cannot
+		// re-open the first-election gap, because a would-be attacker in that gap
+		// IS an electable witness and so was already held above.
+		release := seat.AdmittedHeight + window
+		if release < seat.AdmittedHeight {
+			return true // overflow guard
+		}
+		return height < release
+	}
+	if seat.ExitHeight == 0 {
+		// Seated, not electable, but no exit recorded yet — the next election
+		// will record the exit and start the clock. Hold until then.
+		return true
+	}
+
+	release := seat.ExitHeight + window
 	if release < seat.ExitHeight {
 		// Overflow — only reachable via an absurd configured halt. Hold rather
 		// than wrap to a release height in the past.
@@ -250,18 +269,58 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 	return height < release
 }
 
+// isElectableWitness reports whether account is a candidate the election
+// proposer would draw from at height: it reads the EXACT set the proposer uses
+// (GetWitnessesAtBlockHeight + EnabledOnly — enabled, fresh within the
+// announcement window, height-addressed and therefore deterministic). If the
+// operator can be placed into the next committee, its bond must stay slashable.
+//
+// Fail-CLOSED: a nil witness store or a read error returns true (assume
+// electable → hold), matching the halt's fail-closed posture — a delayed
+// withdrawal is bounded, a released bond on a signer is not.
+func (se *StateEngine) isElectableWitness(account string, height uint64) bool {
+	if se.witnessDb == nil {
+		return true
+	}
+	ws, err := se.witnessDb.GetWitnessesAtBlockHeight(height, witnesses.EnabledOnly())
+	if err != nil {
+		log.Error("poa exit-halt: witness read failed; HOLDING (fail-closed)",
+			"account", account, "height", height, "err", err)
+		return true
+	}
+	bare := poaseats.NormalizeAccount(account)
+	for _, w := range ws {
+		if poaseats.NormalizeAccount(w.Account) == bare {
+			return true
+		}
+	}
+	return false
+}
+
 // PoaExitHaltReleaseHeight returns the height at which an account's exit-halt
-// lifts, and whether one is currently armed. Used to put a concrete, checkable
-// number in the refusal message rather than "try again later".
+// lifts, and whether a fixed release height exists. It mirrors IsPoaExitHalted:
+// while the operator is still an electable witness there is NO fixed release
+// (the hold lasts until it stops being electable), so it returns armed=false and
+// the caller phrases the refusal accordingly.
 func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool) {
 	if se.poaSeats == nil || se.sconf == nil {
 		return 0, false
 	}
 	seat, found, err := se.poaSeats.GetSeat(account)
-	if err != nil || !found || seat.LastSeatedHeight == 0 || seat.ExitHeight == 0 {
+	if err != nil || !found {
 		return 0, false
 	}
-	return seat.ExitHeight + se.sconf.ConsensusParams().EffectivePoaExitHalt(), true
+	if se.isElectableWitness(account, height) {
+		return 0, false // held while electable — no fixed release height
+	}
+	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	if seat.LastSeatedHeight == 0 {
+		return seat.AdmittedHeight + window, true
+	}
+	if seat.ExitHeight == 0 {
+		return 0, false // exit not yet recorded
+	}
+	return seat.ExitHeight + window, true
 }
 
 // bootstrapPoaSeats seeds the registry from the first ratified election observed

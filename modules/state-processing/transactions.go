@@ -886,10 +886,15 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 	//
 	// Inert below consensus 0.7.0 and for any account with no seat.
 	if se.IsPoaExitHalted(tx.From, tx.Self.BlockHeight) {
-		msg := "consensus bond is locked: POA collateral exit-halt. Your seat is still in the elected set; leave the set (disable your witness) and the halt expires a fixed number of blocks after your exit election"
+		// Two shapes of hold: (a) still an electable witness — no fixed release,
+		// the operator must stop being electable (disable its witness) before the
+		// clock starts; (b) winding down — a concrete release height exists.
+		var msg string
 		if release, armed := se.PoaExitHaltReleaseHeight(tx.From, tx.Self.BlockHeight); armed {
 			msg = "consensus bond is locked: POA collateral exit-halt runs until block " +
 				strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+		} else {
+			msg = "consensus bond is locked: POA collateral exit-halt. Your seat is still an electable committee candidate. Disable your witness so it can no longer be elected; the halt then expires a fixed number of blocks later"
 		}
 		return TxResult{Success: false, Ret: msg, RcUsed: 50}
 	}
