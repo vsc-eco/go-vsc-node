@@ -209,9 +209,30 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 		return false
 	}
 	if seat.LastSeatedHeight == 0 {
-		// Admitted but never elected — never held keys, so never held collateral
-		// hostage to a theft it could not have committed.
-		return false
+		// ★ RG-1 FIX: armed from ADMISSION, not from first seating.
+		//
+		// This branch used to return false ("admitted but never elected, never
+		// held keys"). That opened the ratification gap: a seat is elected at
+		// GENERATION height but only marked seated at RATIFICATION, and in the
+		// window between, LastSeatedHeight is still 0. A validator could unstake
+		// in that window — the old branch let it through — draining
+		// hive_consensus (the slashable pool) to ~0 while still becoming a
+		// committee member one block later, defeating the slash deterrent.
+		//
+		// Under POA a seat is ELECTABLE the moment it is admitted (the seat gate
+		// admits any seat holder), so "holds a seat" is the right trigger for the
+		// halt, not "has been seated once". Holding any seat ⇒ held.
+		//
+		// TRADEOFF, flagged for team review: a seat that is admitted but never
+		// elected has its bond held with no timed release (ExitHeight is only set
+		// on a seated→absent transition, which a never-seated seat never makes).
+		// This errs toward holding collateral (safe) over convenience. A
+		// governance release path for a genuinely-never-serving admitted operator
+		// is a follow-up, not a security gap. It cannot re-open RG-1: any release
+		// keyed on admission height would let the gap attacker (who IS an admitted
+		// seat at unstake time) through again, so the never-seated hold must stay
+		// unconditional until a real exit or an explicit governance action.
+		return true
 	}
 	if seat.ExitHeight == 0 {
 		// Still in the set: holds keys, so holds the bond.
