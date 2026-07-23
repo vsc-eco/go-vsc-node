@@ -65,6 +65,7 @@ func TestAuditUnfixed_37_NoMaxCommitteeSizeCap(t *testing.T) {
 		nil,                          // p2p
 		&test_utils.MockWitnessDb{},  // witnesses (unused by GenerateFullElection)
 		&test_utils.MockElectionDb{}, // elections → GetElection nil = first election
+		nil,                          // poaSeats (POA inert)
 		nil,                          // vscBlocks
 		balanceDb,                    // balanceDb → all 200 witnesses staked
 		ct.DataLayer,                 // da

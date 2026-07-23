@@ -74,6 +74,7 @@ func TestH6GatewayPoPGate(t *testing.T) {
 		nil,
 		&test_utils.MockWitnessDb{},
 		&test_utils.MockElectionDb{},
+		nil, // poaSeats (POA inert)
 		nil,
 		&test_utils.MockBalanceDb{},
 		ct.DataLayer,

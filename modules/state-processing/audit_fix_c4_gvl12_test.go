@@ -95,6 +95,7 @@ func newGVL12Env() *gvl12Env {
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
 		tssKeys, tssCommitments, tssRequests,
 		nil, // governanceDb
+		nil, // poaSeatsDb
 		nil, // pendulumSettlementsDb
 		nil, // consensusStateDb
 		nil, // wasm

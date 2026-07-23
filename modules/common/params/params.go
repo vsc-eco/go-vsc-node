@@ -97,7 +97,7 @@ var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
-var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts
+var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts. Devnet/mocknet raise this in system-config.FromNetwork so ephemeral test accounts (which hold ~0 HBD) can afford the gas of SPV-heavy ops (map/migrate); mainnet/testnet keep this production default.
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
@@ -268,6 +268,104 @@ type ConsensusParams struct {
 	// point-in-time read.
 	BondInclusionSampleCount int `json:"bondInclusionSampleCount,omitempty"`
 
+	// VaultRotationV2ActivationHeight gates the BTC TSS vault-rotation-v2 cutover
+	// (Build Map §7 N1 — reshare→fresh-keygen-per-generation rotation for the BTC
+	// vault key only). Like BondInclusionActivationHeight it MUST be a fixed
+	// network-wide constant set strictly above the current head on an epoch
+	// boundary, identical on every node, or live-vs-reindex diverges. 0 = disabled
+	// (inert; the safe default — no behaviour change until governance pins a height
+	// and ALL nodes run the same binary at/after it).
+	//
+	// HARD GO-LIVE PRECONDITION (M1.3 council-converged, 3 independent lenses —
+	// do NOT treat a non-zero value as "rotation is safe to enable"): this flag
+	// ships only the NODE half — it gate-offs BTC reshare. The fresh keygen is
+	// triggered by a CONTRACT "create" TssOp (spine S1), and the old→new fund
+	// sweep + old-share destruction are also spine work. Pinning a height before
+	// those exist and are DEVNET-PROVEN (with signing continuity across a
+	// rotation) makes the BTC key stop resharing with NO keygen replacement → it
+	// rotates to neither → the vault FREEZES as the committee churns members out.
+	// Precondition to pin: (a) contract emits fresh-keyId "create" per generation,
+	// (b) old→new migration sweep, (c) old-share destruction — all built + proven.
+	//
+	// ADDITIONAL DEPLOY-ORDERING PRECONDITIONS (S3 methodology, do NOT pin without):
+	//   (d) MaxNewMembersActivationHeight is ALSO pinned/active — the S3.4 V-A
+	//       liveness argument (a churned-out retiring committee can't sign the
+	//       migration) relies on the churn cap slowing membership drift; with the
+	//       cap inert, that mitigation is vacuous. Pin the cap (or ship the V-A
+	//       lifecycle fix) at/before this height.
+	//   (e) OracleParams().ContractId("BTC") is populated — an empty BTC contract
+	//       id makes isBtcVaultKey false, silently disabling S3 output scoping AND
+	//       the M1.1a solvency halt AND the M1.3 reshare-skip TOGETHER (fail-open
+	//       on theft-prevention). Verify it is set on the target network.
+	//   (f) DONE (BRK-1 + BRK-4b — contract feat/vault-rotation-s1 @ a5cf0a0): the
+	//       migration confirm flow is reorg-hardened — swept inputs are deleted at
+	//       CONFIRM not build (settleMigrationSweep, under the sweep's SPV proof), the
+	//       next rotation is gated on a pending unconfirmed sweep (inputs stay in the
+	//       registry → AnyFundedSupersededGen true → NN#3 refuses createKey), and the
+	//       in-flight migration confirm is pause-EXEMPT (BRK-4b). Fee is CHECK-at-build /
+	//       DEBIT-at-confirm so no confirm aborts post-L1. Council-proven (5 lenses:
+	//       conservation, state-machine, adversarial, determinism, fail-safe) —
+	//       conserving, deterministic, no reachable permanent brick / fund loss.
+	//   (g) the check-SIGNATURE-before-activate ceremony (M1.3b) is built — the new
+	//       generation's activation must gate on a PRODUCED + consensus-verified
+	//       test signature, not just keygen agreement (attestPrimaryKey), or funds
+	//       can route into an agreed-but-UNSIGNABLE new vault (brick council FS3-1).
+	//   (h) ★ CRITICAL for S5: fund-gated retirement must delete a generation's
+	//       shares ONLY on SPV-proven ZERO L1 balance — NEVER on the contract
+	//       registry being empty. delete-at-build (item f) can leave a stranded
+	//       gen reading registry-empty while funds are still on L1; a registry-
+	//       emptiness retire would then destroy its shares = PERMANENT LOSS (brick
+	//       council FS5-1). Today safe only because KeyRetirementEnabled=false makes
+	//       all deletion dead code; S5 must preserve the SPV-zero gate.
+	//   (i) MaxBlockRetention (contract) is raised ≥ CSV backup timelock + max reorg
+	//       depth — else a pending sweep or a CSV-backup recovery outlasts header
+	//       retention and becomes unverifiable/unreconcilable (FS1/FS2/FS4/FS5 H-3).
+	//   (j) under ProcessingSuspended the unconditional epoch deprecation clock must
+	//       NOT deprecate a fund-holding gen while renewKey is blocked (freeze the
+	//       clock for fund-holding gens, or allow-list renewKey during suspend) —
+	//       else a long suspend forces an un-curable deprecation (FS1-FS2).
+	//   (k) the fleet runs the BRK-5/BRK-8 binary UNIFORMLY before any Epochs>0 (v2)
+	//       key is minted or reshared — BRK-5 (suspend freezes deprecation) and
+	//       BRK-8 (reshare extends expiry) change consensus key-lifecycle timing
+	//       once Epochs>0; inert on today's legacy Epochs==0 keys (a rolling upgrade
+	//       today is byte-identical), but a heterogeneous fleet would diverge in the
+	//       v2 era. Same all-nodes-same-height discipline as this flag (brick-fix
+	//       determinism lens).
+	//   (l) the migration DUST-ESCAPE is handled — a sub-sweep-fee dust deposit to a
+	//       superseded gen's still-matchable address is credited (S1.4) but can NEVER be
+	//       swept (buildMigrationTransaction V-1/V5-4 fee abort), and BRK-1's registry-
+	//       based NN#3 then FREEZES all rotation until that gen drains, so an unprivileged
+	//       dust deposit can wedge rotation (BRK-1 council state-machine N1; funds-safe —
+	//       L1 + CSV, but a liveness DoS). Pre-existing, but BRK-1 makes rotation-liveness
+	//       depend on it. Ship the V-1 dust-burn / reserve-subsidy (or a min-deposit floor
+	//       / prune the residual via the S5 SPV-zero gate) before pinning a height.
+	//       Also fund FeeSupply — calcVscFee is 0 today, so the BRK-1 build-time fee
+	//       reserve check rejects EVERY sweep (fail-safe can't-start, not stuck-on-L1);
+	//       rotation cannot complete until the migration fee model is funded.
+	//   (m) #11 bond-lock. FAIL-STOP reads: DONE — IsBondLockedRetiringMember drives a
+	//       CONSENSUS tx outcome (TxConsensusUnstake), so its reads now block/retry on
+	//       a TRANSIENT per-node infra error via GetLastOutputStrict/GetElectionStrict
+	//       + blockingRetry (isTransientReadErr treats mongo.ErrNoDocuments as
+	//       deterministic absence; datalayer reads block via the online bitswap
+	//       blockservice), concluding "not-locked" ONLY from a read that SUCCEEDED and
+	//       showed genuine (all-nodes-identical) absence — no fail-open divergence/fork
+	//       (council determinism F2). (m1) FRONT-RUN hold-release: DONE — the
+	//       matured-consensus_unstake release path (state_engine.go) HOLDS (defers,
+	//       never loses) a payout whose BONDED account (carried as Params["from"] on
+	//       the unstake action) is still a bond-locked retiring committee member, via
+	//       the same fail-stop predicate; it releases automatically once the gen
+	//       drains. So a member cannot cash out its bond ahead of finishing the
+	//       migration (it still holds the key's TSS share via V-A). ONE ITEM STILL
+	//       OPEN: (m2) a #11 lock/hold RELEASES only when a gen leaves the
+	//       fund-holding set, which is S5's job → S5 (item h) must exist before a
+	//       member can be locked, else the lock/hold is permanent.
+	// STATUS: (a)-(e) tracked/unbuilt (spine); (f) DONE (BRK-1/BRK-4b); (g) DONE
+	// (BRK-2 check-sig ceremony); (h) enforced by the S5 SPV-zero rule; (i) DONE
+	// (MaxBlockRetention=4608, BRK-4a); (j) DONE (BRK-5 suspend-freeze); (k) DONE
+	// (BRK-5/8 fleet deploy-order note); (l) tracked (V-1 dust + fee model); (m)
+	// fail-stop + (m1) front-run hold-release DONE; (m2) S5 lock-release tracked.
+	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
+
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
 	// the bond inclusion gate admits in a single election. The maturity window
@@ -281,6 +379,19 @@ type ConsensusParams struct {
 	// only consulted then). It does NOT cap incumbents or floor-guard
 	// backfills (those are not "new"), so it can never fight the floor guard.
 	MaxNewMembersPerElection int `json:"maxNewMembersPerElection,omitempty"`
+
+	// MaxNewMembersActivationHeight gates the churn cap's 0→N cutover (pruned-
+	// methodology, 4-lens: the cap change is a consensus-critical ELECTION input).
+	// Like BondInclusionActivationHeight / VaultRotationV2ActivationHeight, the cap
+	// is INERT until this height is pinned and reached, so the value change flips on
+	// EVERY node at one deterministic block — NOT at whenever each node swaps
+	// binaries. A bare value (no height) lets a rolling upgrade run old-binary
+	// (cap=0) and new-binary (cap=N) nodes side by side, computing DIFFERENT election
+	// member sets for the same election → BLS won't aggregate → the epoch/rotation
+	// stalls (a determinism break in the election mechanism underlying blocks/TSS/
+	// oracle). Pin a FUTURE epoch-boundary height with lead time, identical on every
+	// node. 0 = disabled (inert; the safe default — the cap does nothing until pinned).
+	MaxNewMembersActivationHeight uint64 `json:"maxNewMembersActivationHeight,omitempty"`
 
 	// BondInclusionEstablishedGraceBlocks is the established-member exception to
 	// the inclusion window (operator requirement). A witness that has served as
@@ -335,6 +446,91 @@ type ConsensusParams struct {
 	// decision changes ledger state, so this is a fixed network-wide constant
 	// every node shares. 0 falls back to DefaultGovernanceProposalExpiryBlocks.
 	GovernanceProposalExpiryBlocks uint64 `json:"governanceProposalExpiryBlocks,omitempty"`
+
+	// ---- POA admission batch (consensus version 0.7.0) ----
+	//
+	// These four are consensus-critical ELECTION/LEDGER inputs, but unlike
+	// BondInclusion*/VaultRotationV2*/MaxNewMembers* they carry NO dedicated
+	// activation height: the whole POA batch activates off the chain-active
+	// consensus version (consensusversion.Version0_7_0Active), which is the
+	// repo's preferred idiom — a feature cannot switch on before a stake
+	// supermajority attests it is RUNNING code that implements it, so a laggard
+	// is excluded from the committee rather than silently forking across a
+	// height gap. See modules/common/consensusversion/feature_gates.go.
+
+	// PoaAdmitVoteWindowBlocks is how long a vsc.admit_vote proposal stays open
+	// to collect seat approvals, in L1 blocks (~3 days at 3s/block on mainnet).
+	// A proposal that has not crossed the ceil(2/3) seat threshold by
+	// openHeight+this is closed and the candidate is not seated. 0 falls back to
+	// DefaultPoaAdmitVoteWindowBlocks.
+	PoaAdmitVoteWindowBlocks uint64 `json:"poaAdmitVoteWindowBlocks,omitempty"`
+
+	// PoaExitHaltBlocks is the collateral exit-halt: how long after a seat LEAVES
+	// the elected set its consensus bond stays unwithdrawable, in L1 blocks (~3
+	// days at 3s/block on mainnet). It closes "steal, leave the set, pull the
+	// collateral and run" — the halt must exceed (theft-detection latency +
+	// slash-execution time). It composes as a MAX with the existing 5-epoch
+	// unstake maturity, it does not replace it. 0 falls back to
+	// DefaultPoaExitHaltBlocks.
+	PoaExitHaltBlocks uint64 `json:"poaExitHaltBlocks,omitempty"`
+
+	// PoaMaxNewMembersPerElection is the POA churn cap: how many NEW members a
+	// single election may admit once the POA batch is active. It exists because
+	// MaxNewMembersPerElection is gated on MaxNewMembersActivationHeight, which
+	// is 0 (inert) on every shipped network — so the pre-existing cap is dead
+	// code today. This one activates off the version gate instead, so no future
+	// height has to be pinned (and mis-pinning it cannot split the member set).
+	// If MaxNewMembersActivationHeight is ever pinned, that value wins and this
+	// is not consulted. 0 falls back to DefaultPoaMaxNewMembersPerElection.
+	PoaMaxNewMembersPerElection int `json:"poaMaxNewMembersPerElection,omitempty"`
+}
+
+// POA admission batch defaults (used when a network pins no explicit value).
+const (
+	// ~3 days at 3s/block.
+	DefaultPoaAdmitVoteWindowBlocks uint64 = 3 * 28800
+	// ~3 days at 3s/block. Must exceed theft-detection + slash-execution latency.
+	DefaultPoaExitHaltBlocks uint64 = 3 * 28800
+	// One new seat per election interval: a suspicious admission wave is visible
+	// and reactable rather than atomic.
+	DefaultPoaMaxNewMembersPerElection int = 1
+)
+
+// PoaSeatWeight is the consensus weight of one ratified POA seat. It is a
+// CONSTANT, deliberately not configurable: the whole point of flat seat-weight
+// is that no per-network knob can reintroduce stake-proportional weight (a whale
+// holding >=2/3 of stake otherwise holds >=2/3 of forging weight, which is the
+// capture vector POA exists to close). 1 keeps every ceil(2W/3) threshold in the
+// codebase exact on small integers — with 20 seats, 2/3 resolves to 14.
+const PoaSeatWeight uint64 = 1
+
+// EffectivePoaAdmitVoteWindow is the admit-vote window in force, falling back to
+// the default when a network pins nothing. Pure function of config — every node
+// resolves it identically.
+func (cp ConsensusParams) EffectivePoaAdmitVoteWindow() uint64 {
+	if cp.PoaAdmitVoteWindowBlocks == 0 {
+		return DefaultPoaAdmitVoteWindowBlocks
+	}
+	return cp.PoaAdmitVoteWindowBlocks
+}
+
+// EffectivePoaExitHalt is the collateral exit-halt in force, falling back to the
+// default when a network pins nothing. Pure function of config.
+func (cp ConsensusParams) EffectivePoaExitHalt() uint64 {
+	if cp.PoaExitHaltBlocks == 0 {
+		return DefaultPoaExitHaltBlocks
+	}
+	return cp.PoaExitHaltBlocks
+}
+
+// EffectivePoaMaxNewMembers is the POA churn cap in force. A negative pin is
+// treated as "unset" rather than as a cap of 0 (which would mean "admit nobody,
+// ever" — a silent liveness stop), so a mis-signed config cannot wedge admission.
+func (cp ConsensusParams) EffectivePoaMaxNewMembers() int {
+	if cp.PoaMaxNewMembersPerElection <= 0 {
+		return DefaultPoaMaxNewMembersPerElection
+	}
+	return cp.PoaMaxNewMembersPerElection
 }
 
 // DefaultGovernanceProposalExpiryBlocks is the fallback proposal voting window
@@ -455,6 +651,35 @@ func (cp ConsensusParams) BondInclusionActive(blockHeight uint64) bool {
 	return cp.BondInclusionActivationHeight != 0 && blockHeight >= cp.BondInclusionActivationHeight
 }
 
+// VaultRotationV2Enabled reports whether the BTC TSS vault-rotation-v2 cutover is
+// live at blockHeight (Build Map §7 N1). Deterministic: a pure function of the
+// per-network activation height, so every node flips identically. 0 = disabled
+// (inert). When true, the BTC vault key rotates by fresh keygen-per-generation
+// instead of reshare — PER-KEYID (only the BTC vault key; other chains keep
+// reshare, so the shared committee/reshare loop is not frozen).
+func (cp ConsensusParams) VaultRotationV2Enabled(blockHeight uint64) bool {
+	return cp.VaultRotationV2ActivationHeight != 0 && blockHeight >= cp.VaultRotationV2ActivationHeight
+}
+
+// MaxNewMembersActive reports whether the churn cap is in force at blockHeight.
+// Deterministic pure function of the per-network activation height, so the 0→N
+// cutover flips identically on every node (mirrors BondInclusionActive /
+// VaultRotationV2Enabled). 0 = disabled (inert).
+func (cp ConsensusParams) MaxNewMembersActive(blockHeight uint64) bool {
+	return cp.MaxNewMembersActivationHeight != 0 && blockHeight >= cp.MaxNewMembersActivationHeight
+}
+
+// EffectiveMaxNewMembers is the churn cap in force at blockHeight: the configured
+// MaxNewMembersPerElection once MaxNewMembersActive, else 0 (disabled). Election
+// enforcement MUST read this, never the raw field, so a rolling binary upgrade
+// cannot split the election member set before the pinned cutover height.
+func (cp ConsensusParams) EffectiveMaxNewMembers(blockHeight uint64) int {
+	if cp.MaxNewMembersActive(blockHeight) {
+		return cp.MaxNewMembersPerElection
+	}
+	return 0
+}
+
 // TssIndexed returns true at blockHeight when TSS state should be indexed for this
 // network. Callers that need network-aware gating (e.g. "only gate on testnet")
 // should keep their explicit OnTestnet/OnMainnet check around this predicate.
@@ -508,6 +733,18 @@ type TssParams struct {
 	// Set higher (e.g. 10m) in test/CI environments where multiple nodes
 	// compete for CPU and prime generation takes longer.
 	PreParamsTimeout time.Duration `json:"preParamsTimeout,omitempty"`
+	// SolvencyGapSats is the tolerance (in satoshis) for the BTC keysign solvency
+	// observation (observeBtcSolvencyInsolvent, modules/tss/solvency_gate.go).
+	// STAGED FOR M1.1b — the observation is not yet wired to anything. When M1.1b
+	// wires it (to trip the FLAG, not to gate locally), it flags insolvency only
+	// when the vault's real L1 balance is BELOW the contract-claimed supply by
+	// MORE than this gap:
+	//   insolvent  iff  L1assets < Supply - SolvencyGapSats
+	// It absorbs benign transient discrepancies — in-flight deposits not yet
+	// credited, mempool/confirmation lag, dust rounding. The LIVE M1.1a freeze is
+	// the deterministic governance FLAG (vsc.tss_halt), NOT this tolerance.
+	// Handled by the reflection Marshal/Unmarshal above as a uint64 field.
+	SolvencyGapSats uint64 `json:"solvencyGapSats,omitempty"`
 }
 
 // MarshalJSON serializes TssParams with durations as human-readable
@@ -585,6 +822,16 @@ var DefaultTssParams = TssParams{
 	RpcTimeout:            30 * time.Second,
 	CommitDelay:           5 * time.Second,
 	WaitForSigsTimeout:    6 * time.Second,
+	// 100,000 sats = 0.001 BTC. A conservative in-flight/rounding tolerance for
+	// the BTC keysign SIGNAL fail-safe: small relative to the vault's holdings
+	// yet large enough to swallow an uncredited deposit or mempool-lag blip so
+	// the local probe never spuriously freezes signing. Used by mainnet, testnet
+	// AND devnet (all take DefaultTssParams — system-config.go:257/352/420); only
+	// mocknet takes MocknetTssParams, which sets the same value below. It is inert
+	// on networks with no BTC oracle contract because the gate short-circuits when
+	// OracleParams().ContractId("BTC") is empty. The primary, durable freeze is
+	// the deterministic vsc.tss_halt FLAG, not this tolerance.
+	SolvencyGapSats: 100_000,
 }
 
 var MocknetTssParams = TssParams{
@@ -596,6 +843,11 @@ var MocknetTssParams = TssParams{
 	RpcTimeout:            10 * time.Second,
 	CommitDelay:           1 * time.Second,
 	WaitForSigsTimeout:    6 * time.Second,
+	// Same BTC keysign solvency tolerance as DefaultTssParams, so mocknet (the
+	// only config that uses these params — system-config.go:472) calibrates
+	// identically once vault addresses are configured. Inert until the M1.1b
+	// observation is wired.
+	SolvencyGapSats: 100_000,
 }
 
 type OracleParams struct {
@@ -610,6 +862,23 @@ type OracleParams struct {
 
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
+
+	// BtcL1BaseURL is the esplora/mempool.space REST base URL the BTC keysign
+	// solvency SIGNAL (modules/tss/solvency_gate.go) queries for the vault's
+	// REAL on-chain balance. Injected here (per-network config) rather than
+	// hardcoded in the client. Empty disables the L1 probe (SIGNAL fails open),
+	// leaving only the deterministic FLAG. e.g. "https://mempool.space/api".
+	BtcL1BaseURL string `json:"btcL1BaseURL,omitempty"`
+
+	// BtcVaultAddresses is the authoritative set of BTC vault addresses the
+	// solvency SIGNAL sums L1 balances over. Left empty by default: while empty
+	// the SIGNAL fails OPEN (never freezes) because it cannot make a trustworthy
+	// solvency determination from an empty/undercounted address set. The
+	// intended long-term source is the on-chain UTXO registry (contract state
+	// keys "r"/"u-"); decoding it in Go requires the mapping contract's msgp
+	// registry schema, which is not present in this tree — see the marked hook
+	// in solvency_gate.go. Populating this list makes the SIGNAL fully live.
+	BtcVaultAddresses []string `json:"btcVaultAddresses,omitempty"`
 }
 
 // HasZKVerifier returns true if the given chain uses ZK proof verification

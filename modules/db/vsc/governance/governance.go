@@ -41,6 +41,13 @@ type Proposal struct {
 	Recipient string `bson:"recipient,omitempty"`
 	Reason    string `bson:"reason,omitempty"`
 
+	// admit_seat payload (POA). Candidate is the account being voted into the
+	// seat registry; UboId names the beneficial owner behind it, and is part of
+	// the proposal id rather than loose payload so a coalition cannot gather
+	// approvals for one owner and then seat a different one.
+	Candidate string `bson:"candidate,omitempty"`
+	UboId     string `bson:"ubo_id,omitempty"`
+
 	// shared
 	Amount int64 `bson:"amount,omitempty"` // sats
 }
@@ -115,6 +122,14 @@ func (g *governance) SaveProposal(p Proposal) error {
 			"recipient":       p.Recipient,
 			"reason":          p.Reason,
 			"amount":          p.Amount,
+			// admit_seat payload. This $set map is hand-rolled rather than
+			// marshalled from the struct, so a field added to Proposal is NOT
+			// persisted until it is added HERE too — and a silently-dropped
+			// field reads back as its zero value, which for an admission means
+			// seating an empty account. Any future Proposal field must be added
+			// to this map in the same change.
+			"candidate": p.Candidate,
+			"ubo_id":    p.UboId,
 		}},
 		opts)
 	if err := res.Err(); err != nil && err != mongo.ErrNoDocuments {

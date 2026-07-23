@@ -28,6 +28,22 @@ const (
 	// per-tick max-of and per-tick cap.
 	TssReshareExclusionBps = 1000
 
+	// TssKeygenExclusionBps applies once per (witness, key) pair when the
+	// witness is in the elected committee but absent from the canonical
+	// keygen commitment's bitset for that key in the epoch (G15). Under
+	// vault-rotation-v2 the BTC vault key rotates by fresh keygen-per-
+	// generation instead of reshare, so the security-critical new-vault DKG
+	// is the direct analogue of a reshare — skipping it must cost the same.
+	// Strict per-key, like TssReshareExclusionBps.
+	//
+	// TUNABLE: set equal to TssReshareExclusionBps (Tier-A = 1000) because
+	// keygen and reshare are equivalently security-critical (both gate whether
+	// the vault key can be produced at all), and far heavier than sign
+	// non-participation (30) or blame (150), which concern a single session's
+	// liveness rather than the vault's very existence. Re-tune here if the
+	// pendulum tiers are re-calibrated.
+	TssKeygenExclusionBps = 1000
+
 	// TssBlameBps applies once per blame commitment that names this witness
 	// in its bitset (i.e., the witness was a culprit in a session that timed
 	// out or errored, forcing a retry).

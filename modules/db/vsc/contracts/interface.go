@@ -24,6 +24,12 @@ type ContractState interface {
 	a.Plugin
 	IngestOutput(inputArgs IngestOutputArgs)
 	GetLastOutput(contractId string, height uint64) (ContractOutput, error)
+	// GetLastOutputStrict is GetLastOutput but SURFACES the FindOne error instead of
+	// swallowing it, so a consensus-critical caller (#11 bond-lock) can fail-STOP on a
+	// transient per-node infra error rather than fail-open (diverge → fork). A
+	// mongo.ErrNoDocuments error is a DETERMINISTIC absence (no output <= height,
+	// identical on all nodes); any other error is treated as transient.
+	GetLastOutputStrict(contractId string, height uint64) (ContractOutput, error)
 	FindOutputs(id *string, input *string, contract *string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ContractOutput, error)
 }
 

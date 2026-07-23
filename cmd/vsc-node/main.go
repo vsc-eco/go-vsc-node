@@ -25,6 +25,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -98,6 +99,9 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	governanceDb := governance_db.New(vscDb)
+	// POA seat registry — the on-chain allowlist of vetted operator accounts
+	// eligible for election. Inert until the consensus floor reaches 0.7.0.
+	poaSeatsDb := poaseats.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
@@ -203,6 +207,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		governanceDb,
+		poaSeatsDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		wasm,
@@ -219,6 +224,7 @@ func main() {
 		p2p,
 		witnessesDb,
 		electionDb,
+		poaSeatsDb,
 		vscBlocks,
 		balanceDb,
 		da,
@@ -269,6 +275,8 @@ func main() {
 		sysConfig,
 		flatDb,
 		&hiveCreator,
+		contractState,
+		da,
 	)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Complexity: gql.NewComplexityRoot(), Resolvers: &gqlgen.Resolver{
@@ -321,6 +329,7 @@ func main() {
 		balanceDb,
 		rcDb,
 		nonceDb,
+		poaSeatsDb,
 		interestClaims,
 		contractState,
 		tssKeys,

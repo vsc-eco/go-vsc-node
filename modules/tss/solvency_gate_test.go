@@ -1,0 +1,189 @@
+package tss
+
+import (
+	"testing"
+
+	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
+	stateEngine "vsc-node/modules/state-processing"
+)
+
+// fakeSolvencyScheduler is a minimal GetScheduler for the gate tests: the
+// governance FLAG (halted) and the M1.1b contract theft FLAG (theftHalted).
+type fakeSolvencyScheduler struct {
+	halted      bool
+	theftHalted bool
+}
+
+func (f *fakeSolvencyScheduler) GetSchedule(uint64) []stateEngine.WitnessSlot { return nil }
+func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusversion.Version {
+	return consensusversion.Version{}
+}
+func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool { return f.halted }
+func (f *fakeSolvencyScheduler) BtcTheftHalted() bool   { return f.theftHalted }
+
+// TestBtcKeysignFrozen_FlagAndScope covers the deterministic FLAG layer and the
+// BTC-only scoping. The SIGNAL layer stays inert here (MainnetConfig ships an
+// empty BtcVaultAddresses => fail open), so nil contractState/da are never
+// dereferenced — which is exactly the production/test invariant we rely on.
+func TestBtcKeysignFrozen_FlagAndScope(t *testing.T) {
+	sconf := systemconfig.MainnetConfig()
+	btc := sconf.OracleParams().ContractId("BTC")
+	if btc == "" {
+		t.Fatal("expected a mainnet BTC contract id to be configured")
+	}
+	btcKey := btc + "-main"
+	nonBtcKey := "vsc1SomeEthKeyNotBtc-main"
+
+	cases := []struct {
+		name        string
+		halted      bool // M1.1a governance flag
+		theftHalted bool // M1.1b contract theft flag
+		keyId       string
+		want        bool
+	}{
+		{"both flags off, BTC key -> not frozen", false, false, btcKey, false},
+		{"gov flag on, BTC key -> frozen", true, false, btcKey, true},
+		{"gov flag on, non-BTC key -> not frozen (scope)", true, false, nonBtcKey, false},
+		{"gov flag on, empty key -> not frozen", true, false, "", false},
+		{"gov flag on, bare contract id (no -suffix) -> not frozen", true, false, btc, false},
+		// M1.1b: the theft flag freezes independently of the governance flag.
+		{"theft flag on, BTC key -> frozen", false, true, btcKey, true},
+		{"theft flag on, non-BTC key -> not frozen (scope)", false, true, nonBtcKey, false},
+		{"both flags on, BTC key -> frozen", true, true, btcKey, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &TssManager{sconf: sconf, scheduler: &fakeSolvencyScheduler{halted: tc.halted, theftHalted: tc.theftHalted}}
+			if got := mgr.btcKeysignFrozen(tc.keyId); got != tc.want {
+				t.Fatalf("btcKeysignFrozen(%q, halted=%v, theftHalted=%v) = %v, want %v", tc.keyId, tc.halted, tc.theftHalted, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSupplySats(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint64
+		ok   bool
+	}{
+		{"123456", 123456, true},
+		{`"7890"`, 7890, true},
+		{"  42  ", 42, true},
+		{"0", 0, true},
+		{"", 0, false},
+		{"abc", 0, false},
+		{"-5", 0, false},
+		{"1.5", 0, false},
+		{"0x10", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := parseSupplySats([]byte(tc.in))
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("parseSupplySats(%q) = (%d, %v), want (%d, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// flagOnConfig wraps a real SystemConfig, overriding ONLY ConsensusParams so the
+// vault-rotation-v2 flag reads as ACTIVE while OracleParams (the BTC contract id
+// used by isBtcVaultKey) stays real. Embedding the interface gives every other
+// method for free — no 15-method fake.
+type flagOnConfig struct {
+	systemconfig.SystemConfig
+	cp params.ConsensusParams
+}
+
+func (f flagOnConfig) ConsensusParams() params.ConsensusParams { return f.cp }
+
+// TestShouldSkipReshareForVaultRotation pins the load-bearing per-keyId gate-off
+// decision at the tss.go reshare loop (M1.3, U-1): the BTC vault key is skipped
+// ONLY when the rotation flag is active and only at/after the pinned height;
+// every OTHER chain keeps resharing (per-keyId, never loop-level); and the whole
+// thing is INERT (never skips) while the flag is off — the property that lets the
+// binary dark-launch before governance pins an activation height.
+func TestShouldSkipReshareForVaultRotation(t *testing.T) {
+	base := systemconfig.MainnetConfig()
+	btc := base.OracleParams().ContractId("BTC")
+	if btc == "" {
+		t.Fatal("expected a mainnet BTC contract id to be configured")
+	}
+	btcKey := btc + "-main"
+	siblingKey := "vsc1SomeEthKeyNotBtc-main"
+
+	// Flag ON at height 100, keeping real mainnet OracleParams via embedding.
+	cpOn := base.ConsensusParams() // returned by value → safe to mutate our copy
+	cpOn.VaultRotationV2ActivationHeight = 100
+	onCfg := flagOnConfig{SystemConfig: base, cp: cpOn}
+
+	cases := []struct {
+		name  string
+		sconf systemconfig.SystemConfig
+		keyId string
+		bh    uint64
+		want  bool
+	}{
+		// Flag OFF (real MainnetConfig, activation height 0): NEVER skip — inert.
+		{"flag off, BTC key -> never skip (inert)", base, btcKey, 1 << 40, false},
+		{"flag off, sibling key -> never skip", base, siblingKey, 1 << 40, false},
+		// Flag ON: the guard short-circuits below the activation height and for
+		// non-BTC keys (no vault-state read). With nil deps here the retiring set is
+		// empty, so a BTC key that reaches the read is treated as the ACTIVE/only gen
+		// (not superseded) and RESHARES (L9-1) — the superseded-skip discrimination is
+		// covered by TestSkipReshareForSupersededGen below (needs a populated set).
+		{"flag on, below height, BTC key -> guard short-circuits", onCfg, btcKey, 99, false},
+		{"flag on, at height, BTC active/only gen -> reshares (L9-1)", onCfg, btcKey, 100, false},
+		{"flag on, above height, BTC active/only gen -> reshares (L9-1)", onCfg, btcKey, 200, false},
+		{"flag on, sibling key -> keep resharing (per-keyId)", onCfg, siblingKey, 200, false},
+		{"flag on, empty key -> not BTC -> keep", onCfg, "", 200, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &TssManager{sconf: tc.sconf}
+			if got := mgr.shouldSkipReshareForVaultRotation(tc.keyId, tc.bh); got != tc.want {
+				t.Fatalf("shouldSkipReshareForVaultRotation(%q, bh=%d) = %v, want %v", tc.keyId, tc.bh, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSkipReshareForSupersededGen is the L9-1 core: given the shared retiring
+// predicate's KeyIds (superseded = retiring/draining/inactive gens), reshare is
+// skipped IFF the key is one of those — the ACTIVE gen (never in the set) always
+// reshares so its signer set follows committee churn instead of freezing. This is
+// the discrimination the datalayer-backed shouldSkip wraps; the set itself is
+// proven by TestComputeRetiringSignerSet.
+func TestSkipReshareForSupersededGen(t *testing.T) {
+	activeKey := "btcContract-main"    // gen 0, ACTIVE — must keep resharing
+	retiringKey := "btcContract-mainv1" // gen 1, superseded — skip reshare
+	drainingKey := "btcContract-mainv2" // gen 2, superseded — skip reshare
+
+	// Populated set: gens 1 and 2 are superseded (fund-holding retiring/draining/
+	// inactive); the active gen 0 is absent.
+	superseded := map[string]bool{retiringKey: true, drainingKey: true}
+
+	cases := []struct {
+		name  string
+		set   map[string]bool
+		keyId string
+		want  bool
+	}{
+		{"active gen not in superseded set -> reshares (L9-1 no-freeze)", superseded, activeKey, false},
+		{"retiring gen in set -> skip reshare", superseded, retiringKey, true},
+		{"draining gen in set -> skip reshare", superseded, drainingKey, true},
+		// Empty set (no rotation in progress, or a corrupt/absent "v" collapsing the
+		// set): NOTHING is skipped -> everything reshares (fail-SAFE liveness).
+		{"empty set, active gen -> reshares", map[string]bool{}, activeKey, false},
+		{"empty set, would-be superseded gen -> reshares (fail-safe)", map[string]bool{}, retiringKey, false},
+		{"nil set -> reshares (no panic)", nil, retiringKey, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skipReshareForSupersededGen(tc.set, tc.keyId); got != tc.want {
+				t.Fatalf("skipReshareForSupersededGen(%v, %q) = %v, want %v", tc.set, tc.keyId, got, tc.want)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ed25519"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"vsc-node/lib/btcvault"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/vsclog"
@@ -33,6 +35,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
+	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
@@ -87,6 +90,13 @@ type StateEngine struct {
 	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
 	// governance (the handlers no-op when nil).
 	governanceDb governance_db.Governance
+
+	// poaSeats is the POA seat registry (the on-chain allowlist of vetted
+	// operator accounts eligible for election). Nil on paths that do not
+	// process POA — every POA code path checks for nil and no-ops, exactly like
+	// governanceDb above, so a harness that does not wire it keeps pre-POA
+	// behaviour rather than panicking.
+	poaSeats poaseats.PoaSeats
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
@@ -243,6 +253,78 @@ func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
 	}
 }
 
+// vaultCheckSigDigest recomputes the BRK-2 canonical check-signature message M
+// for a BTC-vault keyId, using the generation encoded in the keyId and the
+// key's OWN pubkey. It is the single derivation shared by the enqueue (N-c) and
+// the verify/mark (N-d) so both sites bind identical bytes. Returns (nil, false)
+// unless vault-rotation-v2 is active at bh AND keyId is a BTC-vault key with a
+// valid 33-byte pubkey — the caller then does nothing (fail-safe: no enqueue /
+// no flag, never a wrong one). Deterministic: every input is on-chain
+// (consensus flag, config-derived BTC contract id, committed pubkey), so all
+// honest nodes compute the same M or all skip.
+func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) ([]byte, bool) {
+	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+		return nil, false
+	}
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
+		return nil, false
+	}
+	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+	if !ok {
+		return nil, false
+	}
+	pub, err := hex.DecodeString(pubKeyHex)
+	if err != nil || len(pub) != 33 {
+		return nil, false
+	}
+	return btcvault.CheckSigMessage(keyId, gen, pub), true
+}
+
+// maybeEnqueueVaultCheckSig (BRK-2 / brick council FS3-1) enqueues the canonical
+// check-signature request the moment a v2 BTC-vault key flips created->active.
+// The fresh committee must PRODUCE and on-chain-verify a signature with the new
+// key before the contract's attestPrimaryKey will activate the vault generation
+// — otherwise funds could route into an agreed-but-UNSIGNABLE vault and custody
+// collapses to the single CSV backup key. Deterministic in-ProcessBlock write
+// (all nodes emit the identical tss_requests row at this block); the sign then
+// flows through the EXISTING FindUnsignedRequests -> SignDispatcher ->
+// vsc.tss_sign path, admitted by the S3 scopeCheckSig verdict. No-op
+// (byte-identical) when the rotation flag is off. Fail-safe: a missing enqueue
+// only means the vault never activates (a clean, recoverable freeze), never a
+// wrong activation.
+func (se *StateEngine) maybeEnqueueVaultCheckSig(keyInfo tss_db.TssKey, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyInfo.Id, keyInfo.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if err := se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		KeyId: keyInfo.Id,
+		Msg:   hex.EncodeToString(m),
+	}); err != nil {
+		tssLog.Warn("BRK-2: failed to enqueue vault check-signature", "keyId", keyInfo.Id, "err", err)
+	} else {
+		se.tssLogSync(bh, "BRK-2 vault check-signature enqueued", "keyId", keyInfo.Id)
+	}
+}
+
+// maybeMarkVaultCheckSig (BRK-2) sets SignatureVerified on a BTC-vault key when
+// the just-verified signature is over the canonical check-message M for that key
+// (recomputed from keyId + the key's OWN committed pubkey). Because M is
+// domain-separated it can never equal a real BTC sighash, so a genuine
+// withdrawal/migration signature never trips this — only the deliberate
+// check-sign does. Deterministic (on-chain inputs, recomputed identically on all
+// nodes). No-op when the rotation flag is off or the message is not M.
+func (se *StateEngine) maybeMarkVaultCheckSig(keyId string, key tss_db.TssKey, msg []byte, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyId, key.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if bytes.Equal(msg, m) {
+		se.tssKeys.SetSignatureVerified(keyId)
+	}
+}
+
 //Transaction
 // InputArgs string -->
 // // - Entrypoint
@@ -350,50 +432,63 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 	se.BlockHeight = int(block.BlockNumber)
 	se.refreshChainConsensusCache()
+	// M1.1b: mirror the BTC mapping contract's SPV-proven theft-halt flag ("th") into the
+	// consensus cache, so the TSS keysign gate freezes on a detected drain as cheaply +
+	// robustly as it does on the governance vsc.tss_halt flag. Deterministic + fail-safe;
+	// inert on networks with no BTC contract configured.
+	se.refreshBtcTheftHalt(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
-	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
-		currentEpoch := electionData.Epoch
+	// BRK-5 (brick council FS-1/FS-2): FREEZE the deprecation/retirement clock
+	// while the chain is processing-suspended. A suspend blocks renewKey (a
+	// non-recovery contract op), so deprecating a key it cannot renew forces an
+	// un-curable freeze (a fund-holding gen's key stops signing with no in-suspend
+	// cure); the chain is halted anyway. Deterministic (on-chain suspend flag,
+	// refreshed just above). Resumes normally when the suspend lifts.
+	if !se.chainProcessingSuspended() {
+		if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
+			currentEpoch := electionData.Epoch
 
-		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-			for _, k := range deprecating {
-				k.Status = tss_db.TssKeyDeprecated
-				if tss_db.KeyRetirementEnabled {
-					k.DeprecatedHeight = int64(block.BlockNumber)
+			// Phase 1: deprecate active keys that have reached their expiry epoch.
+			if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+				for _, k := range deprecating {
+					k.Status = tss_db.TssKeyDeprecated
+					if tss_db.KeyRetirementEnabled {
+						k.DeprecatedHeight = int64(block.BlockNumber)
+					}
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
 				}
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key deprecated",
-					"keyId",
-					k.Id,
-					"expiryEpoch",
-					k.ExpiryEpoch,
-					"blockHeight",
-					block.BlockNumber,
-				)
 			}
 		}
-	}
 
-	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
-	if tss_db.KeyRetirementEnabled {
-		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
-			for _, k := range retiring {
-				k.Status = tss_db.TssKeyRetired
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key retired",
-					"keyId",
-					k.Id,
-					"deprecatedHeight",
-					k.DeprecatedHeight,
-					"blockHeight",
-					block.BlockNumber,
-				)
+		// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+		if tss_db.KeyRetirementEnabled {
+			if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+				for _, k := range retiring {
+					k.Status = tss_db.TssKeyRetired
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key retired",
+						"keyId",
+						k.Id,
+						"deprecatedHeight",
+						k.DeprecatedHeight,
+						"blockHeight",
+						block.BlockNumber,
+					)
+				}
 			}
 		}
-	}
+	} // BRK-5: close the processing-suspended key-lifecycle-freeze guard
 
 	blockInfo := struct {
 		BlockHeight uint64
@@ -584,6 +679,40 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
+				// vsc.tss_halt: the governance multisig freezes/unfreezes BTC TSS
+				// keysign issuance (emergency solvency containment, Build Map §5b).
+				// Chain-global deterministic flag — every node converges by processing
+				// this same op. The BTC solvency gate (modules/tss/solvency_gate.go)
+				// reads it before issuing a SignAction. Authority = the gateway/
+				// governance multisig (same gate as safety_slash_reverse / reserve_*).
+				if Id == "vsc.tss_halt" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					var h struct {
+						Active bool   `json:"active"`
+						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+					}
+					if err := json.Unmarshal(cj.Json, &h); err != nil {
+						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
+					} else if se.consensusState == nil {
+						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else {
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetBtcKeysignHalt(context.Background(), h.Active, height); err != nil {
+							// ERROR, not Warn: this node did NOT apply the emergency BTC
+							// keysign halt (write failed) and will keep signing until a
+							// later op succeeds — operators must alert + re-broadcast the
+							// idempotent vsc.tss_halt op (pruned-methodology F1 write-path).
+							log.Error("vsc.tss_halt: SetBtcKeysignHalt FAILED — halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied", "active", h.Active, "keyId", h.KeyId,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
+					}
+				}
+
 				// The witness-vote governance batch (vsc.slash_restore /
 				// vsc.reserve_payout / vsc.reserve_vote) is gated on the CHAIN-ACTIVE
 				// consensus version reaching 0.3.0, resolved from the election active
@@ -615,6 +744,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// electorate, the reserve disburses (capped at its balance).
 					if Id == "vsc.reserve_vote" {
 						se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
+
+					// vsc.admit_vote (POA): a SEATED operator votes a vetted
+					// candidate into the seat registry. Deliberately not
+					// gateway-gated — the electorate is the seated operators
+					// themselves, so any account may broadcast and the handler
+					// decides whether it holds a seat. The extra 0.7.0 check is
+					// what makes this inert until the POA batch activates; the
+					// enclosing 0.3.0 gate is implied by it (consensus 7 >= 3)
+					// and is kept only because this op shares the governance
+					// store and vote engine with the trio above.
+					if Id == "vsc.admit_vote" && se.PoaAdmitVoteActive(blockInfo.BlockHeight) {
+						se.handleAdmitVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
 					}
 				}
 			}
@@ -1325,6 +1467,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Status: tss_db.SignComplete,
 											})
 											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "ecdsa")
+											// BRK-2: if this verified sig is over the canonical
+											// check-message M for this key, mark it signature-verified
+											// (the contract's attestPrimaryKey gate). Domain-separated
+											// M can never equal a real BTC sighash, so a genuine
+											// withdrawal/migration sig never trips this.
+											se.maybeMarkVaultCheckSig(sigPack.KeyId, *keyCache[sigPack.KeyId], msgBytes, txSelf.BlockHeight)
 										}
 									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
 										pk := ed25519.PublicKey(publicKey)
@@ -1482,9 +1630,33 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								}
 								se.tssLogSync(block.BlockNumber, "key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
+								// BRK-2 (check-SIGNATURE-before-activate, deploy
+								// precondition g): the instant a v2 BTC-vault key becomes
+								// node-active, enqueue its canonical check-signature so the
+								// fresh committee must PROVE signability before the contract
+								// activates the vault generation. Inert (no enqueue) until
+								// the rotation flag is pinned. See the helper.
+								se.maybeEnqueueVaultCheckSig(keyInfo, block.BlockNumber)
 							} else if newKey {
 								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
+								// corr-F1 (M1.3 council; rule-zero — don't grant the trust
+								// assumption): a "keygen" commitment must NEVER land on an
+								// already-active keyId. Under vault-rotation-v2 every rotation
+								// mints a FRESH keyId (always status "created" → the newKey
+								// branch above), so a keygen for an ALREADY-active key means
+								// the contract reused a keyId. Taking this else-branch would
+								// bump the epoch while keeping the stale on-chain PublicKey
+								// (old d) — but the DKG has written NEW shares (d') to the
+								// keystore at the bumped epoch. On-chain key and shares then
+								// disagree and the committee can no longer sign the vault's own
+								// funds (split-brain FREEZE). Reject it. A RESHARE legitimately
+								// re-keys an active key WITHOUT changing the pubkey → unaffected.
+								// Gated on the flag → byte-identical when inert (flag 0 default).
+								if commitment.Type == "keygen" && se.sconf != nil && se.sconf.ConsensusParams().VaultRotationV2Enabled(block.BlockNumber) {
+									tssLog.Warn("rejecting keygen commitment for an already-active keyId (v2 rotation must use a fresh keyId; contract keyId-reuse would split-brain the vault)", "keyId", commitment.KeyId, "activeEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+									continue
+								}
 								// S8: never rewind an active key's Epoch.
 								// keyInfo.Epoch drives the on-disk keystore-path
 								// derivation (tss.go: makeKey("key", id, epoch)),
@@ -1495,7 +1667,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									continue
 								}
 								keyInfo.Epoch = commitment.Epoch
-								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								// BRK-8 (brick council FS3-2 / L-1): a RESHARE re-keys an
+								// IN-USE active key — extend its expiry too (like activation
+								// does), so an actively-reshared key does NOT deprecate mid-
+								// life on the fixed epoch clock (the manual-renew time-bomb).
+								// A key that STOPS resharing still deprecates at its last-
+								// reshare expiry. Deterministic (commitment.Epoch + Epochs are
+								// on-chain). reshare only (a v2 keygen for an already-active
+								// keyId is rejected above; a legacy no-expiry key has Epochs==0
+								// → unchanged).
+								if commitment.Type == "reshare" && keyInfo.Epochs > 0 {
+									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
+								}
+								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
@@ -1821,9 +2005,23 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.tssCommitments != nil {
 		from := fromBlock
 		to := tickHeight
+		// G15: keygen-exclusion scoring is GATED on VaultRotationV2Enabled.
+		// When inert (flag 0 — the default on every network today), "keygen"
+		// is NOT added to the query type list, so `commits` is byte-identical
+		// to base and no keygen commitment can enter the reward pipeline. When
+		// active, the BTC vault key rotates by fresh keygen-per-generation
+		// instead of reshare, so skipping the security-critical new-vault DKG
+		// must cost the same as skipping a reshare. Nil-guard sconf so a
+		// minimal (test) engine keeps base behavior.
+		keygenScoringEnabled := se.sconf != nil &&
+			se.sconf.ConsensusParams().VaultRotationV2Enabled(tickHeight)
+		commitTypes := []string{"reshare", "blame", "sign_result"}
+		if keygenScoringEnabled {
+			commitTypes = append(commitTypes, "keygen")
+		}
 		commits, err := se.tssCommitments.FindCommitments(
 			nil,
-			[]string{"reshare", "blame", "sign_result"},
+			commitTypes,
 			nil,
 			&from,
 			&to,
@@ -1842,6 +2040,20 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 				switch c.Type {
 				case "reshare":
 					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "keygen":
+					// G15: only reachable when VaultRotationV2Enabled — "keygen"
+					// is absent from commitTypes otherwise, so this case never
+					// fires while the flag is inert (double gate: query + here).
+					// Keygen carries the same participant bitset as reshare
+					// (KeyGenResult.Serialize → setToCommitment, identical
+					// semantics), so a member absent from the bitset was
+					// excluded from the new-vault DKG and scores like a reshare
+					// exclusion. Same committee source as reshare: the election
+					// elected for the commitment's own epoch.
+					in.Keygens = append(in.Keygens, rewards.KeygenWithCommittee{
 						Commitment:   c,
 						NewCommittee: memberAccounts,
 					})
@@ -2142,6 +2354,44 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range records {
+		// #11 F4 (front-run hold-release): a matured consensus_unstake whose BONDED
+		// account is still a bond-locked retiring committee member is HELD — not paid
+		// out and not marked complete, so it stays pending and is re-attempted next
+		// slot; it releases automatically once the member's generation drains (it
+		// leaves the fund-holding set). The funds are DEFERRED, never lost — this
+		// closes the front-run where a member unstakes just before its gen goes
+		// retiring (its bond is already debited, but it still holds the key's TSS
+		// share via V-A eligibility, so holding the payout keeps the pull to finish
+		// the migration). Consensus-safe: IsBondLockedRetiringMember is the SAME
+		// fail-stop predicate this slot already uses (council F2), so every node holds
+		// or releases the identical set. INERT when vault-rotation-v2 is off (returns
+		// false → normal release). The bonded account is From (carried in Params by
+		// the unstake action); the record's To is only the payout destination. A
+		// pre-this-change record has no "from" → treated as not-locked (inert).
+		if from, ok := record.Params["from"].(string); ok && from != "" &&
+			se.IsBondLockedRetiringMember(from, endBlock) {
+			continue
+		}
+
+		// POA collateral exit-halt (B1), same hold-don't-lose shape as the
+		// retiring-member lock directly above.
+		//
+		// THIS SITE IS WHAT MAKES THE HALT REAL. The submission-time check alone
+		// is bypassable by ordering: submit the unstake while still comfortably
+		// seated, then leave the set and let the 5-epoch maturity elapse — the
+		// bond would pay out on schedule with no halt ever applied, because the
+		// halt did not exist at submission time. Re-evaluating at RELEASE time
+		// closes that, and it is why the two enforcement points are not
+		// redundant.
+		//
+		// The payout is HELD (stays pending, retried next slot), never dropped,
+		// and releases automatically once the exit-halt expires. INERT below
+		// consensus 0.7.0 and for accounts with no seat.
+		if from, ok := record.Params["from"].(string); ok && from != "" &&
+			se.IsPoaExitHalted(from, endBlock) {
+			continue
+		}
+
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
@@ -2703,6 +2953,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	governanceDb governance_db.Governance,
+	poaSeatsDb poaseats.PoaSeats,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
@@ -2758,6 +3009,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
 		governanceDb:   governanceDb,
+		poaSeats:       poaSeatsDb,
 
 		consensusState:   consensusStateDb,
 		consensusRuntime: NewConsensusRuntime(),
