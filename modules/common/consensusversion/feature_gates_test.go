@@ -130,9 +130,13 @@ func TestV0_5_0Gates(t *testing.T) {
 		}
 	}
 
-	// The shipped binary must run the version it implements, so the floor can rise.
-	if RunningVersion().Cmp(V0_5_0) != 0 {
-		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.5.0 gates)",
+	// The shipped binary must be able to honor the v0.5.0 batch, so the floor can
+	// rise to it. This is a >= check, not equality: RunningVersion tracks the
+	// HIGHEST shipped batch, which is now 0.7.0 (POA). The exact-equality tripwire
+	// — "the binary runs the version it implements" — lives with that highest
+	// batch, in poa_gates_test.go (TestRunningVersionImplementsPoa).
+	if !RunningVersion().MeetsConsensusMin(V0_5_0) {
+		t.Errorf("RunningVersion() = %s, want >= %s (the shipped binary must honor the v0.5.0 gates)",
 			RunningVersion().Format(), V0_5_0.Format())
 	}
 }

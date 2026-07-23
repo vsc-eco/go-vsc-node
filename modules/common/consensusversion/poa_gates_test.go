@@ -109,3 +109,17 @@ func TestPoaVersionLineIsDistinct(t *testing.T) {
 			V0_7_0.Consensus)
 	}
 }
+
+// The shipped binary must announce the highest batch it implements, or the
+// election floor can never rise to activate it: a witness whose announced
+// version is below the pinned floor is deleted from the committee
+// (election-proposer.go, PinnedVersionFloor filter), so a floor rise to 0.7.0
+// while the binary still announces 0.3.0 would empty the committee. POA is the
+// highest batch now, so RunningVersion must be 0.7.0. Bump currentConsensus in
+// version.go in the SAME commit as any change here.
+func TestRunningVersionImplementsPoa(t *testing.T) {
+	if RunningVersion().Cmp(V0_7_0) != 0 {
+		t.Errorf("RunningVersion() = %s, want %s (bump currentConsensus in version.go when shipping the POA batch)",
+			RunningVersion().Format(), V0_7_0.Format())
+	}
+}

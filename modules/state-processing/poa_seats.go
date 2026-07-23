@@ -10,6 +10,8 @@ import (
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/witnesses"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // POA seat maintenance — the consensus point.
@@ -230,14 +232,34 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 	// (GetWitnessesAtBlockHeight + EnabledOnly, deterministic and freshness-
 	// filtered), so if the operator can be put into the next committee, the bond
 	// is held. This is a pure function of on-chain state at `height`.
+	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+
 	if se.isElectableWitness(account, height) {
 		return true
 	}
 
-	// From here the operator is NOT currently electable (witness disabled or
-	// stale) — it cannot be placed in a future committee, so it is genuinely
-	// winding down and the bond releases on the clock.
-	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	// ★ RG-1c CLOSE (the disable-in-the-gap variant). isElectableWitness samples
+	// the CURRENT candidate set, but an attacker can be electable at the pending
+	// election's GENERATION height and disable its witness before UNSTAKING, so a
+	// point-in-time "electable now" check reads false while it is about to be
+	// seated from the frozen generation membership.
+	//
+	// The fix does not need to know the (off-chain) generation membership: the
+	// generation→ratification window is a handful of blocks, while the halt
+	// window is ~3 days. So if the account has had ANY witness activity — enabled
+	// OR just-disabled — within the last `window` blocks, an election it was in
+	// may still be in flight, and the bond is held. Only once it has been
+	// witness-silent for a FULL window (no announcement activity) is it provable
+	// that no in-flight election can seat it, and the seat clock may govern
+	// release. `window` (>= the announcement-freshness horizon on mainnet) is far
+	// larger than any generation→ratification gap, so this leaves no timing seam.
+	if se.hadRecentWitnessActivity(account, height, window) {
+		return true
+	}
+
+	// From here the operator has been provably non-electable for a full window —
+	// it cannot be placed in any committee, in-flight or future — so it is
+	// genuinely wound down and the bond releases on the seat clock.
 
 	if seat.LastSeatedHeight == 0 {
 		// Never seated AND no longer electable → release after `window` measured
@@ -297,11 +319,41 @@ func (se *StateEngine) isElectableWitness(account string, height uint64) bool {
 	return false
 }
 
+// hadRecentWitnessActivity reports whether account made ANY witness announcement
+// (enabled or disabled) within the last `window` blocks. A recently-disabled
+// witness may still be a member of an in-flight election (decided at generation,
+// not yet ratified), so its bond must stay held until the account has been
+// witness-silent for a full window — long enough that any such election has
+// ratified. Fail-CLOSED (nil store or read error → true → hold).
+func (se *StateEngine) hadRecentWitnessActivity(account string, height, window uint64) bool {
+	if se.witnessDb == nil {
+		return true
+	}
+	h := height
+	w, err := se.witnessDb.GetWitnessAtHeight(poaseats.NormalizeAccount(account), &h)
+	if err != nil {
+		// A genuine "no announcement" (ErrNoDocuments) means the account has
+		// never been a witness → not electable, no in-flight election. Any other
+		// error is a transient read → fail closed.
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false
+		}
+		log.Error("poa exit-halt: witness-activity read failed; HOLDING (fail-closed)",
+			"account", account, "height", height, "err", err)
+		return true
+	}
+	if w == nil {
+		return false
+	}
+	// w.Height < height (GetWitnessAtHeight filters height<bh), so no underflow.
+	return height-w.Height < window
+}
+
 // PoaExitHaltReleaseHeight returns the height at which an account's exit-halt
 // lifts, and whether a fixed release height exists. It mirrors IsPoaExitHalted:
-// while the operator is still an electable witness there is NO fixed release
-// (the hold lasts until it stops being electable), so it returns armed=false and
-// the caller phrases the refusal accordingly.
+// while the operator is still electable — currently, or via recent witness
+// activity that may leave an election in flight — there is NO fixed release, so
+// it returns armed=false and the caller phrases the refusal accordingly.
 func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool) {
 	if se.poaSeats == nil || se.sconf == nil {
 		return 0, false
@@ -310,10 +362,10 @@ func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (
 	if err != nil || !found {
 		return 0, false
 	}
-	if se.isElectableWitness(account, height) {
-		return 0, false // held while electable — no fixed release height
-	}
 	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	if se.isElectableWitness(account, height) || se.hadRecentWitnessActivity(account, height, window) {
+		return 0, false // held while electable / recently active — no fixed release
+	}
 	if seat.LastSeatedHeight == 0 {
 		return seat.AdmittedHeight + window, true
 	}
