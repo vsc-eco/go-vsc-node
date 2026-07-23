@@ -144,21 +144,32 @@ func (f *fakeSeats) seed(account, ubo string, admitted, seated uint64) {
 type fakeWitnesses struct {
 	fakePlugin
 	seats    *fakeSeats
-	disabled map[string]bool
+	disabled map[string]uint64 // acct -> the height it disabled its witness (0 = active)
 }
 
 func newFakeWitnesses(seats *fakeSeats) *fakeWitnesses {
-	return &fakeWitnesses{seats: seats, disabled: map[string]bool{}}
+	return &fakeWitnesses{seats: seats, disabled: map[string]uint64{}}
 }
-func (f *fakeWitnesses) disable(acct string) { f.disabled[poaseats.NormalizeAccount(acct)] = true }
+
+// disable records that acct turned its witness off at height dh (a dated
+// announcement, which is what the exit-halt's recent-activity check reads).
+func (f *fakeWitnesses) disable(acct string, dh uint64) {
+	f.disabled[poaseats.NormalizeAccount(acct)] = dh
+}
+
+func (f *fakeWitnesses) disabledAt(acct string) (uint64, bool) {
+	dh, ok := f.disabled[poaseats.NormalizeAccount(acct)]
+	return dh, ok
+}
 
 func (f *fakeWitnesses) GetWitnessesAtBlockHeight(bh uint64, _ ...witnesses.SearchOption) ([]witnesses.Witness, error) {
 	out := []witnesses.Witness{}
 	for acct := range f.seats.seats {
-		if f.disabled[poaseats.NormalizeAccount(acct)] {
+		// Electable (enabled) unless disabled at or before bh.
+		if dh, ok := f.disabledAt(acct); ok && dh <= bh {
 			continue
 		}
-		out = append(out, witnesses.Witness{Account: acct, Enabled: true})
+		out = append(out, witnesses.Witness{Account: acct, Enabled: true, Height: 1})
 	}
 	return out, nil
 }
@@ -168,8 +179,17 @@ func (f *fakeWitnesses) GetLastestWitnesses(_ ...witnesses.SearchOption) ([]witn
 func (f *fakeWitnesses) GetWitnessesByPeerId(_ []string, _ ...witnesses.SearchOption) ([]witnesses.Witness, error) {
 	return nil, nil
 }
-func (f *fakeWitnesses) GetWitnessAtHeight(account string, _ *uint64) (*witnesses.Witness, error) {
-	return nil, nil
+func (f *fakeWitnesses) GetWitnessAtHeight(account string, bh *uint64) (*witnesses.Witness, error) {
+	acct := poaseats.NormalizeAccount(account)
+	if _, held := f.seats.seats[acct]; !held {
+		return nil, nil // never a witness
+	}
+	if dh, ok := f.disabledAt(acct); ok && (bh == nil || dh < *bh) {
+		// Latest announcement is the disable, dated at dh.
+		return &witnesses.Witness{Account: acct, Enabled: false, Height: dh}, nil
+	}
+	// Active: an enabled announcement dated long ago (height 1).
+	return &witnesses.Witness{Account: acct, Enabled: true, Height: 1}, nil
 }
 func (f *fakeWitnesses) StoreNodeAnnouncement(string) error                    { return nil }
 func (f *fakeWitnesses) SetWitnessUpdate(witnesses.SetWitnessUpdateType) error { return nil }
@@ -489,11 +509,11 @@ func TestExitHaltRunsForTheConfiguredWindowThenReleases(t *testing.T) {
 	if err := seats.SetExit("alice", 500); err != nil {
 		t.Fatal(err)
 	}
-	// She has WOUND DOWN: disabled her witness, so she can no longer be elected
-	// and the release clock governs. (While she remains an electable witness the
-	// bond is held indefinitely — see TestExitHaltHoldsAnElectableWitness.)
-	wits.disable("alice")
-	release := 500 + testHalt
+	// She wound down EARLY (disabled her witness at 300), so by the time the seat
+	// clock (exit 500 + window) governs, her recent-witness-activity hold has long
+	// since expired and the exit clock is what releases her.
+	wits.disable("alice", 300)
+	release := 500 + testHalt // seat-clock release (exit + window), the later of the two
 
 	for _, h := range []uint64{500, 501, release - 1} {
 		if !se.IsPoaExitHalted("alice", h) {
@@ -506,7 +526,9 @@ func TestExitHaltRunsForTheConfiguredWindowThenReleases(t *testing.T) {
 				h, release)
 		}
 	}
-	got, armed := se.PoaExitHaltReleaseHeight("alice", 500)
+	// In [disable+window, exit+window) she is held on the seat clock with a fixed
+	// release height the refusal message can quote.
+	got, armed := se.PoaExitHaltReleaseHeight("alice", 460)
 	if !armed || got != release {
 		t.Fatalf("release height = %d (armed=%v), want %d — the refusal message would quote the wrong height", got, armed, release)
 	}
@@ -543,17 +565,19 @@ func TestExitHaltTerminatesOnlyWhenNoLongerElectable(t *testing.T) {
 	if !se.IsPoaExitHalted("bob", 200) {
 		t.Fatal("bond released the instant bob left — the steal-and-run escape")
 	}
-	// ★ F1: even AFTER the exit window, while bob remains electable the bond is
-	// held — he could be re-seated at any election, so it must stay slashable.
+	// ★ F1: even long AFTER the exit window, while bob remains electable the bond
+	// is held — he could be re-seated at any election, so it must stay slashable.
 	if !se.IsPoaExitHalted("bob", 200+testHalt+10_000) {
 		t.Fatal("bond released while bob is still an electable witness — the re-election gap (F1) is open")
 	}
-	// bob genuinely winds down: disables his witness. Now the clock governs.
-	wits.disable("bob")
-	if !se.IsPoaExitHalted("bob", 200+testHalt-1) {
-		t.Fatal("bond released before the window after exit")
+	// bob genuinely winds down: disables his witness at 10400. Release is a window
+	// after his LAST witness activity (RG-1c: a recently-disabled witness may
+	// still have an in-flight election), i.e. 10400 + window.
+	wits.disable("bob", 10_400)
+	if !se.IsPoaExitHalted("bob", 10_400+testHalt-1) {
+		t.Fatal("bond released before a full window after bob's last witness activity")
 	}
-	if se.IsPoaExitHalted("bob", 200+testHalt) {
+	if se.IsPoaExitHalted("bob", 10_400+testHalt) {
 		t.Fatal("bond never releases even after winding down + full window — a seizure, not a delay")
 	}
 }
@@ -570,9 +594,10 @@ func TestReEntryDoesNotShortenTheHalt(t *testing.T) {
 	if !se.IsPoaExitHalted("bob", 400) {
 		t.Fatal("bond released while bob is back in the set — re-entering shortened the halt instead of re-arming it")
 	}
-	// Leaving again and winding down starts a fresh window from the NEW exit.
+	// Leaving again and winding down (disable at 500) starts a fresh window from
+	// the last witness activity.
 	se.applyPoaSeatMaintenance(ratified(13, "alice", "carol"), nil, 500)
-	wits.disable("bob")
+	wits.disable("bob", 500)
 	if !se.IsPoaExitHalted("bob", 500+testHalt-1) {
 		t.Fatal("second window not enforced")
 	}
@@ -597,9 +622,33 @@ func TestExitHaltHoldsAnElectableWitnessAfterWindowElapsed(t *testing.T) {
 	}
 }
 
+// ★ THE RG-1c REGRESSION GUARD (disable-in-the-gap): a seat that was seated,
+// exited, and whose seat-clock window has fully ELAPSED, but which DISABLED its
+// witness only recently, must remain held — the recent disable means it may be a
+// member of an in-flight election (decided at generation, not yet ratified). The
+// electability-only fix (44db7185) released it; the recent-witness-activity guard
+// closes it.
+func TestRG1c_ExitedElapsedButRecentlyDisabledIsHeld(t *testing.T) {
+	se, seats, wits := poaEnv(t, 7)
+	seats.seed("alice", "ubo-a", 10, 100) // seated
+	_ = seats.SetExit("alice", 200)       // exited at 200; seat clock ends at 320
+	// The attacker was electable at the pending election's generation and disables
+	// only now, at 10000 — long after the seat clock (320) would have released.
+	wits.disable("alice", 10_000)
+	// Just after disabling, within a window: HELD, despite the seat clock being
+	// long expired.
+	if !se.IsPoaExitHalted("alice", 10_050) {
+		t.Fatal("RG-1c REGRESSION: an exited-elapsed seat that just disabled its witness is not held — it can unstake in the generation→ratification gap and drain the slashable pool while being seated from the frozen generation membership")
+	}
+	// A full window after the last witness activity, it finally releases.
+	if se.IsPoaExitHalted("alice", 10_000+testHalt) {
+		t.Fatal("bond never releases even a full window after the last witness activity")
+	}
+}
+
 // The bond of a genuinely never-serving admitted operator MUST have a release
-// path (the F2 freeze-forever fix): once it disables its witness (not electable),
-// its bond releases a window after admission.
+// path (the F2 freeze-forever fix): once it disables its witness (not electable)
+// and a full window passes with no witness activity, its bond releases.
 func TestNeverSeatedSeatReleasesAfterDisablingWitness(t *testing.T) {
 	se, seats, wits := poaEnv(t, 7)
 	seats.seed("alice", "ubo-a", 100, 0) // admitted at 100, never seated
@@ -608,12 +657,13 @@ func TestNeverSeatedSeatReleasesAfterDisablingWitness(t *testing.T) {
 	if !se.IsPoaExitHalted("alice", 150) {
 		t.Fatal("admitted electable seat not held — RG-1 first-election gap open")
 	}
-	// Winds down (never served): disables witness. Releases a window after admission.
-	wits.disable("alice")
-	if !se.IsPoaExitHalted("alice", 100+testHalt-1) {
-		t.Fatal("released before the window after admission")
+	// Winds down (never served): disables witness at 200. Releases a window after
+	// its last witness activity (200 + window).
+	wits.disable("alice", 200)
+	if !se.IsPoaExitHalted("alice", 200+testHalt-1) {
+		t.Fatal("released before a full window after the last witness activity")
 	}
-	if se.IsPoaExitHalted("alice", 100+testHalt) {
+	if se.IsPoaExitHalted("alice", 200+testHalt) {
 		t.Fatal("F2 REGRESSION: a never-served admitted seat that disabled its witness is STILL held — the bond is frozen forever with no release path")
 	}
 }

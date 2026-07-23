@@ -77,9 +77,19 @@ import (
 //     unchanged. Below the line all three behaviors are inert and the legacy
 //     hive_consensus-holder paths run byte-identically, so old and new binaries
 //     interoperate until activation.
+//   - 0.7.0 — the Consensus 5→7 bump gates the POA ADMISSION batch, all activated
+//     together when the election floor reaches 0.7.0 (consensusversion.V0_7_0): the
+//     seat-registry gate on candidacy, vsc.admit_vote, flat seat-weight, the churn
+//     cap, and the collateral exit-halt. Skipping 0.6.0 is deliberate: that line is
+//     reserved for feat/vault-protection's batch, so 0.7.0 is the first line free
+//     across every branch (see feature_gates.go V0_7_0). Reusing a taken line would
+//     mean one floor rise silently activates two unrelated batches at once — the
+//     exact coordinated-activation property this mechanism exists to provide.
+//     Until 0.7.0 is chain-active every POA rule is inert and behaviour stays
+//     byte-identical, so old and new binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 5
+	currentConsensus    uint64 = 7
 	currentNonConsensus uint64 = 0
 )
 
