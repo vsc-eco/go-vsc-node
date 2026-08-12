@@ -724,9 +724,9 @@ func TestNestedArrayStructure(t *testing.T) {
 	// clear existing data
 	assert.NoError(t, mockHiveBlocks.ClearBlocks())
 
-	// a dummy hiveblock that has a nested array structure that
-	// should fail when stored in mongoDB norally, BUT, with our
-	// conversion function, this should now work
+	// a dummy hiveblock that has a nested array structure (e.g. custom_json
+	// payloads with arrays of arrays). Blocks are stored and retrieved as
+	// plain BSON, so the round trip must preserve the nested arrays.
 	originalBlock := hive_blocks.HiveBlock{
 		BlockNumber: 123,
 		BlockID:     "some-block-id-123",
@@ -763,7 +763,8 @@ func TestNestedArrayStructure(t *testing.T) {
 
 	// compare the original and fetched blocks
 	//
-	// the reason we have to do this is because we store it internally in a different format so we
-	// want to ensure that our retrieval and conversion function is working correctly
+	// the reason we have to do this is because we retrieve blocks via the
+	// collection read path, so we want to ensure the round trip preserves
+	// nested array structures
 	assert.Equal(t, originalBlock, fetchedBlocks[0])
 }

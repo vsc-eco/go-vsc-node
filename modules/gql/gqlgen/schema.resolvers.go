@@ -333,7 +333,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 		return nil, err
 	}
 
-	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -1181,6 +1181,31 @@ func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions
 // RcLimit is the resolver for the rc_limit field.
 func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.RcLimit), nil
+}
+
+// Ledger is the resolver for the ledger field. The ledger events were removed
+// from the transaction_pool document (redundant with the ledger collection);
+// they are resolved from the ledger collection by tx id instead. Note: the
+// method name shadows the resolver struct's Ledger field, hence r.Resolver.Ledger.
+func (r *transactionRecordResolver) Ledger(ctx context.Context, obj *transactions.TransactionRecord) ([]ledgerSystem.OpLogEvent, error) {
+	lrs, err := r.Resolver.Ledger.GetLedgersByTxId(obj.Id)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]ledgerSystem.OpLogEvent, len(lrs))
+	for i, lr := range lrs {
+		events[i] = ledgerSystem.OpLogEvent{
+			Id:          lr.Id,
+			To:          lr.Owner,
+			From:        lr.From,
+			Amount:      lr.Amount,
+			Asset:       lr.Asset,
+			Memo:        "",
+			Type:        lr.Type,
+			BlockHeight: lr.BlockHeight,
+		}
+	}
+	return events, nil
 }
 
 // LedgerActions is the resolver for the ledger_actions field.
