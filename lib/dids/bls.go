@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"vsc-node/lib/lru"
 	"vsc-node/lib/vsclog"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -19,6 +20,15 @@ import (
 )
 
 var log = vsclog.Module("dids")
+
+// pubkeyCache memoizes DID → deserialized BLS pubkey so repeated verifications
+// (every produce_block / election result / PoP over the same committee keyset)
+// skip the base58 decode + G1 point decompression (~50µs+ each). Pure
+// performance cache: Identifier() returns a copy of the cached key, so callers
+// can never observe or corrupt shared state, and malformed DIDs are never
+// stored (they keep the nil-return decode path). Capacity covers many epochs of
+// committee churn; an eviction only costs one re-deserialization.
+var pubkeyCache = lru.New[BlsDID, *BlsPubKey](4096)
 
 // ===== constants =====
 
@@ -111,6 +121,14 @@ func (d BlsDID) String() string {
 
 // returns the key part of the DID ("did:key:z<what_is_returned>")
 func (d BlsDID) Identifier() *BlsPubKey {
+	// Fast path: return a copy of a previously deserialized key. Malformed
+	// DIDs are never stored (only successful deserializations are cached), so
+	// the nil-return decode path below is unchanged.
+	if pk, ok := pubkeyCache.Get(d); ok {
+		pkCopy := *pk
+		return &pkCopy
+	}
+
 	// review2 MEDIUM #100: DIDs come from untrusted on-chain data (election
 	// keys, tss commitments). Guard every slice/array conversion so a
 	// malformed DID returns nil instead of panicking (slice bounds out of
@@ -143,8 +161,12 @@ func (d BlsDID) Identifier() *BlsPubKey {
 		return nil
 	}
 
-	// return uncompressed pub key
-	return pubKey
+	pubkeyCache.Put(d, pubKey)
+
+	// return uncompressed pub key (a copy — never hand out the cached
+	// instance, so a caller cannot corrupt it)
+	pkCopy := *pubKey
+	return &pkCopy
 }
 
 // verifies if the sig is valid for the block (based on its CID)
@@ -753,9 +775,8 @@ func (b *BlsCircuit) Verify() (bool, []BlsDID, error) {
 	// 	return false, nil, fmt.Errorf("failed to get aggregated signature: %w", err)
 	// }
 
-	_, err := b.BitVector()
-	if err != nil {
-		return false, nil, fmt.Errorf("failed to get bit vector: %w", err)
+	if b.bitVector == nil {
+		return false, nil, fmt.Errorf("failed to get bit vector: bit vector is nil")
 	}
 
 	// decode the sig from base64

@@ -974,7 +974,7 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ValidateDetailed mirrors Validate but exposes the skip-vs-invalid
 // distinction needed by the principal-slash detectors.
 func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcome {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.electionAtHeight(t.Self.BlockHeight)
 	if err != nil {
 		// Election lookup failure is environmental, not fault of producer.
 		return BlockValidationOutcome{Kind: BlockSkip, Reason: "election lookup failed: " + err.Error()}
