@@ -10,6 +10,13 @@ type Ledger interface {
 	GetLedgerAfterHeight(account string, blockHeight uint64, asset string, limit *int64) (*[]LedgerRecord, error)
 	GetLedgerRange(account string, start uint64, end uint64, asset string, options ...LedgerOptions) (*[]LedgerRecord, error)
 	GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
+	// GetLedgersByTxId returns every ledger record produced by the given
+	// transaction, ordered by block height. Ledger record ids are
+	// MakeTxId(txId, opIdx) with optional type suffixes (#in/#out/...), so a
+	// prefix match on the tx id (anchored regex, served by the (id) index)
+	// recovers the full event set. Mirrors GetActionsByTxId's id-prefix
+	// pattern.
+	GetLedgersByTxId(txId string) ([]LedgerRecord, error)
 	GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]LedgerRecord, error)
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
@@ -31,6 +38,7 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
+	UpdateBalanceRecords(records []BalanceRecord) error
 	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 

@@ -3,6 +3,7 @@ package ledger_db
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"vsc-node/modules/common"
 	"vsc-node/modules/db"
@@ -244,6 +245,32 @@ func (ledger *ledger) GetLedgerRecordsByType(types []string, toBlock uint64) ([]
 	return results, nil
 }
 
+// GetLedgersByTxId returns every ledger record produced by the given
+// transaction. Record ids are MakeTxId(txId, opIdx) with optional type
+// suffixes (#in/#out/#edge/...), so a prefix match on the tx id recovers the
+// full event set. Anchored regex → served by the (id) index.
+func (ledger *ledger) GetLedgersByTxId(txId string) ([]LedgerRecord, error) {
+	opts := options.Find().SetSort(bson.M{"block_height": 1})
+	findResult, err := ledger.Find(context.Background(), bson.M{
+		"id": bson.M{
+			"$regex": "^" + regexp.QuoteMeta(txId),
+		},
+	}, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]LedgerRecord, 0)
+	for findResult.Next(context.Background()) {
+		ledRes := LedgerRecord{}
+		if decErr := findResult.Decode(&ledRes); decErr != nil {
+			continue
+		}
+		results = append(results, ledRes)
+	}
+	return results, findResult.Err()
+}
+
 func (ledger *ledger) GetLedgersTsRange(
 	account *string,
 	txId *string,
@@ -440,6 +467,27 @@ func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 		return err
 	}
 	return nil
+}
+
+// UpdateBalanceRecords persists a batch of balance snapshots in a single round
+// trip (upserts keyed on (account, block_height)). Used by the per-slot balance
+// fold so N accounts cost one write instead of N.
+func (balances *balances) UpdateBalanceRecords(records []BalanceRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, len(records))
+	for i, record := range records {
+		models[i] = mongo.NewUpdateOneModel().
+			SetFilter(bson.M{
+				"account":      record.Account,
+				"block_height": record.BlockHeight,
+			}).
+			SetUpdate(bson.M{"$set": record}).
+			SetUpsert(true)
+	}
+	_, err := balances.BulkWrite(context.Background(), models)
+	return err
 }
 
 func (balances *balances) GetAll(blockHeight uint64) ([]BalanceRecord, error) {
@@ -844,4 +892,17 @@ func (ic *interestClaims) FindClaims(fromBlock *uint64, toBlock *uint64, offset 
 
 func NewInterestClaimDb(d *vsc.VscDb) InterestClaims {
 	return &interestClaims{db.NewCollection(d.DbInstance, "ledger_claims")}
+}
+
+// Init creates the block_height index backing GetLastClaim
+// ({block_height $lt} sorted desc) — previously unindexed, so every claim
+// lookup (once per account per slot in UpdateBalances) was a full
+// collection scan.
+func (ic *interestClaims) Init() error {
+	if err := ic.Collection.Init(); err != nil {
+		return err
+	}
+	return ic.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "block_height", Value: 1}},
+	})
 }

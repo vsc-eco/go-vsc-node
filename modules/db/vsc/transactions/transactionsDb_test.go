@@ -97,7 +97,7 @@ func TestInboundContractTransferVisibleToRecipient(t *testing.T) {
 
 	// Recipient (in payload, NOT in required_auths) must see the tx.
 	acct := "hive:v4vapp-test"
-	res, err := tx.FindTransactions(nil, nil, &acct, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	res, err := tx.FindTransactions(nil, nil, &acct, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 1)
 	if len(res) == 1 {
@@ -106,13 +106,13 @@ func TestInboundContractTransferVisibleToRecipient(t *testing.T) {
 
 	// Sender still finds it via required_auths (no regression).
 	sender := "hive:devser.v4vapp"
-	res, err = tx.FindTransactions(nil, nil, &sender, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	res, err = tx.FindTransactions(nil, nil, &sender, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 1)
 
 	// Unrelated account sees nothing.
 	other := "hive:nobody"
-	res, err = tx.FindTransactions(nil, nil, &other, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	res, err = tx.FindTransactions(nil, nil, &other, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 0)
 }
@@ -145,7 +145,7 @@ func TestLegacyInboundTransferVisibleViaRegexFallback(t *testing.T) {
 
 	// Recipient must still be found, via the regex fallback.
 	acct := "hive:v4vapp-test"
-	res, err := tx.FindTransactions(nil, nil, &acct, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	res, err := tx.FindTransactions(nil, nil, &acct, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 1)
 	if len(res) == 1 {
@@ -154,7 +154,7 @@ func TestLegacyInboundTransferVisibleViaRegexFallback(t *testing.T) {
 
 	// Prefix safety: a longer account name must not match this doc.
 	bobby := "hive:v4vapp-testxyz"
-	res, err = tx.FindTransactions(nil, nil, &bobby, nil, nil, nil, nil, nil, nil, nil, 0, 50)
+	res, err = tx.FindTransactions(nil, nil, &bobby, nil, nil, nil, nil, nil, 0, 50)
 	assert.NoError(t, err)
 	assert.Len(t, res, 0)
 }
