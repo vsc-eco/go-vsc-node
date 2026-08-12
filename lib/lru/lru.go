@@ -14,6 +14,7 @@ type Cache[K comparable, V any] struct {
 	capacity int
 	items    map[K]*list.Element
 	order    *list.List
+	onEvict  func(K, V)
 }
 
 type entry[K comparable, V any] struct {
@@ -24,6 +25,16 @@ type entry[K comparable, V any] struct {
 // New creates an LRU cache with the given capacity.
 // Panics if capacity <= 0.
 func New[K comparable, V any](capacity int) *Cache[K, V] {
+	return NewEvict[K, V](capacity, nil)
+}
+
+// NewEvict creates an LRU cache with the given capacity and an optional
+// eviction hook. The hook is invoked with the key and value of an entry when
+// it is evicted to make room for a new one, allowing callers to release
+// resources owned by the value (e.g. C-backed handles). It runs while the
+// cache's internal lock is held and must not call back into the cache.
+// Panics if capacity <= 0.
+func NewEvict[K comparable, V any](capacity int, onEvict func(K, V)) *Cache[K, V] {
 	if capacity <= 0 {
 		panic("lru: capacity must be > 0")
 	}
@@ -31,6 +42,7 @@ func New[K comparable, V any](capacity int) *Cache[K, V] {
 		capacity: capacity,
 		items:    make(map[K]*list.Element),
 		order:    list.New(),
+		onEvict:  onEvict,
 	}
 }
 
@@ -79,4 +91,7 @@ func (c *Cache[K, V]) evictOldest() {
 	c.order.Remove(elem)
 	kv := elem.Value.(*entry[K, V])
 	delete(c.items, kv.key)
+	if c.onEvict != nil {
+		c.onEvict(kv.key, kv.value)
+	}
 }
