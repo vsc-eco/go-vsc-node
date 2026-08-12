@@ -22,8 +22,9 @@ import (
 // Differential: on the #170 baseline the bogus-asset stake passes the
 // (missing) asset check and the ledger stakes HIVE → Success:true (RED).
 // On fix/review2 it is rejected with "Invalid asset" before the ledger is
-// touched → Success:false (GREEN). An asset-omitted stake still succeeds
-// on both arms (sanity — guard not too strict).
+// touched → Success:false (GREEN). An asset-omitted stake fails at the
+// amount parse ("unknown asset") on both arms — the #45 guard only rejects
+// non-hive/non-empty assets, it never makes an otherwise-invalid stake pass.
 func TestReview2ConsensusStakeAssetValidated(t *testing.T) {
 	te := newTestEnv() // wired StateEngine; MocknetConfig NetId = vsc-mocknet
 
@@ -71,8 +72,11 @@ func TestReview2ConsensusStakeAssetValidated(t *testing.T) {
 	assert.Equal(t, "Invalid asset", resU.Ret,
 		"review2 #45: baseline reaches ledger and returns 'insufficient balance' instead")
 
-	// Sanity: asset-omitted stake (the only shape the crafter emits) still
-	// reaches the ledger and succeeds — identical on both arms.
+	// Sanity: an asset-omitted stake is rejected by the amount parse — an
+	// empty asset is not a known asset — NOT by the #45 asset guard. This is
+	// the historical behavior (ParseAssetAmount before the #170 asset check)
+	// and the guard does not widen it: the guard's empty-default allowance
+	// only means it never rejects the empty case itself.
 	okStake := &stateEngine.TxConsensusStake{
 		Self:   self,
 		From:   "hive:alice",
@@ -81,8 +85,10 @@ func TestReview2ConsensusStakeAssetValidated(t *testing.T) {
 		NetId:  "vsc-mocknet",
 	}
 	resOk := okStake.ExecuteTx(te.SE, newSession(), nil, nil, "")
-	assert.True(t, resOk.Success,
-		"review2 #45: valid (asset-omitted) stake must still succeed (guard not too strict)")
+	assert.False(t, resOk.Success,
+		"review2 #45: asset-omitted stake must fail at the amount parse (empty asset is not a known asset)")
+	assert.Equal(t, "Invalid amount: unknown asset \"\"", resOk.Ret,
+		"review2 #45: expected the amount-parse rejection, not the asset guard")
 
 	// Explicit asset:"hive" is also accepted.
 	okStakeHive := &stateEngine.TxConsensusStake{
