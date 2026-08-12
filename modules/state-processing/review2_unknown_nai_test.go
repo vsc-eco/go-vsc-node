@@ -34,11 +34,11 @@ func TestReview2UnknownNaiNotCredited(t *testing.T) {
 						"from": "alice",
 						"to":   "vsc.gateway",
 						"memo": "",
-						"amount": map[string]interface{}{
-							"amount":    "1.000",
-							"nai":       "@@999999999", // unrecognised NAI
-							"precision": 3,
-						},
+					"amount": map[string]interface{}{
+						"amount":    "1000",
+						"nai":       "@@999999999", // unrecognised NAI
+						"precision": 3,
+					},
 					},
 				}},
 			},
@@ -51,11 +51,11 @@ func TestReview2UnknownNaiNotCredited(t *testing.T) {
 						"from": "bob",
 						"to":   "vsc.gateway",
 						"memo": "",
-						"amount": map[string]interface{}{
-							"amount":    "2.000",
-							"nai":       "@@000000021", // HIVE
-							"precision": 3,
-						},
+					"amount": map[string]interface{}{
+						"amount":    "2000", // base units — the NAI amount form this codebase consumes
+						"nai":       "@@000000021", // HIVE
+						"precision": 3,
+					},
 					},
 				}},
 			},

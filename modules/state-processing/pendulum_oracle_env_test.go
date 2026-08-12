@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"vsc-node/modules/db/vsc/hive_blocks"
+	pendulumoracle "vsc-node/modules/incentive-pendulum/oracle"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -46,7 +47,9 @@ func pumpHiveBlocks(t *testing.T, te *testEnv, from, to uint64, publishHeights .
 						Value: map[string]interface{}{
 							"owner": "alice",
 							"props": []interface{}{
-								[]interface{}{"hbd_interest_rate", "1500"},
+								// fc-serialized uint16 (LE, hex) — the raw
+								// block_api prop value; 1500 bps == 0x05DC.
+								[]interface{}{"hbd_interest_rate", "dc05"},
 							},
 						},
 					},
@@ -106,22 +109,25 @@ func TestPendulumOracleEnv_ExposesTickSnapshot(t *testing.T) {
 
 // TestPendulumOracleEnv_WarmedButFeedAgedOut covers the post-warmup state
 // where the tracker has filled both rings but no trusted feed has published
-// inside the most recent rolling-100 window. Warmed() stays true (the rings
-// don't drain), but the tick snapshot reports trusted_hive_mean_ok=false so
-// contracts know the price isn't current.
+// inside the most recent freshness window (FeedFreshnessBlocks — ~1h of
+// blocks; deliberately decoupled from the 100-block production window).
+// Warmed() stays true (the rings don't drain), but the tick snapshot reports
+// trusted_hive_mean_ok=false so contracts know the price isn't current.
 func TestPendulumOracleEnv_WarmedButFeedAgedOut(t *testing.T) {
 	te := newTestEnv()
 
-	// Warm the tracker through tick 300, then run two more ticks (400, 500)
-	// without further publishes — alice's last publish at bh=300 ages out of
-	// the trust window (300+100=400 not > 500) by the time tick 500 fires.
-	pumpHiveBlocks(t, te, 1, 500, 1, 100, 200, 300)
+	// Warm the tracker through tick 300, then run two more ticks without
+	// further publishes — alice's last publish at bh=300 ages out of the
+	// freshness window (300 + FeedFreshnessBlocks = 1500 <= 1600) by the
+	// time tick 1600 fires.
+	agedOutHeight := uint64(300 + pendulumoracle.FeedFreshnessBlocks + 100)
+	pumpHiveBlocks(t, te, 1, agedOutHeight, 1, 100, 200, 300)
 
 	require.True(t, te.SE.PendulumFeedTracker().Warmed())
 
 	env := te.SE.PendulumOracleEnv()
 	require.NotNil(t, env)
-	assert.Equal(t, uint64(500), env["pendulum.tick_block_height"])
+	assert.Equal(t, agedOutHeight, env["pendulum.tick_block_height"])
 	assert.Equal(t, false, env["pendulum.trusted_hive_mean_ok"])
 	// APR is sourced from the running trusted witness group at this tick;
 	// with no trusted witnesses, the APR aggregator returns ok=false even

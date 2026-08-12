@@ -19,6 +19,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/hasura/go-graphql-client v0.13.1
 	github.com/ipfs/go-ds-flatfs v0.5.4
+	github.com/kilic/bls12-381 v0.1.0
 	github.com/libp2p/go-libp2p-gorpc v0.6.0
 	github.com/moznion/go-optional v0.12.0
 	github.com/protolambda/bls12-381-util v0.1.0
@@ -54,7 +55,6 @@ require (
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/ipfs/go-cidutil v0.1.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/kilic/bls12-381 v0.1.0 // indirect
 	github.com/libp2p/go-yamux/v5 v5.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
