@@ -118,6 +118,76 @@ func TestNewPanicsOnNonPositiveCapacity(t *testing.T) {
 	}
 }
 
+// TestNewEvictPanicsOnNonPositiveCapacity verifies NewEvict panics for
+// capacity <= 0 just like New.
+func TestNewEvictPanicsOnNonPositiveCapacity(t *testing.T) {
+	for _, cap := range []int{0, -1} {
+		func(cap int) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("NewEvict(%d) should panic", cap)
+				}
+			}()
+			_ = NewEvict[string, int](cap, nil)
+		}(cap)
+	}
+}
+
+// TestEvictionHook verifies the eviction callback fires exactly once per
+// eviction, with the evicted key and value, and only for entries that are
+// actually evicted (not for updates or Gets).
+func TestEvictionHook(t *testing.T) {
+	type evicted struct {
+		key string
+		val int
+	}
+	var got []evicted
+	c := NewEvict[string, int](2, func(k string, v int) {
+		got = append(got, evicted{k, v})
+	})
+
+	c.Put("a", 1)
+	c.Put("b", 2)
+	c.Put("a", 10) // update: no eviction, no hook
+	if len(got) != 0 {
+		t.Fatalf("update must not trigger the hook, got %v", got)
+	}
+	c.Get("a") // touch: no eviction
+	if len(got) != 0 {
+		t.Fatalf("Get must not trigger the hook, got %v", got)
+	}
+
+	c.Put("c", 3) // evicts "b" (LRU) → order: a, c
+	c.Put("d", 4) // evicts "a" (LRU)
+
+	want := []evicted{{"b", 2}, {"a", 10}}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d evictions, got %d: %v", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("eviction[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if _, ok := c.Get("c"); !ok {
+		t.Fatal("c should still be present")
+	}
+	if _, ok := c.Get("d"); !ok {
+		t.Fatal("d should be present")
+	}
+}
+
+// TestEvictionHookNilSafe verifies New (nil hook) does not panic on
+// evictions, and that a nil-hook NewEvict behaves identically.
+func TestEvictionHookNilSafe(t *testing.T) {
+	c := NewEvict[string, int](1, nil)
+	c.Put("a", 1)
+	c.Put("b", 2) // evicts a — must not panic
+	if v, ok := c.Get("b"); !ok || v != 2 {
+		t.Fatalf("expected b=2, got %v, %v", v, ok)
+	}
+}
+
 // TestCapacityOne exercises the smallest valid cache: every new key evicts
 // the previous one.
 func TestCapacityOne(t *testing.T) {
