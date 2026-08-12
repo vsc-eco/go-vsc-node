@@ -32,3 +32,11 @@ func (m *MockRcDb) SetRecord(account string, blockHeight uint64, amount int64) {
 		BlockHeight: blockHeight,
 	})
 }
+
+// SetRecords mirrors SetRecord for the batched path.
+func (m *MockRcDb) SetRecords(records []rcDb.RcRecord) error {
+	for _, r := range records {
+		m.SetRecord(r.Account, r.BlockHeight, r.Amount)
+	}
+	return nil
+}

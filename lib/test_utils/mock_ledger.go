@@ -42,6 +42,16 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
+// UpdateBalanceRecords mirrors UpdateBalanceRecord for the batched path.
+func (m *MockBalanceDb) UpdateBalanceRecords(records []ledgerDb.BalanceRecord) error {
+	for _, record := range records {
+		if err := m.UpdateBalanceRecord(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
 	if m.GetAllErr != nil {
 		return nil, m.GetAllErr
@@ -58,6 +68,18 @@ func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, er
 type MockLedgerDb struct {
 	aggregate.Plugin
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
+	// writeVersions mirrors the production per-owner ledger write generation
+	// (see ledger.WriteVersion) so session balance caches validate identically
+	// under mocks.
+	writeVersions map[string]uint64
+}
+
+// WriteVersion implements ledger_db.Ledger.
+func (m *MockLedgerDb) WriteVersion(owner string) uint64 {
+	if m.writeVersions == nil {
+		return 0
+	}
+	return m.writeVersions[owner]
 }
 
 // StoreLedger upserts by Id within the per-owner slice — matching the
@@ -67,6 +89,9 @@ type MockLedgerDb struct {
 // detectors) be exercised by mock-backed tests without false-positive
 // double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
+	if m.writeVersions == nil {
+		m.writeVersions = make(map[string]uint64)
+	}
 	for _, record := range ledgerRecords {
 		owner := record.Owner
 		existing := m.LedgerRecords[owner]
@@ -82,10 +107,12 @@ func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error
 			}
 			if replaced {
 				m.LedgerRecords[owner] = existing
+				m.writeVersions[owner]++
 				continue
 			}
 		}
 		m.LedgerRecords[owner] = append(existing, record)
+		m.writeVersions[owner]++
 	}
 	return nil
 }
@@ -127,6 +154,23 @@ func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, 
 // GraphQL use only, not implemented in mocks
 func (m *MockLedgerDb) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
 	return make([]ledgerDb.LedgerRecord, 0), nil
+}
+
+// GetLedgersByTxId returns the ledger records whose id is prefixed with the tx
+// id (matching the production anchored-regex semantics).
+func (m *MockLedgerDb) GetLedgersByTxId(txId string) ([]ledgerDb.LedgerRecord, error) {
+	results := make([]ledgerDb.LedgerRecord, 0)
+	for _, records := range m.LedgerRecords {
+		for _, record := range records {
+			if strings.HasPrefix(record.Id, txId+"-") {
+				results = append(results, record)
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].BlockHeight < results[j].BlockHeight
+	})
+	return results, nil
 }
 
 // GraphQL use only, not implemented in mocks

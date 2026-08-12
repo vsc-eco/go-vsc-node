@@ -17,7 +17,6 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/transactions"
-	ledgerSystem "vsc-node/modules/ledger-system"
 	libp2p "vsc-node/modules/p2p"
 	rcSystem "vsc-node/modules/rc-system"
 
@@ -447,7 +446,6 @@ func (tp *TransactionPool) indexTx(txId string, txShell VSCTransactionShell) err
 		OpTypes:       opTypes,
 		Ops:           ops,
 		RcLimit:       txShell.Headers.RcLimit,
-		Ledger:        make([]ledgerSystem.OpLogEvent, 0),
 	})
 }
 

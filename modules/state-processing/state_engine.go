@@ -216,6 +216,32 @@ type StateEngine struct {
 	// summary (modules/state-processing/profiling.go). Always-on; overhead
 	// is one monotonic-clock read per sample. Constructed in New.
 	profiler *Profiler
+
+	// --- reindex hot-path read caching ---
+	// keyLifecycleEpochDirty is set whenever an election is stored (see
+	// onElectionStored) and consumed by ProcessBlock's key-lifecycle pass, so
+	// the per-block GetElectionByHeight + FindDeprecatingKeys are only issued
+	// after an election actually changed (previously every block paid one
+	// election read + one full tss_keys scan). ProcessBlock is serial, so the
+	// flag and epoch fields are unsynchronized.
+	keyLifecycleEpochDirty bool
+	lastDeprecationEpoch   uint64
+	// electionCache memoizes GetElectionByHeight for the exact query height.
+	// Mutex'd because gql/tss tickers reach ActiveConsensusVersion off the
+	// ProcessBlock goroutine. Correctness: elections only become active at
+	// heights strictly above their stored block_height, and onElectionStored
+	// clears the entry, so a hit at the same height equals a fresh read.
+	electionCacheMu     sync.Mutex
+	electionCacheHeight uint64
+	electionCacheResult elections.ElectionResult
+	electionCacheHit    bool
+	// scheduleCache memoizes the witness schedule per round-start for the
+	// produce_block path (getScheduleForSlot). The schedule is constant within
+	// a round until an election is stored; onElectionStored drops it so
+	// mid-round elections recompute for later slots. Only touched from
+	// ProcessBlock (serial), so unsynchronized.
+	scheduleRoundStart uint64
+	scheduleCached     []WitnessSlot
 }
 
 // SetBlockStatus wires the block-status getter so the state engine can
@@ -363,10 +389,30 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId s
 	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount, txId)
 }
 
-// Gets ranomized schedule of witnesses
-// Uses a different PRNG variant from the original used in JS VSC
-// Not aiming for exact replica
+// GetSchedule returns the randomized witness schedule for the round containing
+// slotHeight. Async callers (block ticks, gql) read the DB directly.
 func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
+	return se.computeSchedule(slotHeight)
+}
+
+// getScheduleForSlot is the ProcessBlock-side memoized variant of GetSchedule:
+// the schedule for a round is constant until an election is stored, so the
+// produce_block hot path (once per slot) reuses the last computed round instead
+// of re-reading the election + hive block. onElectionStored drops the memo so a
+// mid-round election recomputes for later slots. Must only be called from
+// ProcessBlock — the cache fields are unsynchronized.
+func (se *StateEngine) getScheduleForSlot(slotHeight uint64) []WitnessSlot {
+	roundStart := vscBlocks.CalculateRoundInfo(slotHeight).StartHeight
+	if se.scheduleRoundStart == roundStart && se.scheduleCached != nil {
+		return se.scheduleCached
+	}
+	schedule := se.computeSchedule(slotHeight)
+	se.scheduleRoundStart = roundStart
+	se.scheduleCached = schedule
+	return schedule
+}
+
+func (se *StateEngine) computeSchedule(slotHeight uint64) []WitnessSlot {
 	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
 
 	if err != nil {
@@ -455,26 +501,37 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	// refreshed just above). Resumes normally when the suspend lifts.
 	if !se.chainProcessingSuspended() {
 		keyLifecycleStart := time.Now()
-		if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
-			currentEpoch := electionData.Epoch
+		// Deprecation only needs re-evaluation after an election is stored
+		// (the expiry clock is the epoch), so the read + FindDeprecatingKeys
+		// scan are gated on onElectionStored. On a transient election read
+		// error the flag stays set and the pass retries next block, matching
+		// the prior read-every-block resilience.
+		if se.keyLifecycleEpochDirty {
+			if electionData, elecErr := se.electionAtHeight(block.BlockNumber); elecErr == nil {
+				se.keyLifecycleEpochDirty = false
+				currentEpoch := electionData.Epoch
+				if currentEpoch != se.lastDeprecationEpoch {
+					se.lastDeprecationEpoch = currentEpoch
 
-			// Phase 1: deprecate active keys that have reached their expiry epoch.
-			if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-				for _, k := range deprecating {
-					k.Status = tss_db.TssKeyDeprecated
-					if tss_db.KeyRetirementEnabled {
-						k.DeprecatedHeight = int64(block.BlockNumber)
+					// Phase 1: deprecate active keys that have reached their expiry epoch.
+					if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+						for _, k := range deprecating {
+							k.Status = tss_db.TssKeyDeprecated
+							if tss_db.KeyRetirementEnabled {
+								k.DeprecatedHeight = int64(block.BlockNumber)
+							}
+							se.tssKeys.SetKey(k)
+							tssLog.Info(
+								"key deprecated",
+								"keyId",
+								k.Id,
+								"expiryEpoch",
+								k.ExpiryEpoch,
+								"blockHeight",
+								block.BlockNumber,
+							)
+						}
 					}
-					se.tssKeys.SetKey(k)
-					tssLog.Info(
-						"key deprecated",
-						"keyId",
-						k.Id,
-						"expiryEpoch",
-						k.ExpiryEpoch,
-						"blockHeight",
-						block.BlockNumber,
-					)
 				}
 			}
 		}
@@ -893,7 +950,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				if cj.Id == "vsc.produce_block" {
 					produceBlockStart := time.Now()
 					//Process block production
-					schedule := se.GetSchedule(slotInfo.StartHeight)
+					schedule := se.getScheduleForSlot(slotInfo.StartHeight)
 
 					var scheduleSlot WitnessSlot
 
@@ -1807,7 +1864,6 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				AnchoredBlock:        &block.BlockID,
 				AnchoredHeight:       &block.BlockNumber,
 				AnchoredIndex:        &blkIdx,
-				Ledger:               make([]ledgerSystem.OpLogEvent, 0),
 			})
 		}
 		se.profiler.Record(PhaseTxParse, time.Since(parseStart))
@@ -2183,6 +2239,15 @@ func (se *StateEngine) ExecuteBatch() {
 	stopExecuteBatch := se.profiler.Start(PhaseExecuteBatch)
 	defer stopExecuteBatch()
 
+	// Reindex hot path: ExecuteBatch fires on every remaining block of a slot
+	// once slotStatus.Done (and again at slot rollover) — the vast majority of
+	// those calls carry an empty batch and do nothing. Bail before the
+	// GetBlockByHeight read; every write in this function lives inside the
+	// TxBatch loop.
+	if len(se.TxBatch) == 0 {
+		return
+	}
+
 	lastBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
 	if err != nil && err != mongo.ErrNoDocuments {
 		log.Error("GetBlockByHeight failed in ExecuteBatch, falling back to lastBlockBh=0",
@@ -2259,16 +2324,11 @@ func (se *StateEngine) ExecuteBatch() {
 		log.Verbose("executing batch item", "idx", idx, "total", len(se.TxBatch))
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
+		// Call session is created lazily on the first call op — the vast
+		// majority of batch items execute non-call ops and never touch it.
 		// Pass the current temp outputs so calls within this slot see the
-		// latest in-memory state instead of the latest contract state
-		callSession := contract_session.NewCallSession(
-			se.da,
-			se.contractDb,
-			se.contractState,
-			se.tssKeys,
-			lastBlockBh,
-			se.TempOutputs,
-		)
+		// latest in-memory state instead of the latest contract state.
+		var callSession *contract_session.CallSession
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
@@ -2277,6 +2337,16 @@ func (se *StateEngine) ExecuteBatch() {
 
 			if vscTx.Type() == "deposit" {
 				continue
+			}
+			if vscTx.Type() == "call" && callSession == nil {
+				callSession = contract_session.NewCallSession(
+					se.da,
+					se.contractDb,
+					se.contractState,
+					se.tssKeys,
+					lastBlockBh,
+					se.TempOutputs,
+				)
 			}
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
@@ -2322,8 +2392,6 @@ func (se *StateEngine) ExecuteBatch() {
 				"TRANSACTION STATUS",
 				"result",
 				result,
-				"ledger session",
-				ledgerSession,
 				"idx",
 				idx,
 				"type",
@@ -2409,7 +2477,7 @@ func (se *StateEngine) ExecuteBatch() {
 		for _, out := range outputs {
 			se.AppendOutput(out.ContractId, out.Output)
 		}
-		if ok {
+		if ok && callSession != nil {
 			callSession.Commit()
 			callOutputs := callSession.ToOutputs()
 			for k, v := range callOutputs {
@@ -2557,7 +2625,18 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
+	// The last-claim record is slot-constant (depends only on endBlock) —
+	// read it once instead of once per account (previously a full
+	// ledger_claims scan per account).
+	claimRecord := se.claimDb.GetLastClaim(endBlock)
+	exists := claimRecord != nil
+	var claimRecordC ledgerDb.ClaimRecord
+	if exists {
+		claimRecordC = *claimRecord
+	}
+
 	//Cleanup!
+	pendingBalanceRecords := make([]ledgerDb.BalanceRecord, 0, len(distinctAccounts))
 	for _, k := range distinctAccounts {
 		accountStart := time.Now()
 		ledgerBalances := map[string]int64{}
@@ -2600,17 +2679,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		hasLedgerUpdates := ledgerUpdates != nil && len(*ledgerUpdates) > 0
 
-		//Previous claim record
-		claimRecord := se.claimDb.GetLastClaim(endBlock)
-
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
 		var claimHeight = uint64(0)
 
-		exists := claimRecord != nil
-		var claimRecordC ledgerDb.ClaimRecord
 		if exists {
-			claimRecordC = *claimRecord
 			modifyHeight = endBlock
 		}
 
@@ -2640,7 +2713,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		if needsClaimUpdate {
 			//Need to execute recalculation of the claim
 			hbdAvg = 0
-			claimHeight = claimRecord.BlockHeight
+			claimHeight = claimRecordC.BlockHeight
 		} else if prevBalRecord != nil {
 			//There is a previous balance record
 			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.
@@ -2668,15 +2741,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		// review4 HIGH #95: UpdateBalanceRecord returns an error on Mongo
-		// write failure. Silently dropping it leaves the next slot's TWAB
-		// calc reading the stale snapshot, which feeds the HBD-interest
-		// distribution path. We can't safely abort the slot here (other
-		// accounts already wrote), but we surface the failure so it shows
-		// up in operator monitoring instead of vanishing.
-		if err := se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord); err != nil {
-			log.Error("ExecuteBatch: UpdateBalanceRecord failed", "account", k, "bh", endBlock, "err", err)
-		}
+		// review4 HIGH #95: balance writes surface their Mongo failures so the
+		// next slot's TWAB never silently reads a stale snapshot (which feeds
+		// the HBD-interest distribution path). Records are batched into one
+		// round trip per slot (UpdateBalanceRecords); a failure logs once for
+		// the whole batch instead of per account.
+		pendingBalanceRecords = append(pendingBalanceRecords, newRecord)
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],
@@ -2685,6 +2755,10 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			},
 		)
 		se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
+	}
+	if err := se.LedgerState.BalanceDb.UpdateBalanceRecords(pendingBalanceRecords); err != nil {
+		log.Error("ExecuteBatch: UpdateBalanceRecords failed",
+			"count", len(pendingBalanceRecords), "bh", endBlock, "err", err)
 	}
 }
 
@@ -2820,6 +2894,7 @@ func (se *StateEngine) getPendingActionsByEpochOrBlock(epoch uint64, t ...string
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 	stopUpdateRcMap := se.profiler.Start(PhaseUpdateRcMap)
 	defer stopUpdateRcMap()
+	records := make([]rcDb.RcRecord, 0, len(se.RcMap))
 	for k, v := range se.RcMap {
 		rcAccountStart := time.Now()
 		//Get the last rc record
@@ -2847,8 +2922,12 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		se.rcDb.SetRecord(k, blockHeight, rcBal)
+		records = append(records, rcDb.RcRecord{Account: k, BlockHeight: blockHeight, Amount: rcBal})
 		se.profiler.Record(PhaseUpdateRcMapAccount, time.Since(rcAccountStart))
+	}
+	// Single round trip for the whole slot's RC map.
+	if err := se.rcDb.SetRecords(records); err != nil {
+		log.Error("UpdateRcMap: SetRecords failed", "count", len(records), "bh", blockHeight, "err", err)
 	}
 }
 
@@ -3165,6 +3244,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		pendulumSettlementsDb: pendulumSettlementsDb,
 		balanceDb:             balanceDb,
 		profiler:              newProfiler(),
+		// First block after (re)start must run the deprecation pass — keys
+		// may have come due while this node was offline.
+		keyLifecycleEpochDirty: true,
 	}
 	if identityConfig != nil {
 		se.selfHiveUsername = identityConfig.Get().HiveUsername

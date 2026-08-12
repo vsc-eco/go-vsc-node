@@ -467,17 +467,15 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	parameter, _ := json.Marshal(params)
 	ledgerResult := ledgerSession.Withdraw(params)
 
-	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult, "parameterJson", string(parameter))
+	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
 		RcUsed:  200,
 	}
 }
-
 func (tx *TxVSCWithdraw) ToData() map[string]interface{} {
 	return map[string]interface{}{
 		"from":   tx.From,
@@ -1189,17 +1187,12 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 	})
 
 	for _, v := range oplog.Outputs {
-		ledgerOps := make([]ledgerSystem.OpLogEvent, 0)
-		for _, v2 := range v.LedgerIdx {
-			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
-		}
 		status := transactions.TransactionStatusConfirmed
 		if !v.Ok {
 			status = transactions.TransactionStatusFailed
 		}
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:     v.Id,
-			Ledger: &ledgerOps,
 			Status: &status,
 		})
 	}
@@ -1288,21 +1281,27 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 	return txId
 }
 
-func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) {
+// Ingest records the transaction in the pool and returns the resolved op list
+// plus the resolve error, so the caller (TxProposeBlock.ExecuteTx) reuses the
+// resolution instead of decoding the tx a second time. An invalid tx (err !=
+// nil) is still recorded — with no ops — so it is queryable and reaches a
+// terminal status. It is marked FAILED later via the oplog round-trip driven by
+// ExecuteBatch's TxPacket.Invalid branch, exactly as every other tx's status is
+// finalized. Resolving zero ops here never means "success": empty Ops on an
+// invalid tx ride the FAILED path. Resolve op builds against the version active
+// at the anchored height (same height used for execution in ExecuteBatch and by
+// the caller) so the indexed op types match what actually executes (e.g. F14
+// unstake_hbd direction).
+func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) ([]VSCTransaction, error) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	// data := make(map[string]interface{})
-	// An invalid tx (err != nil) is still recorded — with no ops — so it is
-	// queryable and reaches a terminal status. It is marked FAILED later via the
-	// oplog round-trip driven by ExecuteBatch's TxPacket.Invalid branch, exactly
-	// as every other tx's status is finalized. Resolving zero ops here never
-	// means "success": empty Ops on an invalid tx ride the FAILED path.
-	// Resolve op builds against the version active at the anchored height (same
-	// height used for execution in ExecuteBatch) so the indexed op types match
-	// what actually executes (e.g. F14 unstake_hbd direction).
-	txs, _ := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
+	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
+	if txs == nil {
+		txs = make([]VSCTransaction, 0)
+	}
 
 	opTypes := make([]string, 0)
 	opTypesM := make(map[string]bool, 0)
@@ -1341,10 +1340,10 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 		OpTypes:        opTypes,
 		Ops:            opList,
 		//Transaction is a VSC transaction
-		Type:   "vsc",
-		Ledger: make([]ledgerSystem.OpLogEvent, 0),
+		Type: "vsc",
 	})
 
+	return txs, resolveErr
 }
 
 func (tx *OffchainTransaction) TxSelf() TxSelf {
