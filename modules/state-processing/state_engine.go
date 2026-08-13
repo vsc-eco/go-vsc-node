@@ -1221,27 +1221,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		for opIndex, op := range tx.Operations {
 
-			// review7 C7-a: a transfer_to_savings to the gateway is not a
-			// supported deposit path (it credits the gateway's illiquid L1
-			// savings). Flag it loudly for manual refund instead of silently
-			// stranding it — the prior handler was dead code (see
-			// isUnsupportedGatewaySavingsDeposit).
 			fromStr, _ := op.Value["from"].(string)
 			toStr, _ := op.Value["to"].(string)
 			if isUnsupportedGatewaySavingsDeposit(op.Type, fromStr, toStr) {
-				log.Warn(
-					"review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
-					"tx",
-					tx.TransactionID,
-					"op",
-					opIndex,
-					"from",
-					fromStr,
-					"amount",
-					op.Value["amount"],
-					"blockHeight",
-					blockInfo.BlockHeight,
-				)
+				// ignore deposit to savings, perhaps could support deposit and stake here in the future and issue sHBD
 				continue
 			}
 
