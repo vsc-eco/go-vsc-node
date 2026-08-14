@@ -172,10 +172,15 @@ type generateBlockParams struct {
 
 // This function should generate a deterministically generated block
 // In the future we should apply protocol versioning to this
+// GenerateBlock returns the derived header, the input tx ids, and the
+// per-component CIDs that produced the header. The components are diagnostics
+// only — they are never signed and never gate accept/reject — but they let a
+// CID mismatch name the component that diverged instead of printing two opaque
+// header CIDs. See HandleBlockMsg.
 func (bp *BlockProducer) GenerateBlock(
 	slotHeight uint64,
 	options ...generateBlockParams,
-) (*vscBlocks.VscHeader, []string, error) {
+) (*vscBlocks.VscHeader, []string, *blockComponents, error) {
 	prevBlock, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
 	daSession := datalayer.NewSession(bp.Datalayer)
 
@@ -261,7 +266,7 @@ func (bp *BlockProducer) GenerateBlock(
 	mr, err := MerklizeCids(outCids)
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	blockData := vscBlocks.VscBlock{
@@ -277,7 +282,7 @@ func (bp *BlockProducer) GenerateBlock(
 	blockCid, err := bp.Datalayer.PutObject(blockData)
 
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	blockHeader := vscBlocks.VscHeader{
@@ -296,6 +301,27 @@ func (bp *BlockProducer) GenerateBlock(
 
 	daSession.Commit()
 
+	// Diagnostics only — see blockComponents. Assembled from the exact values
+	// that produced blockHeader above, so a mismatch can be attributed to a
+	// component rather than to the header CID as a whole.
+	comps := &blockComponents{
+		Br:         prevRange,
+		MerkleRoot: mr,
+		BlockCid:   blockCid.String(),
+	}
+	if prevBlockId != nil {
+		comps.Prevb = *prevBlockId
+	}
+	if oplog != nil {
+		comps.Oplog = oplog.Id
+	}
+	for _, co := range contractOutputs {
+		comps.Outputs = append(comps.Outputs, co.Id)
+	}
+	for _, tx := range offchainTxs {
+		comps.Leaves = append(comps.Leaves, tx.Id)
+	}
+
 	vlog.Verbose(
 		"GenerateBlock",
 		"merkleRoot",
@@ -308,7 +334,7 @@ func (bp *BlockProducer) GenerateBlock(
 		prevRange,
 	)
 
-	return &blockHeader, outTxs, nil
+	return &blockHeader, outTxs, comps, nil
 }
 
 func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.VscBlockTx {
@@ -458,7 +484,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 	// processed by the state engine, so state is already current; the wait
 	// served no purpose. Removed so GenerateBlock runs immediately.
 
-	genBlock, transactions, err := bp.GenerateBlock(bh, generateBlockParams{
+	genBlock, transactions, comps, err := bp.GenerateBlock(bh, generateBlockParams{
 		PopulateTxs: true,
 	})
 
@@ -469,7 +495,8 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
-	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh)
+	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh,
+		"components", comps.summary())
 
 	// TEST-ONLY (devnet) malicious DOUBLE-BLOCK-SIGN injection. When this node ==
 	// VSC_DOUBLE_SIGN_ACCOUNT (harness-set; never mainnet), broadcast TWO
@@ -525,6 +552,10 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 				"producer":     bp.config.Config.Get().HiveUsername,
 				"transactions": transactions,
 				"block_cid":    cid.String(),
+				// Additive diagnostics: peers on older code ignore this key,
+				// and HandleBlockMsg tolerates its absence. Never signed,
+				// never gates accept/reject.
+				"components": comps.toMap(),
 			},
 		})
 	}()
@@ -719,7 +750,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	waitCancel()
 
 	// Independently derive block (including oplog + contract outputs)
-	blockHeader, _, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
+	blockHeader, _, localComps, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
 		Transactions: transactions,
 	})
 
@@ -740,8 +771,35 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		return "", errors.New("missing block_cid in message")
 	}
 	if localCid.String() != producerCidStr {
-		vlog.Error("CID MISMATCH", "local", localCid.String(), "producer", producerCidStr)
-		return "", fmt.Errorf("block CID mismatch: local=%s producer=%s", localCid.String(), producerCidStr)
+		// Name the component that diverged. Without this the operator sees two
+		// opaque header CIDs and has to reconstruct both blocks by hand to find
+		// out which input differed.
+		remoteComps := parseComponents(msg.Data["components"])
+		divergent := localComps.Diff(remoteComps)
+		divergentStr := strings.Join(divergent, ",")
+		if remoteComps == nil {
+			divergentStr = "<producer sent no component detail>"
+		} else if len(divergent) == 0 {
+			// Every compared component agrees yet the header CIDs differ, so
+			// the divergence is in a header field that is not covered above
+			// (or in the CBOR encoding itself).
+			divergentStr = "<none — header-level divergence>"
+		}
+		vlog.Error("CID MISMATCH",
+			"divergent", divergentStr,
+			"slotHeight", msg.SlotHeight,
+			"producer", producer,
+			"localCid", localCid.String(),
+			"producerCid", producerCidStr,
+			"localComponents", localComps.summary(),
+			"producerComponents", remoteComps.summary(),
+			"localOutputs", joinCids(localComps.Outputs),
+			"producerOutputs", joinCids(remoteComps.outputs()),
+			"localTxList", joinCids(localComps.Leaves),
+			"producerTxList", joinCids(remoteComps.leaves()),
+		)
+		return "", fmt.Errorf("block CID mismatch: divergent=%s local=%s producer=%s",
+			divergentStr, localCid.String(), producerCidStr)
 	}
 
 	// CIDs match — sign
