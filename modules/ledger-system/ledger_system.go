@@ -914,6 +914,22 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// shares that were genuinely written to the ledger). This keeps balances
 	// byte-for-byte IDENTICAL to pristine (no new credit anywhere) while the
 	// claim RECEIPT stops overstating. Track the running total below.
+	// Reprocess idempotency (2026-08-14): this claim's interest rows may already
+	// exist under the OLD index-based id scheme (hbd_interest_<h>_<idx>, no '#')
+	// from a prior run on a pre-#241 binary. Those rows are keyed differently
+	// from the account-keyed rows written below, so a reprocess would otherwise
+	// leave BOTH and DOUBLE-CREDIT hbd_savings — a balance divergence of exactly
+	// the class that halted mainnet. Drop only the legacy (no-'#') rows for this
+	// block, once, up front; account-keyed rows are overwritten by the upserts
+	// below (and multiple interest ops in one block keep distinct '#'-ids, so
+	// they survive). Fail-stop like every other write on this deterministic path.
+	blockingRetry(
+		fmt.Sprintf("ClaimHBDInterest.DeleteLegacyInterestRecords(@%d)", blockHeight+1),
+		func() error {
+			return ls.LedgerDb.DeleteLegacyInterestRecords(blockHeight + 1)
+		},
+	)
+
 	distributed := int64(0)
 	for _, balance := range processedBalRecords {
 		// if balance.HBD_AVG == 0 {
@@ -954,10 +970,13 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 			// of iteration order.
 			//
 			// balance.Account is unique per record by construction (Distinct).
-			// txId disambiguates two interest_operation virtual ops landing in
-			// the same Hive block, which the height-only id also collided on.
-			// Mirrors the existing convention in
-			// state-processing/pendulum_settlement.go: txID + "#" + acct.
+			// txId is the interest op's block-local INDEX (passed from
+			// state_engine.go), NOT a Hive trx_id: interest_operation is a
+			// VIRTUAL op whose trx_id is all-zero, so the index is what
+			// actually disambiguates two such ops landing in one Hive block
+			// (the height-only id also collided on that). Deterministic (Hive
+			// fixes vop order) and replay-stable. Mirrors the convention in
+			// state-processing/pendulum_settlement.go: <disambiguator> + "#" + acct.
 			//
 			// NOTE: this changes ledger record ids for interest payments.
 			//

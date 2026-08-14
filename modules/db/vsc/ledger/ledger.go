@@ -10,6 +10,7 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -57,6 +58,20 @@ func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) error {
 		}
 	}
 	return nil
+}
+
+// DeleteLegacyInterestRecords removes legacy (pre-account-keyed) interest rows
+// at recordBlockHeight — those whose id has no '#' separator, i.e. the old
+// hbd_interest_<h>_<index> scheme. Account-keyed rows (id contains '#') are left
+// intact, so this is safe to call on every ClaimHBDInterest reprocess and is a
+// no-op once a block holds only new-scheme rows. See ClaimHBDInterest.
+func (ledger *ledger) DeleteLegacyInterestRecords(recordBlockHeight uint64) error {
+	_, err := ledger.DeleteMany(context.Background(), bson.M{
+		"t":            "interest",
+		"block_height": recordBlockHeight,
+		"id":           bson.M{"$not": primitive.Regex{Pattern: "#"}},
+	})
+	return err
 }
 
 // Get ledger ops after height inclusive
