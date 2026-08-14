@@ -503,18 +503,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		keyLifecycleStart := time.Now()
 		// Deprecation only needs re-evaluation after an election is stored
 		// (the expiry clock is the epoch), so the read + FindDeprecatingKeys
-		// scan are gated on onElectionStored. On a transient election read
-		// error the flag stays set and the pass retries next block, matching
-		// the prior read-every-block resilience.
+		// scan are gated on onElectionStored. The pass is only marked complete
+		// (flag cleared, epoch advanced) after the scan SUCCEEDS: on a
+		// transient election read error, and on a transient FindDeprecatingKeys
+		// error, the flag stays set and the pass retries next block, matching
+		// the prior read-every-block resilience. Without this, a single failed
+		// scan would skip deprecation of every key expiring in that epoch.
 		if se.keyLifecycleEpochDirty {
 			if electionData, elecErr := se.electionAtHeight(block.BlockNumber); elecErr == nil {
-				se.keyLifecycleEpochDirty = false
 				currentEpoch := electionData.Epoch
 				if currentEpoch != se.lastDeprecationEpoch {
-					se.lastDeprecationEpoch = currentEpoch
-
 					// Phase 1: deprecate active keys that have reached their expiry epoch.
 					if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+						se.keyLifecycleEpochDirty = false
+						se.lastDeprecationEpoch = currentEpoch
 						for _, k := range deprecating {
 							k.Status = tss_db.TssKeyDeprecated
 							if tss_db.KeyRetirementEnabled {
@@ -532,6 +534,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							)
 						}
 					}
+				} else {
+					// Epoch already processed (e.g. a second election stored in
+					// the same epoch): nothing to scan, the pass is complete.
+					se.keyLifecycleEpochDirty = false
 				}
 			}
 		}
