@@ -416,10 +416,22 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 				}
 
 				// TODO mongo.ErrNoDocuments
+				//
+				// The sort is load-bearing, not cosmetic. This cursor feeds
+				// StateEngine.ProcessBlock, which applies each Hive block to
+				// consensus state and sets the height unconditionally. MongoDB
+				// guarantees NO order for a Find without an explicit sort — the
+				// server may return documents in any order it likes, and that
+				// order can change with storage layout, chunk migration, or a
+				// different index being chosen. Feeding blocks out of order
+				// applies L1 transactions in the wrong sequence, which diverges
+				// this node's ledger from its peers and shows up downstream as
+				// an unexplained block CID mismatch. Sort ascending by block
+				// number so the stream is monotonic by construction.
 				cur, err := h.Find(ctx, bson.M{
 					"type":               DocumentTypeHiveBlock,
 					"block.block_number": bson.M{"$gt": startBlock},
-				})
+				}, options.Find().SetSort(bson.D{{Key: "block.block_number", Value: 1}}))
 				if err != nil {
 					errChan <- err
 					return

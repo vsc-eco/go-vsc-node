@@ -915,7 +915,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// byte-for-byte IDENTICAL to pristine (no new credit anywhere) while the
 	// claim RECEIPT stops overstating. Track the running total below.
 	distributed := int64(0)
-	for id, balance := range processedBalRecords {
+	for _, balance := range processedBalRecords {
 		// if balance.HBD_AVG == 0 {
 		// 	continue
 		// }
@@ -940,30 +940,72 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				owner = balance.Account
 			}
 
-			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + strconv.Itoa(id),
-				//next block
-				BlockHeight: blockHeight + 1,
-				Amount:      int64(distributeAmt),
-				Asset:       "hbd_savings",
-				Owner:       owner,
-				Type:        "interest",
-			}); err != nil {
-				log.Error(
-					"ClaimHBDInterest: ledger write failed",
-					"blockHeight",
-					blockHeight,
-					"owner",
-					owner,
-					"err",
-					err,
-				)
-				// GV-L1: only count toward `distributed` when the write
-				// actually succeeded — a failed write credited nothing, so
-				// counting it would re-introduce the overstatement this fix
-				// removes.
-				continue
-			}
+			// Key the record on the ACCOUNT, not on a loop index.
+			//
+			// processedBalRecords is ordered by BalanceDb.GetAll, which walks
+			// a Mongo Distinct("account") — Distinct defines NO order, so the
+			// index a given account landed on differed between nodes and
+			// between replays on the same node. Since StoreLedger upserts on
+			// `id`, a non-deterministic id means (a) two nodes disagree on
+			// which id holds which account's interest, and (b) a replay that
+			// hands out different indices writes the SAME payment under a
+			// second id instead of overwriting the first — the id is the
+			// idempotency key, so it has to be a function of the payment, not
+			// of iteration order.
+			//
+			// balance.Account is unique per record by construction (Distinct).
+			// txId disambiguates two interest_operation virtual ops landing in
+			// the same Hive block, which the height-only id also collided on.
+			// Mirrors the existing convention in
+			// state-processing/pendulum_settlement.go: txID + "#" + acct.
+			//
+			// NOTE: this changes ledger record ids for interest payments.
+			//
+			// These records never enter the block oplog — they are written
+			// straight to Mongo — so the id itself is not part of any block
+			// CID. But they ARE summed into hbd_savings, and that balance
+			// decides whether an unstake writes an oplog entry at all. On
+			// 2026-08-13 mainnet halted for exactly that reason: five nodes
+			// held a daveks balance 53 units below the other twelve, his
+			// unstake of his exact full balance passed the `fromBal < amount`
+			// check on one side and failed it on the other, and the two sides
+			// built different blocks. So this path is squarely in the
+			// consensus-critical set even though its ids are not committed.
+			//
+			// ★★★ FAIL-STOP, NOT `continue` (2026-08-14).
+			//
+			// This previously logged the error and moved on. A single
+			// transient Mongo write error therefore dropped that account's
+			// interest credit PERMANENTLY on that node and nowhere else —
+			// no retry, no reconciliation, and nothing that ever notices.
+			// The node then carries a silently wrong balance until some
+			// zero-margin operation on that account forks the chain, which
+			// is the shape of the halt above (herman was missing
+			// `hbd_interest_107159902_37`, 51 units, from ~2026-06-10).
+			//
+			// blockingRetry is the same helper this file already uses for
+			// consensus-critical reads, and its own doc comment describes
+			// this exact failure: "halting the deterministic block-processing
+			// path on a transient infra error instead of swallowing it and
+			// diverging from peers." A stuck node is recoverable; a node that
+			// silently disagrees about a balance is not.
+			blockingRetry(
+				fmt.Sprintf("ClaimHBDInterest.StoreLedger(%s @%d)", owner, blockHeight),
+				func() error {
+					return ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+						Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + txId + "#" + balance.Account,
+						//next block
+						BlockHeight: blockHeight + 1,
+						Amount:      int64(distributeAmt),
+						Asset:       "hbd_savings",
+						Owner:       owner,
+						Type:        "interest",
+					})
+				},
+			)
+			// GV-L1: only counted once the write actually succeeded. With the
+			// fail-stop above that is now unconditional — blockingRetry does
+			// not return until it does.
 			distributed += distributeAmt
 		}
 	}
