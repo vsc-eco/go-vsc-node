@@ -14,6 +14,12 @@ type Ledger interface {
 	//Gets distinct accounts on or after a block height
 	//Used to indicate whether balance has been updated or not
 	GetDistinctAccountsRange(startBlock, endBlock uint64) ([]string, error)
+	// DeleteLegacyInterestRecords removes pre-account-keyed interest rows (id
+	// has no '#' separator) at the given ledger block_height, so a reprocess of
+	// a block first written under the old index-based id scheme overwrites
+	// rather than double-credits. Account-keyed rows (id contains '#') are
+	// preserved. See ledger-system.ClaimHBDInterest.
+	DeleteLegacyInterestRecords(recordBlockHeight uint64) error
 }
 
 type Balances interface {

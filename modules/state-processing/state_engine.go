@@ -432,7 +432,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.rehydrateDoubleSignMap(block.BlockNumber)
 	}
 
-	for _, virtualOp := range block.VirtualOps {
+	for i, virtualOp := range block.VirtualOps {
 		if virtualOp.Op.Type == "interest_operation" {
 			owner, ok := virtualOp.Op.Value["owner"].(string)
 			if !ok {
@@ -458,7 +458,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					)
 					continue
 				}
-				se.claimHBDInterest(blockInfo.BlockHeight, vInt1, virtualOp.TrxId)
+				// Disambiguator for the interest ledger-record id. A Hive
+				// VIRTUAL op (interest_operation is one) carries an all-zero
+				// trx_id, so virtualOp.TrxId cannot tell two interest ops in
+				// one block apart. Use the vop's block-local index instead:
+				// deterministic (Hive fixes vop order), unique per op, and
+				// replay-stable — so it is a safe id component. See
+				// ClaimHBDInterest.
+				se.claimHBDInterest(blockInfo.BlockHeight, vInt1, strconv.Itoa(i))
 			}
 		}
 	}
