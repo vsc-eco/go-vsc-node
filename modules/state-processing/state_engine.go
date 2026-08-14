@@ -2110,6 +2110,37 @@ func (se *StateEngine) ExecuteBatch() {
 	se.TxBatch = make([]TxPacket, 0)
 }
 
+// guardedSpendableAssets are the L1-backed balances that must never be
+// negative on a real Hive account. HBD_AVG is intentionally NOT included — it
+// is a cumulative TWAB accumulator, not a spendable balance.
+
+// negativeSpendableBalance reports the first guarded spendable asset on `rec`
+// whose materialized balance is negative, or negative=false if all are >= 0.
+// Used by the ledger-corruption fail-stop in UpdateBalances; kept as a pure
+// function so the guard logic is unit-testable without a state engine.
+func negativeSpendableBalance(rec ledgerDb.BalanceRecord) (asset string, amount int64, negative bool) {
+	switch {
+	case rec.HBD < 0:
+		return "hbd", rec.HBD, true
+	case rec.HBD_SAVINGS < 0:
+		return "hbd_savings", rec.HBD_SAVINGS, true
+	case rec.Hive < 0:
+		return "hive", rec.Hive, true
+	case rec.HIVE_CONSENSUS < 0:
+		return "hive_consensus", rec.HIVE_CONSENSUS, true
+	}
+	return "", 0, false
+}
+
+// isGuardedAccount reports whether `account` is a real Hive-backed user account
+// whose spendable balances must never be negative. Scoped to the "hive:" prefix
+// so the corruption fail-stop can never trip on the special bookkeeping of
+// system:/protocol/did: accounts (which carry meta ledger rows that are
+// excluded from the spendable balance fold — see IsProtocolMetaLedgerType).
+func isGuardedAccount(account string) bool {
+	return strings.HasPrefix(account, "hive:")
+}
+
 func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//Sets a default start block of 0 if near block 0
 	//E2E testing starts at block 0
@@ -2305,6 +2336,39 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		newRecord.HBD_MODIFY_HEIGHT = modifyHeight
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
+
+		// LEDGER-CORRUPTION FAIL-STOP (consensus-neutral).
+		//
+		// A correct node can NEVER materialize a negative spendable balance:
+		// block production rejects any op that would over-debit an account, so
+		// a finalized op applied to correct state always leaves the balance
+		// >= 0 (an exact-balance "max" op lands on 0, not below). A negative
+		// here therefore means THIS node's stored ledger has diverged from the
+		// finalized truth — e.g. a silently-dropped interest credit lowered a
+		// base balance, so a later finalized debit under-runs it (the 2026-08
+		// halt: daveks 5271 vs 5324, a finalized unstake -5324 -> -53).
+		//
+		// Persisting the negative and continuing is the cascade: at the next
+		// HBD-interest claim a negative balance fails endingAvg<1, drops the
+		// account, and shifts totalAvgBig — the distribution denominator for
+		// EVERY account on this node — turning a one-account divergence into a
+		// node-wide one that only a reindex/restore repairs. So halt loudly and
+		// refuse to write instead.
+		//
+		// This changes behavior ONLY on an already-diverged node; a healthy
+		// node never reaches it, so block computation is byte-identical with or
+		// without this guard. It is therefore NOT a forkable change and needs
+		// no consensus-version gate — safe to roll out across a mixed fleet.
+		// The panic propagates to the streamer supervisor (inteceptError),
+		// which stops the block pipeline; the node must be restored from a
+		// healthy snapshot. Scoped to hive: accounts (see isGuardedAccount).
+		if isGuardedAccount(k) {
+			if asset, bal, negative := negativeSpendableBalance(newRecord); negative {
+				log.Error("LEDGER CORRUPTION: negative spendable balance — halting node; restore from a healthy snapshot",
+					"account", k, "asset", asset, "balance", bal, "blockHeight", endBlock)
+				panic(fmt.Errorf("MAGI-HALT ledger corruption: %s.%s would materialize to %d at block %d; this node has diverged from finalized state and must be restored", k, asset, bal, endBlock))
+			}
+		}
 
 		// review4 HIGH #95: UpdateBalanceRecord returns an error on Mongo
 		// write failure. Silently dropping it leaves the next slot's TWAB
