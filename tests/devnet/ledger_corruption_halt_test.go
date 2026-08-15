@@ -129,10 +129,21 @@ func TestLedgerCorruptionHaltGuard(t *testing.T) {
 	time.Sleep(90 * time.Second)
 	haltedAt, err := d.getLastProcessedBlock(ctx, corruptNode)
 	if err != nil {
-		// A hard-stopped/panicked node may also fail this read — that is still a
-		// halt, not a pass-through. Treat a read error as "halted".
-		t.Logf("corrupt node %d height read failed (consistent with a halt): %v", corruptNode, err)
-		return
+		// Deliberately fatal, not tolerated. The original form logged this and
+		// returned PASS on the reasoning that a hard-stopped node may fail its
+		// own height read -- but that premise does not hold here: mongoClient
+		// connects to a SINGLE mongo server and nodeDbName only selects database
+		// "magi-N", so the store is a separate container whose readability is
+		// independent of node liveness. Verified on the 2026-08-15 run: the
+		// corrupt node's container was Exited(1) and this read still returned
+		// 299 normally.
+		//
+		// Tolerating it would let an infrastructure hiccup score as a successful
+		// halt with nothing actually inspected -- the assertion below never runs
+		// and the guard is never checked. Note the read for the healthy node
+		// immediately after is already t.Fatalf on the same condition; this
+		// makes the two consistent.
+		t.Fatalf("read corrupt-node %d height: %v", corruptNode, err)
 	}
 	healthy, err := d.getLastProcessedBlock(ctx, 1)
 	if err != nil {
