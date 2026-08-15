@@ -42,13 +42,18 @@ func TestLedgerCorruptionHaltGuard(t *testing.T) {
 	d, ctx := startDevnet(t, cfg, 20*time.Minute)
 
 	const (
-		staker      = 1               // witness whose account we stake + corrupt
-		corruptNode = 5               // the node we corrupt (a minority of 5)
-		stakeAmt    = "5.000"         // → hbd_savings 5000 (milli-units)
-		unstakeAmt  = "5.000"         // exact full balance → zero margin
-		corruptBy   = int64(1)        // stored balance 1 unit low on corruptNode
+		staker      = 1        // witness whose account we stake + corrupt
+		corruptNode = 5        // the node we corrupt (a minority of 5)
+		stakeAmt    = "5.000"  // → hbd_savings 5000 (milli-units)
+		unstakeAmt  = "5.000"  // exact full balance → zero margin
+		corruptBy   = int64(1) // stored balance 1 unit low on corruptNode
 	)
-	account := d.witnessAccount(staker) // ASSUMPTION: this is the ledger account key
+	// The ledger keys accounts hive:-qualified, and isGuardedAccount scopes the
+	// guard to exactly that prefix. witnessAccount returns the bare name
+	// ("magi.test1"), so without this the corruption UpdateOne matches zero
+	// documents and the guard is never exercised. Every other devnet test
+	// does the same qualification (blame_cycle, bond_gate_gap1, pr181, ...).
+	account := "hive:" + d.witnessAccount(staker)
 
 	// 1. Move funds into hbd_savings and let the stake finalize network-wide.
 	if _, err := d.Deposit(ctx, staker, "20.000", "hbd"); err != nil {
@@ -68,7 +73,13 @@ func TestLedgerCorruptionHaltGuard(t *testing.T) {
 	// is a real snapshot row to tamper with.
 	corruptColl := client.Database(d.nodeDbName(corruptNode)).Collection("ledger_balances")
 	var snap ledgerDb.BalanceRecord
-	deadline := time.Now().Add(2 * time.Minute)
+	// 2 minutes is not enough on a fresh devnet. StakeHBD debits hbd immediately,
+	// but the hbd_savings CREDIT lands via IndexActions, driven by the gateway's
+	// vsc.actions batch — emitted every ACTION_INTERVAL (20) blocks and requiring
+	// 2/3 multisig cosigning. Right after the genesis election the committee is
+	// still coming up, so the credit arrives minutes later. Observed failing at
+	// 2m with HBD:15000 (debit applied) / HBD_SAVINGS:0 (credit pending).
+	deadline := time.Now().Add(12 * time.Minute)
 	for {
 		opts := options.FindOne().SetSort(bson.D{{Key: "block_height", Value: -1}})
 		err := corruptColl.FindOne(ctx, bson.M{"account": account}, opts).Decode(&snap)
