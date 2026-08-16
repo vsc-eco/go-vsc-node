@@ -2344,36 +2344,37 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		// LEDGER-CORRUPTION FAIL-STOP (consensus-neutral).
+		// NEGATIVE SPENDABLE BALANCE — observability only, NEVER a halt.
 		//
-		// A correct node can NEVER materialize a negative spendable balance:
-		// block production rejects any op that would over-debit an account, so
-		// a finalized op applied to correct state always leaves the balance
-		// >= 0 (an exact-balance "max" op lands on 0, not below). A negative
-		// here therefore means THIS node's stored ledger has diverged from the
-		// finalized truth — e.g. a silently-dropped interest credit lowered a
-		// base balance, so a later finalized debit under-runs it (the 2026-08
-		// halt: daveks 5271 vs 5324, a finalized unstake -5324 -> -53).
+		// History: this was a fail-stop panic added during the 2026-08-13
+		// recovery, on the premise that "a correct node can never materialize a
+		// negative spendable balance, so a negative means THIS node diverged."
+		// That premise is false. Negative balances also exist as legacy,
+		// network-consistent state from historical over-debits: an unstake was
+		// once applied for more than the account held (hive:dhedge staked
+		// 63364 and unstaked 64302 — 938 too much — leaving hbd_savings
+		// negative on EVERY node). Those rows fold identically everywhere, so
+		// the chain ran with them for months without forking.
 		//
-		// Persisting the negative and continuing is the cascade: at the next
-		// HBD-interest claim a negative balance fails endingAvg<1, drops the
-		// account, and shifts totalAvgBig — the distribution denominator for
-		// EVERY account on this node — turning a one-account divergence into a
-		// node-wide one that only a reindex/restore repairs. So halt loudly and
-		// refuse to write instead.
+		// Because the guard tested the ABSOLUTE materialized record, it fired
+		// whenever such an account was merely touched again — even by an op on
+		// a different asset that only carried the old negative forward. On
+		// 2026-08-16 an unrelated hbd transfer re-materialized dhedge's record
+		// and every node panicked at the same block: the guard itself halted
+		// the network. It served its purpose during the recovery; it must not
+		// stay armed.
 		//
-		// This changes behavior ONLY on an already-diverged node; a healthy
-		// node never reaches it, so block computation is byte-identical with or
-		// without this guard. It is therefore NOT a forkable change and needs
-		// no consensus-version gate — safe to roll out across a mixed fleet.
-		// The panic propagates to the streamer supervisor (inteceptError),
-		// which stops the block pipeline; the node must be restored from a
-		// healthy snapshot. Scoped to hive: accounts (see isGuardedAccount).
+		// Log and continue. A negative here is a real accounting defect worth
+		// surfacing, but it is NOT proof of local divergence and must never
+		// stop the block pipeline. The durable fixes are (a) preventing
+		// over-debits at the ledger apply point, and (b) settling the existing
+		// negatives with compensating ledger records at an agreed height —
+		// which fold deterministically and survive a reindex, unlike a
+		// hand-edited balance snapshot.
 		if isGuardedAccount(k) {
 			if asset, bal, negative := negativeSpendableBalance(newRecord); negative {
-				log.Error("LEDGER CORRUPTION: negative spendable balance — halting node; restore from a healthy snapshot",
+				log.Warn("negative spendable balance materialized (legacy over-debit; not halting)",
 					"account", k, "asset", asset, "balance", bal, "blockHeight", endBlock)
-				panic(fmt.Errorf("MAGI-HALT ledger corruption: %s.%s would materialize to %d at block %d; this node has diverged from finalized state and must be restored", k, asset, bal, endBlock))
 			}
 		}
 
