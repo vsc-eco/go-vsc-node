@@ -231,7 +231,7 @@ func (ledger *ledger) GetLedgersByTxId(txId string) ([]LedgerRecord, error) {
 	opts := options.Find().SetSort(bson.M{"block_height": 1})
 	findResult, err := ledger.Find(context.Background(), bson.M{
 		"id": bson.M{
-			"$regex": "^" + regexp.QuoteMeta(txId) + "-",
+			"$regex": "^" + regexp.QuoteMeta(txId),
 		},
 	}, opts)
 	if err != nil {
