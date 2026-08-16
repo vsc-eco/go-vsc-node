@@ -6,6 +6,7 @@ type RcDb interface {
 	aggregate.Plugin
 	GetRecord(account string, blockHeight uint64) (RcRecord, error)
 	SetRecord(account string, blockHeight uint64, amount int64)
+	SetRecords(records []RcRecord) error
 }
 
 type RcRecord struct {

@@ -2,7 +2,6 @@ package ledgerSystem
 
 import (
 	"math/big"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +14,17 @@ type ledgerSession struct {
 	ledgerOps []LedgerUpdate
 	balances  map[string]*int64
 	idCache   map[string]int
+	// fillVersions records the ledger write generation (LedgerDb.WriteVersion)
+	// of the owner at the moment each balance-cache entry was filled. A
+	// balance is served from the cache only while the version is unchanged —
+	// mid-batch direct ledger writes (deposits, fr_sync, slashes) invalidate
+	// the affected owner, so the retained cache behaves exactly like a fresh
+	// read. Untouched owners keep their entries across Done() calls (see
+	// Done), which is what removes the per-tx DB round trips on busy slots.
+	fillVersions map[string]uint64
+	// txTouched keys mutated by setBalance during the current transaction;
+	// Revert() drops them from the cache so the next tx re-reads.
+	txTouched map[string]bool
 
 	StartHeight uint64
 }
@@ -32,7 +42,14 @@ func (session *ledgerSession) Done() []string {
 		// lss.le.Ls.log.Debug("LedgerSession.Done adding LedgerResult", op)
 		session.state.VirtualLedger[op.Owner] = append(session.state.VirtualLedger[op.Owner], op)
 	}
-	session.balances = make(map[string]*int64)
+	// The balance cache is RETAINED across transactions: an entry filled from
+	// SnapshotForAccount (DB base + VirtualLedger) self-maintains through
+	// setBalance during the tx and stays exact once this tx's ops are folded
+	// into VirtualLedger above (touched entries already include the tx's
+	// deltas; untouched entries' owners were not appended). Direct DB writes
+	// (which bypass the session) are caught by the WriteVersion check in
+	// GetBalance. Only the per-tx mutation set is reset.
+	session.txTouched = make(map[string]bool)
 	session.oplog = make([]OpLogEvent, 0)
 	session.ledgerOps = make([]LedgerUpdate, 0)
 
@@ -42,19 +59,28 @@ func (session *ledgerSession) Done() []string {
 func (lss *ledgerSession) Revert() {
 	lss.oplog = make([]OpLogEvent, 0)
 	lss.ledgerOps = make([]LedgerUpdate, 0)
-	lss.balances = make(map[string]*int64)
+	// The reverted tx's setBalance mutations are invalid; drop the touched
+	// entries so the next tx re-reads them from the DB + VirtualLedger.
+	for k := range lss.txTouched {
+		delete(lss.balances, k)
+		delete(lss.fillVersions, k)
+	}
+	lss.txTouched = make(map[string]bool)
 }
 
 // LedgerSavepoint captures a rollback point within a ledger session so a failed
 // try/catch inter-contract call can be unwound without touching anything the
 // caller did before it. oplog and ledgerOps are append-only within a session, so
-// the savepoint records their lengths plus a copy of the balance cache and the
-// id dedup counter; RestoreSavepoint truncates the slices back and restores the
-// maps, discarding exactly what was appended after the savepoint.
+// the savepoint records their lengths plus a copy of the balance cache (and its
+// fill versions) and the id dedup counter; RestoreSavepoint truncates the slices
+// back and restores the maps, discarding exactly what was appended after the
+// savepoint.
 type LedgerSavepoint struct {
 	oplogLen     int
 	ledgerOpsLen int
 	balances     map[string]*int64
+	fillVersions map[string]uint64
+	txTouched    map[string]bool
 	idCache      map[string]int
 }
 
@@ -76,10 +102,20 @@ func (lss *ledgerSession) Savepoint() LedgerSavepoint {
 	for k, v := range lss.idCache {
 		idCache[k] = v
 	}
+	fillVersions := make(map[string]uint64, len(lss.fillVersions))
+	for k, v := range lss.fillVersions {
+		fillVersions[k] = v
+	}
+	txTouched := make(map[string]bool, len(lss.txTouched))
+	for k := range lss.txTouched {
+		txTouched[k] = true
+	}
 	return LedgerSavepoint{
 		oplogLen:     len(lss.oplog),
 		ledgerOpsLen: len(lss.ledgerOps),
 		balances:     cloneBalances(lss.balances),
+		fillVersions: fillVersions,
+		txTouched:    txTouched,
 		idCache:      idCache,
 	}
 }
@@ -92,6 +128,14 @@ func (lss *ledgerSession) RestoreSavepoint(sp LedgerSavepoint) {
 		lss.ledgerOps = lss.ledgerOps[:sp.ledgerOpsLen]
 	}
 	lss.balances = cloneBalances(sp.balances)
+	lss.fillVersions = make(map[string]uint64, len(sp.fillVersions))
+	for k, v := range sp.fillVersions {
+		lss.fillVersions[k] = v
+	}
+	lss.txTouched = make(map[string]bool, len(sp.txTouched))
+	for k := range sp.txTouched {
+		lss.txTouched[k] = true
+	}
 	idCache := make(map[string]int, len(sp.idCache))
 	for k, v := range sp.idCache {
 		idCache[k] = v
@@ -136,16 +180,27 @@ func (session *ledgerSession) AppendLedger(event LedgerUpdate) {
 
 func (session *ledgerSession) GetBalance(account string, blockHeight uint64, asset string) int64 {
 	session.state.Validate()
-	if session.balances[session.key(account, asset)] == nil {
-		bal := session.state.SnapshotForAccount(account, blockHeight, asset)
-		session.balances[session.key(account, asset)] = &bal
+	if session.fillVersions == nil {
+		session.fillVersions = make(map[string]uint64)
 	}
-
-	return *session.balances[session.key(account, asset)]
+	key := session.key(account, asset)
+	if session.balances[key] != nil &&
+		session.fillVersions[key] == session.state.LedgerDb.WriteVersion(account) {
+		return *session.balances[key]
+	}
+	bal := session.state.SnapshotForAccount(account, blockHeight, asset)
+	session.balances[key] = &bal
+	session.fillVersions[key] = session.state.LedgerDb.WriteVersion(account)
+	return bal
 }
 
 func (lss *ledgerSession) setBalance(account string, asset string, amount int64) {
-	lss.balances[lss.key(account, asset)] = &amount
+	if lss.txTouched == nil {
+		lss.txTouched = make(map[string]bool)
+	}
+	key := lss.key(account, asset)
+	lss.balances[key] = &amount
+	lss.txTouched[key] = true
 }
 
 func (lss *ledgerSession) key(account, asset string) string {
@@ -173,12 +228,12 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 	var dest string
 
 	if hiveAsset {
-		matchedHive, _ := regexp.MatchString(HIVE_REGEX, withdraw.To)
+		matchedHive := hiveRegex.MatchString(withdraw.To)
 		if matchedHive && len(withdraw.To) >= 3 && len(withdraw.To) < 17 {
 			dest = `hive:` + withdraw.To
 		} else if strings.HasPrefix(withdraw.To, "hive:") {
 			splitHive := strings.Split(withdraw.To, ":")[1]
-			matchedHive, _ := regexp.MatchString(HIVE_REGEX, splitHive)
+			matchedHive := hiveRegex.MatchString(splitHive)
 			if matchedHive && len(splitHive) >= 3 && len(splitHive) < 17 {
 				dest = withdraw.To
 			} else {
@@ -196,7 +251,7 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 	} else {
 		if strings.HasPrefix(withdraw.To, "eth:") {
 			ethAddr := strings.Split(withdraw.To, ":")[1]
-			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			matchedEth := ethRegex.MatchString(ethAddr)
 			if matchedEth {
 				dest = withdraw.To
 			} else {
@@ -204,7 +259,7 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 			}
 		} else if strings.HasPrefix(withdraw.To, "did:pkh:eip155:1:") {
 			ethAddr := strings.TrimPrefix(withdraw.To, "did:pkh:eip155:1:")
-			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			matchedEth := ethRegex.MatchString(ethAddr)
 			if matchedEth {
 				dest = withdraw.To
 			} else {

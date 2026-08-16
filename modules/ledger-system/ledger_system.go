@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/big"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1119,7 +1118,7 @@ func normalizeEthDID(account string) string {
 	if !ok {
 		return account
 	}
-	if matched, _ := regexp.MatchString(ETH_REGEX, addr); !matched {
+	if matched := ethRegex.MatchString(addr); !matched {
 		return account
 	}
 	return ethDIDPrefix + ethcommon.HexToAddress(addr).Hex()
@@ -1138,8 +1137,8 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		}
 	}
 
-	matchedHive, _ := regexp.MatchString(HIVE_REGEX, decodedParams.To)
-	matchedEth, _ := regexp.MatchString(ETH_REGEX, decodedParams.To)
+	matchedHive := hiveRegex.MatchString(decodedParams.To)
+	matchedEth := ethRegex.MatchString(decodedParams.To)
 
 	if matchedHive && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17 {
 		decodedParams.To = `hive:` + decodedParams.To
@@ -1147,7 +1146,7 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		decodedParams.To = `did:pkh:eip155:1:` + decodedParams.To
 	} else if strings.HasPrefix(decodedParams.To, "hive:") {
 		//No nothing. It's parsed correctly
-		matchedEth, _ := regexp.MatchString(HIVE_REGEX, strings.Split(decodedParams.To, ":")[1])
+		matchedEth := hiveRegex.MatchString(strings.Split(decodedParams.To, ":")[1])
 		if !(matchedEth && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17) {
 			decodedParams.To = "hive:" + deposit.From
 		}
@@ -1264,10 +1263,12 @@ func (ls *ledgerSystem) NewEmptySession(state *LedgerState, startHeight uint64) 
 	ledgerSession := ledgerSession{
 		state: state,
 
-		oplog:     make([]OpLogEvent, 0),
-		ledgerOps: make([]LedgerUpdate, 0),
-		balances:  make(map[string]*int64),
-		idCache:   make(map[string]int),
+		oplog:        make([]OpLogEvent, 0),
+		ledgerOps:    make([]LedgerUpdate, 0),
+		balances:     make(map[string]*int64),
+		fillVersions: make(map[string]uint64),
+		txTouched:    make(map[string]bool),
+		idCache:      make(map[string]int),
 
 		StartHeight: startHeight,
 	}

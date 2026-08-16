@@ -87,8 +87,8 @@ install: all
 # picked up by `make test` automatically.
 #
 # NON_HOST_PACKAGES never run under either target: the wasm-guest packages under
-# modules/wasm/e2e/go_wasm are built for the wasm target (build-excluded on the
-# host) and modules/oracle/price is WIP that does not compile.
+# modules/wasm/e2e/go_wasm are built for the wasm target (their own nested
+# go.mod excludes them on the host).
 
 empty :=
 space := $(empty) $(empty)
@@ -103,13 +103,11 @@ SLOW_PACKAGES := \
 	modules/hive/streamer \
 	modules/block-producer \
 	modules/state-processing \
-	modules/wasm/e2e \
 	modules/e2e \
 	cmd/mapping-bot/mapper \
 	cmd/zk-tx-signer
 
-NON_HOST_PACKAGES := \
-	modules/oracle/price
+NON_HOST_PACKAGES :=
 
 # --- Known-failing exclusions (TEMPORARY — remove each entry once fixed) --------
 # These currently fail and are excluded from BOTH `make test` and `make test-full`
@@ -170,6 +168,16 @@ LIST_TEST_PKGS := go list -e -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPa
 # cache key doesn't capture external state (MongoDB, libp2p, time), so a cached
 # `ok` could reflect a stale run — undesirable for a deliberate test invocation.
 GO_TEST := go test -count=1
+
+# On macOS the `go` tool strips DYLD_LIBRARY_PATH from test binaries, so a
+# cgo-linked test binary cannot locate libwasmedge at runtime unless the rpath
+# is embedded at link time. Add it when a local WasmEdge install exists.
+WASMEDGE_LIB_DIR := $(HOME)/.wasmedge/lib
+ifeq ($(wildcard $(WASMEDGE_LIB_DIR)/libwasmedge.dylib),)
+GO_TEST := $(GO_TEST)
+else
+GO_TEST := CGO_LDFLAGS="-Wl,-rpath,$(WASMEDGE_LIB_DIR)" $(GO_TEST)
+endif
 
 # Quick unit tests across the whole repo. Intended to stay under ~5 minutes.
 test:

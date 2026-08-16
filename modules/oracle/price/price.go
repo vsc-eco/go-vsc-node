@@ -29,12 +29,15 @@ type priceQuery interface {
 }
 
 type PricePoint struct {
-	Price  float64
-	Volume float64
-	PeerID peer.ID
+	Price  float64 `json:"price"`
+	Volume float64 `json:"volume"`
+	// peer.ID fails to unmarshal from an empty string, and median price
+	// points (the JSON wire payload of a price block) never carry one, so
+	// omit the field entirely when it is unset.
+	PeerID peer.ID `json:"peerID,omitempty"`
 
 	// unix UTC timestamp
-	CollectedAt time.Time
+	CollectedAt time.Time `json:"collectedAt"`
 }
 
 type PricePointMap map[string][]PricePoint

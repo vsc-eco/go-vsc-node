@@ -395,3 +395,16 @@ func (ch *contractState) FindOutputs(id *string, input *string, contract *string
 func NewContractState(d *vsc.VscDb) ContractState {
 	return &contractState{db.NewCollection(d.DbInstance, "contract_state")}
 }
+
+// Init creates the contract_state index backing GetLastOutput /
+// GetLastOutputStrict ({contract_id, block_height $lte} sorted desc) — the
+// query was previously unindexed, a full collection scan per contract call
+// (and per block via the BTC theft-halt mirror, refreshBtcTheftHalt).
+func (ch *contractState) Init() error {
+	if err := ch.Collection.Init(); err != nil {
+		return err
+	}
+	return ch.CreateIndexIfNotExist(mongo.IndexModel{
+		Keys: bson.D{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
+	})
+}

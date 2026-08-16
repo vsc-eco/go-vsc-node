@@ -63,3 +63,23 @@ func (e rcDb) SetRecord(account string, blockHeight uint64, amount int64) {
 		},
 	}, options)
 }
+
+// SetRecords persists a batch of RC snapshots in a single round trip (upserts
+// keyed on (account, block_height)) — the per-slot RC map flush.
+func (e *rcDb) SetRecords(records []RcRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	models := make([]mongo.WriteModel, len(records))
+	for i, r := range records {
+		models[i] = mongo.NewUpdateOneModel().
+			SetFilter(bson.M{
+				"account":      r.Account,
+				"block_height": r.BlockHeight,
+			}).
+			SetUpdate(bson.M{"$set": bson.M{"amount": r.Amount}}).
+			SetUpsert(true)
+	}
+	_, err := e.BulkWrite(context.Background(), models)
+	return err
+}

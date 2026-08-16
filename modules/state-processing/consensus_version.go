@@ -191,10 +191,46 @@ func (se *StateEngine) upsertVersionProposal(p consensus_state.VersionProposal) 
 	se.refreshChainConsensusCache()
 }
 
+// electionAtHeight returns the election active at `height`, memoizing the
+// exact-height result so repeated in-block reads (per-tx ActiveConsensusVersion,
+// etc.) hit the cache instead of the DB. Safe for concurrent readers (mutex);
+// onElectionStored clears the entry so an election stored mid-block is picked
+// up by subsequent reads at the same height.
+func (se *StateEngine) electionAtHeight(height uint64) (elections.ElectionResult, error) {
+	se.electionCacheMu.Lock()
+	defer se.electionCacheMu.Unlock()
+	if se.electionCacheHit && se.electionCacheHeight == height {
+		return se.electionCacheResult, nil
+	}
+	result, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil {
+		return result, err
+	}
+	se.electionCacheResult = result
+	se.electionCacheHeight = height
+	se.electionCacheHit = true
+	return result, nil
+}
+
+// onElectionStored records that a new election was persisted: the key-lifecycle
+// deprecation pass re-runs, the produce-block schedule memo is dropped (a
+// mid-round election changes the schedule for later slots), and the height
+// election cache is cleared. Called from the vsc.election_result handler.
+// Harmless when nothing was actually written (an extra deprecation pass is an
+// empty scan).
+func (se *StateEngine) onElectionStored() {
+	se.keyLifecycleEpochDirty = true
+	se.scheduleRoundStart = 0
+	se.scheduleCached = nil
+	se.electionCacheMu.Lock()
+	se.electionCacheHit = false
+	se.electionCacheMu.Unlock()
+}
+
 // ActiveConsensusVersion returns the chain-active consensus triple at a block height,
 // sourced purely from the on-chain election (deterministic and height-addressable).
 func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
-	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
+	elec, err := se.electionAtHeight(blockHeight)
 	if err != nil {
 		return consensusversion.Version{}
 	}

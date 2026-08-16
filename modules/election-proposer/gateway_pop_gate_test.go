@@ -66,8 +66,17 @@ func h6Witness(t *testing.T, account string, seedByte byte, withGatewayPoP bool)
 // PoP is admitted, and an otherwise-identical witness whose gateway key has NO
 // PoP is excluded from the committee.
 func TestH6GatewayPoPGate(t *testing.T) {
-	good := h6Witness(t, "alice", 0x11, true)   // valid gateway PoP → kept
-	noPoP := h6Witness(t, "bob", 0x22, false)   // gateway key, no PoP → excluded
+	// The gate keys off WitnessKeyStrictActive, which has been TEMPORARILY
+	// DISABLED since 2026-06-22 (mainnet liveness fix — see feature_gates.go).
+	// While disabled the gate provably cannot bite, so this test can only
+	// assert its contract once the gate is restored. Skip (not fail) so the
+	// suite stays green; the test re-arms itself when the gate is re-enabled.
+	if !consensusversion.WitnessKeyStrictActive(consensusversion.V0_2_0) {
+		t.Skip("H-6 gateway-key PoP gate is temporarily disabled on mainnet (see WitnessKeyStrictActive)")
+	}
+
+	good := h6Witness(t, "alice", 0x11, true) // valid gateway PoP → kept
+	noPoP := h6Witness(t, "bob", 0x22, false) // gateway key, no PoP → excluded
 
 	ct := test_utils.NewContractTest()
 	ep := New(

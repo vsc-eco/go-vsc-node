@@ -17,9 +17,9 @@ go run github.com/99designs/gqlgen generate  # Regenerate GraphQL code
 
 `make test` skips the slow packages listed in `SLOW_PACKAGES` in the Makefile
 (libp2p clusters, docker devnet, zk proving, multi-second suites) and the
-non-host-runnable ones (`modules/wasm/e2e/go_wasm*` wasm guests,
-`modules/oracle/price` WIP). New packages are quick by default — add genuinely
-slow ones to `SLOW_PACKAGES`.
+non-host-runnable `modules/wasm/e2e/go_wasm*` wasm guests (their nested go.mod
+excludes them from host builds). New packages are quick by default — add
+genuinely slow ones to `SLOW_PACKAGES`.
 
 `make test-regression` runs the single `TestFullNetworkRegression` (in
 `tests/devnet`) with a 130m timeout (TSS stages wait on ~5-min epoch boundaries
