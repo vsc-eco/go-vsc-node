@@ -172,6 +172,19 @@ const (
 	// `hive` (the make-whole disbursement). NOT a meta type — GetBalance must count
 	// it so the recipient can use the funds.
 	LedgerTypeReservePayoutCredit = "reserve_payout_credit"
+
+	// LedgerTypeRemediationCredit is the one-time write-off of a legacy negative
+	// spendable balance (see params.LEDGER_REMEDIATION_HEIGHT). NOT a meta type
+	// — GetBalance MUST count it, since correcting the account's balance is the
+	// entire point.
+	LedgerTypeRemediationCredit = "remediation_credit"
+	// LedgerTypeRemediationDebit is the paired entry on the keyless
+	// params.LedgerShortfallAccount, recording value the protocol over-paid.
+	// Meta, exactly like LedgerTypeReservePayoutDebit: the shortfall account has
+	// no key and no transfer path, and counting it would park a permanent
+	// negative spendable balance on a system account — the very artifact this
+	// remediation exists to clear. The rows remain queryable as the audit trail.
+	LedgerTypeRemediationDebit = "remediation_debit"
 )
 
 // IsProtocolMetaLedgerType reports whether a ledger record type is a
@@ -206,7 +219,9 @@ func IsProtocolMetaLedgerType(t string) bool {
 		// The reserve-payout DEBIT is held bookkeeping on the keyless reserve
 		// account — never spendable there. (The paired CREDIT on the recipient is
 		// deliberately NOT here: it is the spendable disbursement.)
-		LedgerTypeReservePayoutDebit:
+		LedgerTypeReservePayoutDebit,
+		// Keyless bookkeeping on system:ledger_shortfall — see the constant.
+		LedgerTypeRemediationDebit:
 		return true
 	default:
 		return false

@@ -1590,6 +1590,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 
+		// One-time write-off of the legacy negative balances, emitted BEFORE the
+		// fold below so the corrected values land in this slot's snapshot.
+		se.ApplyLedgerRemediation(se.slotStatus.SlotHeight)
+
 		se.UpdateBalances(startBlock, se.slotStatus.SlotHeight)
 
 		se.UpdateRcMap(se.slotStatus.SlotHeight)

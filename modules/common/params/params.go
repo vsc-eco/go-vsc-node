@@ -92,6 +92,69 @@ var ProtocolSlashPendingBurnAccount = "system:protocol_slash_burn_pending"
 // neutral (every row has Amount=0); it exists purely as a meta marker.
 var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 
+// ───── Legacy negative-balance remediation ─────
+//
+// LedgerShortfallAccount is the counterparty for the one-time write-off of the
+// legacy negative spendable balances (see LEDGER_REMEDIATION_HEIGHT). Ten
+// mainnet accounts were over-debited between ~2025-08 and ~2026-02 by the
+// stale-overstated-balance bug in GetBalance (fixed 2026-06-20): the spend
+// check read a balance that had not yet subtracted a landed debit, so a second
+// debit of the same funds was admitted. The over-paid value already left the
+// system on L1, so each negative is a realized loss, not a collectible debt.
+//
+// Writing the negatives off single-sided would erase the record of that loss,
+// so the credit is booked double-entry against this account. Its balance is
+// therefore the permanent, queryable total of value the protocol over-paid.
+var LedgerShortfallAccount = "system:ledger_shortfall"
+
+// LEDGER_REMEDIATION_HEIGHT is the mainnet activation height (Hive L1 block) at
+// which the accounts in LEDGER_REMEDIATIONS have any remaining negative
+// spendable balance written off. Below this height replay is byte-identical to
+// the pre-fix binary, so witnesses can upgrade across the rollout window
+// without diverging; at exactly this height every witness emits the same
+// records atomically.
+//
+// This survives a reindex by construction: the emission is code on the
+// deterministic replay path, not a database edit, so every replay re-derives
+// the identical records (ids are fixed, StoreLedger upserts on id).
+//
+// 0 disables the remediation (testnet/devnet, and mainnet until the height is
+// pinned). MUST be set to a height comfortably in the future of the deploy
+// decision before release — see PENDULUM_FEE_FIX_HEIGHT for the convention
+// (~6h / 7200 blocks @3s).
+var LEDGER_REMEDIATION_HEIGHT uint64 = 0
+
+// LedgerRemediation names one (account, asset) whose negative balance is
+// written off at LEDGER_REMEDIATION_HEIGHT.
+//
+// The credited amount is NOT taken from this table: it is computed from the
+// account's balance as of LEDGER_REMEDIATION_HEIGHT-1 and credits only what is
+// still negative. That is deliberate — a fixed amount would GIFT value to any
+// account whose debt was meanwhile absorbed by a new deposit (the negative
+// self-collects), and would under-correct one that drifted further. Expected is
+// documentation only: the value observed on 2026-08-17, logged and compared so
+// an unexpected drift is visible, never used to decide the credit.
+type LedgerRemediation struct {
+	Account  string
+	Asset    string
+	Expected int64
+}
+
+// LEDGER_REMEDIATIONS is the full set, from the on-chain fold on 2026-08-17.
+// Totals: 456.999 HIVE, 114.847 HBD, 10.015 hive_consensus.
+var LEDGER_REMEDIATIONS = []LedgerRemediation{
+	{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	{Account: "hive:louis88", Asset: "hbd_savings", Expected: 20000},
+	{Account: "hive:knossi", Asset: "hbd_savings", Expected: 63000},
+	{Account: "hive:rivalzzz.magi", Asset: "hbd_savings", Expected: 31564},
+	{Account: "hive:fyn", Asset: "hive", Expected: 181999},
+	{Account: "hive:louis.random", Asset: "hive", Expected: 273000},
+	{Account: "hive:neuropoeta", Asset: "hive", Expected: 1000},
+	{Account: "hive:buzzer11", Asset: "hive", Expected: 1000},
+	{Account: "hive:tanzil2024", Asset: "hive_consensus", Expected: 10000},
+	{Account: "hive:martusamak", Asset: "hive_consensus", Expected: 15},
+}
+
 // MaxSafetySlashBurnDelayBlocks caps BurnDelayBlocks to avoid uint64 maturity
 // overflow and unbounded pending queues. ~115 days at 3s/block.
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
