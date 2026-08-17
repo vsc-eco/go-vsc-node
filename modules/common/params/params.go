@@ -127,17 +127,15 @@ var LEDGER_REMEDIATION_HEIGHT uint64 = 0
 // LedgerRemediation names one (account, asset) whose negative balance is
 // written off at LEDGER_REMEDIATION_HEIGHT.
 //
-// The credit is min(outstanding, Expected), where outstanding is computed from
-// the account's balance as of LEDGER_REMEDIATION_HEIGHT-1:
-//
-//	outstanding — a fixed amount would GIFT value to any account whose debt was
-//	              meanwhile absorbed by a new deposit (the negative
-//	              self-collects), so never credit more than is still negative.
-//	Expected    — the value observed on 2026-08-17, and a hard ceiling. The
-//	              outstanding figure is derived at runtime, so this bounds the
-//	              credit to a reviewed, committed number. It fails safe: a
-//	              balance that drifted further negative is only partly written
-//	              off, leaving a harmless residual rather than minting.
+// The credited amount is NOT taken from this table: it is the account's
+// outstanding negative as of LEDGER_REMEDIATION_HEIGHT-1, so every listed
+// balance ends at exactly zero. A fixed amount would GIFT spendable value to
+// any account whose debt was meanwhile absorbed by a new deposit (the negative
+// self-collects). Expected is the value observed on 2026-08-17: documentation,
+// logged and compared so drift is visible, never used to decide the credit.
+// There is deliberately no ceiling — raising a negative to zero never gives the
+// account spendable funds, so a ceiling would only risk leaving a residual that
+// needed a second coordinated deploy to clear.
 type LedgerRemediation struct {
 	Account  string
 	Asset    string
