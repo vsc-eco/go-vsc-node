@@ -38,14 +38,11 @@ import (
 // after a crash recomputes the same amount instead of seeing an
 // already-corrected 0 and zeroing the fix out.
 //
-// The credit is min(outstanding, Expected), so it is bounded on both sides:
-// never more than is actually negative (crediting a fixed amount would GIFT
-// value to an account whose debt had meanwhile been absorbed by a new deposit —
-// the negative self-collects when the account next funds that asset), and never
-// more than the reviewed table value (the outstanding figure is derived at
-// runtime, so the cap keeps a pathological read from minting). Capping fails
-// safe: the worst case is a small residual negative, harmless now that nothing
-// halts on it, and finishable by a later pinned height.
+// The credit is exactly the outstanding negative, so every listed balance ends
+// at zero. It is never the table's Expected figure: if the account funded that
+// asset before activation the negative self-collects, and crediting a fixed
+// amount would hand over spendable value. Expected is documentation — logged
+// and compared so drift is visible, never used to decide the credit.
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// 0 disables (testnet/devnet, and mainnet until the height is pinned).
 	if params.LEDGER_REMEDIATION_HEIGHT == 0 || blockHeight != params.LEDGER_REMEDIATION_HEIGHT {
@@ -68,32 +65,30 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			continue
 		}
 
-		// amount = min(outstanding, Expected). Both bounds matter:
+		// Credit exactly the outstanding negative: the goal is a zero balance,
+		// so anything less leaves a residual that would need a second
+		// coordinated height-gated deploy to finish.
 		//
-		//   outstanding  — never credit more than is actually negative, or an
-		//                  account whose debt was absorbed by a later deposit
-		//                  would be GIFTED value.
-		//   Expected     — never credit more than the reviewed, committed table
-		//                  value. The outstanding amount is derived at runtime,
-		//                  so without this the credit would be unbounded if a
-		//                  balance ever read pathologically negative. Capping
-		//                  fails SAFE: the worst case is a small residual
-		//                  negative, which is now harmless (nothing halts on
-		//                  it) and can be finished by a later pinned height.
-		outstanding := -bal
-		amount := outstanding
-		if amount > rem.Expected {
-			log.Warn("ledger remediation: outstanding exceeds the reviewed expectation; capping",
+		// The one bound that matters is already implicit — we credit the
+		// outstanding amount and nothing more. That is what stops a windfall:
+		// if the account funded the asset before activation, the negative has
+		// self-collected and `bal >= 0` skipped it above; if it partly
+		// self-collected, only the remainder is credited. Crediting a fixed
+		// table amount instead WOULD hand over spendable value.
+		//
+		// There is deliberately no ceiling on this figure. Raising a negative
+		// to zero never gives the account spendable funds — they can spend
+		// exactly 0 afterwards — so a large outstanding amount is not a mint,
+		// only a larger recorded loss on the (keyless, double-entry) shortfall
+		// account. A ceiling would buy no protection and could only prevent the
+		// write-off from doing its job. Drift from the reviewed figure is
+		// surfaced loudly below instead.
+		amount := -bal
+		if amount != rem.Expected {
+			log.Warn("ledger remediation: outstanding differs from the reviewed expectation; crediting the live amount",
 				"account", rem.Account, "asset", rem.Asset,
-				"outstanding", outstanding, "expected", rem.Expected,
-				"crediting", rem.Expected, "residual", outstanding-rem.Expected)
-			amount = rem.Expected
-		} else if amount < rem.Expected {
-			// Partly absorbed since the table was captured — credit only what
-			// is still owed. Not an error.
-			log.Info("ledger remediation: debt partly absorbed; crediting the remainder",
-				"account", rem.Account, "asset", rem.Asset,
-				"crediting", amount, "expected", rem.Expected)
+				"crediting", amount, "expected", rem.Expected,
+				"drift", amount-rem.Expected)
 		}
 
 		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", blockHeight, rem.Account, rem.Asset)

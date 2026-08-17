@@ -266,36 +266,36 @@ func TestLedgerRemediation_MainnetTableIsWellFormed(t *testing.T) {
 	assert.Equal(t, int64(10015), total["hive_consensus"], "hive_consensus total")
 }
 
-// ★ THE CAP. The outstanding amount is derived from live state, so it is
-// bounded by the reviewed table value. A balance that drifted further negative
-// than recorded is only partly written off — the residual is harmless (nothing
-// halts on it) and can be finished at a later pinned height. Without the cap a
-// pathological balance read would mint an unbounded credit.
-func TestLedgerRemediation_CapsCreditAtExpected(t *testing.T) {
+// Drift past the reviewed figure is credited IN FULL — the goal is a zero
+// balance, and a residual would need a second coordinated height-gated deploy
+// to clear. There is deliberately no ceiling: raising a negative to zero never
+// gives the account spendable funds, so a large outstanding amount is a larger
+// recorded loss on the shortfall account, not a mint.
+func TestLedgerRemediation_DriftIsCreditedInFull(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
 	env := newTestEnv()
-	// Drifted well past the reviewed figure.
 	seedNegative(env, "hive:dhedge", "hbd_savings", -10_000)
 
 	env.SE.ApplyLedgerRemediation(remediationTestHeight)
 
 	credits := remediationRows(env, "hive:dhedge")
 	assert.Len(t, credits, 1)
-	assert.Equal(t, int64(283), credits[0].Amount,
-		"credit must be capped at the reviewed Expected, never the live 10000")
+	assert.Equal(t, int64(10_000), credits[0].Amount,
+		"the live outstanding amount is credited, not the stale table figure")
 
 	debits := remediationRows(env, params.LedgerShortfallAccount)
-	assert.Equal(t, int64(-283), debits[0].Amount, "the paired debit must match the capped credit")
+	assert.Equal(t, int64(-10_000), debits[0].Amount,
+		"the shortfall account absorbs the full loss — supply stays conserved")
 
-	assert.Equal(t, int64(-9717),
+	assert.Equal(t, int64(0),
 		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"),
-		"a residual negative is the fail-safe outcome, not a minted credit")
+		"the balance must reach zero; a residual would need another deploy to clear")
 }
 
-// The cap must not disturb replay determinism: capped runs stay idempotent too.
-func TestLedgerRemediation_CappedCreditIsIdempotent(t *testing.T) {
+// Drifted emissions must replay byte-identically too.
+func TestLedgerRemediation_DriftedCreditIsIdempotent(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
@@ -307,6 +307,8 @@ func TestLedgerRemediation_CappedCreditIsIdempotent(t *testing.T) {
 	env.SE.ApplyLedgerRemediation(remediationTestHeight)
 	second := remediationRows(env, "hive:dhedge")
 
-	assert.Equal(t, first, second, "capped emission must replay byte-identically")
+	assert.Equal(t, first, second, "drifted emission must replay byte-identically")
 	assert.Len(t, second, 1, "no second credit row")
+	assert.Equal(t, int64(0),
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"))
 }
