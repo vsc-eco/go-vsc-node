@@ -122,6 +122,12 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // pinned). MUST be set to a height comfortably in the future of the deploy
 // decision before release — see PENDULUM_FEE_FIX_HEIGHT for the convention
 // (~6h / 7200 blocks @3s).
+//
+// ⚠ MUST BE A MULTIPLE OF SlotLength (10). The emission is driven from
+// se.slotStatus.SlotHeight, and CalculateSlotInfo floors every block to
+// blockHeight - (blockHeight %% SlotLength), so a height off a slot boundary is
+// never reached and the remediation silently never fires.
+// TestLedgerRemediation_HeightMustBeOnASlotBoundary enforces this at CI time.
 var LEDGER_REMEDIATION_HEIGHT uint64 = 0
 
 // LedgerRemediation names one (account, asset) whose negative balance is

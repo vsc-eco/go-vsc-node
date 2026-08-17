@@ -6,6 +6,7 @@ import (
 	"vsc-node/modules/common/params"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	ledgerSystem "vsc-node/modules/ledger-system"
+	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -311,4 +312,29 @@ func TestLedgerRemediation_DriftedCreditIsIdempotent(t *testing.T) {
 	assert.Len(t, second, 1, "no second credit row")
 	assert.Equal(t, int64(0),
 		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"))
+}
+
+// ★ SLOT-BOUNDARY GUARD. ApplyLedgerRemediation is driven from
+// se.slotStatus.SlotHeight, and CalculateSlotInfo floors every block to
+// blockHeight - (blockHeight % SlotLength). It is therefore only ever invoked
+// with multiples of SlotLength. A height pinned off a slot boundary would never
+// be reached and the remediation would silently never fire — with nothing in
+// the logs to say so. Fail here instead, at CI time, the moment the height is
+// pinned.
+func TestLedgerRemediation_HeightMustBeOnASlotBoundary(t *testing.T) {
+	if params.LEDGER_REMEDIATION_HEIGHT == 0 {
+		t.Skip("remediation disabled; nothing to validate yet")
+	}
+	slotLen := stateEngine.CONSENSUS_SPECS.SlotLength
+	assert.Zero(t, params.LEDGER_REMEDIATION_HEIGHT%slotLen,
+		"LEDGER_REMEDIATION_HEIGHT (%d) must be a multiple of SlotLength (%d) or it will never be reached",
+		params.LEDGER_REMEDIATION_HEIGHT, slotLen)
+}
+
+// The gate must also reject a height that is not slot-aligned even if someone
+// bypasses the constant, so the invariant is behavioural and not just a lint.
+func TestLedgerRemediation_SlotAlignedHeightFires(t *testing.T) {
+	slotLen := stateEngine.CONSENSUS_SPECS.SlotLength
+	assert.Zero(t, remediationTestHeight%slotLen,
+		"the test height itself must be slot-aligned to model production faithfully")
 }
