@@ -65,10 +65,17 @@ func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) error {
 // hbd_interest_<h>_<index> scheme. Account-keyed rows (id contains '#') are left
 // intact, so this is safe to call on every ClaimHBDInterest reprocess and is a
 // no-op once a block holds only new-scheme rows. See ClaimHBDInterest.
-func (ledger *ledger) DeleteLegacyInterestRecords(recordBlockHeight uint64) error {
+func (ledger *ledger) DeleteLegacyInterestRecords(recordBlockHeight uint64, owners []string) error {
+	// Scoped to `owners` on purpose: only accounts that receive a replacement
+	// account-keyed row may have their legacy row dropped. Deleting a legacy
+	// row for an account we do NOT rewrite would destroy that credit outright.
+	if len(owners) == 0 {
+		return nil
+	}
 	_, err := ledger.DeleteMany(context.Background(), bson.M{
 		"t":            "interest",
 		"block_height": recordBlockHeight,
+		"owner":        bson.M{"$in": owners},
 		"id":           bson.M{"$not": primitive.Regex{Pattern: "#"}},
 	})
 	return err

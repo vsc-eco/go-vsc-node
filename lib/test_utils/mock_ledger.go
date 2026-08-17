@@ -92,11 +92,22 @@ func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error
 // DeleteLegacyInterestRecords mirrors the production delete: drop interest rows
 // at recordBlockHeight whose Id has no '#' (the old index-based scheme), leaving
 // account-keyed rows intact.
-func (m *MockLedgerDb) DeleteLegacyInterestRecords(recordBlockHeight uint64) error {
+func (m *MockLedgerDb) DeleteLegacyInterestRecords(recordBlockHeight uint64, owners []string) error {
+	if len(owners) == 0 {
+		return nil
+	}
+	scope := make(map[string]bool, len(owners))
+	for _, o := range owners {
+		scope[o] = true
+	}
 	for owner, records := range m.LedgerRecords {
 		kept := make([]ledgerDb.LedgerRecord, 0, len(records))
 		for _, r := range records {
-			if r.Type == "interest" && r.BlockHeight == recordBlockHeight && !strings.Contains(r.Id, "#") {
+			// Match the real query: scoped by the record's Owner field, not the
+			// map key, so an account that gets no replacement row keeps its
+			// legacy credit.
+			if r.Type == "interest" && r.BlockHeight == recordBlockHeight &&
+				!strings.Contains(r.Id, "#") && scope[r.Owner] {
 				continue
 			}
 			kept = append(kept, r)

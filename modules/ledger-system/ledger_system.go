@@ -914,49 +914,83 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// shares that were genuinely written to the ledger). This keeps balances
 	// byte-for-byte IDENTICAL to pristine (no new credit anywhere) while the
 	// claim RECEIPT stops overstating. Track the running total below.
-	// Reprocess idempotency (2026-08-14): this claim's interest rows may already
-	// exist under the OLD index-based id scheme (hbd_interest_<h>_<idx>, no '#')
-	// from a prior run on a pre-#241 binary. Those rows are keyed differently
-	// from the account-keyed rows written below, so a reprocess would otherwise
-	// leave BOTH and DOUBLE-CREDIT hbd_savings — a balance divergence of exactly
-	// the class that halted mainnet. Drop only the legacy (no-'#') rows for this
-	// block, once, up front; account-keyed rows are overwritten by the upserts
-	// below (and multiple interest ops in one block keep distinct '#'-ids, so
-	// they survive). Fail-stop like every other write on this deterministic path.
-	blockingRetry(
-		fmt.Sprintf("ClaimHBDInterest.DeleteLegacyInterestRecords(@%d)", blockHeight+1),
-		func() error {
-			return ls.LedgerDb.DeleteLegacyInterestRecords(blockHeight + 1)
-		},
-	)
-
-	distributed := int64(0)
+	// Resolve every credit BEFORE touching the ledger. The legacy-row delete
+	// below MUST be scoped to exactly the accounts that get a replacement row,
+	// so this pass computes the full (owner, amount) set first.
+	//
+	// ★ Why scoping matters: an account can be dropped before it ever reaches
+	// the write loop — endingAvg < 1, an overflow guard, a non-fr system:
+	// account, or a floor-division share of 0. A blanket delete of every legacy
+	// (no-'#') row at this height would erase such an account's historical
+	// interest credit and write NOTHING back, silently lowering its
+	// hbd_savings — the exact shape of the over-debits that left ten mainnet
+	// accounts with negative balances. Deleting only what we rewrite keeps the
+	// reprocess idempotent without ever destroying a credit.
+	type interestCredit struct {
+		// account is the ledger_balances key and the id suffix. owner is where
+		// the credit lands (they differ only for system:fr_balance -> DAO
+		// wallet). Keeping both is load-bearing: the id MUST stay keyed on
+		// account, or the fr_balance row would upsert under a second id and
+		// double-credit on reprocess.
+		account string
+		owner   string
+		amount  int64
+	}
+	credits := make([]interestCredit, 0, len(processedBalRecords))
 	for _, balance := range processedBalRecords {
-		// if balance.HBD_AVG == 0 {
-		// 	continue
-		// }
-
 		// Overflow-safe HBD_AVG * amount / totalAvg — see review4 HIGH #15.
 		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvgBig)
 		if !okDist {
 			log.Warn("ClaimHBD distributeAmt overflows int64", "account", balance.Account)
 			continue
 		}
-
-		if distributeAmt > 0 {
-			var owner string
-			if strings.HasPrefix(balance.Account, "system:") {
-				if balance.Account == "system:fr_balance" {
-					owner = params.DAO_WALLET
-				} else {
-					//Filter
-					continue
-				}
+		if distributeAmt <= 0 {
+			continue
+		}
+		var owner string
+		if strings.HasPrefix(balance.Account, "system:") {
+			if balance.Account == "system:fr_balance" {
+				owner = params.DAO_WALLET
 			} else {
-				owner = balance.Account
+				//Filter
+				continue
 			}
+		} else {
+			owner = balance.Account
+		}
+		credits = append(credits, interestCredit{account: balance.Account, owner: owner, amount: distributeAmt})
+	}
+
+	// Reprocess idempotency (2026-08-14): this claim's interest rows may already
+	// exist under the OLD index-based id scheme (hbd_interest_<h>_<idx>, no '#')
+	// from a prior run on a pre-#241 binary. Those rows are keyed differently
+	// from the account-keyed rows written below, so a reprocess would otherwise
+	// leave BOTH and DOUBLE-CREDIT hbd_savings — a balance divergence of exactly
+	// the class that halted mainnet. Drop the legacy (no-'#') rows for this
+	// block, but ONLY for the accounts rewritten below; account-keyed rows are
+	// overwritten by the upserts (and multiple interest ops in one block keep
+	// distinct '#'-ids, so they survive). Fail-stop like every other write on
+	// this deterministic path.
+	if len(credits) > 0 {
+		owners := make([]string, 0, len(credits))
+		for _, c := range credits {
+			owners = append(owners, c.owner)
+		}
+		blockingRetry(
+			fmt.Sprintf("ClaimHBDInterest.DeleteLegacyInterestRecords(@%d)", blockHeight+1),
+			func() error {
+				return ls.LedgerDb.DeleteLegacyInterestRecords(blockHeight+1, owners)
+			},
+		)
+	}
+
+	distributed := int64(0)
+	for _, c := range credits {
+		{
+			owner, distributeAmt := c.owner, c.amount
 
 			// Key the record on the ACCOUNT, not on a loop index.
+			// (c.account, NOT owner — see interestCredit above.)
 			//
 			// processedBalRecords is ordered by BalanceDb.GetAll, which walks
 			// a Mongo Distinct("account") — Distinct defines NO order, so the
@@ -1012,7 +1046,7 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 				fmt.Sprintf("ClaimHBDInterest.StoreLedger(%s @%d)", owner, blockHeight),
 				func() error {
 					return ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-						Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + txId + "#" + balance.Account,
+						Id: "hbd_interest_" + strconv.Itoa(int(blockHeight)) + "_" + txId + "#" + c.account,
 						//next block
 						BlockHeight: blockHeight + 1,
 						Amount:      int64(distributeAmt),

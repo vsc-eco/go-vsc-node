@@ -88,3 +88,73 @@ func TestClaimHBDInterest_TwoOpsSameBlock_DistinctIds(t *testing.T) {
 	assert.Contains(t, ids, "hbd_interest_200_0#hive:alice")
 	assert.Contains(t, ids, "hbd_interest_200_1#hive:alice")
 }
+
+// TestClaimHBDInterest_SkippedAccount_KeepsLegacyRow is the regression test for
+// the scoped legacy-row delete.
+//
+// The delete used to be unconditional for the whole block: every legacy
+// (no-'#') interest row at the height was dropped up front, and only accounts
+// that survived to the write loop got a replacement. An account filtered out
+// earlier — endingAvg < 1 (ledger_system.go), an overflow guard, or a
+// floor-division share of 0 — therefore had its historical interest credit
+// DELETED with nothing written back, silently lowering its hbd_savings. That is
+// exactly the shape of the over-debits that left ten mainnet accounts with
+// negative balances, and it would have fired on the first reprocess of an old
+// interest block.
+//
+// alice is credited (legacy row must be replaced by the account-keyed row).
+// bob has zero savings and zero avg, so he is skipped — his legacy row must
+// SURVIVE untouched.
+func TestClaimHBDInterest_SkippedAccount_KeepsLegacyRow(t *testing.T) {
+	ls, lDb, _ := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
+		"hive:alice": {{
+			Account: "hive:alice", BlockHeight: 100, HBD_SAVINGS: 1000,
+			HBD_AVG: 0, HBD_CLAIM_HEIGHT: 100, HBD_MODIFY_HEIGHT: 100,
+		}},
+		// Zero savings and zero accumulated average -> endingAvg < 1 -> skipped.
+		"hive:bob": {{
+			Account: "hive:bob", BlockHeight: 100, HBD_SAVINGS: 0,
+			HBD_AVG: 0, HBD_CLAIM_HEIGHT: 100, HBD_MODIFY_HEIGHT: 100,
+		}},
+	})
+	if lDb.LedgerRecords == nil {
+		lDb.LedgerRecords = map[string][]ledgerDb.LedgerRecord{}
+	}
+
+	// Both accounts were paid under the pre-#241 index-based id scheme.
+	lDb.LedgerRecords["hive:alice"] = append(lDb.LedgerRecords["hive:alice"], ledgerDb.LedgerRecord{
+		Id: "hbd_interest_200_0", BlockHeight: 201, Amount: 50,
+		Asset: "hbd_savings", Owner: "hive:alice", Type: "interest",
+	})
+	lDb.LedgerRecords["hive:bob"] = append(lDb.LedgerRecords["hive:bob"], ledgerDb.LedgerRecord{
+		Id: "hbd_interest_200_1", BlockHeight: 201, Amount: 7,
+		Asset: "hbd_savings", Owner: "hive:bob", Type: "interest",
+	})
+
+	ls.ClaimHBDInterest(100, 200, 50, "0")
+
+	// alice: exactly one interest row, account-keyed, no double credit.
+	aliceRows, aliceTotal := 0, int64(0)
+	for _, r := range lDb.LedgerRecords["hive:alice"] {
+		if r.Type == "interest" {
+			aliceRows++
+			aliceTotal += r.Amount
+			assert.Contains(t, r.Id, "#", "alice's legacy row must be replaced by the account-keyed row")
+		}
+	}
+	assert.Equal(t, 1, aliceRows, "alice must not keep both legacy and new rows")
+	assert.Equal(t, int64(50), aliceTotal, "alice must not be double-credited")
+
+	// bob: skipped by the distribution, so his legacy credit must still be there.
+	bobRows, bobTotal := 0, int64(0)
+	for _, r := range lDb.LedgerRecords["hive:bob"] {
+		if r.Type == "interest" {
+			bobRows++
+			bobTotal += r.Amount
+		}
+	}
+	assert.Equal(t, 1, bobRows,
+		"a skipped account's legacy interest row must NOT be deleted — nothing replaces it")
+	assert.Equal(t, int64(7), bobTotal,
+		"deleting a skipped account's credit silently debits it (the negative-balance bug)")
+}
