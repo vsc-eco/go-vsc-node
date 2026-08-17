@@ -133,7 +133,11 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // blockHeight - (blockHeight %% SlotLength), so a height off a slot boundary is
 // never reached and the remediation silently never fires.
 // TestLedgerRemediation_HeightMustBeOnASlotBoundary enforces this at CI time.
-var LEDGER_REMEDIATION_HEIGHT uint64 = 0
+// PINNED 2026-08-17: head was 109,112,370, +57,600 blocks = ~2 days at 3s,
+// slot-aligned. Chosen so the fleet's hourly watchtower poll has ~48 cycles
+// to roll the binary out before the write-off fires. Clear of the next
+// interest claim (~109,788,523).
+var LEDGER_REMEDIATION_HEIGHT uint64 = 109169970
 
 // LedgerRemediation names one (account, asset) whose negative balance is
 // written off at LEDGER_REMEDIATION_HEIGHT.
