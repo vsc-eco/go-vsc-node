@@ -103,8 +103,13 @@ var ProtocolSlashFinalizeCursorAccount = "system:protocol_slash_finalize_cursor"
 // system on L1, so each negative is a realized loss, not a collectible debt.
 //
 // Writing the negatives off single-sided would erase the record of that loss,
-// so the credit is booked double-entry against this account. Its balance is
-// therefore the permanent, queryable total of value the protocol over-paid.
+// so the credit is booked double-entry against this account.
+//
+// Note its ledger_balances row reads 0, not the total: the paired debit is a
+// protocol-meta type (LedgerTypeRemediationDebit), deliberately excluded from
+// every spendable fold so the write-off does not park a fresh permanent
+// negative on a system account. The audit trail is the raw remediation_debit
+// rows in the ledger collection, which are never removed.
 var LedgerShortfallAccount = "system:ledger_shortfall"
 
 // LEDGER_REMEDIATION_HEIGHT is the mainnet activation height (Hive L1 block) at

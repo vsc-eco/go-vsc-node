@@ -81,6 +81,13 @@ var hiveConsensusLedgerOps = []string{
 	"consensus_unstake",
 	LedgerTypeSafetySlashConsensus,
 	LedgerTypeSafetySlashConsensusReverse,
+	// The one-time legacy write-off credits hive_consensus for two accounts
+	// (see params.LEDGER_REMEDIATIONS). It is a fifth mutator, so it belongs
+	// here: GetBalance counts every non-meta row and would otherwise disagree
+	// with GetConsensusBalanceAt, which filters on this list — exactly the
+	// silent drift the comment above forbids, and it would reach the bond
+	// inclusion gate.
+	LedgerTypeRemediationCredit,
 }
 
 // Used to represent the global ledger state in the execution environment

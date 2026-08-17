@@ -43,18 +43,48 @@ import (
 // asset before activation the negative self-collects, and crediting a fixed
 // amount would hand over spendable value. Expected is documentation — logged
 // and compared so drift is visible, never used to decide the credit.
+// LedgerRemediationCatchupBlocks is how long after the activation height a node
+// may still apply the write-off. It exists because the emission is driven from
+// the slot-TRANSITION branch, which a restart can skip entirely: a node stopped
+// inside slot R resumes with slotStatus initialised to the slot it resumes in,
+// so the transition for R never fires. Exact-equality gating therefore made a
+// restart across the activation slot silently skip the remediation forever —
+// and with watchtower auto-updates restarting nodes at arbitrary times that is
+// likely, not theoretical. ~1 day at 3s blocks.
+const LedgerRemediationCatchupBlocks = 28800
+
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
+	target := params.LEDGER_REMEDIATION_HEIGHT
 	// 0 disables (testnet/devnet, and mainnet until the height is pinned).
-	if params.LEDGER_REMEDIATION_HEIGHT == 0 || blockHeight != params.LEDGER_REMEDIATION_HEIGHT {
+	if target == 0 {
 		return
 	}
+	// At or past the activation height, within the catch-up window. NOT exact
+	// equality — see LedgerRemediationCatchupBlocks.
+	if blockHeight < target || blockHeight > target+LedgerRemediationCatchupBlocks {
+		return
+	}
+	// Bounded work: the records are upserts, so re-emitting is harmless, but
+	// there is no reason to rewrite them on every slot for a day. Once per
+	// process is enough; a restart re-runs it and lands on the same rows.
+	if se.ledgerRemediationDone {
+		return
+	}
+	se.ledgerRemediationDone = true
 	if se.LedgerState == nil || se.LedgerState.LedgerDb == nil {
 		log.Error("ledger remediation: no ledger db; skipping", "height", blockHeight)
 		return
 	}
 
-	// Settled state strictly before this height — see the determinism note.
-	readHeight := blockHeight - 1
+	// Everything below is keyed to the FIXED activation height, never to the
+	// slot we happened to notice in. A node that catches up late must emit
+	// byte-identical rows (same ids, same BlockHeight, same amounts) to one
+	// that fired exactly at the height, or the catch-up would itself become a
+	// divergence.
+	//
+	// Settled state strictly before the activation height — see the
+	// determinism note.
+	readHeight := target - 1
 
 	for _, rem := range params.LEDGER_REMEDIATIONS {
 		bal := se.LedgerState.GetBalance(rem.Account, readHeight, rem.Asset)
@@ -91,7 +121,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 				"drift", amount-rem.Expected)
 		}
 
-		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", blockHeight, rem.Account, rem.Asset)
+		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", target, rem.Account, rem.Asset)
 		debitID := creditID + "#shortfall"
 
 		// Double-entry: the shortfall account carries the permanent record of
@@ -101,7 +131,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			return se.LedgerState.LedgerDb.StoreLedger(
 				ledger_db.LedgerRecord{
 					Id:          creditID,
-					BlockHeight: blockHeight,
+					BlockHeight: target,
 					Amount:      amount,
 					Asset:       rem.Asset,
 					Owner:       rem.Account,
@@ -109,7 +139,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 				},
 				ledger_db.LedgerRecord{
 					Id:          debitID,
-					BlockHeight: blockHeight,
+					BlockHeight: target,
 					Amount:      -amount,
 					Asset:       rem.Asset,
 					Owner:       params.LedgerShortfallAccount,
@@ -120,7 +150,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 
 		log.Info("ledger remediation: negative balance written off",
 			"account", rem.Account, "asset", rem.Asset, "amount", amount,
-			"counterparty", params.LedgerShortfallAccount, "height", blockHeight)
+			"counterparty", params.LedgerShortfallAccount, "height", target, "appliedAtSlot", blockHeight)
 	}
 }
 

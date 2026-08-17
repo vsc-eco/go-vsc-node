@@ -142,6 +142,11 @@ type StateEngine struct {
 	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
 	// on LedgerSystem.GetBalance.
 	balanceDb ledgerDb.Balances
+	// ledgerRemediationDone stops the one-time legacy write-off from being
+	// re-emitted on every slot inside its catch-up window. Process-local by
+	// design: the records are upserts keyed to a fixed height, so a restart
+	// simply re-applies them onto the identical rows.
+	ledgerRemediationDone bool
 	// selfHiveUsername is the local node's Hive account name. Currently
 	// unused outside of tests now that settlement is leader-agnostic.
 	selfHiveUsername string
