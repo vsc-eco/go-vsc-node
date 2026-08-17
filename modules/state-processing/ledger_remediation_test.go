@@ -112,19 +112,64 @@ func TestLedgerRemediation_ReplayIsIdempotent(t *testing.T) {
 	assert.Equal(t, int64(-283), debits[0].Amount)
 }
 
-// Height gate: nothing may be emitted before or after the activation block, or
-// nodes replaying at different speeds would diverge.
-func TestLedgerRemediation_OnlyAtActivationHeight(t *testing.T) {
+// Height gate. Nothing may be emitted BEFORE the activation height, or nodes
+// replaying at different speeds would diverge. At or after it (within the
+// catch-up window) the emission fires — see LedgerRemediationCatchupBlocks: the
+// slot-transition branch is skippable across a restart, so exact equality would
+// let a node silently miss the remediation forever.
+func TestLedgerRemediation_NeverBeforeActivationHeight(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	for _, h := range []uint64{remediationTestHeight - 1, remediationTestHeight + 1, 1} {
+	for _, h := range []uint64{remediationTestHeight - 10, 10} {
 		env := newTestEnv()
 		seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 		env.SE.ApplyLedgerRemediation(h)
 		assert.Empty(t, remediationRows(env, "hive:dhedge"),
-			"no remediation may be emitted at height %d", h)
+			"no remediation may be emitted at height %d (before activation)", h)
 	}
+}
+
+// ★ RESTART CATCH-UP. A node stopped inside the activation slot resumes with
+// slotStatus initialised to the slot it resumes in, so the transition for the
+// activation slot never fires. Under exact-equality gating that node would
+// silently skip the write-off forever — permanent per-node divergence with
+// nothing in the logs. It must still apply when it notices later, and the rows
+// must be stamped at the ACTIVATION height, not the slot it noticed in, or the
+// catch-up would itself be a divergence.
+func TestLedgerRemediation_CatchesUpAfterARestartSkippedTheSlot(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+
+	onTime := newTestEnv()
+	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
+	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
+
+	// A node that missed the slot entirely and only reaches it 30 slots later.
+	late := newTestEnv()
+	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
+	late.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
+
+	lateRows := remediationRows(late, "hive:dhedge")
+	assert.Len(t, lateRows, 1, "a node that skipped the activation slot must still apply the write-off")
+	assert.Equal(t, remediationRows(onTime, "hive:dhedge"), lateRows,
+		"late catch-up must emit records IDENTICAL to the on-time node (same id, height, amount)")
+	assert.Equal(t, remediationTestHeight, lateRows[0].BlockHeight,
+		"rows must be stamped at the activation height, never the slot they were noticed in")
+}
+
+// Past the catch-up window the emission stops, so a node resyncing from far
+// behind cannot suddenly re-apply an ancient remediation out of nowhere.
+func TestLedgerRemediation_StopsAfterCatchupWindow(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newTestEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + stateEngine.LedgerRemediationCatchupBlocks + 10)
+	assert.Empty(t, remediationRows(env, "hive:dhedge"),
+		"beyond the catch-up window nothing may be emitted")
 }
 
 // A zero activation height disables the whole mechanism (testnet/devnet, and

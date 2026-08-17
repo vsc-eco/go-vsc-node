@@ -876,17 +876,48 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// while SaveClaim still recorded the full amount. Keep the accumulator in
 	// arbitrary precision so it can never wrap.
 	totalAvgBig := new(big.Int)
+
+	// Owners with at least one candidate account that ends up with NO
+	// replacement row. Legacy interest rows carry only `owner`, never the
+	// account, so accounts sharing an owner (system:fr_balance credits
+	// DAO_WALLET, and the DAO wallet is itself a real account) are
+	// indistinguishable in the delete below. Dropping such an owner's rows
+	// while rewriting only one of them would destroy the other's credit — the
+	// very failure the scoping exists to prevent — so any owner with a skipped
+	// candidate is excluded from the delete entirely.
+	//
+	// Most skips happen in THIS loop (endingAvg < 1 and the height guards), not
+	// in the distribution loop, so the tracking has to start here.
+	skippedOwners := map[string]bool{}
+	ownerOf := func(account string) (string, bool) {
+		if strings.HasPrefix(account, "system:") {
+			if account == "system:fr_balance" {
+				return params.DAO_WALLET, true
+			}
+			return "", false
+		}
+		return account, true
+	}
+	markSkipped := func(account string) {
+		if o, mapped := ownerOf(account); mapped {
+			skippedOwners[o] = true
+		}
+	}
+
 	//Ensure averages have been updated before distribution;
 	for _, balance := range ledgerBalances {
 
 		if blockHeight <= balance.HBD_CLAIM_HEIGHT {
+			markSkipped(balance.Account)
 			continue // Avoid underflow when claim height is at or beyond current block
 		}
 		B := blockHeight - balance.HBD_CLAIM_HEIGHT //Total blocks since last claim
 		if B == 0 {
+			markSkipped(balance.Account)
 			continue //Avoid division by zero when claim height equals block height
 		}
 		if blockHeight <= balance.HBD_MODIFY_HEIGHT {
+			markSkipped(balance.Account)
 			continue // Avoid underflow when modify height is at or beyond current block
 		}
 		A := blockHeight - balance.HBD_MODIFY_HEIGHT //Blocks since last balance modification
@@ -897,11 +928,13 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 		endingAvg, okAvg := computeEndingAvg(balance.HBD_AVG, balance.HBD_SAVINGS, int64(A), int64(B))
 		if !okAvg {
 			log.Warn("ClaimHBD endingAvg overflows int64", "account", balance.Account)
+			markSkipped(balance.Account)
 			continue
 		}
 
 		if endingAvg < 1 {
 			log.Verbose("ClaimHBD endingAvg sub-zero", "account", balance.Account, "avg", endingAvg)
+			markSkipped(balance.Account)
 			continue
 		}
 
@@ -954,24 +987,20 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	credits := make([]interestCredit, 0, len(processedBalRecords))
 	for _, balance := range processedBalRecords {
 		// Overflow-safe HBD_AVG * amount / totalAvg — see review4 HIGH #15.
+		owner, mapped := ownerOf(balance.Account)
 		distributeAmt, okDist := computeDistributeAmount(balance.HBD_AVG, amount, totalAvgBig)
 		if !okDist {
 			log.Warn("ClaimHBD distributeAmt overflows int64", "account", balance.Account)
+			markSkipped(balance.Account)
 			continue
 		}
 		if distributeAmt <= 0 {
+			markSkipped(balance.Account)
 			continue
 		}
-		var owner string
-		if strings.HasPrefix(balance.Account, "system:") {
-			if balance.Account == "system:fr_balance" {
-				owner = params.DAO_WALLET
-			} else {
-				//Filter
-				continue
-			}
-		} else {
-			owner = balance.Account
+		if !mapped {
+			//Filter: non-fr system accounts never receive interest.
+			continue
 		}
 		credits = append(credits, interestCredit{account: balance.Account, owner: owner, amount: distributeAmt})
 	}
@@ -987,16 +1016,23 @@ func (ls *ledgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, a
 	// distinct '#'-ids, so they survive). Fail-stop like every other write on
 	// this deterministic path.
 	if len(credits) > 0 {
+		seenOwner := map[string]bool{}
 		owners := make([]string, 0, len(credits))
 		for _, c := range credits {
+			if skippedOwners[c.owner] || seenOwner[c.owner] {
+				continue
+			}
+			seenOwner[c.owner] = true
 			owners = append(owners, c.owner)
 		}
-		blockingRetry(
-			fmt.Sprintf("ClaimHBDInterest.DeleteLegacyInterestRecords(@%d)", blockHeight+1),
-			func() error {
-				return ls.LedgerDb.DeleteLegacyInterestRecords(blockHeight+1, owners)
-			},
-		)
+		if len(owners) > 0 {
+			blockingRetry(
+				fmt.Sprintf("ClaimHBDInterest.DeleteLegacyInterestRecords(@%d)", blockHeight+1),
+				func() error {
+					return ls.LedgerDb.DeleteLegacyInterestRecords(blockHeight+1, owners)
+				},
+			)
+		}
 	}
 
 	distributed := int64(0)
