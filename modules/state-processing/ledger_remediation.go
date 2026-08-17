@@ -38,10 +38,14 @@ import (
 // after a crash recomputes the same amount instead of seeing an
 // already-corrected 0 and zeroing the fix out.
 //
-// Only still-negative balances are credited, and only up to zero. A fixed
-// per-account amount would gift value to an account whose debt had meanwhile
-// been absorbed by a new deposit (the negative self-collects when the account
-// next funds that asset).
+// The credit is min(outstanding, Expected), so it is bounded on both sides:
+// never more than is actually negative (crediting a fixed amount would GIFT
+// value to an account whose debt had meanwhile been absorbed by a new deposit —
+// the negative self-collects when the account next funds that asset), and never
+// more than the reviewed table value (the outstanding figure is derived at
+// runtime, so the cap keeps a pathological read from minting). Capping fails
+// safe: the worst case is a small residual negative, harmless now that nothing
+// halts on it, and finishable by a later pinned height.
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// 0 disables (testnet/devnet, and mainnet until the height is pinned).
 	if params.LEDGER_REMEDIATION_HEIGHT == 0 || blockHeight != params.LEDGER_REMEDIATION_HEIGHT {
@@ -64,11 +68,30 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			continue
 		}
 
-		amount := -bal
-		if amount != rem.Expected {
-			// Documentation drift, not an error: the account moved since the
-			// table was captured. The computed amount is authoritative.
-			log.Warn("ledger remediation: outstanding amount differs from the recorded expectation",
+		// amount = min(outstanding, Expected). Both bounds matter:
+		//
+		//   outstanding  — never credit more than is actually negative, or an
+		//                  account whose debt was absorbed by a later deposit
+		//                  would be GIFTED value.
+		//   Expected     — never credit more than the reviewed, committed table
+		//                  value. The outstanding amount is derived at runtime,
+		//                  so without this the credit would be unbounded if a
+		//                  balance ever read pathologically negative. Capping
+		//                  fails SAFE: the worst case is a small residual
+		//                  negative, which is now harmless (nothing halts on
+		//                  it) and can be finished by a later pinned height.
+		outstanding := -bal
+		amount := outstanding
+		if amount > rem.Expected {
+			log.Warn("ledger remediation: outstanding exceeds the reviewed expectation; capping",
+				"account", rem.Account, "asset", rem.Asset,
+				"outstanding", outstanding, "expected", rem.Expected,
+				"crediting", rem.Expected, "residual", outstanding-rem.Expected)
+			amount = rem.Expected
+		} else if amount < rem.Expected {
+			// Partly absorbed since the table was captured — credit only what
+			// is still owed. Not an error.
+			log.Info("ledger remediation: debt partly absorbed; crediting the remainder",
 				"account", rem.Account, "asset", rem.Asset,
 				"crediting", amount, "expected", rem.Expected)
 		}
