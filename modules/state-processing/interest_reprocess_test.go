@@ -1,7 +1,6 @@
 package state_engine_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -160,20 +159,24 @@ func TestClaimHBDInterest_SkippedAccount_KeepsLegacyRow(t *testing.T) {
 		"deleting a skipped account's credit silently debits it (the negative-balance bug)")
 }
 
-// TestClaimHBDInterest_SharedOwner_SkippedAccountKeepsLegacyRow covers the
-// owner-collision hole in the scoped delete.
+// TestClaimHBDInterest_SharedOwner_NoDoubleCredit pins the per-owner symmetry
+// of the scoped delete.
 //
-// Legacy interest rows carry only `owner`, never the account, so two accounts
-// that map to the SAME owner are indistinguishable in the delete:
-// system:fr_balance credits the DAO wallet, and the DAO wallet is itself a
-// real balance-bearing account (76 balance rows on mainnet). Scoping the
-// delete purely by owner would drop BOTH legacy rows while writing only the
-// one replacement that qualified — destroying a credit, which is precisely
-// what the scoping exists to prevent. Any owner with a skipped candidate is
-// therefore excluded from the delete entirely.
-func TestClaimHBDInterest_SharedOwner_SkippedAccountKeepsLegacyRow(t *testing.T) {
+// Interest is credited to an OWNER, and system:fr_balance credits DAO_WALLET,
+// which is itself a real balance-bearing account (76 balance rows on mainnet).
+// Legacy rows carry only `owner`, never the account, so the two are
+// indistinguishable in the delete. The delete and the writes must therefore
+// stay symmetric per owner: for any owner we credit, drop ALL its legacy rows
+// and write ALL its new rows, so the ledger nets to exactly what this
+// recomputation says the owner is owed.
+//
+// The tempting alternative — excluding an owner that has a skipped account —
+// leaves the REPLACED account's own legacy row sitting next to its replacement
+// and double-credits the owner. This test asserts the total, not merely that
+// rows exist, because a row-count assertion is exactly what let that bug hide.
+func TestClaimHBDInterest_SharedOwner_NoDoubleCredit(t *testing.T) {
 	ls, lDb, _ := newLedgerEnvWithClaims(map[string][]ledgerDb.BalanceRecord{
-		// Credited: produces a replacement row owned by the DAO wallet.
+		// Credited: its replacement row is owned by the DAO wallet.
 		"system:fr_balance": {{
 			Account: "system:fr_balance", BlockHeight: 100, HBD_SAVINGS: 1000,
 			HBD_AVG: 0, HBD_CLAIM_HEIGHT: 100, HBD_MODIFY_HEIGHT: 100,
@@ -187,8 +190,13 @@ func TestClaimHBDInterest_SharedOwner_SkippedAccountKeepsLegacyRow(t *testing.T)
 	if lDb.LedgerRecords == nil {
 		lDb.LedgerRecords = map[string][]ledgerDb.LedgerRecord{}
 	}
-	// A prior pre-#241 run paid the DAO wallet under the legacy id scheme.
+	// A prior pre-#241 run paid both under the legacy id scheme; both rows are
+	// owned by the DAO wallet and cannot be told apart.
 	lDb.LedgerRecords["hive:vsc.dao"] = append(lDb.LedgerRecords["hive:vsc.dao"],
+		ledgerDb.LedgerRecord{
+			Id: "hbd_interest_200_3", BlockHeight: 201, Amount: 50,
+			Asset: "hbd_savings", Owner: "hive:vsc.dao", Type: "interest",
+		},
 		ledgerDb.LedgerRecord{
 			Id: "hbd_interest_200_7", BlockHeight: 201, Amount: 42,
 			Asset: "hbd_savings", Owner: "hive:vsc.dao", Type: "interest",
@@ -196,16 +204,15 @@ func TestClaimHBDInterest_SharedOwner_SkippedAccountKeepsLegacyRow(t *testing.T)
 
 	ls.ClaimHBDInterest(100, 200, 50, "0")
 
-	var legacyTotal int64
-	legacyRows := 0
-	for _, r := range lDb.LedgerRecords["hive:vsc.dao"] {
-		if r.Type == "interest" && !strings.Contains(r.Id, "#") {
-			legacyRows++
-			legacyTotal += r.Amount
+	var total int64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Type == "interest" && r.Owner == "hive:vsc.dao" {
+				total += r.Amount
+			}
 		}
 	}
-	assert.Equal(t, 1, legacyRows,
-		"the DAO wallet's legacy row must survive: it shares an owner with a credited "+
-			"account but was itself skipped, so nothing replaces it")
-	assert.Equal(t, int64(42), legacyTotal, "its credit must not be destroyed")
+	assert.Equal(t, int64(50), total,
+		"the DAO wallet must end with exactly the recomputed payout — leaving the "+
+			"replaced account's legacy row in place would double-credit it")
 }

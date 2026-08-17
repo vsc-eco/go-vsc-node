@@ -43,37 +43,50 @@ import (
 // asset before activation the negative self-collects, and crediting a fixed
 // amount would hand over spendable value. Expected is documentation — logged
 // and compared so drift is visible, never used to decide the credit.
-// LedgerRemediationCatchupBlocks is how long after the activation height a node
-// may still apply the write-off. It exists because the emission is driven from
-// the slot-TRANSITION branch, which a restart can skip entirely: a node stopped
-// inside slot R resumes with slotStatus initialised to the slot it resumes in,
-// so the transition for R never fires. Exact-equality gating therefore made a
-// restart across the activation slot silently skip the remediation forever —
-// and with watchtower auto-updates restarting nodes at arbitrary times that is
-// likely, not theoretical. ~1 day at 3s blocks.
-const LedgerRemediationCatchupBlocks = 28800
-
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	target := params.LEDGER_REMEDIATION_HEIGHT
 	// 0 disables (testnet/devnet, and mainnet until the height is pinned).
 	if target == 0 {
 		return
 	}
-	// At or past the activation height, within the catch-up window. NOT exact
-	// equality — see LedgerRemediationCatchupBlocks.
-	if blockHeight < target || blockHeight > target+LedgerRemediationCatchupBlocks {
+	// At or past the activation height — NOT exact equality, and deliberately
+	// with no upper bound.
+	//
+	// The emission runs in the slot-TRANSITION branch, which a restart can skip
+	// entirely: a node stopped inside slot R resumes with slotStatus
+	// initialised to the slot it resumes in, so the transition for R never
+	// fires. Under exact-equality gating that node would silently miss the
+	// write-off forever. An upper bound reintroduces the same hazard for any
+	// node upgraded after the window closes — it would keep the negatives
+	// permanently, recoverable only by a full reindex, which is the cross-node
+	// balance disagreement that halted mainnet on 2026-08-13.
+	//
+	// Applying late is safe precisely because nothing here depends on WHEN it
+	// runs: the amount is read at target-1 (immutable history) and every row is
+	// stamped at `target` with a fixed id, so a node catching up days later
+	// writes rows byte-identical to one that fired on time, and the upsert makes
+	// a repeat a no-op.
+	if blockHeight < target {
+		return
+	}
+	if se.LedgerState == nil || se.LedgerState.LedgerDb == nil {
+		// Do NOT latch the done flag here: this is a transient wiring/startup
+		// condition, and latching would disable the write-off for the whole
+		// process instead of retrying on the next slot.
+		log.Error("ledger remediation: no ledger db; will retry next slot",
+			"activationHeight", target, "slot", blockHeight)
 		return
 	}
 	// Bounded work: the records are upserts, so re-emitting is harmless, but
-	// there is no reason to rewrite them on every slot for a day. Once per
-	// process is enough; a restart re-runs it and lands on the same rows.
+	// there is no reason to rewrite them on every slot. Once per process is
+	// enough; a restart re-runs it and lands on the same rows.
 	if se.ledgerRemediationDone {
 		return
 	}
 	se.ledgerRemediationDone = true
-	if se.LedgerState == nil || se.LedgerState.LedgerDb == nil {
-		log.Error("ledger remediation: no ledger db; skipping", "height", blockHeight)
-		return
+	if blockHeight > target {
+		log.Warn("ledger remediation: applying LATE — this node did not process the activation slot",
+			"activationHeight", target, "slot", blockHeight, "blocksLate", blockHeight-target)
 	}
 
 	// Everything below is keyed to the FIXED activation height, never to the
