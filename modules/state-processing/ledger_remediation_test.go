@@ -159,17 +159,30 @@ func TestLedgerRemediation_CatchesUpAfterARestartSkippedTheSlot(t *testing.T) {
 		"rows must be stamped at the activation height, never the slot they were noticed in")
 }
 
-// Past the catch-up window the emission stops, so a node resyncing from far
-// behind cannot suddenly re-apply an ancient remediation out of nowhere.
-func TestLedgerRemediation_StopsAfterCatchupWindow(t *testing.T) {
+// A node upgraded LONG after the activation height must still apply the
+// write-off. There is deliberately no upper bound: one would recreate the very
+// hazard the lower bound was relaxed to fix, leaving a late-upgraded node with
+// the negatives forever (recoverable only by a full reindex) and a permanent
+// cross-node balance disagreement.
+func TestLedgerRemediation_AppliesEvenVeryLate(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
-	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
-	env.SE.ApplyLedgerRemediation(remediationTestHeight + stateEngine.LedgerRemediationCatchupBlocks + 10)
-	assert.Empty(t, remediationRows(env, "hive:dhedge"),
-		"beyond the catch-up window nothing may be emitted")
+
+	onTime := newTestEnv()
+	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
+	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
+
+	// Weeks later.
+	late := newTestEnv()
+	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
+	late.SE.ApplyLedgerRemediation(remediationTestHeight + 500_000)
+
+	assert.Equal(t, remediationRows(onTime, "hive:dhedge"), remediationRows(late, "hive:dhedge"),
+		"a very late node must emit records identical to an on-time one")
+	assert.Equal(t, int64(0),
+		late.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"),
+		"and must reach a zero balance, not keep the negative forever")
 }
 
 // A zero activation height disables the whole mechanism (testnet/devnet, and
