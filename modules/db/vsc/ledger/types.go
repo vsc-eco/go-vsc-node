@@ -19,7 +19,7 @@ type Ledger interface {
 	// a block first written under the old index-based id scheme overwrites
 	// rather than double-credits. Account-keyed rows (id contains '#') are
 	// preserved. See ledger-system.ClaimHBDInterest.
-	DeleteLegacyInterestRecords(recordBlockHeight uint64) error
+	DeleteLegacyInterestRecords(recordBlockHeight uint64, owners []string) error
 }
 
 type Balances interface {
