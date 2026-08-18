@@ -157,3 +157,62 @@ func TestIndexActions_OtherTypes_StillComplete(t *testing.T) {
 	assert.Nil(t, creditRow(lDb, "hive:dave", "act5#out"),
 		"but no credit leg may be invented for it")
 }
+
+// ★ B7 — A CONSERVATION TEST THAT CAN ACTUALLY FAIL.
+//
+// modules/ledger-system/invariant_test.go has four conservation tests
+// (BalanceConservation, StakeConsistency, StakeUnstakeRoundTrip,
+// ComplexMultiOpSequence) that all balance BY CONSTRUCTION:
+//
+//   - mockLedgerSystem.IndexActions is stubbed to an empty body, so the credit
+//     leg never runs at all;
+//   - oplogInTransit derives "in transit" purely from the DEBIT-side oplog,
+//     with no dependency on whether the credit ever landed, and the assertion
+//     then adds that value back in: actualHbd = totalHbd + transit["hbd"].
+//
+// So the missing value is counted as in-transit forever and the invariant
+// still passes. If IndexActions were deleted outright those four tests would
+// all still be green — which is precisely why the credit-leg defects survived
+// this long. De-stubbing alone would not fix them; the arithmetic is blind.
+//
+// This test closes the gap from the other end: it drives the REAL IndexActions
+// and asserts the credited value is actually present in an account, with no
+// in-transit compensation anywhere. It fails if the credit leg regresses.
+func TestIndexActions_Conservation_CreditMustLandInAnAccount(t *testing.T) {
+	ls, lDb, aDb := newIndexActionsEnv()
+
+	// Two stakes and one unstake, all pending their credit leg.
+	aDb.Actions["s1"] = ledgerDb.ActionRecord{Id: "s1", Amount: 3000, To: "hive:alice", Type: "stake", Status: "pending"}
+	aDb.Actions["s2"] = ledgerDb.ActionRecord{Id: "s2", Amount: 2000, To: "hive:bob", Type: "stake", Status: "pending"}
+	aDb.Actions["u1"] = ledgerDb.ActionRecord{Id: "u1", Amount: 1500, To: "hive:alice", Type: "unstake", Status: "pending"}
+
+	ls.IndexActions(
+		ledgerSystem.ActionUpdate{Ops: []string{"s1", "s2", "u1"}, ClearedOps: ""},
+		ledgerSystem.ExtraInfo{BlockHeight: 1000, ActionId: "tx"},
+	)
+
+	// Sum every credit actually written, per asset. No transit term: a value
+	// that is "in transit" because its credit was dropped is a LOST value, not
+	// a conserved one, and the whole point is that this must not balance
+	// unless the credit really landed.
+	credited := map[string]int64{}
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			credited[r.Asset] += r.Amount
+		}
+	}
+
+	assert.Equal(t, int64(5000), credited["hbd_savings"],
+		"both stake credits must be present in the ledger (3000+2000) — counting a "+
+			"dropped credit as 'in transit' is what made the existing conservation "+
+			"tests unable to fail")
+	assert.Equal(t, int64(1500), credited["hbd"],
+		"the unstake credit must be present")
+
+	for _, id := range []string{"s1", "s2", "u1"} {
+		assert.Equal(t, "complete", aDb.Actions[id].Status, "%s must be completed", id)
+	}
+	// alice: stake credit + unstake credit; bob: stake credit.
+	assert.Len(t, lDb.LedgerRecords["hive:alice"], 2)
+	assert.Len(t, lDb.LedgerRecords["hive:bob"], 1)
+}

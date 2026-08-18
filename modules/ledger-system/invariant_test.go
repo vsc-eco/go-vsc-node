@@ -55,6 +55,27 @@ func sessionBalanceOf(state *ledgerSystem.LedgerState, account, asset string, bh
 // oplogInTransit sums amounts from the committed oplog that have left one asset
 // but not yet arrived to the destination asset (stake/unstake/withdraw are two-phase).
 // Returns a map of asset -> amount "in transit" (debited but not yet credited elsewhere).
+// ⚠ THIS HELPER CANNOT DETECT A DROPPED CREDIT — read before trusting any
+// conservation assertion that uses it.
+//
+// It derives "in transit" purely from the DEBIT-side oplog, with no dependency
+// on whether the matching credit leg ever landed. Callers then add the result
+// back into the total (actualHbd = totalHbd + transit["hbd"]), so a credit that
+// was never written is counted as in-transit forever and conservation still
+// balances. Combined with mockLedgerSystem.IndexActions being stubbed to an
+// empty body — IndexActions is the SOLE writer of the stake/unstake credit leg
+// — the conservation tests below pass BY CONSTRUCTION: if IndexActions were
+// deleted outright they would all still be green.
+//
+// That is why the credit-leg defects (discarded Get error, complete-before-
+// write, log-only failure) survived this long. De-stubbing alone would not fix
+// it; the arithmetic is blind either way.
+//
+// A conservation check that can actually fail lives in
+// state-processing/index_actions_test.go
+// (TestIndexActions_Conservation_CreditMustLandInAnAccount): it drives the real
+// IndexActions and asserts the credited value is present in an account, with no
+// in-transit compensation.
 func oplogInTransit(state *ledgerSystem.LedgerState) map[string]int64 {
 	transit := map[string]int64{
 		"hbd":         0,
