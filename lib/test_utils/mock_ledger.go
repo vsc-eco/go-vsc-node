@@ -205,6 +205,17 @@ func (ic *MockInterestClaimsDb) FindClaims(fromBlock *uint64, toBlock *uint64, o
 type MockActionsDb struct {
 	aggregate.Plugin
 	Actions map[string]ledgerDb.ActionRecord
+	// GetErrs lets a test inject transient Get failures: each call pops one
+	// error off the front. Exists so the IndexActions hardening (a DB fault
+	// must never be mistaken for "action not found") can actually be
+	// exercised — without it that path has no coverage at all.
+	GetErrs []error
+	// CompletedAt records, per action id, how many ledger records existed when
+	// ExecuteComplete fired. It is how a test proves the credit was written
+	// BEFORE the action was marked complete.
+	CompletedAt map[string]int
+	// LedgerRef, when set, is read to size CompletedAt.
+	LedgerRef *MockLedgerDb
 }
 
 func (m *MockActionsDb) StoreAction(action ledgerDb.ActionRecord) {
@@ -213,6 +224,20 @@ func (m *MockActionsDb) StoreAction(action ledgerDb.ActionRecord) {
 
 func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	for _, id := range ids {
+		if m.CompletedAt != nil {
+			// Record only the FIRST completion for an id. A later call must not
+			// be able to overwrite an earlier (premature) one, or an
+			// ordering bug would mask itself.
+			if _, seen := m.CompletedAt[id]; !seen {
+				n := 0
+				if m.LedgerRef != nil {
+					for _, recs := range m.LedgerRef.LedgerRecords {
+						n += len(recs)
+					}
+				}
+				m.CompletedAt[id] = n
+			}
+		}
 		action, exists := m.Actions[id]
 		if exists {
 			action.Status = "complete"
@@ -237,6 +262,13 @@ func (m *MockActionsDb) RevertProcessingToPending() ([]ledgerDb.ActionRecord, er
 }
 
 func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
+	if len(m.GetErrs) > 0 {
+		err := m.GetErrs[0]
+		m.GetErrs = m.GetErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	d, exists := m.Actions[id]
 	if !exists {
 		return nil, nil
