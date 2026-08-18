@@ -26,19 +26,19 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
-	// AdjustBalanceRecordsFrom adds delta to ONE asset field on an account's
-	// snapshot rows at or above fromHeight. Used only by the late-application
-	// path of the one-time ledger remediation: GetBalance is snapshot-anchored,
-	// so a credit written retroactively below an existing snapshot is invisible
-	// forever.
+	// GetBalanceRecordsFrom lists an account's snapshot rows at or above
+	// fromHeight, oldest first. Used by the late-application path of the
+	// one-time ledger remediation, which rewrites each affected snapshot to the
+	// value re-derived from the ledger.
 	//
-	// It adjusts rather than deletes on purpose. Deleting the rows would also
-	// discard HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT — path-dependent
-	// accumulators never rebuilt from the ledger — and the other three asset
-	// fields. Six of the ten remediated accounts are on hive/hive_consensus and
-	// can hold a positive hbd_savings position, so discarding their TWAB state
-	// would shift the interest denominator for EVERY account on that node.
-	AdjustBalanceRecordsFrom(account string, fromHeight uint64, asset string, delta int64) error
+	// It deliberately does NOT expose an increment. GetBalance is
+	// snapshot-anchored, so a credit written retroactively below an existing
+	// snapshot is invisible; correcting that by $inc is non-idempotent, which
+	// forces a durable marker and makes the marker/write ordering a
+	// crash-correctness problem in both directions (double credit one way,
+	// silently un-applied the other). Recomputing from the ledger is idempotent
+	// by construction, so it can be re-run any number of times.
+	GetBalanceRecordsFrom(account string, fromHeight uint64) ([]BalanceRecord, error)
 	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 

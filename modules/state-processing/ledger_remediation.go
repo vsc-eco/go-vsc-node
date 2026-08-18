@@ -172,54 +172,38 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			)
 		})
 
-		// ★ Snapshot re-anchor, and the marker that makes it once-only.
+		// ★ LATE PATH: re-derive the affected snapshots from the ledger.
 		//
 		// GetBalance is snapshot-anchored — recordHeight = balRecord.BlockHeight
 		// + 1, folding only ABOVE it — so a credit written at `target` is
-		// invisible to any account whose snapshot already advanced past target.
-		// A late node would otherwise write the byte-identical row and keep the
-		// negative forever.
+		// invisible to any account whose snapshot already advanced past target,
+		// and stays invisible because every later snapshot builds on the
+		// previous one. A node that upgrades after the height (without
+		// reindexing) would otherwise write the byte-identical credit row and
+		// keep the negative forever.
 		//
-		// The marker is written on BOTH paths, not just the late one. On-time
-		// application needs no adjustment (no snapshot at or above target exists
-		// yet), but it must still record that this account is settled —-
-		// otherwise the first slot transition after ANY later restart finds no
-		// marker and re-applies the adjustment to snapshots that already fold
-		// the credit, double-crediting the account. For the two hive_consensus
-		// entries that diverges ReadCommitteeBonds and the bond-gate CID.
+		// This is NOT an increment. An earlier version added the credit to each
+		// stale snapshot, which is non-idempotent: it needed a durable marker to
+		// run once, and then the marker/write ordering became a crash-safety
+		// problem in BOTH directions — write-first double-credits on restart,
+		// marker-first silently leaves the correction un-applied. Recomputing
+		// the field from the authoritative ledger is idempotent by construction,
+		// so it can run every slot, survive any crash, and needs no marker at
+		// all.
 		//
-		// Marker BEFORE the adjustment, deliberately. AdjustBalanceRecordsFrom
-		// is a non-idempotent $inc, so the two writes cannot both be safe
-		// against a crash between them; ordering the marker first makes the
-		// failure UNDER-correction (the negative persists, visible to the
-		// negative-balance monitor) rather than a silent double credit.
-		markerID := creditID + "#reanchored"
-		if !se.remediationMarkerExists(rem.Account, target, markerID) {
-			blockingRetry("ledger remediation: marker "+markerID, func() error {
-				return se.LedgerState.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-					Id:          markerID,
-					BlockHeight: target,
-					Amount:      0,
-					Asset:       rem.Asset,
-					Owner:       rem.Account,
-					Type:        ledgerSystem.LedgerTypeRemediationReanchor,
-				})
-			})
-			if blockHeight > target {
-				// ADJUST, don't delete: dropping the rows would discard HBD_AVG /
-				// HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT (path-dependent, never
-				// rebuilt from the ledger) and the other three asset fields. Six
-				// of the ten remediated accounts are on hive/hive_consensus and
-				// can hold a positive hbd_savings position, so that would shift
-				// the interest denominator for every account on the node.
-				blockingRetry("ledger remediation: re-anchor "+rem.Account, func() error {
-					return se.LedgerState.BalanceDb.AdjustBalanceRecordsFrom(
-						rem.Account, target, rem.Asset, amount)
-				})
-				log.Warn("ledger remediation: adjusted stale balance snapshots so the late credit is visible",
-					"account", rem.Account, "asset", rem.Asset, "delta", amount,
-					"fromHeight", target, "slot", blockHeight)
-			}
+		// Only the ONE remediated asset is rewritten. The other three fields and
+		// HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT are left untouched:
+		// those accumulators are path-dependent and never rebuilt from the
+		// ledger, and six of the ten remediated accounts are on
+		// hive/hive_consensus while holding a positive hbd_savings position, so
+		// discarding their TWAB would shift the interest denominator for every
+		// account on the node.
+		//
+		// A node applying on time skips all of this: it runs immediately before
+		// UpdateBalances in the same slot transition, so no snapshot at or above
+		// target exists yet.
+		if blockHeight > target {
+			se.resyncRemediatedSnapshots(rem.Account, rem.Asset, target)
 		}
 
 		log.Info("ledger remediation: negative balance written off",
@@ -228,28 +212,85 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	}
 }
 
-// remediationMarkerExists reports whether this account's late-path re-anchor
-// has already been applied. Durable by design: a process-local flag resets on
-// restart, and the balance itself cannot be used as the signal (see the call
-// site).
-func (se *StateEngine) remediationMarkerExists(account string, target uint64, markerID string) bool {
-	var found bool
-	blockingRetry("ledger remediation: marker check "+markerID, func() error {
-		rows, err := se.LedgerState.LedgerDb.GetLedgerRange(account, target, target, "")
+// resyncRemediatedSnapshots rewrites this account's snapshots at or above
+// `target` so the ONE remediated asset matches the ledger fold at that
+// snapshot's height. Idempotent: a second run recomputes the same values and
+// writes nothing new, so it is safe on every slot and after any crash.
+func (se *StateEngine) resyncRemediatedSnapshots(account, asset string, target uint64) {
+	var snaps []ledger_db.BalanceRecord
+	blockingRetry("ledger remediation: list snapshots "+account, func() error {
+		rows, err := se.LedgerState.BalanceDb.GetBalanceRecordsFrom(account, target)
+		if err != nil {
+			return err
+		}
+		snaps = rows
+		return nil
+	})
+
+	for _, snap := range snaps {
+		want := se.foldLedgerAsset(account, asset, snap.BlockHeight)
+		if assetField(snap, asset) == want {
+			continue // already correct — this is what makes a re-run a no-op
+		}
+		fixed := snap
+		setAssetField(&fixed, asset, want)
+		blockingRetry(fmt.Sprintf("ledger remediation: resync %s @%d", account, snap.BlockHeight), func() error {
+			return se.LedgerState.BalanceDb.UpdateBalanceRecord(fixed)
+		})
+		log.Warn("ledger remediation: rewrote stale balance snapshot from the ledger",
+			"account", account, "asset", asset, "bh", snap.BlockHeight,
+			"was", assetField(snap, asset), "now", want)
+	}
+}
+
+// foldLedgerAsset sums every non-meta ledger record for (account, asset) at or
+// below blockHeight — the same fold GetBalance performs, but anchored at
+// genesis so it cannot inherit a stale snapshot.
+func (se *StateEngine) foldLedgerAsset(account, asset string, blockHeight uint64) int64 {
+	var total int64
+	blockingRetry(fmt.Sprintf("ledger remediation: fold %s %s @%d", account, asset, blockHeight), func() error {
+		rows, err := se.LedgerState.LedgerDb.GetLedgerRange(account, 0, blockHeight, asset)
 		if err != nil {
 			return err
 		}
 		if rows == nil {
-			return fmt.Errorf("nil ledger range for %s at %d", account, target)
+			return fmt.Errorf("nil ledger range for %s at %d", account, blockHeight)
 		}
-		found = false
+		total = 0
 		for _, r := range *rows {
-			if r.Id == markerID {
-				found = true
-				break
+			if ledgerSystem.IsProtocolMetaLedgerType(r.Type) {
+				continue
 			}
+			total += r.Amount
 		}
 		return nil
 	})
-	return found
+	return total
+}
+
+func assetField(r ledger_db.BalanceRecord, asset string) int64 {
+	switch asset {
+	case "hbd":
+		return r.HBD
+	case "hive":
+		return r.Hive
+	case "hbd_savings":
+		return r.HBD_SAVINGS
+	case "hive_consensus":
+		return r.HIVE_CONSENSUS
+	}
+	return 0
+}
+
+func setAssetField(r *ledger_db.BalanceRecord, asset string, v int64) {
+	switch asset {
+	case "hbd":
+		r.HBD = v
+	case "hive":
+		r.Hive = v
+	case "hbd_savings":
+		r.HBD_SAVINGS = v
+	case "hive_consensus":
+		r.HIVE_CONSENSUS = v
+	}
 }

@@ -186,12 +186,6 @@ const (
 	// negative spendable balance on a system account — the very artifact this
 	// remediation exists to clear. The rows remain queryable as the audit trail.
 	LedgerTypeRemediationDebit = "remediation_debit"
-	// LedgerTypeRemediationReanchor marks that the late-application path has
-	// already adjusted an account's stale balance snapshots. Zero-amount and
-	// meta, so it never touches a balance; it exists purely as a durable
-	// idempotency marker (a process-local flag resets on restart, and the
-	// balance cannot serve as the signal — see ApplyLedgerRemediation).
-	LedgerTypeRemediationReanchor = "remediation_reanchor"
 )
 
 // IsProtocolMetaLedgerType reports whether a ledger record type is a
@@ -228,8 +222,7 @@ func IsProtocolMetaLedgerType(t string) bool {
 		// deliberately NOT here: it is the spendable disbursement.)
 		LedgerTypeReservePayoutDebit,
 		// Keyless bookkeeping on system:ledger_shortfall — see the constant.
-		LedgerTypeRemediationDebit,
-		LedgerTypeRemediationReanchor:
+		LedgerTypeRemediationDebit:
 		return true
 	default:
 		return false

@@ -55,25 +55,17 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
-func (m *MockBalanceDb) AdjustBalanceRecordsFrom(account string, fromHeight uint64, asset string, delta int64) error {
-	recs := m.BalanceRecords[account]
-	for i := range recs {
-		if recs[i].BlockHeight < fromHeight {
-			continue
-		}
-		switch asset {
-		case "hbd":
-			recs[i].HBD += delta
-		case "hive":
-			recs[i].Hive += delta
-		case "hbd_savings":
-			recs[i].HBD_SAVINGS += delta
-		case "hive_consensus":
-			recs[i].HIVE_CONSENSUS += delta
+func (m *MockBalanceDb) GetBalanceRecordsFrom(account string, fromHeight uint64) ([]ledgerDb.BalanceRecord, error) {
+	out := make([]ledgerDb.BalanceRecord, 0)
+	for _, r := range m.BalanceRecords[account] {
+		if r.BlockHeight >= fromHeight {
+			out = append(out, r)
 		}
 	}
-	m.BalanceRecords[account] = recs
-	return nil
+	slices.SortFunc(out, func(a, b ledgerDb.BalanceRecord) int {
+		return int(a.BlockHeight) - int(b.BlockHeight)
+	})
+	return out, nil
 }
 
 func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
