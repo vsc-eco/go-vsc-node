@@ -1607,6 +1607,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		// negative balance any more, so without this a new one would go
 		// unnoticed exactly the way the ten legacy ones did.
 		se.scanNegativeBalances(se.slotStatus.SlotHeight)
+		se.reconcileCompletedActions(se.slotStatus.SlotHeight)
 
 		se.RcMap = make(map[string]int64)
 
