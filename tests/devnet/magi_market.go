@@ -2,6 +2,7 @@ package devnet
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -111,7 +112,11 @@ func (d *Devnet) CallMarketContract(ctx context.Context, node int, contractId, a
 	if err != nil {
 		return "", "", fmt.Errorf("%s on %s: %w", action, contractId, err)
 	}
-	status, err := d.WaitForTxStatus(ctx, node, txId, 3*time.Minute)
+	// 6 minutes, not 2-3. "INCLUDED" means the transaction is in a Hive block
+	// but the state engine has not processed it yet, and that gap widens under
+	// load — a run has already been lost to a call that was progressing
+	// normally, just not fast enough for a tighter deadline.
+	status, err := d.WaitForTxStatus(ctx, node, txId, 6*time.Minute)
 	return txId, status, err
 }
 
@@ -139,6 +144,86 @@ func (d *Devnet) WaitForTxStatus(ctx context.Context, node int, txId string, tim
 	}
 }
 
+// ContractCallResult is the outcome of one contract execution as the chain
+// recorded it.
+type ContractCallResult struct {
+	Ok  bool
+	Ret string
+}
+
+// ContractCallResults returns what the contract actually returned for a
+// transaction — including the abort message when it refused.
+//
+// A "FAILED" status alone says nothing about WHY, and the node's default log
+// level does not surface contract output, so a failing devnet call is otherwise
+// a dead end. The contract's own message is the whole diagnosis.
+func (d *Devnet) ContractCallResults(ctx context.Context, node int, txId string) ([]ContractCallResult, error) {
+	const q = `query($t:String!){findContractOutput(filterOptions:{byInput:$t}){results{ret ok}}}`
+	var out struct {
+		FindContractOutput []struct {
+			Results []struct {
+				Ret string `json:"ret"`
+				Ok  bool   `json:"ok"`
+			} `json:"results"`
+		} `json:"findContractOutput"`
+	}
+	if err := d.gqlQuery(ctx, node, q, map[string]any{"t": txId}, &out); err != nil {
+		return nil, err
+	}
+	var res []ContractCallResult
+	for _, o := range out.FindContractOutput {
+		for _, r := range o.Results {
+			res = append(res, ContractCallResult{Ok: r.Ok, Ret: r.Ret})
+		}
+	}
+	return res, nil
+}
+
+// ContractCallError returns the contract's message for a failed call, or "" if
+// the call succeeded or no output has been indexed yet.
+func (d *Devnet) ContractCallError(ctx context.Context, node int, txId string) string {
+	// A failed tx with NO failing contract output did not abort — it never ran.
+	// Distinguishing the two is the whole point: a contract refusal names its
+	// own reason, while a chain-level rejection (most often exhausted RC, since
+	// an account's budget is its VSC-ledger hbd balance plus a 10k free tier)
+	// leaves no message at all. Reporting an empty string for the second case
+	// sends the reader hunting through contract logic that never executed.
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		res, err := d.ContractCallResults(ctx, node, txId)
+		if err == nil && len(res) > 0 {
+			for _, r := range res {
+				if !r.Ok {
+					return r.Ret
+				}
+			}
+			return "(tx failed but every contract result is ok — rejected outside the contract, e.g. insufficient RC)"
+		}
+		if time.Now().After(deadline) {
+			return "(no contract output — the contract never executed; most likely insufficient RC)"
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// decodeNftBalance decodes an NFT balance from contract state.
+//
+// The two contracts here do NOT store integers the same way. The market writes
+// uint64s as decimal text, so bucket counters read back with ParseUint. The NFT
+// contract writes RAW LITTLE-ENDIAN BYTES — a balance of 4 is the single byte
+// 0x04, not "4" — which ParseUint rejects, silently yielding 0 and making
+// delivered cards look undelivered. This mirrors decodeNftU64 in the market
+// contract, which is how the market itself reads these balances.
+func decodeNftBalance(s string) uint64 {
+	b := []byte(s)
+	if len(b) == 0 || len(b) > 8 {
+		return 0
+	}
+	var buf [8]byte
+	copy(buf[:], b) // least-significant byte first
+	return binary.LittleEndian.Uint64(buf[:])
+}
+
 // NftBalance reads a holder's balance of one token id straight from the NFT
 // contract's state, using the same key the market itself reads.
 func (d *Devnet) NftBalance(ctx context.Context, node int, nftContract, account, tokenId string) (uint64, error) {
@@ -147,7 +232,7 @@ func (d *Devnet) NftBalance(ctx context.Context, node int, nftContract, account,
 	if err != nil {
 		return 0, err
 	}
-	return stateUint(st[key]), nil
+	return decodeNftBalance(stateString(st[key])), nil
 }
 
 // BucketField reads one field of a bucket's state (see the layout comment in

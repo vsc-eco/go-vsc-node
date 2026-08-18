@@ -92,21 +92,66 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 	buyerC := d.WitnessAccount(buyerNodeC)
 
 	// ───────── deploy the three contracts ─────────
-	tokenId, err := d.DeployContract(ctx, ContractDeployOpts{
-		WasmPath: wasm.Token, Name: "market-paytoken", DeployerNode: deployNode})
-	if err != nil {
-		t.Fatalf("deploy token: %v", err)
+	//
+	// Deploying STOPS the deployer node to take its data dir, then restarts it.
+	// Storage proof needs a quorum of the remaining nodes to sign, so a node
+	// that has just been cycled has to rejoin the mesh before the next deploy
+	// cycles it again — otherwise the second deploy asks a network that is still
+	// re-converging and dies on "failed to request storage proof context
+	// deadline exceeded". A marketplace needs THREE contracts, so this is the
+	// first test here to deploy enough of them in a row for that to bite.
+	settle := func(what string) {
+		t.Helper()
+		// Read the head straight from mongo rather than GraphQL. Right after a
+		// deploy the resolver can still answer "no documents in result" while
+		// the node is catching up, and that is a transient to wait through, not
+		// a reason to fail the test.
+		var head uint64
+		deadline := time.Now().Add(3 * time.Minute)
+		for {
+			h, err := d.getLastProcessedBlock(ctx, queryNode)
+			if err == nil && h > 0 {
+				head = h
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("no head from magi-%d after %s: %v", queryNode, what, err)
+			}
+			time.Sleep(3 * time.Second)
+		}
+		for node := 1; node <= cfg.Nodes; node++ {
+			if err := d.WaitForBlockProcessing(ctx, node, head+4, 5*time.Minute); err != nil {
+				t.Fatalf("magi-%d never caught up after %s: %v", node, what, err)
+			}
+		}
 	}
-	nftId, err := d.DeployContract(ctx, ContractDeployOpts{
-		WasmPath: wasm.Nft, Name: "market-nft", DeployerNode: deployNode})
-	if err != nil {
-		t.Fatalf("deploy nft: %v", err)
+
+	// Storage-proof collection is the flaky part, not the deploy itself: the
+	// deployer node has just rejoined the mesh, and the request can time out
+	// while peers are still re-converging. It is worse for a bigger contract —
+	// the market wasm is ~2.5x the others — so retry with a fresh settle rather
+	// than lose a 15-minute run to a transient.
+	deploy := func(what, path string) string {
+		t.Helper()
+		var lastErr error
+		for attempt := 1; attempt <= 3; attempt++ {
+			id, err := d.DeployContract(ctx, ContractDeployOpts{
+				WasmPath: path, Name: what, DeployerNode: deployNode})
+			if err == nil {
+				settle(what + " deploy")
+				return id
+			}
+			lastErr = err
+			t.Logf("deploy %s attempt %d failed (%v) — settling and retrying", what, attempt, err)
+			settle(what + " deploy retry")
+		}
+		t.Fatalf("deploy %s failed after 3 attempts: %v", what, lastErr)
+		return ""
 	}
-	marketId, err := d.DeployContract(ctx, ContractDeployOpts{
-		WasmPath: wasm.Market, Name: "magi-market", DeployerNode: deployNode})
-	if err != nil {
-		t.Fatalf("deploy market: %v", err)
-	}
+
+	tokenId := deploy("market-paytoken", wasm.Token)
+	nftId := deploy("market-nft", wasm.Nft)
+	marketId := deploy("magi-market", wasm.Market)
 	t.Logf("deployed token=%s nft=%s market=%s", tokenId, nftId, marketId)
 	marketAddr := "contract:" + marketId
 
@@ -120,7 +165,8 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 			t.Fatalf("%s on %s: %v", action, contractId, err)
 		}
 		if status == "FAILED" {
-			t.Fatalf("%s on %s FAILED (tx %s)", action, contractId, txId)
+			t.Fatalf("%s on %s FAILED: %s (tx %s)", action, contractId,
+				d.ContractCallError(ctx, queryNode, txId), txId)
 		}
 	}
 	// callExpectFail is for the cases where refusing IS the behaviour.
@@ -133,6 +179,52 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 		if status != "FAILED" {
 			t.Errorf("%s on %s was expected to fail (%s) but got %s (tx %s)",
 				action, contractId, why, status, txId)
+			return
+		}
+		t.Logf("%s correctly refused: %s", action, d.ContractCallError(ctx, queryNode, txId))
+	}
+
+	// ───────── give every actor RC headroom ─────────
+	//
+	// AFTER the deploys, deliberately. Deploying costs 10 TBD of HIVE L1
+	// balance per contract, while RC comes from the VSC LEDGER — two different
+	// balances, and the gateway deposit moves funds from the first to the
+	// second. Depositing first therefore starves the deploys: the seller has
+	// 100 TBD, three deploys need 30, and an early 90 TBD deposit leaves the
+	// second deploy with nothing.
+	//
+	// The headroom is needed because RC is the account's VSC-ledger hbd balance
+	// plus a 10k free tier, and the devnet funds witnesses on L1 only. This
+	// scenario makes far more than 10k RC of calls from the seller alone, so
+	// without this the first listBucket is rejected before the contract even
+	// runs — which surfaces as a failed tx carrying NO abort message.
+	for _, dep := range []struct {
+		node   int
+		amount string
+	}{
+		// The seller already spent 30 TBD on deploys; leave a margin.
+		{deployNode, "60.000"},
+		{buyerNodeA, "90.000"},
+		{buyerNodeB, "90.000"},
+		{buyerNodeC, "90.000"},
+	} {
+		if _, err := d.Deposit(ctx, dep.node, dep.amount, "hbd"); err != nil {
+			t.Fatalf("depositing for magi-%d: %v", dep.node, err)
+		}
+	}
+	for _, n := range []int{deployNode, buyerNodeA, buyerNodeB, buyerNodeC} {
+		acct := d.WitnessAccount(n)
+		deadline := time.Now().Add(4 * time.Minute)
+		for {
+			b, err := d.GetAccountBalance(ctx, queryNode, acct)
+			if err == nil && b.Hbd > 0 {
+				t.Logf("%s VSC ledger hbd=%d (RC headroom)", acct, b.Hbd)
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("deposit for %s never credited the VSC ledger (err=%v)", acct, err)
+			}
+			time.Sleep(5 * time.Second)
 		}
 	}
 
@@ -198,8 +290,21 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 	assertBucketSeller(t, d, ctx, queryNode, marketId, 1, seller)
 
 	buyPack1 := `{"bucketId":1,"mode":"pack","quantity":1,"maxTotalPrice":""}`
+	unitsBefore, err := d.BucketUnits(ctx, queryNode, marketId, 1)
+	if err != nil {
+		t.Fatalf("reading bucket 1 units: %v", err)
+	}
 	callExpectFail(buyerNodeB, marketId, "buyFromBucket", buyPack1,
 		"the rare pool is not stocked yet, so the guaranteed slot cannot be filled")
+	// Refusing is not enough — a refused pack must cost the buyer NOTHING and
+	// consume no stock. Asserting on state rather than on the abort text also
+	// keeps this honest: a contract abort comes back with an empty `ret`, so
+	// "it failed" alone could mean it failed for some unrelated reason.
+	if after, err := d.BucketUnits(ctx, queryNode, marketId, 1); err != nil {
+		t.Fatalf("re-reading bucket 1 units: %v", err)
+	} else if after != unitsBefore {
+		t.Errorf("refused pack consumed stock: bucket 1 went %d -> %d units", unitsBefore, after)
+	}
 
 	call(deployNode, marketId, "addToBucket",
 		fmt.Sprintf(`{"bucketId":1,"entries":%s}`, poolEntries(rares, 1, 1)))
@@ -244,6 +349,21 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 		return total
 	}
 
+	// The seller keeps 16 of 20 holo units after buyer C draws 4. Reading that
+	// first proves whether NFT-contract state is readable AT ALL, which
+	// separates "the buyer got nothing" from "this query cannot see NFT state".
+	if sellerHolo, err := d.NftBalance(ctx, queryNode, nftId, seller, holo); err != nil {
+		t.Fatalf("reading seller holo balance: %v", err)
+	} else {
+		t.Logf("DIAGNOSTIC seller %s holds %d holo (expect 16 if NFT state is readable)", seller, sellerHolo)
+	}
+	for _, probe := range []struct{ acct, id string }{
+		{seller, commons[0]}, {buyerA, commons[0]}, {buyerB, rares[0]}, {buyerC, holo},
+	} {
+		raw, err := d.GetStateByKeys(ctx, queryNode, nftId, []string{"bal|" + probe.acct + "|" + probe.id})
+		t.Logf("DIAGNOSTIC raw nft state bal|%s|%s = %#v (err=%v)", probe.acct, probe.id, raw, err)
+	}
+
 	if got := held(queryNode, buyerA, commons); got != 2 {
 		t.Errorf("buyer A drew %d commons from bucket 0, want 2", got)
 	}
@@ -277,21 +397,38 @@ func TestMagiMarketBucketsDevnet(t *testing.T) {
 		}
 	}
 
-	// Every node must agree, byte for byte, on how many units each bucket has
-	// left. Disagreement here is a consensus fault, not a test failure.
+	// Every node must agree on how many units each bucket has left. Disagreement
+	// is a consensus fault — but only once every node has actually processed the
+	// last purchase. Reading one node that is a block ahead of another is a race
+	// in the test, not a fork, and it produced exactly that false alarm: two
+	// nodes reported 17 units while the query node reported 16, purely because
+	// they had not yet applied the final draw.
+	//
+	// So: let everyone catch up first, and on a mismatch give the lagging node a
+	// bounded chance to converge. Genuine divergence PERSISTS; lag does not.
+	settle("the draws")
 	for node := 1; node <= cfg.Nodes; node++ {
 		for id := uint64(0); id <= 2; id++ {
 			ref, err := d.BucketUnits(ctx, queryNode, marketId, id)
 			if err != nil {
 				t.Fatalf("reading reference units: %v", err)
 			}
-			got, err := d.BucketUnits(ctx, node, marketId, id)
-			if err != nil {
-				t.Logf("magi-%d unreadable for bucket %d (%v), skipping", node, id, err)
-				continue
+			var got uint64
+			converged := false
+			deadline := time.Now().Add(90 * time.Second)
+			for {
+				got, err = d.BucketUnits(ctx, node, marketId, id)
+				if err == nil && got == ref {
+					converged = true
+					break
+				}
+				if time.Now().After(deadline) {
+					break
+				}
+				time.Sleep(5 * time.Second)
 			}
-			if got != ref {
-				t.Errorf("magi-%d says bucket %d has %d units, magi-%d says %d — nodes disagree",
+			if !converged {
+				t.Errorf("magi-%d says bucket %d has %d units, magi-%d says %d after 90s — nodes disagree",
 					node, id, got, queryNode, ref)
 			}
 		}

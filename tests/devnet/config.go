@@ -103,21 +103,25 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults for testing.
 func DefaultConfig() *Config {
 	return &Config{
-		Nodes:           5,
-		GQLBasePort:     18080,
-		P2PBasePort:     11720, // offset from mainnet/testnet nodes on 10720+
-		MongoPort:       18057,
-		HivePort:        18091,
-		WitnessPrefix:   "magi.test",
-		StakeAmount:     "2000.000",
-		LogLevel:        "error,tss=trace",
-		HAFImage:        "registry.gitlab.syncad.com/hive/haf/testnet",
-		MongoImage:      "mongo:8.0.17",
-		SourceDir:       findSourceRoot(),
-		GenesisNode:     5,
-		InitminerWIF:    "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
-		HafahImage:      "registry.gitlab.syncad.com/hive/hafah",
-		PostgRESTImage:  "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
+		Nodes:         5,
+		GQLBasePort:   18080,
+		P2PBasePort:   11720, // offset from mainnet/testnet nodes on 10720+
+		MongoPort:     18057,
+		HivePort:      18091,
+		WitnessPrefix: "magi.test",
+		StakeAmount:   "2000.000",
+		LogLevel:      "error,tss=trace",
+		HAFImage:      "registry.gitlab.syncad.com/hive/haf/testnet",
+		MongoImage:    "mongo:8.0.17",
+		SourceDir:     findSourceRoot(),
+		GenesisNode:   5,
+		InitminerWIF:  "5JNHfZYKGaomSFvd4NUdQ9qMcEAC43kujbfjueTHpVapX1Kzq2n",
+		// Pinned by digest. These two were unpinned, so they silently tracked
+		// :latest — and when hafah changed which schemas it installs, every
+		// devnet test broke at once with no local change to explain it. A
+		// devnet is a reproducibility tool; it cannot rest on a moving tag.
+		HafahImage:      "registry.gitlab.syncad.com/hive/hafah@sha256:33634fc69374b08c3d18006961254579540b290b0dd643a958b7017efa82161c",
+		PostgRESTImage:  "registry.gitlab.syncad.com/hive/haf_api_node/postgrest@sha256:c7674ec8afc3c96cb5efe4beacc7044af6d1ecc7ca50053cea848be49686a49a",
 		PgBouncerImage:  "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
 		DroneImage:      "registry.gitlab.syncad.com/hive/drone",
 		DronePort:       19000,
