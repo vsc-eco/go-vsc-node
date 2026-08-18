@@ -95,7 +95,19 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		return
 	}
 	se.ledgerRemediationDone = true
-	if blockHeight > target {
+	// The slot the emission can FIRST be reached in. ApplyLedgerRemediation is
+	// driven from slotStatus.SlotHeight, which is always a multiple of
+	// SlotLength, so a target that is not slot-aligned is first seen at the next
+	// boundary. Comparing against target directly would then make EVERY node in
+	// the fleet log "APPLIED LATE ... MUST BE REINDEXED" on a correct,
+	// fully-coordinated rollout, purely because the pin was off a boundary.
+	slotLen := CONSENSUS_SPECS.SlotLength
+	onTimeSlot := target
+	if slotLen > 0 && target%slotLen != 0 {
+		onTimeSlot = target + (slotLen - target%slotLen)
+	}
+
+	if blockHeight > onTimeSlot {
 		log.Warn("ledger remediation: applying LATE — this node did not process the activation slot",
 			"activationHeight", target, "slot", blockHeight, "blocksLate", blockHeight-target)
 	}
@@ -195,7 +207,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// crash-safety problem in both directions) or a full ledger recompute,
 		// and none of that complexity is warranted for a case the deployment
 		// procedure rules out.
-		if blockHeight > target {
+		if blockHeight > onTimeSlot {
 			log.Error("ledger remediation: APPLIED LATE — this node passed the activation height before upgrading; "+
 				"the credit row is written but the account's balance is snapshot-anchored above it and will NOT be corrected. "+
 				"THIS NODE MUST BE REINDEXED or it will disagree with its peers about this balance",

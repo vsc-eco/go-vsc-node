@@ -374,39 +374,46 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			"account", acct, "debit", debitID, "companion", companion, "amount", forcedSlashAmt)
 	}
 
-	bondRecord := func(height uint64) *ledger_db.BalanceRecord {
-		rec, _ := ls.BalanceDb.GetBalanceRecord(acct, height)
-		return rec
-	}
-	rec := bondRecord(p.BlockHeight)
-	if rec == nil || rec.HIVE_CONSENSUS <= 0 {
-		if p.BlockHeight > 0 {
-			rec = bondRecord(p.BlockHeight - 1)
-		}
-	}
-	if rec == nil || rec.HIVE_CONSENSUS <= 0 {
-		return LedgerResult{Ok: false, Msg: "zero consensus bond"}
-	}
-	bond := rec.HIVE_CONSENSUS
-
-	// slashAmt = bond·SlashBps/10000, computed overflow-safe. The naive
-	// `bond*SlashBps` overflows int64 once bond > MaxInt64/10000 (~9.2e14 sats,
-	// far above HIVE supply, so unreachable today) and would wrap negative,
-	// silently turning a real slash into a "rounds to zero" no-op (a guilty
-	// validator goes unslashed). Splitting the division avoids the large
-	// intermediate product — exact integer floor, identical result, no overflow,
-	// deterministic. (bond = 10000·q + r ⇒ bond·bps/10000 = q·bps + r·bps/10000.)
-	slashAmt := (bond/10000)*int64(p.SlashBps) + ((bond%10000)*int64(p.SlashBps))/10000
-	if slashAmt <= 0 {
-		return LedgerResult{Ok: false, Msg: "slash rounds to zero"}
-	}
-	if slashAmt > bond {
-		slashAmt = bond
-	}
+	// When completing a half-applied slash the amount is already fixed by the
+	// row on disk, so the entire bond-derivation below is skipped. It must be:
+	// the "zero consensus bond" and "slash rounds to zero" guards both RETURN,
+	// and by this point the bond legitimately reads 0 (the debit that landed is
+	// exactly what drove it there). Falling through would bail out before the
+	// forced amount was ever applied, leaving the companion reserve/pending-burn
+	// leg unwritten forever with the bond already debited.
+	var slashAmt int64
 	if forcedSlashAmt > 0 {
-		// Completing a half-applied slash: the authoritative figure is the one
-		// already written, not a recompute against a bond that now reflects it.
 		slashAmt = forcedSlashAmt
+	} else {
+		bondRecord := func(height uint64) *ledger_db.BalanceRecord {
+			rec, _ := ls.BalanceDb.GetBalanceRecord(acct, height)
+			return rec
+		}
+		rec := bondRecord(p.BlockHeight)
+		if rec == nil || rec.HIVE_CONSENSUS <= 0 {
+			if p.BlockHeight > 0 {
+				rec = bondRecord(p.BlockHeight - 1)
+			}
+		}
+		if rec == nil || rec.HIVE_CONSENSUS <= 0 {
+			return LedgerResult{Ok: false, Msg: "zero consensus bond"}
+		}
+		bond := rec.HIVE_CONSENSUS
+
+		// slashAmt = bond·SlashBps/10000, computed overflow-safe. The naive
+		// `bond*SlashBps` overflows int64 once bond > MaxInt64/10000 (~9.2e14
+		// sats, far above HIVE supply, so unreachable today) and would wrap
+		// negative, silently turning a real slash into a "rounds to zero" no-op
+		// (a guilty validator goes unslashed). Splitting the division avoids the
+		// large intermediate product — exact integer floor, identical result, no
+		// overflow, deterministic.
+		slashAmt = (bond/10000)*int64(p.SlashBps) + ((bond%10000)*int64(p.SlashBps))/10000
+		if slashAmt <= 0 {
+			return LedgerResult{Ok: false, Msg: "slash rounds to zero"}
+		}
+		if slashAmt > bond {
+			slashAmt = bond
+		}
 	}
 
 	// The full slashed amount is the residual; it is committed to the keyless

@@ -129,9 +129,14 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // (~6h / 7200 blocks @3s).
 //
 // ⚠ MUST BE A MULTIPLE OF SlotLength (10). The emission is driven from
-// se.slotStatus.SlotHeight, and CalculateSlotInfo floors every block to
-// blockHeight - (blockHeight %% SlotLength), so a height off a slot boundary is
-// never reached and the remediation silently never fires.
+// se.slotStatus.SlotHeight, which CalculateSlotInfo floors to a multiple of
+// SlotLength, so a height off a boundary is first reached at the NEXT one.
+//
+// (It does not "silently never fire" — that was true only under the original
+// exact-equality gate. Under the current `blockHeight < target` gate a
+// misaligned pin still applies, one slot late. The reason to keep it aligned is
+// that the activation block then matches the slot every node actually applies
+// in, so the on-time/late distinction is exact.)
 // TestLedgerRemediation_HeightMustBeOnASlotBoundary enforces this at CI time.
 // PINNED 2026-08-17: head was 109,112,370, +57,600 blocks = ~2 days at 3s,
 // slot-aligned. Chosen so the fleet's hourly watchtower poll has ~48 cycles
