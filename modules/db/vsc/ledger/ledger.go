@@ -374,10 +374,21 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 	return &balRecord, nil
 }
 
-func (balances *balances) DeleteBalanceRecordsFrom(account string, fromHeight uint64) error {
-	_, err := balances.DeleteMany(context.Background(), bson.M{
+func (balances *balances) AdjustBalanceRecordsFrom(account string, fromHeight uint64, asset string, delta int64) error {
+	field, ok := map[string]string{
+		"hbd":            "hbd",
+		"hive":           "hive",
+		"hbd_savings":    "hbd_savings",
+		"hive_consensus": "hive_consensus",
+	}[asset]
+	if !ok {
+		return fmt.Errorf("AdjustBalanceRecordsFrom: unknown asset %q", asset)
+	}
+	_, err := balances.UpdateMany(context.Background(), bson.M{
 		"account":      account,
 		"block_height": bson.M{"$gte": fromHeight},
+	}, bson.M{
+		"$inc": bson.M{field: delta},
 	})
 	return err
 }

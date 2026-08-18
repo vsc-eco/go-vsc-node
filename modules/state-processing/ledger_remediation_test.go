@@ -631,3 +631,75 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) 
 	assert.Equal(t, int64(12345), snaps[0].HBD_AVG,
 		"HBD_AVG must survive — it is path-dependent and never rebuilt from the ledger")
 }
+
+// ★ REVIEW FINDING (F2) — the late-path re-anchor must not discard the rest of
+// the snapshot. It previously DELETED the rows, which also threw away HBD_AVG /
+// HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT (path-dependent, never rebuilt from the
+// ledger) and the other three asset fields. Six of the ten remediated accounts
+// are on hive/hive_consensus and can hold a positive hbd_savings position, so
+// discarding their TWAB state would shift the interest denominator for EVERY
+// account on that node.
+func TestLedgerRemediation_LateApply_PreservesTwabAndOtherAssets(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:fyn", Asset: "hive", Expected: 181999},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:fyn", "hive", -181999)
+
+	// A snapshot past target carrying the negative hive balance, a POSITIVE
+	// hbd_savings position, and live TWAB state.
+	env.BalanceDb.BalanceRecords["hive:fyn"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:fyn",
+		BlockHeight:       remediationTestHeight + 40,
+		Hive:              -181999,
+		HBD_SAVINGS:       50_000,
+		HBD_AVG:           987654,
+		HBD_MODIFY_HEIGHT: remediationTestHeight + 40,
+		HBD_CLAIM_HEIGHT:  remediationTestHeight - 200,
+	}}
+
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
+
+	snaps := env.BalanceDb.BalanceRecords["hive:fyn"]
+	assert.Len(t, snaps, 1, "the snapshot must be adjusted in place, not deleted")
+	assert.Equal(t, int64(0), snaps[0].Hive, "the remediated asset is corrected")
+	assert.Equal(t, int64(50_000), snaps[0].HBD_SAVINGS, "an unrelated asset must be untouched")
+	assert.Equal(t, int64(987654), snaps[0].HBD_AVG,
+		"HBD_AVG must survive — discarding it shifts the interest denominator for every account")
+	assert.Equal(t, remediationTestHeight-200, snaps[0].HBD_CLAIM_HEIGHT,
+		"claim height must survive")
+}
+
+// ★ REVIEW FINDING (F3) — the re-anchor must be idempotent across restarts via
+// a DURABLE marker. `bal` is read at target-1 (immutable) so it can never mean
+// "already done", and the live balance is not a valid signal either: after the
+// write-off it is exactly 0, so any later debit would re-arm the adjustment and
+// every restart would apply it again.
+func TestLedgerRemediation_LateApply_RepeatedRestarts_AdjustOnlyOnce(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account: "hive:dhedge", BlockHeight: remediationTestHeight + 40, HBD_SAVINGS: -283,
+	}}
+
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
+	afterFirst := env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS
+	assert.Equal(t, int64(0), afterFirst, "first late apply corrects the snapshot")
+
+	// A later debit drives it negative again — this must NOT look like
+	// "needs re-anchoring".
+	env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS = -500
+
+	for i := 0; i < 3; i++ {
+		restarted := newRemediationEnv()
+		restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
+		restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
+		restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 400 + uint64(i))
+	}
+
+	assert.Equal(t, int64(-500), env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS,
+		"repeated restarts must not re-apply the adjustment — the durable marker gates it")
+}

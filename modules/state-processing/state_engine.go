@@ -2343,6 +2343,15 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			} else {
 				claimHeight = balanceR.HBD_CLAIM_HEIGHT
 			}
+			// modifyHeight is only set above inside `if exists`, so on the nil
+			// path it stays 0 and HBD_MODIFY_HEIGHT persists as 0. The next slot
+			// then computes A = endBlock - 0 and inflates HBD_AVG by ~5 orders of
+			// magnitude — permanently, since HBD_AVG is never rebuilt from the
+			// ledger. Because ClaimHBDInterest normalises across the sum of every
+			// account's HBD_AVG, that one account changes the split for ALL of
+			// them: a transient GetLastClaim error (it returns nil on ANY Mongo
+			// failure) would turn a loud panic into silent cross-node divergence.
+			modifyHeight = endBlock
 		} else if prevBalRecord != nil {
 			//There is a previous balance record
 			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.
@@ -2426,7 +2435,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// path still left log-only after the two 2026-08 halts; the other is
 		// rcDb.SetRecord. Block until it lands, matching getLedgerRangeOrBlock
 		// immediately above, which fail-stops the READ feeding this same value.
-		blockingBalanceWrite(k, endBlock, func() error {
+		blockingRetry(fmt.Sprintf("UpdateBalanceRecord(%s @%d)", k, endBlock), func() error {
 			return se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
 		})
 
@@ -2588,7 +2597,7 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 		// dropped write loses the accounting with nothing to rebuild it from.
 		// RC gates transaction admission, so a node that under-counts admits
 		// transactions its peers reject. Fail-stop like the balance snapshot.
-		blockingBalanceWrite(k, blockHeight, func() error {
+		blockingRetry(fmt.Sprintf("rcDb.SetRecord(%s @%d)", k, blockHeight), func() error {
 			return se.rcDb.SetRecord(k, blockHeight, rcBal)
 		})
 	}
