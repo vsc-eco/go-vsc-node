@@ -680,12 +680,19 @@ func TestLedgerRemediation_LateApply_PreservesTwabAndOtherAssets(t *testing.T) {
 		"claim height must survive")
 }
 
-// ★ REVIEW FINDING (F3) — the re-anchor must be idempotent across restarts via
-// a DURABLE marker. `bal` is read at target-1 (immutable) so it can never mean
-// "already done", and the live balance is not a valid signal either: after the
-// write-off it is exactly 0, so any later debit would re-arm the adjustment and
-// every restart would apply it again.
-func TestLedgerRemediation_LateApply_RepeatedRestarts_AdjustOnlyOnce(t *testing.T) {
+// ★ IDEMPOTENCE ACROSS RESTARTS — now by construction, not by a marker.
+//
+// The late path rewrites each stale snapshot to the LEDGER FOLD at that
+// snapshot's height, so re-running it recomputes the same value and writes
+// nothing. That replaced an $inc guarded by a durable marker, whose ordering
+// was a crash-safety problem in both directions (write-first double-credited on
+// restart; marker-first silently left the correction un-applied).
+//
+// Note how the later debit is modelled: as a real ledger record. An earlier
+// version of this test edited the snapshot directly with no matching record,
+// which the recompute correctly treats as a corrupt snapshot and repairs — the
+// test premise, not the code, was wrong.
+func TestLedgerRemediation_LateApply_RepeatedRestarts_ConvergeToLedgerTruth(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
@@ -696,12 +703,15 @@ func TestLedgerRemediation_LateApply_RepeatedRestarts_AdjustOnlyOnce(t *testing.
 	}}
 
 	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
-	afterFirst := env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS
-	assert.Equal(t, int64(0), afterFirst, "first late apply corrects the snapshot")
+	assert.Equal(t, int64(0), env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS,
+		"first late apply corrects the snapshot to the ledger fold")
 
-	// A later debit drives it negative again — this must NOT look like
-	// "needs re-anchoring".
-	env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS = -500
+	// A REAL later debit: a ledger record, as production would have.
+	env.LedgerDb.LedgerRecords["hive:dhedge"] = append(env.LedgerDb.LedgerRecords["hive:dhedge"],
+		ledgerDb.LedgerRecord{
+			Id: "later_unstake#dhedge", BlockHeight: remediationTestHeight + 20,
+			Amount: -500, Asset: "hbd_savings", Owner: "hive:dhedge", Type: "unstake",
+		})
 
 	for i := 0; i < 3; i++ {
 		restarted := newRemediationEnv()
@@ -710,6 +720,8 @@ func TestLedgerRemediation_LateApply_RepeatedRestarts_AdjustOnlyOnce(t *testing.
 		restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 400 + uint64(i))
 	}
 
+	// -283 (legacy) + 283 (credit) - 500 (real debit) = -500. Every restart
+	// recomputes exactly that; none of them stacks another +283 on top.
 	assert.Equal(t, int64(-500), env.BalanceDb.BalanceRecords["hive:dhedge"][0].HBD_SAVINGS,
-		"repeated restarts must not re-apply the adjustment — the durable marker gates it")
+		"repeated restarts must converge to the ledger fold, never re-apply the credit")
 }
