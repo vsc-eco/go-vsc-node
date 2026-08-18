@@ -52,7 +52,10 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// heights sit in the low millions against a 109.17M target, and the accounts
 	// would read non-negative and be skipped anyway), but the deviation is
 	// cheap to close and the convention exists for a reason.
-	if se.sconf != nil && !se.sconf.OnMainnet() {
+	// Fail CLOSED on a nil sconf: an unknown network must not run a
+	// mainnet-specific table. (The inverse, `sconf != nil && !OnMainnet()`, is
+	// fail-open — it applies the remediation when the network is unknown.)
+	if se.sconf == nil || !se.sconf.OnMainnet() {
 		return
 	}
 	target := params.LEDGER_REMEDIATION_HEIGHT
