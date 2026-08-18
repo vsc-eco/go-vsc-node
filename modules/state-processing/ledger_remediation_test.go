@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	ledgerSystem "vsc-node/modules/ledger-system"
 	stateEngine "vsc-node/modules/state-processing"
@@ -12,6 +13,15 @@ import (
 )
 
 const remediationTestHeight = uint64(500)
+
+// newRemediationEnv builds a MAINNET test environment. The remediation is
+// network-gated (A6) exactly like CONTRACT_DEPLOYMENT_FEE_START_HEIGHT,
+// CONTRACT_UPDATE_HEIGHT and PENDULUM_FEE_FIX_HEIGHT, because
+// LEDGER_REMEDIATIONS is a mainnet-specific table of ten mainnet accounts. The
+// default mocknet env would therefore skip it entirely.
+func newRemediationEnv() *testEnv {
+	return newTestEnvWithConsensus(nil, systemconfig.MainnetConfig())
+}
 
 // withRemediation pins the activation height and table for one test and
 // restores the real mainnet values afterwards, so these tests can never leak
@@ -61,7 +71,7 @@ func TestLedgerRemediation_WritesOffNegative_DoubleEntry(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 
 	env.SE.ApplyLedgerRemediation(remediationTestHeight)
@@ -82,32 +92,44 @@ func TestLedgerRemediation_WritesOffNegative_DoubleEntry(t *testing.T) {
 		"balance must fold to exactly 0 after the write-off")
 }
 
-// ★ THE REINDEX PROPERTY. A reindex drops the ledger and replays from L1, and a
-// crash can re-process the same block. Applying twice must be identical to
-// applying once — otherwise the second pass would see an already-corrected
-// balance and either zero the fix out or double-credit it.
+// ★ THE REINDEX PROPERTY — with a SECOND process, not the same one twice.
+//
+// The earlier version of this test called ApplyLedgerRemediation twice on the
+// SAME StateEngine. The second call returned immediately at
+// `if se.ledgerRemediationDone { return }`, so it never re-read the balance and
+// never called StoreLedger again: `first == second` and `Len == 1` were
+// tautologies and the upsert behaviour it claimed to prove was never exercised.
+// (Third instance of the same mistake in this file's history — asserting on the
+// shape of the output instead of on the value that matters.)
+//
+// A reindex or a crash-restart is a NEW process against the SAME database, so
+// that is what this models: two StateEngines sharing one MockLedgerDb.
 func TestLedgerRemediation_ReplayIsIdempotent(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
-	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 
-	env.SE.ApplyLedgerRemediation(remediationTestHeight)
-	first := remediationRows(env, "hive:dhedge")
+	first := newRemediationEnv()
+	seedNegative(first, "hive:dhedge", "hbd_savings", -283)
+	first.SE.ApplyLedgerRemediation(remediationTestHeight)
+	firstRows := remediationRows(first, "hive:dhedge")
+	assert.Len(t, firstRows, 1)
 
-	// Re-process the very same block (crash/restart, or a full replay).
-	env.SE.ApplyLedgerRemediation(remediationTestHeight)
-	second := remediationRows(env, "hive:dhedge")
+	// Second process, same ledger contents (including the row just written).
+	second := newRemediationEnv()
+	second.LedgerDb.LedgerRecords = first.LedgerDb.LedgerRecords
+	second.SE.ApplyLedgerRemediation(remediationTestHeight)
 
-	assert.Equal(t, first, second,
-		"re-processing the activation block must reproduce byte-identical records")
-	assert.Len(t, second, 1, "the fixed id must upsert, never append a second credit")
+	secondRows := remediationRows(second, "hive:dhedge")
+	assert.Equal(t, firstRows, secondRows,
+		"a fresh process replaying the activation block must reproduce byte-identical rows")
+	assert.Len(t, secondRows, 1,
+		"the fixed id must upsert, never append a second credit")
 	assert.Equal(t, int64(0),
-		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"),
-		"balance stays 0 across replay — not double-credited, not re-zeroed")
+		second.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"),
+		"balance stays 0 across the replay — not double-credited, not re-zeroed")
 
-	debits := remediationRows(env, params.LedgerShortfallAccount)
+	debits := remediationRows(second, params.LedgerShortfallAccount)
 	assert.Len(t, debits, 1, "shortfall side must also stay single")
 	assert.Equal(t, int64(-283), debits[0].Amount)
 }
@@ -122,7 +144,7 @@ func TestLedgerRemediation_NeverBeforeActivationHeight(t *testing.T) {
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
 	for _, h := range []uint64{remediationTestHeight - 10, 10} {
-		env := newTestEnv()
+		env := newRemediationEnv()
 		seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 		env.SE.ApplyLedgerRemediation(h)
 		assert.Empty(t, remediationRows(env, "hive:dhedge"),
@@ -142,12 +164,12 @@ func TestLedgerRemediation_CatchesUpAfterARestartSkippedTheSlot(t *testing.T) {
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
 
-	onTime := newTestEnv()
+	onTime := newRemediationEnv()
 	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
 	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
 
 	// A node that missed the slot entirely and only reaches it 30 slots later.
-	late := newTestEnv()
+	late := newRemediationEnv()
 	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
 	late.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
 
@@ -169,12 +191,12 @@ func TestLedgerRemediation_AppliesEvenVeryLate(t *testing.T) {
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
 
-	onTime := newTestEnv()
+	onTime := newRemediationEnv()
 	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
 	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
 
 	// Weeks later.
-	late := newTestEnv()
+	late := newRemediationEnv()
 	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
 	late.SE.ApplyLedgerRemediation(remediationTestHeight + 500_000)
 
@@ -198,7 +220,7 @@ func TestLedgerRemediation_DisabledWhenHeightZero(t *testing.T) {
 		params.LEDGER_REMEDIATIONS = origTable
 	})
 
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 	env.SE.ApplyLedgerRemediation(0)
 	assert.Empty(t, remediationRows(env, "hive:dhedge"), "height 0 must disable the remediation")
@@ -211,7 +233,7 @@ func TestLedgerRemediation_AbsorbedDebt_CreditsNothing(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 	// A later deposit more than covers the old debt.
 	env.LedgerDb.LedgerRecords["hive:dhedge"] = append(env.LedgerDb.LedgerRecords["hive:dhedge"],
@@ -239,7 +261,7 @@ func TestLedgerRemediation_PartiallyAbsorbed_CreditsOnlyRemainder(t *testing.T) 
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 	env.LedgerDb.LedgerRecords["hive:dhedge"] = append(env.LedgerDb.LedgerRecords["hive:dhedge"],
 		ledgerDb.LedgerRecord{
@@ -278,7 +300,7 @@ func TestLedgerRemediation_AllAssets(t *testing.T) {
 		{Account: "hive:b", Asset: "hive", Expected: 181999},
 		{Account: "hive:c", Asset: "hive_consensus", Expected: 15},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:a", "hbd_savings", -283)
 	seedNegative(env, "hive:b", "hive", -181999)
 	seedNegative(env, "hive:c", "hive_consensus", -15)
@@ -334,7 +356,7 @@ func TestLedgerRemediation_DriftIsCreditedInFull(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -10_000)
 
 	env.SE.ApplyLedgerRemediation(remediationTestHeight)
@@ -358,7 +380,7 @@ func TestLedgerRemediation_DriftedCreditIsIdempotent(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -10_000)
 
 	env.SE.ApplyLedgerRemediation(remediationTestHeight)
@@ -389,12 +411,23 @@ func TestLedgerRemediation_HeightMustBeOnASlotBoundary(t *testing.T) {
 		params.LEDGER_REMEDIATION_HEIGHT, slotLen)
 }
 
-// The gate must also reject a height that is not slot-aligned even if someone
-// bypasses the constant, so the invariant is behavioural and not just a lint.
-func TestLedgerRemediation_SlotAlignedHeightFires(t *testing.T) {
+// The test height must model production: ApplyLedgerRemediation is driven from
+// slotStatus.SlotHeight, which CalculateSlotInfo floors to a multiple of
+// SlotLength, so a test height off a slot boundary would exercise a value the
+// production caller can never pass.
+//
+// (This replaces an assertion that checked the file-local constant against
+// itself and claimed the invariant was "behavioural" — there is no modulo check
+// inside ApplyLedgerRemediation. The real enforcement is
+// TestLedgerRemediation_HeightMustBeOnASlotBoundary, which gates the SHIPPED
+// constant. The old comment's "or it will never be reached" was also stale:
+// true under the original exact-equality gate, but under the current
+// `blockHeight < target` gate a misaligned height simply fires at the next slot
+// boundary, up to SlotLength-1 blocks late.)
+func TestLedgerRemediation_TestHeightModelsAProductionSlot(t *testing.T) {
 	slotLen := stateEngine.CONSENSUS_SPECS.SlotLength
 	assert.Zero(t, remediationTestHeight%slotLen,
-		"the test height itself must be slot-aligned to model production faithfully")
+		"the test height must be one the production caller could actually pass")
 }
 
 // ★ A3 — THE LATE-APPLICATION DEFECT (PR #244 review, lordbutterfly).
@@ -413,7 +446,7 @@ func TestLedgerRemediation_LateApply_WithAdvancedSnapshot_StillReachesZero(t *te
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 
 	// The node ran past the activation height on the old binary and
@@ -446,7 +479,7 @@ func TestLedgerRemediation_OnTime_LeavesEarlierSnapshotsAlone(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
-	env := newTestEnv()
+	env := newRemediationEnv()
 	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
 		Account:           "hive:dhedge",
@@ -459,4 +492,26 @@ func TestLedgerRemediation_OnTime_LeavesEarlierSnapshotsAlone(t *testing.T) {
 
 	assert.Len(t, env.BalanceDb.BalanceRecords["hive:dhedge"], 1,
 		"an anchor below target is still valid and must be preserved")
+}
+
+// A6 — the remediation must not fire off mainnet. LEDGER_REMEDIATIONS is a
+// mainnet-specific table of ten mainnet accounts, and both it and the height
+// are package globals; every other height constant in the tree
+// (CONTRACT_DEPLOYMENT_FEE_START_HEIGHT, CONTRACT_UPDATE_HEIGHT,
+// PENDULUM_FEE_FIX_HEIGHT) is guarded by OnMainnet() for the same reason.
+func TestLedgerRemediation_DoesNotFireOffMainnet(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	for _, sc := range []systemconfig.SystemConfig{
+		systemconfig.TestnetConfig(),
+		systemconfig.DevnetConfig(),
+		systemconfig.MocknetConfig(),
+	} {
+		env := newTestEnvWithConsensus(nil, sc)
+		seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+		env.SE.ApplyLedgerRemediation(remediationTestHeight)
+		assert.Empty(t, remediationRows(env, "hive:dhedge"),
+			"the mainnet remediation table must not be applied on a non-mainnet network")
+	}
 }

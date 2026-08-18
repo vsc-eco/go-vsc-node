@@ -424,7 +424,12 @@ func (d *Devnet) BuildOldCodeImage(ctx context.Context) error {
 
 	goImage := d.cfg.OldCodeGoImage
 	if goImage == "" {
-		goImage = "golang:1.24.1"
+		// Must be >= the toolchain in the OldCodeSourceDir's go.mod, which is
+		// currently `go 1.25.7`. The previous 1.24.1 default is BELOW that and
+		// fails under GOTOOLCHAIN=local, so any differential test using a
+		// recent-but-pre-fix worktree (the mixed-binary setup that found the
+		// late-application defect) could not build its old-code image at all.
+		goImage = "golang:1.25.10"
 	}
 
 	// Write a Dockerfile tailored for the old code into the old source dir.

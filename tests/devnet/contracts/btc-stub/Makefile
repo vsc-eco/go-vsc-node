@@ -8,13 +8,18 @@ TINYJSON		:= tinyjson
 TINYJSON_FLAGS 	:= -snake_case -no_std_marshalers
 CONTRACTS_DIR	:= contract
 
+# The container runs as the host uid with no matching passwd entry, so HOME is
+# unset and defaults to "/". tinygo then tries to create /.cache and dies with
+# "mkdir /.cache: permission denied", failing `make test-regression` in setup
+# before any node starts — i.e. on a fresh clone it never runs at all. Point
+# HOME at the writable workdir.
 TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
 
 TINYGO_CMD = docker run --rm \
     -u $(shell id -u):$(shell id -g) \
     -v $(CURDIR):$(WORKDIR) \
-    -w $(WORKDIR) \
+    -w $(WORKDIR) -e HOME=$(WORKDIR) \
     $(TINYGO_IMAGE) \
     tinygo
 
