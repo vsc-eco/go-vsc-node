@@ -1,6 +1,7 @@
 package state_engine_test
 
 import (
+	"errors"
 	"testing"
 
 	"vsc-node/modules/common/params"
@@ -514,4 +515,72 @@ func TestLedgerRemediation_DoesNotFireOffMainnet(t *testing.T) {
 		assert.Empty(t, remediationRows(env, "hive:dhedge"),
 			"the mainnet remediation table must not be applied on a non-mainnet network")
 	}
+}
+
+// A5.1 — the remediation credits hive_consensus for two of the ten accounts,
+// and the only ledger_state.go change in this branch adds
+// LedgerTypeRemediationCredit to hiveConsensusLedgerOps. That list is the
+// single source of truth shared by GetBalance and GetConsensusBalanceAt, the
+// ERROR-AWARE reader behind the bond inclusion seat gate. Nothing in the repo
+// ever constructed such a row and called both readers, so a divergence between
+// them — the exact drift the list's own comment forbids — would have been
+// invisible.
+func TestLedgerRemediation_HiveConsensus_BothReadersAgree(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:tanzil2024", Asset: "hive_consensus", Expected: 10000},
+	})
+	env := newRemediationEnv()
+	// Seed with the REAL shape: on mainnet tanzil2024's negative comes from a
+	// double consensus_unstake (-10000 twice against a single +10000 stake).
+	// The row type matters — GetConsensusBalanceAt filters on
+	// hiveConsensusLedgerOps, so a type outside that list is counted by
+	// GetBalance and ignored by the gate. Every hive_consensus type present on
+	// mainnet (consensus_stake, consensus_unstake, safety_slash_consensus) is
+	// in the list, which is what makes the two readers agree.
+	env.LedgerDb.LedgerRecords["hive:tanzil2024"] = []ledgerDb.LedgerRecord{
+		{Id: "stake#1", BlockHeight: remediationTestHeight - 120, Amount: 10000,
+			Asset: "hive_consensus", Owner: "hive:tanzil2024", Type: "consensus_stake"},
+		{Id: "unstake#1", BlockHeight: remediationTestHeight - 110, Amount: -10000,
+			Asset: "hive_consensus", Owner: "hive:tanzil2024", Type: "consensus_unstake"},
+		{Id: "unstake#2", BlockHeight: remediationTestHeight - 100, Amount: -10000,
+			Asset: "hive_consensus", Owner: "hive:tanzil2024", Type: "consensus_unstake"},
+	}
+
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+
+	at := remediationTestHeight + 5
+	viaGetBalance := env.SE.LedgerState.GetBalance("hive:tanzil2024", at, "hive_consensus")
+	viaConsensus, err := env.SE.LedgerState.GetConsensusBalanceAt("hive:tanzil2024", at)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), viaGetBalance, "the write-off must zero the consensus bond")
+	assert.Equal(t, viaGetBalance, viaConsensus,
+		"GetBalance and GetConsensusBalanceAt MUST agree — the bond inclusion gate "+
+			"reads the latter, so drift between them evicts or over-counts a seat")
+}
+
+// A5.2 — the fail-stop retry path had zero coverage: MockLedgerDb.StoreLedger
+// could never fail, so blockingRemediationWrite's retry branch was never taken.
+// A transient failure must be retried until it lands, not skipped.
+func TestLedgerRemediation_TransientWriteFailure_IsRetriedNotSkipped(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	// Two transient faults, then success.
+	env.LedgerDb.StoreErrs = []error{
+		errors.New("connection reset by peer"),
+		errors.New("no reachable servers"),
+	}
+
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+
+	rows := remediationRows(env, "hive:dhedge")
+	assert.Len(t, rows, 1,
+		"a transient write failure must be retried until the credit lands, never dropped")
+	assert.Equal(t, int64(283), rows[0].Amount)
+	assert.Equal(t, int64(0),
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"))
+	assert.Empty(t, env.LedgerDb.StoreErrs, "both injected faults must have been consumed by retries")
 }

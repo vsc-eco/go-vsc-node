@@ -108,7 +108,36 @@ func (m *mockLedgerSystem) GetBalance(account string, blockHeight uint64, asset 
 }
 func (m *mockLedgerSystem) ClaimHBDInterest(lastClaim uint64, blockHeight uint64, amount int64, txId string) {
 }
+
+// IndexActions is the SOLE writer of the stake/unstake credit leg. It used to
+// be stubbed to an empty body here, which is a large part of why the credit-leg
+// defects survived: with it doing nothing, every conservation assertion below
+// still balanced (the debited value was counted as "in transit" forever — see
+// oplogInTransit).
+//
+// It now performs the credit into the same VirtualLedger the assertions read,
+// mirroring production: stake credits hbd_savings to the recipient, unstake
+// credits hbd. That makes a dropped credit observable instead of absorbed.
 func (m *mockLedgerSystem) IndexActions(actionUpdate ledgerSystem.ActionUpdate, extraInfo ledgerSystem.ExtraInfo) {
+	for _, op := range m.state.Oplog {
+		var asset string
+		switch op.Type {
+		case "stake":
+			asset = "hbd_savings"
+		case "unstake":
+			asset = "hbd"
+		default:
+			continue
+		}
+		m.state.VirtualLedger[op.To] = append(m.state.VirtualLedger[op.To], ledgerSystem.LedgerUpdate{
+			Id:          op.Id + "#out",
+			Owner:       op.To,
+			Amount:      op.Amount,
+			Asset:       asset,
+			Type:        op.Type,
+			BlockHeight: extraInfo.BlockHeight + 1,
+		})
+	}
 }
 func (m *mockLedgerSystem) Deposit(deposit ledgerSystem.Deposit) string { return "" }
 func (m *mockLedgerSystem) IngestOplog(oplog []ledgerSystem.OpLogEvent, options ledgerSystem.OplogInjestOptions) {
@@ -207,29 +236,38 @@ func TestInvariant_BalanceConservation(t *testing.T) {
 	require.True(t, r.Ok, "withdraw failed: %s", r.Msg)
 	s4.Done()
 
-	// Now verify conservation.
-	// Architecture: session operations only record the debit side for stake/unstake/withdraw.
-	// The credit side arrives later (IndexActions for stake, on-chain for withdraw/unstake).
-	// So: total_in_accounts + in_transit = total_deposited
-	//
-	// in_transit includes: staked HBD (awaiting HBD_SAVINGS credit),
-	//                      withdrawn HBD (left the system).
+	// ★ Run the credit leg. Previously this test never invoked it at all, and
+	// then added the un-credited value back via oplogInTransit — so it balanced
+	// whether or not the credit existed. Driving it here is what lets the
+	// assertion below actually fail if the credit leg regresses.
+	ls := &mockLedgerSystem{state: state}
+	ls.IndexActions(ledgerSystem.ActionUpdate{}, ledgerSystem.ExtraInfo{BlockHeight: bh})
 
+	// Conservation is measured across BOTH hbd and hbd_savings, because a stake
+	// does not remove value from the system — it moves hbd into hbd_savings.
+	// Only a withdraw genuinely leaves. Compensating for stake/unstake (the old
+	// behaviour) is what made a dropped credit invisible: the value was counted
+	// as "in transit" forever and the books still balanced.
 	accounts := []string{"hive:alice", "hive:bob", "hive:carol"}
 
-	totalHbd := int64(0)
+	totalHeld := int64(0)
 	for _, acc := range accounts {
-		totalHbd += sessionBalanceOf(state, acc, "hbd", bh)
+		totalHeld += sessionBalanceOf(state, acc, "hbd", bh)
+		totalHeld += sessionBalanceOf(state, acc, "hbd_savings", bh)
 	}
 
-	transit := oplogInTransit(state)
+	// Only value that has genuinely left the system.
+	withdrawn := int64(0)
+	for _, op := range state.Oplog {
+		if op.Type == "withdraw" {
+			withdrawn += op.Amount
+		}
+	}
 
-	expectedHbd := totalDeposited
-	actualHbd := totalHbd + transit["hbd"]
-
-	assert.Equal(t, expectedHbd, actualHbd,
-		"BALANCE CONSERVATION VIOLATED: deposited=%d, expected=%d, got hbd_in_accounts=%d + in_transit=%d = %d",
-		totalDeposited, expectedHbd, totalHbd, transit["hbd"], actualHbd)
+	assert.Equal(t, totalDeposited, totalHeld+withdrawn,
+		"BALANCE CONSERVATION VIOLATED: deposited=%d, held(hbd+hbd_savings)=%d, withdrawn=%d, total=%d "+
+			"— a shortfall here means a credit leg did not land",
+		totalDeposited, totalHeld, withdrawn, totalHeld+withdrawn)
 }
 
 // ---------------------------------------------------------------------------

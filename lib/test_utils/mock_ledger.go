@@ -81,6 +81,11 @@ func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, er
 type MockLedgerDb struct {
 	aggregate.Plugin
 	LedgerRecords map[string][]ledgerDb.LedgerRecord
+	// StoreErrs lets a test inject transient write failures: each StoreLedger
+	// call pops one entry off the front. Without it the fail-stop retry paths
+	// (blockingRemediationWrite, storeLedgerOrFail, IndexActions) have zero
+	// coverage, because this mock could never fail.
+	StoreErrs []error
 }
 
 // StoreLedger upserts by Id within the per-owner slice — matching the
@@ -90,6 +95,13 @@ type MockLedgerDb struct {
 // detectors) be exercised by mock-backed tests without false-positive
 // double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
+	if len(m.StoreErrs) > 0 {
+		err := m.StoreErrs[0]
+		m.StoreErrs = m.StoreErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	for _, record := range ledgerRecords {
 		// B8: the real query is FindOneAndUpdate({"id": ...}) — keyed on id
 		// ALONE, with no owner scope. A same-Id write from a different owner
@@ -331,6 +343,10 @@ func (m *MockActionsDb) SetStatus(id string, status string) {
 // status=="pending", block_height<=bh, type in t (when t non-empty),
 // sorted by block_height then id.
 func (m *MockActionsDb) GetPendingActions(bh uint64, t ...string) ([]ledgerDb.ActionRecord, error) {
+	// B8: production sorts by (block_height, id) and applies
+	// SetLimit(MaxGatewayActionBatch). The mock was unbounded and returned map
+	// order, so the batch-size guard was never exercised and any test relying
+	// on ordering was relying on Go's randomized map iteration.
 	result := make([]ledgerDb.ActionRecord, 0)
 	for _, action := range m.Actions {
 		if action.Status != "pending" {
@@ -350,6 +366,9 @@ func (m *MockActionsDb) GetPendingActions(bh uint64, t ...string) ([]ledgerDb.Ac
 		}
 		return strings.Compare(a.Id, b.Id)
 	})
+	if len(result) > ledgerDb.MaxGatewayActionBatch {
+		result = result[:ledgerDb.MaxGatewayActionBatch]
+	}
 	return result, nil
 }
 
