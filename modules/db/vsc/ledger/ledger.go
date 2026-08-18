@@ -385,12 +385,22 @@ func (balances *balances) DeleteBalanceRecordsFrom(account string, fromHeight ui
 // FIX ME!!
 func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
-	balances.FindOneAndUpdate(context.Background(), bson.M{
+	res := balances.FindOneAndUpdate(context.Background(), bson.M{
 		"account":      record.Account,
 		"block_height": record.BlockHeight,
 	}, bson.M{
 		"$set": record,
 	}, findUpdateOpts)
+	// This returned nil unconditionally, which made the blockingBalanceWrite
+	// fail-stop in UpdateBalances inert against the real DB — it could never
+	// observe a failure. Same treatment as StoreLedger and rcDb.SetRecord: with
+	// SetUpsert and the default ReturnDocument (Before), a fresh insert reports
+	// ErrNoDocuments, which is the success path; anything else is a real write
+	// failure, and this snapshot carries HBD_AVG / HBD_MODIFY_HEIGHT /
+	// HBD_CLAIM_HEIGHT, which are never rebuilt from the ledger.
+	if err := res.Err(); err != nil && err != mongo.ErrNoDocuments {
+		return err
+	}
 	return nil
 }
 

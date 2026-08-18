@@ -206,7 +206,26 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// excludes it from the interest distribution on both), and only
 		// surfaces if it later funds the asset. A node wanting byte-exact TWAB
 		// should reindex.
-		if blockHeight > target {
+		// Gate on the LIVE balance, not on `blockHeight > target` alone.
+		//
+		// `bal` above is read at target-1 — immutable history — so it is ALWAYS
+		// negative and can never signal "already done". ledgerRemediationDone is
+		// process-local, so with only that gate this deletion re-fired on EVERY
+		// restart after the activation height: a node that applied on time and
+		// later restarted would wipe all its post-target snapshots for these ten
+		// accounts. That is not cosmetic — ReadCommitteeBonds samples
+		// BalanceRecord.HIVE_CONSENSUS directly (no replay), so for the two
+		// hive_consensus accounts it would diverge the pendulum settlement map
+		// and its CID from peers, and it rewinds HBD_AVG/HBD_CLAIM_HEIGHT that
+		// feed the cross-account interest denominator.
+		//
+		// The live balance is the actual symptom: if it still reads negative the
+		// snapshots are masking the credit and must be re-anchored; if it reads
+		// 0 the credit is already visible and there is nothing to do — which is
+		// the case both for an on-time node and for a late node that already
+		// re-anchored on a previous run.
+		if blockHeight > target &&
+			se.LedgerState.GetBalance(rem.Account, blockHeight, rem.Asset) < 0 {
 			blockingRemediationWrite("DeleteBalanceRecordsFrom("+rem.Account+")", func() error {
 				return se.LedgerState.BalanceDb.DeleteBalanceRecordsFrom(rem.Account, target)
 			})
