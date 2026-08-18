@@ -205,53 +205,49 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// excludes it from the interest distribution on both), and only
 		// surfaces if it later funds the asset. A node wanting byte-exact TWAB
 		// should reindex.
-		// ★ LATE PATH: make the retroactive credit visible to the snapshot.
+		// ★ Snapshot re-anchor, and the marker that makes it once-only.
 		//
 		// GetBalance is snapshot-anchored — recordHeight = balRecord.BlockHeight
 		// + 1, folding only ABOVE it — so a credit written at `target` is
-		// invisible to any account whose snapshot already advanced past target,
-		// and stays invisible because every later snapshot builds on the
-		// previous one. A late node would write the byte-identical row and keep
-		// the negative forever. (Found in the PR #244 review and reproduced on
-		// live mixed-binary devnet nodes.)
+		// invisible to any account whose snapshot already advanced past target.
+		// A late node would otherwise write the byte-identical row and keep the
+		// negative forever.
 		//
-		// ADJUST, don't delete. Dropping those snapshot rows would also discard
-		// HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT — path-dependent
-		// accumulators never rebuilt from the ledger — and the other three asset
-		// fields. Six of the ten remediated accounts are on hive/hive_consensus
-		// and can hold a positive hbd_savings position, so discarding their TWAB
-		// state would shift the interest denominator for EVERY account on the
-		// node. Adding the credit to the one affected field fixes the balance
-		// and leaves everything else intact.
+		// The marker is written on BOTH paths, not just the late one. On-time
+		// application needs no adjustment (no snapshot at or above target exists
+		// yet), but it must still record that this account is settled —-
+		// otherwise the first slot transition after ANY later restart finds no
+		// marker and re-applies the adjustment to snapshots that already fold
+		// the credit, double-crediting the account. For the two hive_consensus
+		// entries that diverges ReadCommitteeBonds and the bond-gate CID.
 		//
-		// Guarded by a DURABLE marker, not by inspecting the balance. `bal` is
-		// read at target-1 (immutable), so it can never signal "already done",
-		// and a live-balance test is not equivalent either: after the write-off
-		// the balance is exactly 0, so any later debit would re-arm it and every
-		// restart would re-apply the adjustment. The marker is a protocol-meta
-		// ledger row — zero amount, excluded from every spendable fold — so it
-		// survives restarts and is re-derived on a reindex like everything else
-		// here.
-		//
-		// On-time application skips this entirely: it runs immediately before
-		// UpdateBalances in the same slot transition, so no snapshot at or above
-		// target exists yet.
-		if blockHeight > target {
-			markerID := creditID + "#reanchored"
-			if !se.remediationMarkerExists(rem.Account, target, markerID) {
+		// Marker BEFORE the adjustment, deliberately. AdjustBalanceRecordsFrom
+		// is a non-idempotent $inc, so the two writes cannot both be safe
+		// against a crash between them; ordering the marker first makes the
+		// failure UNDER-correction (the negative persists, visible to the
+		// negative-balance monitor) rather than a silent double credit.
+		markerID := creditID + "#reanchored"
+		if !se.remediationMarkerExists(rem.Account, target, markerID) {
+			blockingRetry("ledger remediation: marker "+markerID, func() error {
+				return se.LedgerState.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+					Id:          markerID,
+					BlockHeight: target,
+					Amount:      0,
+					Asset:       rem.Asset,
+					Owner:       rem.Account,
+					Type:        ledgerSystem.LedgerTypeRemediationReanchor,
+				})
+			})
+			if blockHeight > target {
+				// ADJUST, don't delete: dropping the rows would discard HBD_AVG /
+				// HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT (path-dependent, never
+				// rebuilt from the ledger) and the other three asset fields. Six
+				// of the ten remediated accounts are on hive/hive_consensus and
+				// can hold a positive hbd_savings position, so that would shift
+				// the interest denominator for every account on the node.
 				blockingRetry("ledger remediation: re-anchor "+rem.Account, func() error {
 					return se.LedgerState.BalanceDb.AdjustBalanceRecordsFrom(
 						rem.Account, target, rem.Asset, amount)
-				})
-				blockingRetry("ledger remediation: marker "+markerID, func() error {
-					return se.LedgerState.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-						Id:          markerID,
-						BlockHeight: target,
-						Amount:      0,
-						Asset:       rem.Asset,
-						Owner:       rem.Account,
-						Type:        ledgerSystem.LedgerTypeRemediationReanchor,
-					})
 				})
 				log.Warn("ledger remediation: adjusted stale balance snapshots so the late credit is visible",
 					"account", rem.Account, "asset", rem.Asset, "delta", amount,

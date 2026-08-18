@@ -630,6 +630,16 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) 
 		"a restart must NOT delete snapshots when the credit is already visible")
 	assert.Equal(t, int64(12345), snaps[0].HBD_AVG,
 		"HBD_AVG must survive — it is path-dependent and never rebuilt from the ledger")
+	// ★ THE ASSERTION THAT WAS MISSING. This test already covered the restart
+	// scenario but checked only Len and HBD_AVG, so it stayed green while the
+	// account was being DOUBLE-CREDITED: the marker was written on the late path
+	// only, so a restart after an on-time apply found none and re-ran the $inc
+	// against snapshots that already folded the credit.
+	assert.Equal(t, int64(0), snaps[0].HBD_SAVINGS,
+		"the balance must stay 0 — a restart must not re-apply the credit")
+	assert.Equal(t, int64(0),
+		restarted.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+200, "hbd_savings"),
+		"and the folded balance must agree")
 }
 
 // ★ REVIEW FINDING (F2) — the late-path re-anchor must not discard the rest of
