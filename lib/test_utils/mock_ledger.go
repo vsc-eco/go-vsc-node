@@ -85,14 +85,20 @@ type MockLedgerDb struct {
 // detectors) be exercised by mock-backed tests without false-positive
 // double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
-	if len(m.StoreErrs) > 0 {
-		err := m.StoreErrs[0]
-		m.StoreErrs = m.StoreErrs[1:]
-		if err != nil {
-			return err
-		}
-	}
 	for _, record := range ledgerRecords {
+		// Pop per RECORD, not per call, and return immediately — production's
+		// StoreLedger loops per record and returns on the first error, leaving
+		// EARLIER records already written. Failing only at call granularity
+		// could not reproduce that partial-batch write, which is exactly what
+		// the guards in SafetySlashConsensusBond,
+		// FinalizeMaturedSafetySlashBurns and ReservePayout exist to handle.
+		if len(m.StoreErrs) > 0 {
+			err := m.StoreErrs[0]
+			m.StoreErrs = m.StoreErrs[1:]
+			if err != nil {
+				return err
+			}
+		}
 		// B8: the real query is FindOneAndUpdate({"id": ...}) — keyed on id
 		// ALONE, with no owner scope. A same-Id write from a different owner
 		// therefore REPLACES the existing document in production. Scoping the
@@ -227,10 +233,17 @@ func (ic *MockInterestClaimsDb) GetLastClaim(blockHeight uint64) *ledgerDb.Claim
 	// B8: the real implementation returns nil when nothing matches, and callers
 	// branch on exactly that. The mock always returned a pointer to a zero
 	// value, so the nil branch was unreachable in every mock-backed test.
+	// Production sorts block_height DESC and takes the newest match. Keeping the
+	// last matching SLICE element instead only agrees when a test seeds in
+	// ascending order — the identical ordering trap already fixed for
+	// MockBalanceDb.GetBalanceRecord.
 	var result ledgerDb.ClaimRecord
 	found := false
 	for _, claim := range ic.Claims {
-		if claim.BlockHeight < blockHeight {
+		if claim.BlockHeight >= blockHeight {
+			continue
+		}
+		if !found || claim.BlockHeight > result.BlockHeight {
 			result = claim
 			found = true
 		}

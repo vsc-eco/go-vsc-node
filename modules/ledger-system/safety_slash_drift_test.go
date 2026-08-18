@@ -134,3 +134,64 @@ func TestSafetySlash_HalfAppliedWrite_IsCompletedOnReplay(t *testing.T) {
 		"a half-applied slash must be completed on replay — guarding on the debit "+
 			"alone would strand the value with the bond already debited")
 }
+
+// ★ REVIEW PASS 7 — completing a half-applied slash must not bail out on the
+// bond guards.
+//
+// By the time the companion leg is being completed, the bond legitimately reads
+// 0: the debit that DID land is exactly what drove it there. The normal path's
+// "zero consensus bond" and "slash rounds to zero" guards both RETURN, so
+// falling through to them abandoned the completion before the recorded amount
+// was ever applied — leaving the reserve/pending-burn leg unwritten forever
+// with the bond already debited.
+func TestSafetySlash_CompletesCompanion_EvenWhenBondNowReadsZero(t *testing.T) {
+	balDb := &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledgerDb.BalanceRecord{}}
+	lDb := &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledgerDb.LedgerRecord{}}
+	aDb := &test_utils.MockActionsDb{Actions: map[string]ledgerDb.ActionRecord{}}
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, nil)
+
+	const acct = "hive:baddie"
+	balDb.BalanceRecords[acct] = []ledgerDb.BalanceRecord{{
+		Account: acct, BlockHeight: 1000, HIVE_CONSENSUS: 1_000_000,
+	}}
+	p := ledgerSystem.SafetySlashConsensusParams{
+		Account: acct, TxID: "tx-zero", EvidenceKind: "double_sign",
+		SlashBps:    10000, // 100% — the bond ends at zero
+		BlockHeight: 1000,
+	}
+
+	ls.SafetySlashConsensusBond(p)
+
+	base := p.TxID + "#safety_slash#" + p.EvidenceKind
+	reserveID := base + "#reserve#" + acct
+	// Crash shape: the debit landed, the reserve leg did not.
+	for owner, recs := range lDb.LedgerRecords {
+		kept := make([]ledgerDb.LedgerRecord, 0, len(recs))
+		for _, r := range recs {
+			if r.Id != reserveID {
+				kept = append(kept, r)
+			}
+		}
+		lDb.LedgerRecords[owner] = kept
+	}
+	// And the bond snapshot now reflects the debit — it reads zero.
+	balDb.BalanceRecords[acct] = append(balDb.BalanceRecords[acct], ledgerDb.BalanceRecord{
+		Account: acct, BlockHeight: 1000, HIVE_CONSENSUS: 0,
+	})
+
+	ls.SafetySlashConsensusBond(p)
+
+	var found bool
+	var amt int64
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Id == reserveID {
+				found, amt = true, r.Amount
+			}
+		}
+	}
+	assert.True(t, found,
+		"the companion leg must be completed even though the bond now reads zero — "+
+			"the guards must not bail out before the recorded amount is applied")
+	assert.Equal(t, int64(1_000_000), amt, "and it must carry the originally recorded amount")
+}
