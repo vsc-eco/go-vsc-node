@@ -137,7 +137,13 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // slot-aligned. Chosen so the fleet's hourly watchtower poll has ~48 cycles
 // to roll the binary out before the write-off fires. Clear of the next
 // interest claim (~109,788,523).
-var LEDGER_REMEDIATION_HEIGHT uint64 = 109169970
+// DISARMED 2026-08-18 pending the late-application defect (PR #244 review, A3):
+// GetBalance is snapshot-anchored (ledger_state.go:218, recordHeight =
+// balRecord.BlockHeight+1), so a credit written retroactively at this height is
+// invisible to any account whose ledger_balances snapshot already advanced past
+// it. A node upgrading late therefore writes the byte-identical row and keeps
+// the negative. Re-pin only once that is fixed.
+var LEDGER_REMEDIATION_HEIGHT uint64 = 0
 
 // LedgerRemediation names one (account, asset) whose negative balance is
 // written off at LEDGER_REMEDIATION_HEIGHT.
