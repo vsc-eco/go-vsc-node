@@ -83,8 +83,8 @@ func TestH6GatewayPoPGate(t *testing.T) {
 	// Un-skip together with re-enabling WitnessKeyStrictActive.
 	t.Skip("H-6 strict PoP gate disabled in production (WitnessKeyStrictActive stubbed false, 9801c292)")
 
-	good := h6Witness(t, "alice", 0x11, true)   // valid gateway PoP → kept
-	noPoP := h6Witness(t, "bob", 0x22, false)   // gateway key, no PoP → excluded
+	good := h6Witness(t, "alice", 0x11, true) // valid gateway PoP → kept
+	noPoP := h6Witness(t, "bob", 0x22, false) // gateway key, no PoP → excluded
 
 	ct := test_utils.NewContractTest()
 	ep := New(
