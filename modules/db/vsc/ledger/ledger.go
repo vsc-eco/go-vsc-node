@@ -374,6 +374,14 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 	return &balRecord, nil
 }
 
+func (balances *balances) DeleteBalanceRecordsFrom(account string, fromHeight uint64) error {
+	_, err := balances.DeleteMany(context.Background(), bson.M{
+		"account":      account,
+		"block_height": bson.M{"$gte": fromHeight},
+	})
+	return err
+}
+
 // FIX ME!!
 func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)

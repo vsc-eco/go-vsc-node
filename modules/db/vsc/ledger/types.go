@@ -26,6 +26,14 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
+	// DeleteBalanceRecordsFrom drops an account's snapshot rows at or above
+	// fromHeight. Used only by the late-application path of the one-time
+	// ledger remediation: GetBalance is snapshot-anchored, so a credit written
+	// retroactively below an existing snapshot is invisible forever. Removing
+	// those snapshots re-anchors the fold below the credit, and because
+	// UpdateBalances rebuilds from prevSnapshot.BlockHeight+1 the credit then
+	// lands in the very next rebuild window.
+	DeleteBalanceRecordsFrom(account string, fromHeight uint64) error
 	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 
