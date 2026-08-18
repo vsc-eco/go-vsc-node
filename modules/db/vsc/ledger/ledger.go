@@ -41,6 +41,31 @@ func (e *ledger) Init() error {
 	return nil
 }
 
+// StoreLedger is NOT ATOMIC ACROSS RECORDS, and cannot be made so here.
+//
+// It loops per record and returns on the first error, so a multi-record call
+// can half-apply: the debit lands and the credit does not. True atomicity needs
+// a Mongo transaction, which needs a replica set; the deployment runs a
+// STANDALONE mongod (verified 2026-08-18: `rs.status()` reports "not running
+// with --replSet"). Fixing this properly is therefore an infrastructure change
+// across every operator, not a code change, and is tracked separately.
+//
+// What bounds the damage today:
+//
+//   - Every consensus-relevant caller now fail-stops rather than logging and
+//     continuing (storeLedgerOrFail / blockingRetry). A transient failure is
+//     retried instead of leaving a half-applied write behind.
+//   - Every record carries a deterministic id and this is an upsert, so a retry
+//     REWRITES the records that already landed and completes the ones that did
+//     not. Partial + retry therefore converges on the complete set — see
+//     TestStoreLedger_PartialWriteThenRetry_Converges.
+//   - SafetySlashConsensusBond additionally verifies BOTH legs exist before
+//     short-circuiting a replay, so a batch interrupted by a process death (the
+//     one case a retry cannot cover, since the process is gone) is completed on
+//     the next pass instead of being mistaken for done.
+//
+// The irreducible residual is a process death mid-batch on a path with no
+// replay driver. Do not add new multi-record callers that lack one.
 func (ledger *ledger) StoreLedger(ledgerRecords ...LedgerRecord) error {
 	for _, ledgerRecord := range ledgerRecords {
 		findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)

@@ -1603,6 +1603,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		se.UpdateRcMap(se.slotStatus.SlotHeight)
 
+		// Observability only — read-only, never fail-stop. Nothing halts on a
+		// negative balance any more, so without this a new one would go
+		// unnoticed exactly the way the ten legacy ones did.
+		se.scanNegativeBalances(se.slotStatus.SlotHeight)
+
 		se.RcMap = make(map[string]int64)
 
 		// The slot we just rolled past is finalized: its block
