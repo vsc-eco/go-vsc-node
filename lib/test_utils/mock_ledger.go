@@ -55,19 +55,6 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
-func (m *MockBalanceDb) GetBalanceRecordsFrom(account string, fromHeight uint64) ([]ledgerDb.BalanceRecord, error) {
-	out := make([]ledgerDb.BalanceRecord, 0)
-	for _, r := range m.BalanceRecords[account] {
-		if r.BlockHeight >= fromHeight {
-			out = append(out, r)
-		}
-	}
-	slices.SortFunc(out, func(a, b ledgerDb.BalanceRecord) int {
-		return int(a.BlockHeight) - int(b.BlockHeight)
-	})
-	return out, nil
-}
-
 func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
 	if m.GetAllErr != nil {
 		return nil, m.GetAllErr

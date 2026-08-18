@@ -374,29 +374,6 @@ func (balances *balances) GetBalanceRecord(account string, blockHeight uint64) (
 	return &balRecord, nil
 }
 
-func (balances *balances) GetBalanceRecordsFrom(account string, fromHeight uint64) ([]BalanceRecord, error) {
-	opts := options.Find().SetSort(bson.M{"block_height": 1})
-	cur, err := balances.Find(context.Background(), bson.M{
-		"account":      account,
-		"block_height": bson.M{"$gte": fromHeight},
-	}, opts)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]BalanceRecord, 0)
-	for cur.Next(context.Background()) {
-		rec := BalanceRecord{}
-		if decErr := cur.Decode(&rec); decErr != nil {
-			return nil, decErr
-		}
-		out = append(out, rec)
-	}
-	if err := cur.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // FIX ME!!
 func (balances *balances) UpdateBalanceRecord(record BalanceRecord) error {
 	findUpdateOpts := options.FindOneAndUpdate().SetUpsert(true)
