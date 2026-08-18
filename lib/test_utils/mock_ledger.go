@@ -5,6 +5,8 @@ import (
 	"strings"
 	"vsc-node/modules/aggregate"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type MockBalanceDb struct {
@@ -337,7 +339,13 @@ func (m *MockActionsDb) Get(id string) (*ledgerDb.ActionRecord, error) {
 	}
 	d, exists := m.Actions[id]
 	if !exists {
-		return nil, nil
+		// Production actionsDb.Get returns (nil, findResult.Err()), which for a
+		// missing document is mongo.ErrNoDocuments — never (nil, nil). Returning
+		// (nil, nil) left the IndexActions error-classification arm (fault vs
+		// genuinely-absent) with zero coverage, the same mock/production
+		// divergence class already fixed for MockInterestClaimsDb and
+		// MockBalanceDb.
+		return nil, mongo.ErrNoDocuments
 	}
 	return &d, nil
 }

@@ -302,6 +302,7 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	// then block every future replay from ever writing that second row — and
 	// the hive_consensus filter cannot even see it. Only skip when both legs
 	// are present.
+	var forcedSlashAmt int64 // non-zero => completing a half-applied slash; do not recompute
 	baseIDForGuard := p.TxID + "#safety_slash#" + p.EvidenceKind
 	debitID := baseIDForGuard + "#consensus_debit#" + acct
 	// NOTE the owner argument: the companion leg is owned by the protocol
@@ -334,24 +335,32 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 		// that protocol account, not by acct.
 		companion := baseIDForGuard + "#reserve#" + acct
 		companionOwner := params.ProtocolSlashReserveAccount
-		companionType := LedgerTypeSafetySlashReserve
 		if p.BurnDelayBlocks != 0 {
 			companion = baseIDForGuard + "#hive_burn_pending#" + acct
 			companionOwner = params.ProtocolSlashPendingBurnAccount
-			companionType = LedgerTypeSafetySlashHiveBurnPending
 		}
 		if rowExists(companionOwner, "hive", companion) {
 			log.Info("SafetySlashConsensusBond: slash fully recorded; not recomputing",
 				"account", acct, "debit", debitID, "companion", companion)
 			return LedgerResult{Ok: true, Msg: "safety slash already recorded"}
 		}
-		// Completing the missing leg must NOT recompute the amount. Falling
-		// through to the full recompute re-derives slashAmt from a bond
+		// Completing the missing leg must NOT recompute the amount: falling
+		// through to the normal recompute re-derives slashAmt from a bond
 		// snapshot that already folded this debit, producing a SMALLER figure
-		// which then upserts over the correct one (-100,000 becomes -90,000) —
-		// the exact amount drift this guard exists to prevent. Re-derive from
-		// the debit row that is already on disk instead.
-		var recordedDebit int64
+		// that upserts over the correct one (-100,000 to -90,000).
+		//
+		// But it must ALSO not hand-build the companion record. The pending-burn
+		// variant carries the maturity height in `From`, and
+		// FinalizeMaturedSafetySlashBurns ParseUints that field, `continue`s on
+		// error WITHOUT updating minUnfinalized, then advances the cursor past
+		// the row — so a companion written without `From` is unreachable forever
+		// and the slashed HIVE is stranded on the pending account, never
+		// promoted to the reserve. BurnDelayBlocks is non-zero on mainnet, so
+		// that is the production branch.
+		//
+		// So: reuse the normal construction path below (which computes maturity,
+		// applies the MaxSafetySlashBurnDelayBlocks clamp and the overflow
+		// check) but force the amount to the figure already on disk.
 		blockingRetry("SafetySlashConsensusBond.readRecordedDebit("+debitID+")", func() error {
 			rows, err := ls.LedgerDb.GetLedgerRange(acct, p.BlockHeight, p.BlockHeight, "hive_consensus")
 			if err != nil {
@@ -362,25 +371,14 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			}
 			for _, r := range *rows {
 				if r.Id == debitID {
-					recordedDebit = -r.Amount // stored negative
+					forcedSlashAmt = -r.Amount // stored negative
 					return nil
 				}
 			}
 			return fmt.Errorf("debit row %s vanished between reads", debitID)
 		})
-		log.Warn("SafetySlashConsensusBond: debit present but companion leg missing; completing it from the recorded amount",
-			"account", acct, "debit", debitID, "companion", companion, "amount", recordedDebit)
-		ls.storeLedgerOrFail("SafetySlashConsensusBond.completeCompanion("+companion+")",
-			ledger_db.LedgerRecord{
-				Id:          companion,
-				TxId:        p.TxID,
-				BlockHeight: p.BlockHeight,
-				Amount:      recordedDebit,
-				Asset:       "hive",
-				Owner:       companionOwner,
-				Type:        companionType,
-			})
-		return LedgerResult{Ok: true, Msg: "safety slash companion leg completed"}
+		log.Warn("SafetySlashConsensusBond: debit present but companion leg missing; re-applying from the recorded amount",
+			"account", acct, "debit", debitID, "companion", companion, "amount", forcedSlashAmt)
 	}
 
 	bondRecord := func(height uint64) *ledger_db.BalanceRecord {
@@ -411,6 +409,11 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	}
 	if slashAmt > bond {
 		slashAmt = bond
+	}
+	if forcedSlashAmt > 0 {
+		// Completing a half-applied slash: the authoritative figure is the one
+		// already written, not a recompute against a bond that now reflects it.
+		slashAmt = forcedSlashAmt
 	}
 
 	// The full slashed amount is the residual; it is committed to the keyless

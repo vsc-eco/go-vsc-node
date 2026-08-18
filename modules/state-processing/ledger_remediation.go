@@ -172,39 +172,6 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			)
 		})
 
-		// ★ LATE PATH: re-anchor the balance snapshot below the credit.
-		//
-		// GetBalance is snapshot-anchored — ledger_state.go sets
-		// recordHeight = balRecord.BlockHeight + 1 and folds only ABOVE that.
-		// A credit written retroactively at `target` is therefore INVISIBLE to
-		// any account whose ledger_balances snapshot has already advanced past
-		// target, and it never becomes visible again because every later
-		// snapshot is built from the previous one. A node upgrading late would
-		// write the byte-identical row and keep the negative forever.
-		//
-		// (Found in the PR #244 review and reproduced on live mixed-binary
-		// devnet nodes. The earlier reasoning — "applying late is safe because
-		// the rows are byte-identical" — checked the rows and never checked
-		// that the balance is not derived from the rows alone.)
-		//
-		// Dropping this account's snapshots at or above target re-anchors the
-		// fold below the credit. It also self-heals on the next rebuild:
-		// UpdateBalances seeds from prevSnapshot and reads ledger records from
-		// prevSnapshot.BlockHeight+1, so once the anchor is below target the
-		// credit falls inside that window and lands in the rebuilt snapshot.
-		//
-		// Only on the late path: applying on time runs immediately before
-		// UpdateBalances in the same slot transition, so no snapshot at or
-		// above target exists yet and the row is already inside that
-		// transition's selection window.
-		//
-		// KNOWN RESIDUAL: HBD_AVG is a path-dependent accumulator kept only in
-		// the snapshot and never rebuilt from the ledger, so a late node
-		// re-accrues it from the older anchor and can differ from an on-time
-		// node. That is invisible while the account sits at 0 (endingAvg < 1
-		// excludes it from the interest distribution on both), and only
-		// surfaces if it later funds the asset. A node wanting byte-exact TWAB
-		// should reindex.
 		// ★ Snapshot re-anchor, and the marker that makes it once-only.
 		//
 		// GetBalance is snapshot-anchored — recordHeight = balRecord.BlockHeight
