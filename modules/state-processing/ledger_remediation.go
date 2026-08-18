@@ -44,8 +44,20 @@ import (
 // amount would hand over spendable value. Expected is documentation — logged
 // and compared so drift is visible, never used to decide the credit.
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
+	// A6: network-gate it, matching every height-constant precedent in the
+	// tree — CONTRACT_DEPLOYMENT_FEE_START_HEIGHT, CONTRACT_UPDATE_HEIGHT and
+	// PENDULUM_FEE_FIX_HEIGHT are all guarded by OnMainnet(). LEDGER_REMEDIATIONS
+	// is a MAINNET-specific table of ten mainnet accounts, and both it and the
+	// height are package globals that would otherwise be applied on every
+	// network. Inert in practice today (testnet is a separate Hive chain whose
+	// heights sit in the low millions against a 109.17M target, and the accounts
+	// would read non-negative and be skipped anyway), but the deviation is
+	// cheap to close and the convention exists for a reason.
+	if se.sconf != nil && !se.sconf.OnMainnet() {
+		return
+	}
 	target := params.LEDGER_REMEDIATION_HEIGHT
-	// 0 disables (testnet/devnet, and mainnet until the height is pinned).
+	// 0 disables (mainnet until the height is pinned).
 	if target == 0 {
 		return
 	}

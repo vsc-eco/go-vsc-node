@@ -93,10 +93,11 @@ type Config struct {
 	// in seconds instead of an hour.
 	MagiEnv map[string]string
 	// OldCodeGoImage overrides the Go base image used by BuildOldCodeImage.
-	// Defaults to "golang:1.24.1" (the multiversion gossip-resilience
-	// baseline). Set to "golang:1.25.10" or matching when the
-	// OldCodeSourceDir's go.mod requires a newer toolchain (e.g., a
-	// recent-but-pre-fix worktree used for differential audit tests).
+	// Defaults to "golang:1.25.10", which must stay >= the toolchain in the
+	// OldCodeSourceDir's go.mod (currently `go 1.25.7`) or the build fails
+	// under GOTOOLCHAIN=local. Override only to pin an older baseline for
+	// multiversion gossip-resilience runs, and only when that source tree's
+	// go.mod actually accepts it.
 	OldCodeGoImage string
 }
 
