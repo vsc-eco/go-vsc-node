@@ -259,6 +259,39 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 		return LedgerResult{Ok: false, Msg: "ledger not configured"}
 	}
 
+	// ★ B9: NEVER RECOMPUTE A SLASH THAT IS ALREADY WRITTEN.
+	//
+	// safetyEvidenceSeen (state_engine) is an in-process map with no
+	// persistence and no rehydration — unlike the double-sign map, which has
+	// rehydrateDoubleSignMap — so after a restart the same evidence is admitted
+	// again and this function re-runs. Its own doc comment says that is safe
+	// because the ledger ids are deterministic and Mongo upserts by id, so a
+	// redundant call "rewrites the same row instead of double-debiting".
+	//
+	// That is correct about double-debiting and SILENT ABOUT AMOUNT DRIFT. The
+	// bond below is a SNAPSHOT read (GetBalanceRecord), slashAmt is derived from
+	// it and then capped at it, and the debit id is fixed. So if the first
+	// debit has already been folded into a snapshot this read can see, the
+	// second pass computes a SMALLER slash and the upsert OVERWRITES the
+	// correct larger debit with it. A validator's punishment silently shrinks,
+	// with no governance action and nothing in the logs to distinguish it from
+	// a normal duplicate-evidence no-op. The row is not versioned, so the
+	// original amount is not recoverable.
+	//
+	// Checking for the existing debit closes it regardless of crash timing or
+	// map state, which a rehydration would not: rehydration narrows the window,
+	// this removes it.
+	debitID := p.TxID + "#safety_slash#" + p.EvidenceKind + "#consensus_debit#" + acct
+	if existing, err := ls.LedgerDb.GetLedgerRange(acct, p.BlockHeight, p.BlockHeight, "hive_consensus"); err == nil && existing != nil {
+		for _, r := range *existing {
+			if r.Id == debitID {
+				log.Info("SafetySlashConsensusBond: debit already recorded; not recomputing",
+					"account", acct, "id", debitID, "amount", r.Amount)
+				return LedgerResult{Ok: true, Msg: "safety slash already recorded"}
+			}
+		}
+	}
+
 	bondRecord := func(height uint64) *ledger_db.BalanceRecord {
 		rec, _ := ls.BalanceDb.GetBalanceRecord(acct, height)
 		return rec
