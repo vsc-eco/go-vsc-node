@@ -2344,17 +2344,32 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			} else {
 				// claimRecord == nil with needsClaimUpdate true is ALWAYS an
 				// error condition: it requires HBD_CLAIM_HEIGHT != 0, i.e. this
-				// account has claimed before, so a claim record must exist.
+				// account has claimed before, so a record must exist.
 				// GetLastClaim returns nil on ANY Mongo failure, so this is a
-				// transient read blip, not a new claim.
+				// transient read blip, never a new claim.
 				//
-				// Do NOT reset hbdAvg here. Zeroing it permanently wipes this
-				// account's TWAB on THIS node only, and since ClaimHBDInterest
-				// normalises across the sum of every account's HBD_AVG, that
-				// re-splits the next distribution for every account — silent
-				// cross-node divergence from a single read hiccup. Carry the
-				// accrual forward exactly as the healthy path does and leave the
-				// claim height untouched; the account is re-evaluated next slot.
+				// Carry the accrual forward; do NOT reset hbdAvg and do NOT
+				// invent a claim height.
+				//
+				// A fail-stop retry was tried here and REVERTED: GetLastClaim
+				// legitimately returns nil when no claim record exists, so an
+				// account with HBD_CLAIM_HEIGHT != 0 against an empty claims
+				// collection spins forever. A guaranteed hang is strictly worse
+				// than the residual below, and the read gives no way to tell a
+				// transient fault from a genuine absence.
+				//
+				// KNOWN RESIDUAL (review pass 6): this snapshot differs from what
+				// a peer with a healthy read writes — it sets hbdAvg=0 and a new
+				// claim height, this carries the accrual forward and keeps the
+				// old one. HBD_AVG is never rebuilt from the ledger, so the
+				// account stays one slot's accrual out of step on this node, and
+				// ClaimHBDInterest normalises across the sum of all HBD_AVG, so
+				// the next distribution splits slightly differently here.
+				// Carrying forward is chosen over zeroing because zeroing
+				// discards the whole accumulated window rather than one slot of
+				// it. The real fix is giving GetLastClaim an error return so a
+				// fault is distinguishable from an absence — an interface change,
+				// tracked separately.
 				if prevBalRecord != nil {
 					A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
 					hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
