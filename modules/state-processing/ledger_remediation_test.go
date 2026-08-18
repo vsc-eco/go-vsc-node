@@ -584,3 +584,50 @@ func TestLedgerRemediation_TransientWriteFailure_IsRetriedNotSkipped(t *testing.
 		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"))
 	assert.Empty(t, env.LedgerDb.StoreErrs, "both injected faults must have been consumed by retries")
 }
+
+// ★ REVIEW FINDING — an ON-TIME node that later RESTARTS must not wipe its
+// balance snapshots.
+//
+// The late-path re-anchor was gated only on `blockHeight > target` plus a
+// process-local flag. But the amount is read at target-1, immutable history, so
+// it is always negative and can never signal "already applied". After a restart
+// the flag resets, blockHeight is past target, and the deletion re-fired —
+// destroying every post-target snapshot for these ten accounts on every restart.
+//
+// That is not cosmetic: ReadCommitteeBonds samples BalanceRecord.HIVE_CONSENSUS
+// directly with no replay, so for the two hive_consensus accounts it diverges
+// the pendulum settlement map and its CID from peers.
+func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+
+	// Applied on time.
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+	assert.Equal(t, int64(0),
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"))
+
+	// Normal operation continues and the account is re-snapshotted past target.
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:dhedge",
+		BlockHeight:       remediationTestHeight + 60,
+		HBD_SAVINGS:       0,
+		HBD_AVG:           12345,
+		HBD_MODIFY_HEIGHT: remediationTestHeight + 60,
+	}}
+
+	// The node restarts: a NEW StateEngine over the same data, so the
+	// process-local "already done" flag is clear again.
+	restarted := newRemediationEnv()
+	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
+	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
+	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 200)
+
+	snaps := restarted.BalanceDb.BalanceRecords["hive:dhedge"]
+	assert.Len(t, snaps, 1,
+		"a restart must NOT delete snapshots when the credit is already visible")
+	assert.Equal(t, int64(12345), snaps[0].HBD_AVG,
+		"HBD_AVG must survive — it is path-dependent and never rebuilt from the ledger")
+}

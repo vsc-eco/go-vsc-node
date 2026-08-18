@@ -281,15 +281,63 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	// Checking for the existing debit closes it regardless of crash timing or
 	// map state, which a rehydration would not: rehydration narrows the window,
 	// this removes it.
-	debitID := p.TxID + "#safety_slash#" + p.EvidenceKind + "#consensus_debit#" + acct
-	if existing, err := ls.LedgerDb.GetLedgerRange(acct, p.BlockHeight, p.BlockHeight, "hive_consensus"); err == nil && existing != nil {
-		for _, r := range *existing {
-			if r.Id == debitID {
-				log.Info("SafetySlashConsensusBond: debit already recorded; not recomputing",
-					"account", acct, "id", debitID, "amount", r.Amount)
-				return LedgerResult{Ok: true, Msg: "safety slash already recorded"}
+	// The guard must be FAIL-STOP, not best-effort. Written as
+	// `err == nil && existing != nil`, a transient read failure silently
+	// disabled it and the slash was recomputed from an already-folded snapshot —
+	// the exact amount-drift overwrite the guard exists to prevent, gated on
+	// per-node DB luck. Block until the read succeeds instead.
+	//
+	// It must also require the COMPLETE record set, not just the debit.
+	// StoreLedger is non-atomic per record, so a crash between the
+	// hive_consensus debit and its paired hive-asset row (reserve, or
+	// pending-burn when a challenge window is configured) leaves the bond
+	// debited with the value nowhere. Short-circuiting on the debit alone would
+	// then block every future replay from ever writing that second row — and
+	// the hive_consensus filter cannot even see it. Only skip when both legs
+	// are present.
+	baseIDForGuard := p.TxID + "#safety_slash#" + p.EvidenceKind
+	debitID := baseIDForGuard + "#consensus_debit#" + acct
+	// NOTE the owner argument: the companion leg is owned by the protocol
+	// reserve / pending-burn account, NOT by the slashed account, so querying
+	// under `acct` would never find it and the guard would never engage.
+	rowExists := func(owner, asset, id string) bool {
+		var found bool
+		blockingRetry(fmt.Sprintf("SafetySlashConsensusBond.replayGuard(%s)", id), func() error {
+			rows, err := ls.LedgerDb.GetLedgerRange(owner, p.BlockHeight, p.BlockHeight, asset)
+			if err != nil {
+				return err
 			}
+			if rows == nil {
+				return fmt.Errorf("nil ledger range for %s at %d", owner, p.BlockHeight)
+			}
+			found = false
+			for _, r := range *rows {
+				if r.Id == id {
+					found = true
+					break
+				}
+			}
+			return nil
+		})
+		return found
+	}
+	if rowExists(acct, "hive_consensus", debitID) {
+		// The companion leg lands on the reserve immediately, or on the
+		// pending-burn account when a challenge window is configured — owned by
+		// that protocol account, not by acct.
+		companion := baseIDForGuard + "#reserve#" + acct
+		companionOwner := params.ProtocolSlashReserveAccount
+		if p.BurnDelayBlocks != 0 {
+			companion = baseIDForGuard + "#hive_burn_pending#" + acct
+			companionOwner = params.ProtocolSlashPendingBurnAccount
 		}
+		if rowExists(companionOwner, "hive", companion) {
+			log.Info("SafetySlashConsensusBond: slash fully recorded; not recomputing",
+				"account", acct, "debit", debitID, "companion", companion)
+			return LedgerResult{Ok: true, Msg: "safety slash already recorded"}
+		}
+		log.Warn("SafetySlashConsensusBond: debit present but companion leg missing; re-applying to complete it",
+			"account", acct, "debit", debitID, "companion", companion)
 	}
 
 	bondRecord := func(height uint64) *ledger_db.BalanceRecord {

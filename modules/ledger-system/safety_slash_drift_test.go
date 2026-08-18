@@ -79,3 +79,58 @@ func TestSafetySlash_ReplayAfterSnapshotFold_DoesNotShrinkTheDebit(t *testing.T)
 				"already reflects the debit overwrites the correct amount with a smaller one")
 	}
 }
+
+// ★ REVIEW FINDING — the replay guard must require the COMPLETE record set.
+//
+// StoreLedger is non-atomic per record, so a crash between the hive_consensus
+// debit and its paired hive-asset leg (reserve, or pending-burn under a
+// challenge window) leaves the bond debited with the value nowhere. Keying the
+// guard on the debit alone would short-circuit every future replay before that
+// second row could ever be written — and the hive_consensus filter cannot even
+// see the missing leg.
+func TestSafetySlash_HalfAppliedWrite_IsCompletedOnReplay(t *testing.T) {
+	balDb := &test_utils.MockBalanceDb{BalanceRecords: map[string][]ledgerDb.BalanceRecord{}}
+	lDb := &test_utils.MockLedgerDb{LedgerRecords: map[string][]ledgerDb.LedgerRecord{}}
+	aDb := &test_utils.MockActionsDb{Actions: map[string]ledgerDb.ActionRecord{}}
+	ls := ledgerSystem.New(balDb, lDb, nil, aDb, nil)
+
+	const acct = "hive:baddie"
+	balDb.BalanceRecords[acct] = []ledgerDb.BalanceRecord{{
+		Account: acct, BlockHeight: 1000, HIVE_CONSENSUS: 1_000_000,
+	}}
+	p := ledgerSystem.SafetySlashConsensusParams{
+		Account: acct, TxID: "tx-ev", EvidenceKind: "double_sign",
+		SlashBps: 1000, BlockHeight: 1000,
+	}
+
+	ls.SafetySlashConsensusBond(p)
+
+	// Simulate the crash: the debit landed, the reserve leg did not.
+	base := p.TxID + "#safety_slash#" + p.EvidenceKind
+	reserveID := base + "#reserve#" + acct
+	for owner, recs := range lDb.LedgerRecords {
+		kept := make([]ledgerDb.LedgerRecord, 0, len(recs))
+		for _, r := range recs {
+			if r.Id == reserveID {
+				continue
+			}
+			kept = append(kept, r)
+		}
+		lDb.LedgerRecords[owner] = kept
+	}
+
+	// Replay must NOT short-circuit — it has to complete the missing leg.
+	ls.SafetySlashConsensusBond(p)
+
+	var found bool
+	for _, recs := range lDb.LedgerRecords {
+		for _, r := range recs {
+			if r.Id == reserveID {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found,
+		"a half-applied slash must be completed on replay — guarding on the debit "+
+			"alone would strand the value with the bond already debited")
+}
