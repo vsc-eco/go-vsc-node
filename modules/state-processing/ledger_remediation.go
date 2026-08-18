@@ -238,3 +238,35 @@ func blockingRemediationWrite(id string, write func() error) {
 		}
 	}
 }
+
+// blockingBalanceWrite fail-stops a balance-snapshot write on the deterministic
+// slot-transition path. See the call site in UpdateBalances: the snapshot holds
+// HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT, which are path-dependent and
+// never rebuilt from the ledger, so a dropped write is not recoverable the way
+// a dropped spendable-balance write is.
+func blockingBalanceWrite(account string, blockHeight uint64, write func() error) {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		if err := write(); err == nil {
+			if attempt > 1 {
+				log.Error("balance snapshot write recovered; resuming",
+					"account", account, "bh", blockHeight, "attempts", attempt)
+			}
+			return
+		} else {
+			log.Error("balance snapshot write failed; halting until DB recovers (fail-stop)",
+				"account", account, "bh", blockHeight, "attempt", attempt,
+				"retryIn", delay.String(), "err", err)
+		}
+		time.Sleep(delay)
+		if delay < maxDelay {
+			if delay *= 2; delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+}
