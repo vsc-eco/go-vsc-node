@@ -12,14 +12,15 @@ CONTRACTS_DIR	:= contract
 # unset and defaults to "/". tinygo then tries to create /.cache and dies with
 # "mkdir /.cache: permission denied", failing `make test-regression` in setup
 # before any node starts — i.e. on a fresh clone it never runs at all. Point
-# HOME at the writable workdir.
+# HOME at /tmp — writable, and NOT the bind-mounted source dir, so tinygo's
+# .cache does not land in the repo (it is not gitignored).
 TINYGO_IMAGE := tinygo/tinygo:0.39.0
 WORKDIR      := /work
 
 TINYGO_CMD = docker run --rm \
     -u $(shell id -u):$(shell id -g) \
     -v $(CURDIR):$(WORKDIR) \
-    -w $(WORKDIR) -e HOME=$(WORKDIR) \
+    -w $(WORKDIR) -e HOME=/tmp \
     $(TINYGO_IMAGE) \
     tinygo
 

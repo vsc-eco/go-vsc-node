@@ -66,9 +66,14 @@ func TestSafetySlash_ReplayAfterSnapshotFold_DoesNotShrinkTheDebit(t *testing.T)
 	// The crash-and-replay condition: the debit has been folded into a snapshot
 	// that the replay's bond read can see, so the bond now reads 900,000 and a
 	// recompute would slash only 90,000 — overwriting the correct 100,000.
-	balDb.BalanceRecords[acct] = append(balDb.BalanceRecords[acct], ledgerDb.BalanceRecord{
+	// REPLACE, not append: production upserts on (account, block_height), so two
+	// rows at the same height cannot exist. UpdateBalances writes its snapshot
+	// at the slot height, so the realistic shape is a single row at 1000 whose
+	// value already folds the debit — which is exactly what the replay's
+	// GetBalanceRecord(acct, 1000) then reads.
+	balDb.BalanceRecords[acct] = []ledgerDb.BalanceRecord{{
 		Account: acct, BlockHeight: 1000, HIVE_CONSENSUS: 900_000,
-	})
+	}}
 
 	ls.SafetySlashConsensusBond(p) // same evidence, replayed
 

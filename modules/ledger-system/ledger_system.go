@@ -477,26 +477,6 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 // scanning from height 0 the first time. The cursor is a single ledger row on
 // ProtocolSlashFinalizeCursorAccount, upserted by safetySlashFinalizeCursorRowID,
 // so reads always return at most one row.
-// storeLedgerOrFail is the fail-stop wrapper for consensus-relevant ledger
-// writes whose caller reports success to a governance/consensus path.
-//
-// Four call sites previously did `ls.LedgerDb.StoreLedger(...)` with the return
-// value DISCARDED and then returned Ok:true. Because StoreLedger loops per
-// record and returns on the first error (leaving earlier records already
-// written — see the atomicity note there), a two-legged write can half-apply:
-// the debit lands, the credit does not, and the caller reports success. For a
-// governance-approved reserve payout that means the reserve is debited and the
-// recipient is never credited, with nothing in the logs.
-//
-// Blocking until the write succeeds is the same trade the rest of this file
-// makes (blockingRetry): a stuck node is recoverable, a node that silently
-// disagrees about a balance is not.
-func (ls *ledgerSystem) storeLedgerOrFail(what string, records ...ledger_db.LedgerRecord) {
-	blockingRetry(what, func() error {
-		return ls.LedgerDb.StoreLedger(records...)
-	})
-}
-
 func (ls *ledgerSystem) readSafetySlashFinalizeCursor() uint64 {
 	if ls.LedgerDb == nil {
 		return 0
@@ -534,6 +514,26 @@ func (ls *ledgerSystem) readSafetySlashFinalizeCursor() uint64 {
 		latestCursor = c
 	}
 	return latestCursor
+}
+
+// storeLedgerOrFail is the fail-stop wrapper for consensus-relevant ledger
+// writes whose caller reports success to a governance/consensus path.
+//
+// Four call sites previously did `ls.LedgerDb.StoreLedger(...)` with the return
+// value DISCARDED and then returned Ok:true. Because StoreLedger loops per
+// record and returns on the first error (leaving earlier records already
+// written — see the atomicity note there), a two-legged write can half-apply:
+// the debit lands, the credit does not, and the caller reports success. For a
+// governance-approved reserve payout that means the reserve is debited and the
+// recipient is never credited, with nothing in the logs.
+//
+// Blocking until the write succeeds is the same trade the rest of this file
+// makes (blockingRetry): a stuck node is recoverable, a node that silently
+// disagrees about a balance is not.
+func (ls *ledgerSystem) storeLedgerOrFail(what string, records ...ledger_db.LedgerRecord) {
+	blockingRetry(what, func() error {
+		return ls.LedgerDb.StoreLedger(records...)
+	})
 }
 
 // writeSafetySlashFinalizeCursor upserts the cursor row to scanFrom. Called
