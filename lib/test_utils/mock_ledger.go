@@ -41,6 +41,18 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
+func (m *MockBalanceDb) DeleteBalanceRecordsFrom(account string, fromHeight uint64) error {
+	kept := make([]ledgerDb.BalanceRecord, 0, len(m.BalanceRecords[account]))
+	for _, r := range m.BalanceRecords[account] {
+		if r.BlockHeight >= fromHeight {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	m.BalanceRecords[account] = kept
+	return nil
+}
+
 func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
 	if m.GetAllErr != nil {
 		return nil, m.GetAllErr

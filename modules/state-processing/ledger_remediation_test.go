@@ -396,3 +396,67 @@ func TestLedgerRemediation_SlotAlignedHeightFires(t *testing.T) {
 	assert.Zero(t, remediationTestHeight%slotLen,
 		"the test height itself must be slot-aligned to model production faithfully")
 }
+
+// ★ A3 — THE LATE-APPLICATION DEFECT (PR #244 review, lordbutterfly).
+//
+// GetBalance is snapshot-anchored: it folds only records ABOVE the newest
+// ledger_balances snapshot. A node that upgrades after the activation height
+// has already re-snapshotted the account past `target`, so the credit written
+// retroactively at `target` is invisible — and stays invisible, because every
+// later snapshot is built from the previous one. The node writes the
+// byte-identical row and its balance does not move.
+//
+// No earlier test caught this because none of them ever seeded a BalanceRecord:
+// MockBalanceDb returned nil, so every test folded from genesis and took the
+// other branch entirely.
+func TestLedgerRemediation_LateApply_WithAdvancedSnapshot_StillReachesZero(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newTestEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+
+	// The node ran past the activation height on the old binary and
+	// re-snapshotted the account 40 blocks later, carrying the negative.
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:dhedge",
+		BlockHeight:       remediationTestHeight + 40,
+		HBD_SAVINGS:       -283,
+		HBD_MODIFY_HEIGHT: remediationTestHeight + 40,
+		HBD_CLAIM_HEIGHT:  remediationTestHeight - 100,
+	}}
+
+	// Now it upgrades and applies late.
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
+
+	rows := remediationRows(env, "hive:dhedge")
+	assert.Len(t, rows, 1, "the credit row must still be written at the activation height")
+	assert.Equal(t, remediationTestHeight, rows[0].BlockHeight)
+
+	assert.Equal(t, int64(0),
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+300, "hbd_savings"),
+		"a late node must actually reach zero — writing the row is not enough when "+
+			"the balance is snapshot-anchored above it")
+}
+
+// The on-time path must NOT touch snapshots: it runs immediately before
+// UpdateBalances in the same slot transition, so nothing at or above target
+// exists yet and the row is already inside that transition's window.
+func TestLedgerRemediation_OnTime_LeavesEarlierSnapshotsAlone(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newTestEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account:           "hive:dhedge",
+		BlockHeight:       remediationTestHeight - 50, // strictly BELOW target
+		HBD_SAVINGS:       0,
+		HBD_MODIFY_HEIGHT: remediationTestHeight - 50,
+	}}
+
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+
+	assert.Len(t, env.BalanceDb.BalanceRecords["hive:dhedge"], 1,
+		"an anchor below target is still valid and must be preserved")
+}
