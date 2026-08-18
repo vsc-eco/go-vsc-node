@@ -334,17 +334,53 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 		// that protocol account, not by acct.
 		companion := baseIDForGuard + "#reserve#" + acct
 		companionOwner := params.ProtocolSlashReserveAccount
+		companionType := LedgerTypeSafetySlashReserve
 		if p.BurnDelayBlocks != 0 {
 			companion = baseIDForGuard + "#hive_burn_pending#" + acct
 			companionOwner = params.ProtocolSlashPendingBurnAccount
+			companionType = LedgerTypeSafetySlashHiveBurnPending
 		}
 		if rowExists(companionOwner, "hive", companion) {
 			log.Info("SafetySlashConsensusBond: slash fully recorded; not recomputing",
 				"account", acct, "debit", debitID, "companion", companion)
 			return LedgerResult{Ok: true, Msg: "safety slash already recorded"}
 		}
-		log.Warn("SafetySlashConsensusBond: debit present but companion leg missing; re-applying to complete it",
-			"account", acct, "debit", debitID, "companion", companion)
+		// Completing the missing leg must NOT recompute the amount. Falling
+		// through to the full recompute re-derives slashAmt from a bond
+		// snapshot that already folded this debit, producing a SMALLER figure
+		// which then upserts over the correct one (-100,000 becomes -90,000) —
+		// the exact amount drift this guard exists to prevent. Re-derive from
+		// the debit row that is already on disk instead.
+		var recordedDebit int64
+		blockingRetry("SafetySlashConsensusBond.readRecordedDebit("+debitID+")", func() error {
+			rows, err := ls.LedgerDb.GetLedgerRange(acct, p.BlockHeight, p.BlockHeight, "hive_consensus")
+			if err != nil {
+				return err
+			}
+			if rows == nil {
+				return fmt.Errorf("nil ledger range for %s at %d", acct, p.BlockHeight)
+			}
+			for _, r := range *rows {
+				if r.Id == debitID {
+					recordedDebit = -r.Amount // stored negative
+					return nil
+				}
+			}
+			return fmt.Errorf("debit row %s vanished between reads", debitID)
+		})
+		log.Warn("SafetySlashConsensusBond: debit present but companion leg missing; completing it from the recorded amount",
+			"account", acct, "debit", debitID, "companion", companion, "amount", recordedDebit)
+		ls.storeLedgerOrFail("SafetySlashConsensusBond.completeCompanion("+companion+")",
+			ledger_db.LedgerRecord{
+				Id:          companion,
+				TxId:        p.TxID,
+				BlockHeight: p.BlockHeight,
+				Amount:      recordedDebit,
+				Asset:       "hive",
+				Owner:       companionOwner,
+				Type:        companionType,
+			})
+		return LedgerResult{Ok: true, Msg: "safety slash companion leg completed"}
 	}
 
 	bondRecord := func(height uint64) *ledger_db.BalanceRecord {

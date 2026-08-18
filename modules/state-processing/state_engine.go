@@ -2337,10 +2337,28 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 			// With no claim on record there is nothing to recalculate against,
 			// so carry the previous claim height forward rather than inventing
 			// one; the account is re-evaluated on the next slot.
-			hbdAvg = 0
 			if claimRecord != nil {
+				// A genuine new claim: the TWAB window restarts.
+				hbdAvg = 0
 				claimHeight = claimRecord.BlockHeight
 			} else {
+				// claimRecord == nil with needsClaimUpdate true is ALWAYS an
+				// error condition: it requires HBD_CLAIM_HEIGHT != 0, i.e. this
+				// account has claimed before, so a claim record must exist.
+				// GetLastClaim returns nil on ANY Mongo failure, so this is a
+				// transient read blip, not a new claim.
+				//
+				// Do NOT reset hbdAvg here. Zeroing it permanently wipes this
+				// account's TWAB on THIS node only, and since ClaimHBDInterest
+				// normalises across the sum of every account's HBD_AVG, that
+				// re-splits the next distribution for every account — silent
+				// cross-node divergence from a single read hiccup. Carry the
+				// accrual forward exactly as the healthy path does and leave the
+				// claim height untouched; the account is re-evaluated next slot.
+				if prevBalRecord != nil {
+					A := endBlock - prevBalRecord.HBD_MODIFY_HEIGHT
+					hbdAvg = prevBalRecord.HBD_AVG + prevBalRecord.HBD_SAVINGS*int64(A)
+				}
 				claimHeight = balanceR.HBD_CLAIM_HEIGHT
 			}
 			// modifyHeight is only set above inside `if exists`, so on the nil
