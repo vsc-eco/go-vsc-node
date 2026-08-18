@@ -19,6 +19,7 @@ import (
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 //Implementation notes:
@@ -1147,29 +1148,68 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 	bs.SetBytes(b64)
 
 	for idx, id := range actionIds {
-		record, _ := ls.ActionsDb.Get(id)
+		// ★ WRITE THE CREDIT, THEN COMPLETE — never the other way round.
+		//
+		// This loop is the SOLE writer of the stake/unstake credit leg. It
+		// previously (a) discarded the Get error, (b) called ExecuteComplete
+		// before writing the credit, and (c) only logged if that write failed.
+		// Any one of the three silently drops a user's credit on this node and
+		// nowhere else, which is the exact shape of divergence that halted
+		// mainnet twice in 2026-08: a balance that is wrong on one node only,
+		// latent until some zero-margin op on that account forks the chain.
+		//
+		// The codebase already states the rule, ~1000 lines away on the
+		// consensus_unstake release path in state_engine.UpdateBalances:
+		// "Only mark the unstake actions complete if their payout records
+		// actually landed ... Completing them on a failed write would strand
+		// the HIVE permanently."
+		//
+		// Unlike that path there is no pending-action sweep to re-drive this
+		// one — IndexActions is driven by oplog ops, which do not repeat — so
+		// leaving the action pending is not a retry, it is a silent loss. The
+		// write is therefore fail-stopped with blockingRetry, matching
+		// ClaimHBDInterest on the same deterministic path: a stuck node is
+		// recoverable, a node that silently disagrees about a balance is not.
+		record, err := ls.ActionsDb.Get(id)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				// Genuinely absent: nothing to credit or complete.
+				continue
+			}
+			// A DB fault is NOT "not found". Treating it as such is precisely
+			// how the credit went missing. Block until the read succeeds.
+			blockingRetry(fmt.Sprintf("IndexActions.Get(%s)", id), func() error {
+				r, e := ls.ActionsDb.Get(id)
+				if e != nil && e != mongo.ErrNoDocuments {
+					return e
+				}
+				record = r
+				return nil
+			})
+		}
 		if record == nil {
 			continue
 		}
-		ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 
 		if record.Type == "stake" {
 			log.Debug("Indexxing stake Ledger")
-			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id:     record.Id + "#out",
-				Amount: record.Amount,
-				Asset:  "hbd_savings",
-				Owner:  record.To,
-				Type:   "stake",
+			rec := *record
+			blockingRetry(fmt.Sprintf("IndexActions.StoreLedger(stake %s)", rec.Id), func() error {
+				return ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+					Id:     rec.Id + "#out",
+					Amount: rec.Amount,
+					Asset:  "hbd_savings",
+					Owner:  rec.To,
+					Type:   "stake",
 
-				//Next block balance should be clear
-				BlockHeight: extraInfo.BlockHeight + 1,
-				//Before everything
-				BIdx:  -1,
-				OpIdx: -1,
-			}); err != nil {
-				log.Error("IndexActions: stake ledger write failed", "id", record.Id, "to", record.To, "err", err)
-			}
+					//Next block balance should be clear
+					BlockHeight: extraInfo.BlockHeight + 1,
+					//Before everything
+					BIdx:  -1,
+					OpIdx: -1,
+				})
+			})
+			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 		}
 		if record.Type == "unstake" {
 			var blockDelay uint64
@@ -1180,20 +1220,30 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 			} else {
 				blockDelay = common.HBD_UNSTAKE_BLOCKS
 			}
-			if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-				Id:     record.Id + "#out",
-				Amount: record.Amount,
-				Asset:  "hbd",
-				Owner:  record.To,
-				Type:   "unstake",
+			rec := *record
+			blockingRetry(fmt.Sprintf("IndexActions.StoreLedger(unstake %s)", rec.Id), func() error {
+				return ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+					Id:     rec.Id + "#out",
+					Amount: rec.Amount,
+					Asset:  "hbd",
+					Owner:  rec.To,
+					Type:   "unstake",
 
-				//It'll become available in 3 days of blocks
-				BlockHeight: extraInfo.BlockHeight + blockDelay,
-				BIdx:        -1,
-				OpIdx:       -1,
-			}); err != nil {
-				log.Error("IndexActions: unstake ledger write failed", "id", record.Id, "to", record.To, "err", err)
-			}
+					//It'll become available in 3 days of blocks
+					BlockHeight: extraInfo.BlockHeight + blockDelay,
+					BIdx:        -1,
+					OpIdx:       -1,
+				})
+			})
+			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+		}
+		if record.Type != "stake" && record.Type != "unstake" {
+			// No credit leg is written here for other action types (withdraw
+			// and consensus_unstake are settled elsewhere), so completing them
+			// is unconditional — but keep it explicit rather than relying on
+			// falling out of the branch, so adding a type without a credit
+			// cannot silently skip completion.
+			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
 		}
 	}
 
