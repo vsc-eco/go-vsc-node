@@ -2,7 +2,6 @@ package state_engine
 
 import (
 	"fmt"
-	"time"
 
 	"vsc-node/modules/common/params"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
@@ -152,7 +151,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// Double-entry: the shortfall account carries the permanent record of
 		// value the protocol over-paid, so the write-off never silently
 		// inflates supply.
-		blockingRemediationWrite(creditID, func() error {
+		blockingRetry("ledger remediation: "+creditID, func() error {
 			return se.LedgerState.LedgerDb.StoreLedger(
 				ledger_db.LedgerRecord{
 					Id:          creditID,
@@ -206,31 +205,58 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// excludes it from the interest distribution on both), and only
 		// surfaces if it later funds the asset. A node wanting byte-exact TWAB
 		// should reindex.
-		// Gate on the LIVE balance, not on `blockHeight > target` alone.
+		// ★ LATE PATH: make the retroactive credit visible to the snapshot.
 		//
-		// `bal` above is read at target-1 — immutable history — so it is ALWAYS
-		// negative and can never signal "already done". ledgerRemediationDone is
-		// process-local, so with only that gate this deletion re-fired on EVERY
-		// restart after the activation height: a node that applied on time and
-		// later restarted would wipe all its post-target snapshots for these ten
-		// accounts. That is not cosmetic — ReadCommitteeBonds samples
-		// BalanceRecord.HIVE_CONSENSUS directly (no replay), so for the two
-		// hive_consensus accounts it would diverge the pendulum settlement map
-		// and its CID from peers, and it rewinds HBD_AVG/HBD_CLAIM_HEIGHT that
-		// feed the cross-account interest denominator.
+		// GetBalance is snapshot-anchored — recordHeight = balRecord.BlockHeight
+		// + 1, folding only ABOVE it — so a credit written at `target` is
+		// invisible to any account whose snapshot already advanced past target,
+		// and stays invisible because every later snapshot builds on the
+		// previous one. A late node would write the byte-identical row and keep
+		// the negative forever. (Found in the PR #244 review and reproduced on
+		// live mixed-binary devnet nodes.)
 		//
-		// The live balance is the actual symptom: if it still reads negative the
-		// snapshots are masking the credit and must be re-anchored; if it reads
-		// 0 the credit is already visible and there is nothing to do — which is
-		// the case both for an on-time node and for a late node that already
-		// re-anchored on a previous run.
-		if blockHeight > target &&
-			se.LedgerState.GetBalance(rem.Account, blockHeight, rem.Asset) < 0 {
-			blockingRemediationWrite("DeleteBalanceRecordsFrom("+rem.Account+")", func() error {
-				return se.LedgerState.BalanceDb.DeleteBalanceRecordsFrom(rem.Account, target)
-			})
-			log.Warn("ledger remediation: dropped stale balance snapshots so the late credit is visible",
-				"account", rem.Account, "fromHeight", target, "slot", blockHeight)
+		// ADJUST, don't delete. Dropping those snapshot rows would also discard
+		// HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT — path-dependent
+		// accumulators never rebuilt from the ledger — and the other three asset
+		// fields. Six of the ten remediated accounts are on hive/hive_consensus
+		// and can hold a positive hbd_savings position, so discarding their TWAB
+		// state would shift the interest denominator for EVERY account on the
+		// node. Adding the credit to the one affected field fixes the balance
+		// and leaves everything else intact.
+		//
+		// Guarded by a DURABLE marker, not by inspecting the balance. `bal` is
+		// read at target-1 (immutable), so it can never signal "already done",
+		// and a live-balance test is not equivalent either: after the write-off
+		// the balance is exactly 0, so any later debit would re-arm it and every
+		// restart would re-apply the adjustment. The marker is a protocol-meta
+		// ledger row — zero amount, excluded from every spendable fold — so it
+		// survives restarts and is re-derived on a reindex like everything else
+		// here.
+		//
+		// On-time application skips this entirely: it runs immediately before
+		// UpdateBalances in the same slot transition, so no snapshot at or above
+		// target exists yet.
+		if blockHeight > target {
+			markerID := creditID + "#reanchored"
+			if !se.remediationMarkerExists(rem.Account, target, markerID) {
+				blockingRetry("ledger remediation: re-anchor "+rem.Account, func() error {
+					return se.LedgerState.BalanceDb.AdjustBalanceRecordsFrom(
+						rem.Account, target, rem.Asset, amount)
+				})
+				blockingRetry("ledger remediation: marker "+markerID, func() error {
+					return se.LedgerState.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+						Id:          markerID,
+						BlockHeight: target,
+						Amount:      0,
+						Asset:       rem.Asset,
+						Owner:       rem.Account,
+						Type:        ledgerSystem.LedgerTypeRemediationReanchor,
+					})
+				})
+				log.Warn("ledger remediation: adjusted stale balance snapshots so the late credit is visible",
+					"account", rem.Account, "asset", rem.Asset, "delta", amount,
+					"fromHeight", target, "slot", blockHeight)
+			}
 		}
 
 		log.Info("ledger remediation: negative balance written off",
@@ -239,65 +265,28 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	}
 }
 
-// blockingRemediationWrite fail-stops the write the same way the rest of the
-// deterministic ledger path does (mirrors ledger-system's blockingRetry,
-// including its exponential backoff — a bare retry loop would spin the CPU): a
-// node that silently skipped this emission would carry a different balance from
-// its peers forever, which is precisely the divergence class being cleaned up
-// here. Blocking until the DB recovers is the only non-divergent option.
-func blockingRemediationWrite(id string, write func() error) {
-	const (
-		baseDelay = 100 * time.Millisecond
-		maxDelay  = 30 * time.Second
-	)
-	delay := baseDelay
-	for attempt := 1; ; attempt++ {
-		if err := write(); err == nil {
-			if attempt > 1 {
-				log.Error("ledger remediation write recovered; resuming", "id", id, "attempts", attempt)
-			}
-			return
-		} else {
-			log.Error("ledger remediation write failed; halting until DB recovers (fail-stop)",
-				"id", id, "attempt", attempt, "retryIn", delay.String(), "err", err)
+// remediationMarkerExists reports whether this account's late-path re-anchor
+// has already been applied. Durable by design: a process-local flag resets on
+// restart, and the balance itself cannot be used as the signal (see the call
+// site).
+func (se *StateEngine) remediationMarkerExists(account string, target uint64, markerID string) bool {
+	var found bool
+	blockingRetry("ledger remediation: marker check "+markerID, func() error {
+		rows, err := se.LedgerState.LedgerDb.GetLedgerRange(account, target, target, "")
+		if err != nil {
+			return err
 		}
-		time.Sleep(delay)
-		if delay < maxDelay {
-			if delay *= 2; delay > maxDelay {
-				delay = maxDelay
+		if rows == nil {
+			return fmt.Errorf("nil ledger range for %s at %d", account, target)
+		}
+		found = false
+		for _, r := range *rows {
+			if r.Id == markerID {
+				found = true
+				break
 			}
 		}
-	}
-}
-
-// blockingBalanceWrite fail-stops a balance-snapshot write on the deterministic
-// slot-transition path. See the call site in UpdateBalances: the snapshot holds
-// HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT, which are path-dependent and
-// never rebuilt from the ledger, so a dropped write is not recoverable the way
-// a dropped spendable-balance write is.
-func blockingBalanceWrite(account string, blockHeight uint64, write func() error) {
-	const (
-		baseDelay = 100 * time.Millisecond
-		maxDelay  = 30 * time.Second
-	)
-	delay := baseDelay
-	for attempt := 1; ; attempt++ {
-		if err := write(); err == nil {
-			if attempt > 1 {
-				log.Error("balance snapshot write recovered; resuming",
-					"account", account, "bh", blockHeight, "attempts", attempt)
-			}
-			return
-		} else {
-			log.Error("balance snapshot write failed; halting until DB recovers (fail-stop)",
-				"account", account, "bh", blockHeight, "attempt", attempt,
-				"retryIn", delay.String(), "err", err)
-		}
-		time.Sleep(delay)
-		if delay < maxDelay {
-			if delay *= 2; delay > maxDelay {
-				delay = maxDelay
-			}
-		}
-	}
+		return nil
+	})
+	return found
 }

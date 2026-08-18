@@ -186,6 +186,12 @@ const (
 	// negative spendable balance on a system account — the very artifact this
 	// remediation exists to clear. The rows remain queryable as the audit trail.
 	LedgerTypeRemediationDebit = "remediation_debit"
+	// LedgerTypeRemediationReanchor marks that the late-application path has
+	// already adjusted an account's stale balance snapshots. Zero-amount and
+	// meta, so it never touches a balance; it exists purely as a durable
+	// idempotency marker (a process-local flag resets on restart, and the
+	// balance cannot serve as the signal — see ApplyLedgerRemediation).
+	LedgerTypeRemediationReanchor = "remediation_reanchor"
 )
 
 // IsProtocolMetaLedgerType reports whether a ledger record type is a
@@ -222,7 +228,8 @@ func IsProtocolMetaLedgerType(t string) bool {
 		// deliberately NOT here: it is the spendable disbursement.)
 		LedgerTypeReservePayoutDebit,
 		// Keyless bookkeeping on system:ledger_shortfall — see the constant.
-		LedgerTypeRemediationDebit:
+		LedgerTypeRemediationDebit,
+		LedgerTypeRemediationReanchor:
 		return true
 	default:
 		return false
@@ -1274,12 +1281,32 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 		// actually landed ... Completing them on a failed write would strand
 		// the HIVE permanently."
 		//
-		// Unlike that path there is no pending-action sweep to re-drive this
-		// one — IndexActions is driven by oplog ops, which do not repeat — so
-		// leaving the action pending is not a retry, it is a silent loss. The
-		// write is therefore fail-stopped with blockingRetry, matching
-		// ClaimHBDInterest on the same deterministic path: a stuck node is
-		// recoverable, a node that silently disagrees about a balance is not.
+		// CORRECTION (review pass 4): an earlier version of this comment claimed
+		// "there is no pending-action sweep to re-drive this one". That is
+		// wrong — gateway/multisig.go executeActions calls
+		// GetPendingActions(bh, "withdraw", "stake", "unstake") every tick.
+		//
+		// So the two orderings trade different failures, and neither is free
+		// without a transaction (see the StoreLedger atomicity note):
+		//
+		//   complete-then-write (old): a crash in between leaves the action
+		//     COMPLETE with no credit row. Silent, permanent, node-local, and
+		//     consensus-affecting — the balance is simply wrong forever with
+		//     nothing that ever notices. This is the halt shape.
+		//   write-then-complete (now): a crash in between leaves the action
+		//     PENDING with its credit already written, so the gateway sweep can
+		//     re-select it and re-issue the L1 leg.
+		//
+		// This ordering is chosen because the ledger is the consensus-critical
+		// side: a wrong balance forks the chain, whereas the duplicate is on the
+		// L1 payout path, which is visible, externally auditable, and gated by
+		// multisig review rather than being silently absorbed. The write is
+		// fail-stopped with blockingRetry so it cannot fail-and-continue,
+		// leaving only a genuine process crash between the two statements as the
+		// window.
+		//
+		// Closing that window entirely needs the two operations to be atomic —
+		// tracked with the StoreLedger non-atomicity item, not solvable here.
 		record, err := ls.ActionsDb.Get(id)
 		if err != nil {
 			if err == mongo.ErrNoDocuments {

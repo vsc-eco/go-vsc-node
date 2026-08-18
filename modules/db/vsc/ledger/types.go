@@ -26,14 +26,19 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
-	// DeleteBalanceRecordsFrom drops an account's snapshot rows at or above
-	// fromHeight. Used only by the late-application path of the one-time
-	// ledger remediation: GetBalance is snapshot-anchored, so a credit written
-	// retroactively below an existing snapshot is invisible forever. Removing
-	// those snapshots re-anchors the fold below the credit, and because
-	// UpdateBalances rebuilds from prevSnapshot.BlockHeight+1 the credit then
-	// lands in the very next rebuild window.
-	DeleteBalanceRecordsFrom(account string, fromHeight uint64) error
+	// AdjustBalanceRecordsFrom adds delta to ONE asset field on an account's
+	// snapshot rows at or above fromHeight. Used only by the late-application
+	// path of the one-time ledger remediation: GetBalance is snapshot-anchored,
+	// so a credit written retroactively below an existing snapshot is invisible
+	// forever.
+	//
+	// It adjusts rather than deletes on purpose. Deleting the rows would also
+	// discard HBD_AVG / HBD_MODIFY_HEIGHT / HBD_CLAIM_HEIGHT — path-dependent
+	// accumulators never rebuilt from the ledger — and the other three asset
+	// fields. Six of the ten remediated accounts are on hive/hive_consensus and
+	// can hold a positive hbd_savings position, so discarding their TWAB state
+	// would shift the interest denominator for EVERY account on that node.
+	AdjustBalanceRecordsFrom(account string, fromHeight uint64, asset string, delta int64) error
 	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 
