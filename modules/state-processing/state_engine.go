@@ -2393,9 +2393,25 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// distribution path. We can't safely abort the slot here (other
 		// accounts already wrote), but we surface the failure so it shows
 		// up in operator monitoring instead of vanishing.
-		if err := se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord); err != nil {
-			log.Error("ExecuteBatch: UpdateBalanceRecord failed", "account", k, "bh", endBlock, "err", err)
-		}
+		// B6: fail-stop, not log-and-continue.
+		//
+		// Spendable balances self-heal — GetBalance reconstructs them from the
+		// append-only ledger past any checkpoint — but HBD_AVG,
+		// HBD_MODIFY_HEIGHT and HBD_CLAIM_HEIGHT do NOT. They are
+		// path-dependent accumulators kept ONLY in this snapshot and never
+		// rebuilt from the ledger, as the review4 HIGH #118 note a few lines
+		// above already states. A single dropped write therefore permanently
+		// mistimes this account's TWAB interval, and because ClaimHBDInterest
+		// divides by the sum of every account's HBD_AVG, one corrupted account
+		// skews the payout for ALL of them.
+		//
+		// This was one of only two writes on the deterministic slot-transition
+		// path still left log-only after the two 2026-08 halts; the other is
+		// rcDb.SetRecord. Block until it lands, matching getLedgerRangeOrBlock
+		// immediately above, which fail-stops the READ feeding this same value.
+		blockingBalanceWrite(k, endBlock, func() error {
+			return se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		})
 
 		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
 			se.LedgerState.VirtualLedger[k],
@@ -2551,7 +2567,13 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		se.rcDb.SetRecord(k, blockHeight, rcBal)
+		// B6: the caller clears this slot's consumption right after, so a
+		// dropped write loses the accounting with nothing to rebuild it from.
+		// RC gates transaction admission, so a node that under-counts admits
+		// transactions its peers reject. Fail-stop like the balance snapshot.
+		blockingBalanceWrite(k, blockHeight, func() error {
+			return se.rcDb.SetRecord(k, blockHeight, rcBal)
+		})
 	}
 }
 

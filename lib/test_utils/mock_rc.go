@@ -8,6 +8,9 @@ import (
 type MockRcDb struct {
 	aggregate.Plugin
 	Records map[string][]rcDb.RcRecord
+	// SetRecordErr lets a test inject a persistence failure so the caller's
+	// handling of it can be exercised.
+	SetRecordErr error
 }
 
 func NewMockRcDb() *MockRcDb {
@@ -25,10 +28,14 @@ func (m *MockRcDb) GetRecord(account string, blockHeight uint64) (rcDb.RcRecord,
 	return best, nil
 }
 
-func (m *MockRcDb) SetRecord(account string, blockHeight uint64, amount int64) {
+func (m *MockRcDb) SetRecord(account string, blockHeight uint64, amount int64) error {
+	if m.SetRecordErr != nil {
+		return m.SetRecordErr
+	}
 	m.Records[account] = append(m.Records[account], rcDb.RcRecord{
 		Account:     account,
 		Amount:      amount,
 		BlockHeight: blockHeight,
 	})
+	return nil
 }

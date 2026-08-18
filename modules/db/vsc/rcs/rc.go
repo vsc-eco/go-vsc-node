@@ -51,15 +51,22 @@ func (e *rcDb) GetRecord(account string, blockHeight uint64) (RcRecord, error) {
 	return record, nil
 }
 
-func (e rcDb) SetRecord(account string, blockHeight uint64, amount int64) {
+func (e rcDb) SetRecord(account string, blockHeight uint64, amount int64) error {
 	query := bson.M{
 		"account":      account,
 		"block_height": blockHeight,
 	}
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	e.Collection.FindOneAndUpdate(context.Background(), query, bson.M{
+	res := e.Collection.FindOneAndUpdate(context.Background(), query, bson.M{
 		"$set": bson.M{
 			"amount": amount,
 		},
 	}, options)
+	// With SetUpsert(true) and the default ReturnDocument (Before), a
+	// newly-inserted record reports ErrNoDocuments — the success path, not a
+	// failure. Anything else is a real write failure the caller must see.
+	if err := res.Err(); err != nil && err != mongo.ErrNoDocuments {
+		return err
+	}
+	return nil
 }

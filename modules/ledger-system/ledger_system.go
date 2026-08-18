@@ -340,7 +340,7 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 			})
 		}
 	}
-	ls.LedgerDb.StoreLedger(records...)
+	ls.storeLedgerOrFail("SafetySlashConsensusBond.StoreLedger", records...)
 	return LedgerResult{Ok: true, Msg: "success"}
 }
 
@@ -350,6 +350,26 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 // scanning from height 0 the first time. The cursor is a single ledger row on
 // ProtocolSlashFinalizeCursorAccount, upserted by safetySlashFinalizeCursorRowID,
 // so reads always return at most one row.
+// storeLedgerOrFail is the fail-stop wrapper for consensus-relevant ledger
+// writes whose caller reports success to a governance/consensus path.
+//
+// Four call sites previously did `ls.LedgerDb.StoreLedger(...)` with the return
+// value DISCARDED and then returned Ok:true. Because StoreLedger loops per
+// record and returns on the first error (leaving earlier records already
+// written — see the atomicity note there), a two-legged write can half-apply:
+// the debit lands, the credit does not, and the caller reports success. For a
+// governance-approved reserve payout that means the reserve is debited and the
+// recipient is never credited, with nothing in the logs.
+//
+// Blocking until the write succeeds is the same trade the rest of this file
+// makes (blockingRetry): a stuck node is recoverable, a node that silently
+// disagrees about a balance is not.
+func (ls *ledgerSystem) storeLedgerOrFail(what string, records ...ledger_db.LedgerRecord) {
+	blockingRetry(what, func() error {
+		return ls.LedgerDb.StoreLedger(records...)
+	})
+}
+
 func (ls *ledgerSystem) readSafetySlashFinalizeCursor() uint64 {
 	if ls.LedgerDb == nil {
 		return 0
@@ -396,15 +416,16 @@ func (ls *ledgerSystem) writeSafetySlashFinalizeCursor(blockHeight, scanFrom uin
 	if ls.LedgerDb == nil {
 		return
 	}
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-		Id:          safetySlashFinalizeCursorRowID,
-		BlockHeight: blockHeight,
-		Amount:      0,
-		Asset:       "hive",
-		Owner:       params.ProtocolSlashFinalizeCursorAccount,
-		From:        strconv.FormatUint(scanFrom, 10),
-		Type:        LedgerTypeSafetySlashBurnFinalizeCursor,
-	})
+	ls.storeLedgerOrFail("writeSafetySlashFinalizeCursor",
+		ledger_db.LedgerRecord{
+			Id:          safetySlashFinalizeCursorRowID,
+			BlockHeight: blockHeight,
+			Amount:      0,
+			Asset:       "hive",
+			Owner:       params.ProtocolSlashFinalizeCursorAccount,
+			From:        strconv.FormatUint(scanFrom, 10),
+			Type:        LedgerTypeSafetySlashBurnFinalizeCursor,
+		})
 }
 
 // FinalizeMaturedSafetySlashBurns promotes pending slash burn rows whose maturity
@@ -469,7 +490,15 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 			}
 			continue
 		}
-		ls.LedgerDb.StoreLedger(
+		// B4: this write MUST NOT be allowed to fail silently. minUnfinalized is
+		// only updated in the not-yet-matured branch above, so a matured row
+		// whose write failed would let newCursor advance past it and the next
+		// scan would start above it — the row unreachable forever, its value
+		// parked on the pending account and excluded from every spendable fold.
+		// Combined with StoreLedger's per-record non-atomicity, a partial write
+		// could also release from pending without crediting the reserve, which
+		// is a straight supply leak. Fail-stop instead.
+		ls.storeLedgerOrFail("FinalizeMaturedSafetySlashBurns("+rec.Id+")",
 			ledger_db.LedgerRecord{
 				Id:          rec.Id + "#pending_release",
 				TxId:        rec.TxId,
@@ -610,7 +639,7 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	// Reason is currently unused (LedgerRecord has no memo field).
 	// Logged at the call site for explorers; idempotency lives in the ID.
 	_ = strings.TrimSpace(p.Reason)
-	ls.LedgerDb.StoreLedger(
+	ls.storeLedgerOrFail("CancelPendingSafetySlashBurn("+releaseID+")",
 		ledger_db.LedgerRecord{
 			Id:          releaseID,
 			TxId:        pendingRec.TxId,
@@ -679,7 +708,7 @@ func (ls *ledgerSystem) ReverseSafetySlashConsensusDebit(p ReverseSafetySlashCon
 	if op := strings.TrimSpace(p.OpInstanceID); op != "" {
 		id = id + "#" + op
 	}
-	ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
+	ls.storeLedgerOrFail("ReverseSafetySlashConsensusDebit("+id+")", ledger_db.LedgerRecord{
 		Id:          id,
 		TxId:        tx,
 		BlockHeight: p.BlockHeight,
@@ -777,7 +806,7 @@ func (ls *ledgerSystem) ReservePayout(p ReservePayoutParams) LedgerResult {
 	}
 	amount := p.Amount
 
-	ls.LedgerDb.StoreLedger(
+	ls.storeLedgerOrFail("ReservePayout.StoreLedger("+proposalID+")",
 		ledger_db.LedgerRecord{
 			Id:          debitID,
 			TxId:        proposalID,
@@ -1255,21 +1284,31 @@ func (ls *ledgerSystem) IngestOplog(oplog []OpLogEvent, options OplogInjestOptio
 	ledgerRecords := executeResults.ledgerRecords
 	actionRecords := executeResults.actionRecords
 
+	// B5: these two loops were uncorrelated. The first only LOGGED a failed
+	// ledger write and continued; the second then unconditionally created the
+	// action — the pending withdraw/stake/unstake obligation the gateway later
+	// pays out on L1. A transient failure on the debit therefore minted a real
+	// payable with no debit recorded against it.
+	//
+	// Fail-stop the debit instead, so the obligation below can only be created
+	// once the debit is durably on this node. Same trade as everywhere else on
+	// this deterministic path: a stuck node is recoverable, a node that has
+	// paid out value it never debited is not.
 	for _, v := range ledgerRecords {
-		if err := ls.LedgerDb.StoreLedger(ledger_db.LedgerRecord{
-			Id: v.Id,
+		rec := v
+		ls.storeLedgerOrFail("IngestOplog.StoreLedger("+rec.Id+")", ledger_db.LedgerRecord{
+			Id: rec.Id,
 			//plz passthrough original block height
 			BlockHeight: options.EndHeight,
-			Amount:      v.Amount,
-			Asset:       v.Asset,
-			Owner:       v.Owner,
-			Type:        v.Type,
+			Amount:      rec.Amount,
+			Asset:       rec.Asset,
+			Owner:       rec.Owner,
+			Type:        rec.Type,
 			// TxId:        v.,
-		}); err != nil {
-			log.Error("IngestOplog: ledger write failed", "id", v.Id, "owner", v.Owner, "err", err)
-		}
+		})
 	}
 
+	// Reached only once every debit above landed.
 	for _, v := range actionRecords {
 		ls.ActionsDb.StoreAction(v)
 	}
