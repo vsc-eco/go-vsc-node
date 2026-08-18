@@ -2323,9 +2323,26 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 
 		if needsClaimUpdate {
-			//Need to execute recalculation of the claim
+			// NIL-DEREF FIX: needsClaimUpdate is computed from claimRecordC, a
+			// VALUE that stays zero when GetLastClaim returns nil (no claim has
+			// ever happened). So an account whose snapshot carries a non-zero
+			// HBD_CLAIM_HEIGHT makes this branch true with claimRecord == nil,
+			// and the deref below panicked the whole slot.
+			//
+			// Masked until now because MockInterestClaimsDb.GetLastClaim always
+			// returned a pointer to a zero value while the real implementation
+			// returns nil — one of the mock/production divergences from the
+			// PR #244 review. Aligning the mock surfaced it immediately.
+			//
+			// With no claim on record there is nothing to recalculate against,
+			// so carry the previous claim height forward rather than inventing
+			// one; the account is re-evaluated on the next slot.
 			hbdAvg = 0
-			claimHeight = claimRecord.BlockHeight
+			if claimRecord != nil {
+				claimHeight = claimRecord.BlockHeight
+			} else {
+				claimHeight = balanceR.HBD_CLAIM_HEIGHT
+			}
 		} else if prevBalRecord != nil {
 			//There is a previous balance record
 			//HBD_AVG stores an unnormalized cumulative sum (balance * blocks) since the last claim.

@@ -17,11 +17,23 @@ func (m *MockBalanceDb) GetBalanceRecord(account string, blockHeight uint64) (*l
 	if len(m.BalanceRecords[account]) == 0 {
 		return nil, nil
 	}
+	// B8: the real query sorts block_height DESC and takes the max at or below
+	// blockHeight. The mock previously kept the LAST matching slice element,
+	// which only agrees when the caller happened to seed in ascending order —
+	// a silent trap for any test that does not.
 	var latestRecord ledgerDb.BalanceRecord
+	found := false
 	for _, record := range m.BalanceRecords[account] {
-		if record.BlockHeight <= blockHeight {
-			latestRecord = record
+		if record.BlockHeight > blockHeight {
+			continue
 		}
+		if !found || record.BlockHeight >= latestRecord.BlockHeight {
+			latestRecord = record
+			found = true
+		}
+	}
+	if !found {
+		return nil, nil
 	}
 
 	return &latestRecord, nil
@@ -79,24 +91,37 @@ type MockLedgerDb struct {
 // double-counts.
 func (m *MockLedgerDb) StoreLedger(ledgerRecords ...ledgerDb.LedgerRecord) error {
 	for _, record := range ledgerRecords {
-		owner := record.Owner
-		existing := m.LedgerRecords[owner]
-		// Records with empty Id fall through to append (legacy flow).
+		// B8: the real query is FindOneAndUpdate({"id": ...}) — keyed on id
+		// ALONE, with no owner scope. A same-Id write from a different owner
+		// therefore REPLACES the existing document in production. Scoping the
+		// mock per-owner hid that, so a test could never observe a cross-owner
+		// id collision. Search every owner, matching production.
 		if record.Id != "" {
 			replaced := false
-			for i := range existing {
-				if existing[i].Id == record.Id {
-					existing[i] = record
-					replaced = true
+			for owner, existing := range m.LedgerRecords {
+				for i := range existing {
+					if existing[i].Id == record.Id {
+						if owner == record.Owner {
+							existing[i] = record
+						} else {
+							// Production overwrites the document wholesale, which
+							// moves it to the new owner.
+							m.LedgerRecords[owner] = append(existing[:i], existing[i+1:]...)
+							m.LedgerRecords[record.Owner] = append(m.LedgerRecords[record.Owner], record)
+						}
+						replaced = true
+						break
+					}
+				}
+				if replaced {
 					break
 				}
 			}
 			if replaced {
-				m.LedgerRecords[owner] = existing
 				continue
 			}
 		}
-		m.LedgerRecords[owner] = append(existing, record)
+		m.LedgerRecords[record.Owner] = append(m.LedgerRecords[record.Owner], record)
 	}
 	return nil
 }
@@ -197,11 +222,19 @@ type MockInterestClaimsDb struct {
 }
 
 func (ic *MockInterestClaimsDb) GetLastClaim(blockHeight uint64) *ledgerDb.ClaimRecord {
+	// B8: the real implementation returns nil when nothing matches, and callers
+	// branch on exactly that. The mock always returned a pointer to a zero
+	// value, so the nil branch was unreachable in every mock-backed test.
 	var result ledgerDb.ClaimRecord
+	found := false
 	for _, claim := range ic.Claims {
 		if claim.BlockHeight < blockHeight {
 			result = claim
+			found = true
 		}
+	}
+	if !found {
+		return nil
 	}
 	return &result
 }
