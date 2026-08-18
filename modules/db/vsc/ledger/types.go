@@ -26,19 +26,6 @@ type Balances interface {
 	aggregate.Plugin
 	GetBalanceRecord(account string, blockHeight uint64) (*BalanceRecord, error)
 	UpdateBalanceRecord(record BalanceRecord) error
-	// GetBalanceRecordsFrom lists an account's snapshot rows at or above
-	// fromHeight, oldest first. Used by the late-application path of the
-	// one-time ledger remediation, which rewrites each affected snapshot to the
-	// value re-derived from the ledger.
-	//
-	// It deliberately does NOT expose an increment. GetBalance is
-	// snapshot-anchored, so a credit written retroactively below an existing
-	// snapshot is invisible; correcting that by $inc is non-idempotent, which
-	// forces a durable marker and makes the marker/write ordering a
-	// crash-correctness problem in both directions (double credit one way,
-	// silently un-applied the other). Recomputing from the ledger is idempotent
-	// by construction, so it can be re-run any number of times.
-	GetBalanceRecordsFrom(account string, fromHeight uint64) ([]BalanceRecord, error)
 	GetAll(blockHeight uint64) ([]BalanceRecord, error)
 }
 
