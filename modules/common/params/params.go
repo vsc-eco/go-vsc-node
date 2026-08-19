@@ -138,16 +138,14 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // that the activation block then matches the slot every node actually applies
 // in, so the on-time/late distinction is exact.)
 // TestLedgerRemediation_HeightMustBeOnASlotBoundary enforces this at CI time.
-// PINNED 2026-08-17: head was 109,112,370, +57,600 blocks = ~2 days at 3s,
-// slot-aligned. Chosen so the fleet's hourly watchtower poll has ~48 cycles
-// to roll the binary out before the write-off fires. Clear of the next
-// interest claim (~109,788,523).
 // PINNED 2026-08-18: head was 109,133,394; +57,600 blocks = ~2 days at 3s,
 // floored to a slot boundary. The window is for the coordinated rollout — the
 // whole fleet must be on this code BEFORE the height, because a node that
 // passes it on the old binary keeps the negative (GetBalance is
 // snapshot-anchored) and must be reindexed. Verify adoption with
-// `localNodeInfo { git_commit }` during the window.
+// `localNodeInfo { git_commit }` during the window. That is ~48 cycles of the
+// fleet's hourly watchtower poll, and it is clear of the next interest claim
+// (~109,788,523).
 var LEDGER_REMEDIATION_HEIGHT uint64 = 109190990
 
 // LedgerRemediation names one (account, asset) whose negative balance is
