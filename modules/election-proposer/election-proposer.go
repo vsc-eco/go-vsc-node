@@ -562,56 +562,56 @@ func (e *electionProposer) GenerateFullElection(
 	// Pure functions of the on-chain witness records ⇒ identical committee/CID on
 	// every node and signer (Constraint 3). The members loop below still skips an
 	// unparseable consensus key as a final safety net.
+	// ★ EVALUATED ALWAYS, ENFORCED ONLY WHEN THE GATE IS ON.
+	//
+	// The exclusion set is computed on every election regardless of
+	// WitnessKeyStrictActive, and DELETIONS happen only when it is true. While
+	// the gate is off this changes nothing an election carries — same members,
+	// same weights, same CID — but it makes the one number nobody has answerable
+	// from the logs of a running fleet: how many witnesses this gate WOULD drop,
+	// and which.
+	//
+	// That number is not optional. The gate was disabled in June because turning
+	// it on starved the mainnet committee below the floor and halted elections at
+	// epoch 1699. The proposed fixes for that all begin with "count the survivors
+	// first", and there is currently no way to count them without either running
+	// the gate (the thing that halted the chain) or reading keys off-chain by
+	// hand. Shadow evaluation is the instrument; enabling the gate is a decision
+	// that must be made FROM its readings, not before them.
+	//
+	// COST, measured rather than assumed (BenchmarkEvaluateKeyAdmission): ~2.5 ms
+	// per candidate, dominated by BLS verification — 124 ms for a 50-witness
+	// list. It is paid once per election on the proposer and once on each signer
+	// that regenerates the election, not per block, so it does not touch the
+	// block-production path.
+	keyExclusions := evaluateKeyAdmission(witnessList)
+	if len(keyExclusions) > 0 {
+		enforced := consensusversion.WitnessKeyStrictActive(prevVersion)
+		accounts := make([]string, 0, len(keyExclusions))
+		for _, x := range keyExclusions {
+			accounts = append(accounts, x.Account+"("+x.Reason+")")
+			log.Warn("H-6 key admission: witness fails proof-of-possession",
+				"account", x.Account, "reason", x.Reason, "enforced", enforced,
+				"err", x.Err)
+		}
+		log.Warn("H-6 key admission summary",
+			"block_height", blockHeight,
+			"candidates", len(witnessList),
+			"would_exclude", len(keyExclusions),
+			"would_remain", len(witnessList)-len(keyExclusions),
+			"enforced", enforced,
+			"min_members", e.sconf.ConsensusParams().MinMembers,
+			"accounts", strings.Join(accounts, ","))
+	}
+
 	if consensusversion.WitnessKeyStrictActive(prevVersion) {
-		seenConsensusKeys := make(map[string]string, len(witnessList))
-		seenGatewayKeys := make(map[string]string, len(witnessList))
+		drop := make(map[string]struct{}, len(keyExclusions))
+		for _, x := range keyExclusions {
+			drop[x.Account] = struct{}{}
+		}
 		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-			if popErr := w.VerifyConsensusPoP(); popErr != nil {
-				log.Warn("H-6: excluding witness with invalid consensus-key PoP",
-					"account", w.Account, "err", popErr)
-				return true
-			}
-			key, keyErr := w.ConsensusKey()
-			if keyErr != nil {
-				log.Warn("H-6: excluding witness with unparseable consensus key",
-					"account", w.Account, "err", keyErr)
-				return true
-			}
-			ks := key.String()
-			if first, dup := seenConsensusKeys[ks]; dup {
-				log.Warn("H-6: excluding witness with duplicate consensus key",
-					"account", w.Account, "kept", first)
-				return true
-			}
-			// Gateway-key strict admission (audit H-6, gateway companion): the
-			// gateway key is an unauthenticated announced string unless its
-			// proof-of-possession verifies. Without this, a distinct elected node
-			// could announce ANOTHER member's public gateway key and wedge gateway
-			// rotation with a duplicate key_auth (Hive rejects duplicate keys).
-			//   (c) EXCLUDE any witness whose gateway-key PoP is missing/invalid —
-			//       it has not proven it holds the announced gateway key.
-			//   (d) DEDUPE by gateway key. With a valid PoP a duplicate implies a
-			//       copied seed (also caught by the consensus-key dedup above for
-			//       the normal derivation); this still covers a shared gateway key
-			//       paired with distinct consensus keys. Keep the
-			//       account-lexicographically-first (witnessList is account-sorted).
-			// Pure function of the on-chain witness record ⇒ identical committee/CID
-			// on every node (Constraint 3). After this gate every elected member
-			// provably holds a unique gateway key, so the committee size and the
-			// gateway multisig's signer count track the same population.
-			if popErr := w.VerifyGatewayKeyPoP(); popErr != nil {
-				log.Warn("H-6: excluding witness with invalid gateway-key PoP",
-					"account", w.Account, "err", popErr)
-				return true
-			}
-			if first, dup := seenGatewayKeys[w.GatewayKey]; dup {
-				log.Warn("H-6: excluding witness with duplicate gateway key",
-					"account", w.Account, "kept", first)
-				return true
-			}
-			seenConsensusKeys[ks] = w.Account
-			seenGatewayKeys[w.GatewayKey] = w.Account
-			return false
+			_, excluded := drop[w.Account]
+			return excluded
 		})
 	}
 
@@ -643,6 +643,25 @@ func (e *electionProposer) GenerateFullElection(
 	//   3. FAIL-STOP on a read error — returning an error aborts this election
 	//      attempt and the next slot retries, rather than proceeding with a
 	//      partial seat set and deleting legitimate candidates.
+	// ★ THE POA RULES BIND TO WHAT THE GATE ACTUALLY DID, NOT TO WHETHER A DB
+	// HANDLE IS NON-NIL.
+	//
+	// This flag is the single fact the flat-weight and churn-cap rules below
+	// read. It is set in exactly one place — the branch that really applies the
+	// seat filter — so the restriction (only seated accounts may be elected) and
+	// the benefit (every seat weighs the same) can no longer come apart. They
+	// used to: `poaActive` re-derived its own verdict from
+	// `PoaFlatWeightActive(prevVersion) && e.poaSeats != nil`, which is true
+	// whenever the registry is merely WIRED, while the gate below has two
+	// reachable paths on which it declines to filter anything (an empty registry
+	// and the starvation refusal). On either of those the old predicate still
+	// said yes, producing the regime this file's own comments call strictly
+	// worse than either it sits between: candidacy back to "anyone with
+	// MinStake", but every such candidate carrying a full seat's weight — so
+	// committee weight is bought at MinStake per seat, cheaper than the
+	// stake-weighting POA replaced and free of the vetting POA adds.
+	poaSeatGateApplied := false
+
 	if consensusversion.PoaSeatGateActive(prevVersion) && e.poaSeats != nil {
 		seats, seatErr := e.poaSeats.GetSeatsAtHeight(blockHeight)
 		if seatErr != nil {
@@ -705,6 +724,7 @@ func (e *electionProposer) GenerateFullElection(
 			} else {
 				before := len(witnessList)
 				witnessList = gated
+				poaSeatGateApplied = true
 				if dropped := before - len(witnessList); dropped > 0 {
 					log.Info("poa seat gate excluded unseated candidates",
 						"block_height", blockHeight,
@@ -936,7 +956,7 @@ func (e *electionProposer) GenerateFullElection(
 		// ElectionData and therefore of the CID) and feeds elections.ResultVersion,
 		// so inventing a third value would ripple into election validation for no
 		// benefit.
-		if e.poaActive(prevVersion) {
+		if e.poaActive(prevVersion, poaSeatGateApplied) {
 			flat := make(map[string]uint64, len(stakedMap))
 			for account := range stakedMap {
 				flat[account] = params.PoaSeatWeight
@@ -1029,7 +1049,13 @@ func (e *electionProposer) GenerateFullElection(
 	//
 	// A pinned MaxNewMembersActivationHeight still wins where present: this only
 	// supplies a cap when the height-gated path yields none.
-	poaChurn := e.poaActive(prevVersion)
+	// The churn cap resolves through its OWN version gate rather than through
+	// poaActive. PoaChurnCapActive had no functional call site at all — the cap
+	// reached production only via poaActive — so the two could drift apart
+	// silently. Keeping the `poaSeatGateApplied` conjunct is deliberate: the cap
+	// rate-limits SEATS entering the committee, which is only a coherent notion
+	// while the seat filter is actually being applied.
+	poaChurn := consensusversion.PoaChurnCapActive(prevVersion) && poaSeatGateApplied
 	if poaChurn && effMaxNew == 0 {
 		effMaxNew = e.sconf.ConsensusParams().EffectivePoaMaxNewMembers()
 	}
@@ -1181,7 +1207,7 @@ func (e *electionProposer) GenerateFullElection(
 				// a single member whose weight could dwarf every other seat
 				// combined, i.e. the exact capture vector A3 removes, restored
 				// through the liveness patch.
-				if e.poaActive(prevVersion) {
+				if e.poaActive(prevVersion, poaSeatGateApplied) {
 					weightMap[c.witness.Account] = params.PoaSeatWeight
 				} else {
 					weightMap[c.witness.Account] = c.weight
@@ -1223,7 +1249,7 @@ func (e *electionProposer) GenerateFullElection(
 	// would hand a required member many times a normal seat's weight the moment
 	// the list is ever populated. Flattening it here means POA's one-seat-one-vote
 	// property cannot be quietly undone later by adding a required member.
-	if e.poaActive(prevVersion) {
+	if e.poaActive(prevVersion, poaSeatGateApplied) {
 		distWeight = params.PoaSeatWeight
 	}
 
@@ -1248,6 +1274,43 @@ func (e *electionProposer) GenerateFullElection(
 			MemberConsensus:     t.Consensus,
 			MemberNonConsensus:  t.NonConsensus,
 		})
+	}
+
+	// ★ THE SIGNABILITY FLOOR IS OBSERVED, NOT ENFORCED — YET.
+	//
+	// bondCommitteeFloor is the size below which a committee cannot do its job
+	// even though the election is perfectly valid: under 8 keys the gateway
+	// multisig rotation is silently SKIPPED (multisig.go keyRotation), and under
+	// ceil(2·prevN/3)+1 too few prior share-holders remain seated for the
+	// outstanding TSS keys to stay signable, so reshares strand. MinMembers, the
+	// bar HoldElection actually aborts on, is lower than both.
+	//
+	// Nothing checks it today. The bond floor guard above works toward it on a
+	// best-effort basis and then returns without ever asking whether it got
+	// there, so a committee in the window between MinMembers and this floor is
+	// emitted silently — and the first symptom is a gateway that will not rotate,
+	// which, with the vsc.dao owner backstop already removed from the mainnet
+	// gateway account, has no on-chain recovery.
+	//
+	// This is deliberately a LOG, not a refusal. Refusing here would make the
+	// check itself the thing that stalls the epoch, and on a 3-node devnet the
+	// floor (8) exceeds the whole network, so a refusal would fire permanently
+	// on every test network while never having been exercised on one. Enforcement
+	// belongs behind a version gate and behind a precondition that the PREVIOUS
+	// committee already cleared the floor, so it can only ever refuse to be the
+	// election that regresses a healthy network. Measure first.
+	if previousElection != nil {
+		signFloor := bondCommitteeFloor(e.sconf.ConsensusParams().MinMembers, len(previousElection.Members))
+		if len(members) < signFloor {
+			log.Error("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
+				"block_height", blockHeight,
+				"members", len(members),
+				"signability_floor", signFloor,
+				"min_members", e.sconf.ConsensusParams().MinMembers,
+				"gateway_key_floor", bondGatewayKeyFloor,
+				"prev_members", len(previousElection.Members),
+				"prev_cleared_floor", len(previousElection.Members) >= signFloor)
+		}
 	}
 
 	weights := make([]uint64, len(members))
@@ -1403,11 +1466,7 @@ func canonicalElectionAnchor(prevBlockHeight uint64, electionInterval uint64) ui
 	return ((target + cadence - 1) / cadence) * cadence
 }
 
-type ElectionOptions struct {
-	OverrideMinimumMemberCount int
-}
-
-func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
+func (ep *electionProposer) HoldElection(blk uint64) error {
 	if ep.signingInfo != nil {
 		log.Warn("election already in progress; skipping new attempt", "block_height", blk)
 		return errors.New("election already in progress")
@@ -1500,12 +1559,14 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		// console.log("electionData - holding election", electionData)
 
-		var minimumMemberCount int
-		if len(options) > 0 {
-			minimumMemberCount = options[0].OverrideMinimumMemberCount
-		} else {
-			minimumMemberCount = ep.sconf.ConsensusParams().MinMembers
-		}
+		// ★ NO OVERRIDE. This bar used to be settable through an ElectionOptions
+		// argument, and because Go zero-values a struct field, ANY caller that
+		// passed ElectionOptions{} without naming the field set the minimum to 0
+		// — silently deleting the proposer's only defence against proposing a
+		// committee too small to sign, rotate the gateway multisig, or hold the
+		// TSS shares. Nothing in the repository ever passed it, so the field was
+		// pure downside: an opt-out from a safety floor, reachable by omission.
+		minimumMemberCount := ep.sconf.ConsensusParams().MinMembers
 
 		if len(electionData.Members) < minimumMemberCount {
 			log.Warn("election minimum member count not met",
@@ -2057,8 +2118,86 @@ func resultJoin[T any](results ...result.Result[T]) (res result.Result[[]T]) {
 	return res
 }
 
+// keyAdmissionExclusion is one witness the H-6 key-admission rules reject, with
+// the reason, so the set can be logged and counted while the gate is off.
+type keyAdmissionExclusion struct {
+	Account string
+	Reason  string
+	Err     error
+}
+
+// evaluateKeyAdmission returns the witnesses H-6 would exclude, in candidate
+// order, WITHOUT mutating the list.
+//
+// One implementation, two consumers: the shadow log and the enforcing delete
+// both read this, so the number an operator sees while the gate is off is
+// exactly the number that will be dropped when it is turned on. A separate
+// "estimate" would be a second implementation of a consensus rule, and the
+// first time the two disagreed would be the moment the estimate was being
+// trusted to decide whether it is safe to enable.
+//
+// Pure function of the on-chain witness records (both verifiers are
+// state/time/RNG free), so every node reaches the identical verdict — which is
+// what makes it safe to gate election membership on. Dedupe keeps the
+// account-lexicographically-first entry, matching the candidate ordering the
+// caller supplies.
+func evaluateKeyAdmission(witnessList []witnesses.Witness) []keyAdmissionExclusion {
+	var excluded []keyAdmissionExclusion
+	seenConsensusKeys := make(map[string]string, len(witnessList))
+	seenGatewayKeys := make(map[string]string, len(witnessList))
+
+	for i := range witnessList {
+		w := witnessList[i]
+		if popErr := w.VerifyConsensusPoP(); popErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "invalid consensus-key PoP", popErr})
+			continue
+		}
+		key, keyErr := w.ConsensusKey()
+		if keyErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "unparseable consensus key", keyErr})
+			continue
+		}
+		ks := key.String()
+		if first, dup := seenConsensusKeys[ks]; dup {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "duplicate consensus key, kept " + first, nil})
+			continue
+		}
+		// Gateway-key strict admission (audit H-6, gateway companion): the
+		// gateway key is an unauthenticated announced string unless its
+		// proof-of-possession verifies. Without this, a distinct elected node
+		// could announce ANOTHER member's public gateway key and wedge gateway
+		// rotation with a duplicate key_auth (Hive rejects duplicate keys).
+		//   (c) EXCLUDE any witness whose gateway-key PoP is missing/invalid —
+		//       it has not proven it holds the announced gateway key.
+		//   (d) DEDUPE by gateway key. With a valid PoP a duplicate implies a
+		//       copied seed (also caught by the consensus-key dedup above for
+		//       the normal derivation); this still covers a shared gateway key
+		//       paired with distinct consensus keys.
+		// After this gate every elected member provably holds a unique gateway
+		// key, so the committee size and the gateway multisig's signer count
+		// track the same population.
+		if popErr := w.VerifyGatewayKeyPoP(); popErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "invalid gateway-key PoP", popErr})
+			continue
+		}
+		if first, dup := seenGatewayKeys[w.GatewayKey]; dup {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "duplicate gateway key, kept " + first, nil})
+			continue
+		}
+		seenConsensusKeys[ks] = w.Account
+		seenGatewayKeys[w.GatewayKey] = w.Account
+	}
+	return excluded
+}
+
 // poaActive reports whether the POA election rules apply: the batch is active AND
-// this node actually has the seat registry wired.
+// the seat gate above actually applied the seat filter to this election.
+//
+// The second half used to be `e.poaSeats != nil`, i.e. "this node has a registry
+// wired". That is a question about the process, not about the election, and the
+// two answers differ on every path where the gate declines to filter. Taking the
+// caller's observation instead means the predicate cannot disagree with what
+// happened a few hundred lines above it.
 //
 // ★ THE REGISTRY CHECK IS NOT DEFENSIVE BOILERPLATE. Flat seat-weight without
 // the seat gate is strictly WORSE than either regime it sits between: candidacy
@@ -2069,6 +2208,6 @@ func resultJoin[T any](results ...result.Result[T]) (res result.Result[[]T]) {
 // POA election rule on the same condition means the rules can only ever apply as
 // a set: either this node has a registry and enforces seats and flat weight
 // together, or it applies neither and behaves exactly as it does today.
-func (e *electionProposer) poaActive(prevVersion consensusversion.Version) bool {
-	return consensusversion.PoaFlatWeightActive(prevVersion) && e.poaSeats != nil
+func (e *electionProposer) poaActive(prevVersion consensusversion.Version, seatGateApplied bool) bool {
+	return consensusversion.PoaFlatWeightActive(prevVersion) && seatGateApplied
 }

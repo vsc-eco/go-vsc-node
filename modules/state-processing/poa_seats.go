@@ -99,33 +99,79 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 		return err
 	})
 
-	if len(seats) == 0 {
-		// ★ BOOTSTRAP ONLY AT THE TRANSITION, not merely "whenever the registry
-		// looks empty".
-		//
-		// An empty registry has two very different causes. One is "the batch just
-		// activated and nothing has seeded yet" — the case bootstrap exists for.
-		// The other is "this node LOST its registry": poa_seats is not part of
-		// any merklized state and the reindex trigger keys off a hive_blocks
-		// marker, so the collection can be dropped or restored independently of
-		// chain history. Treating those two as the same thing means a node that
-		// loses its registry silently re-seeds from whatever the CURRENT
-		// committee happens to be, and then disagrees with every peer that still
-		// holds the true, continuously-maintained one — a divergence with no
-		// checkpoint or repair path anywhere to catch it.
-		//
-		// The transition is identifiable: it is the ratified election whose
-		// PREDECESSOR was still below the POA line. Anywhere else, an empty
-		// registry is an anomaly, and the safe response is to leave it empty
-		// (which keeps the seat gate inert) and say so loudly.
-		prevBelowPoa := prevElection == nil ||
-			!consensusversion.PoaSeatGateActive(elections.ResultVersion(*prevElection))
-		if !prevBelowPoa {
-			log.Error("poa: seat registry is EMPTY but this is not the activation transition — NOT re-seeding. This node has most likely lost its poa_seats collection and is now inconsistent with its peers; restore it or full-reindex. The seat gate stays inert meanwhile",
-				"epoch", elecResult.Epoch, "height", blockHeight)
-			return
+	// ★ THE TRANSITION IS DETECTED BEFORE THE ROW COUNT, NOT AFTER IT.
+	//
+	// An empty registry has two very different causes. One is "the batch just
+	// activated and nothing has seeded yet" — the case bootstrap exists for.
+	// The other is "this node LOST its registry": poa_seats is not part of any
+	// merklized state and the reindex trigger keys off a hive_blocks marker, so
+	// the collection can be dropped or restored independently of chain history.
+	// Treating those two as the same thing means a node that loses its registry
+	// silently re-seeds from whatever the CURRENT committee happens to be, and
+	// then disagrees with every peer that still holds the true, continuously
+	// maintained one — a divergence with no checkpoint or repair path anywhere
+	// to catch it. So re-seeding is allowed ONLY at the transition: the ratified
+	// election whose PREDECESSOR was still below the POA line.
+	//
+	// That much was already true. What changed is WHERE the check sits.
+	//
+	// It used to sit inside `if len(seats) == 0`, which made the whole bootstrap
+	// unreachable the moment the registry held even one row. That is precisely
+	// the state a crash leaves behind: AdmitSeat writes one row at a time
+	// (bootstrapPoaSeats below), while the streamer only checkpoints AFTER
+	// s.process() returns. Kill a node midway through seeding N members and it
+	// restarts, REPLAYS the same block, finds len(seats) == k ≠ 0, skips
+	// bootstrap forever, and falls into the maintenance loop below — which
+	// iterates the k rows that exist and therefore can never write the missing
+	// N-k. The registry is then permanently short, permanently divergent from
+	// every peer, and, because seats are append-only with no delete path and the
+	// transition fires exactly once, permanently unrepairable.
+	//
+	// Hoisting the transition test above the row count makes bootstrap
+	// REPLAY-COMPLETE instead of once-only. It is safe to re-run because
+	// AdmitSeat is idempotent per account: a duplicate is a deterministic,
+	// typed error (isDuplicateSeatErr) that every node sees identically and that
+	// the seeding loop treats as "already present", not as a failure. Re-running
+	// is therefore convergent — it can only ever add the seats this same
+	// ratified election already specifies, never remove or alter one.
+	//
+	// The maintenance loop is skipped on this path deliberately: at the
+	// transition the seats being written ARE this election's members, so every
+	// seat is seated and none has exited. There is nothing for it to do.
+	// ★ THE UNCONDITIONAL RE-RUN REQUIRES A *KNOWN* PREDECESSOR BELOW THE LINE.
+	//
+	// Note what is NOT folded in here: `prevElection == nil`. A nil predecessor
+	// means "this node cannot see the previous election", which is not evidence
+	// of a transition — it is absence of evidence. While the row count guarded
+	// the whole block that distinction was harmless, because a populated
+	// registry short-circuited it. With the row count gone, folding nil in would
+	// make EVERY election with an unreadable predecessor re-seed from whatever
+	// committee happens to be current, quietly adding accounts that were never
+	// voted in. That turns the allowlist into a rubber stamp, which is the exact
+	// failure the append-only registry exists to prevent. Nil is handled below,
+	// where an empty registry still makes seeding the only sensible response.
+	prevKnownBelowPoa := prevElection != nil &&
+		!consensusversion.PoaSeatGateActive(elections.ResultVersion(*prevElection))
+
+	if prevKnownBelowPoa {
+		if len(seats) > 0 {
+			log.Warn("poa: activation transition replayed against a NON-EMPTY seat registry — re-running bootstrap so a partially-seeded registry is completed rather than frozen short; seats already present are left untouched",
+				"epoch", elecResult.Epoch, "height", blockHeight, "existing_seats", len(seats))
 		}
 		se.bootstrapPoaSeats(elecResult, blockHeight, members)
+		return
+	}
+
+	if len(seats) == 0 {
+		// Registry empty and the predecessor is unreadable: seeding is the only
+		// response that can ever bring POA up, and it cannot lose information
+		// because there is none to lose.
+		if prevElection == nil {
+			se.bootstrapPoaSeats(elecResult, blockHeight, members)
+			return
+		}
+		log.Error("poa: seat registry is EMPTY but this is not the activation transition — NOT re-seeding. This node has most likely lost its poa_seats collection and is now inconsistent with its peers; restore it or full-reindex. The seat gate stays inert meanwhile",
+			"epoch", elecResult.Epoch, "height", blockHeight)
 		return
 	}
 
@@ -429,6 +475,87 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		return
 	}
 
+	// ★ PROOF-OF-POSSESSION IS CHECKED HERE, NOT ONLY IN THE ELECTION GATE.
+	//
+	// The election gate (H-6) is the usual place this is enforced, and it is
+	// switched off in production. That alone would be a liveness tradeoff. What
+	// makes it a permanence problem is this function: whatever is elected at the
+	// transition is written into a registry that is APPEND-ONLY BY DESIGN — there
+	// is no Delete, no Revoke, and no vote can remove a seat, because a set that
+	// can shrink is a cheaper set to capture. So an operator who cannot
+	// demonstrate control of the key it announced does not merely serve one bad
+	// epoch; it becomes a permanent member of the electorate, holding a share of
+	// the ceil(2/3) veto over every future admission.
+	//
+	// Checking here also removes the runbook from the critical path. Because
+	// MeetsConsensusMin is >=, raising a floor arms every batch at or below it at
+	// once, so "activate key-strict before POA" is an ordering that lives only in
+	// an operator procedure and cannot be expressed in the version numbers. An
+	// in-batch check means that even a floor raised straight past both batches in
+	// one step still seeds a PoP-clean registry.
+	//
+	// A MISSING key or PoP is rejected exactly like an invalid one. Tolerating
+	// absence would make the check trivially bypassable — announce no PoP and
+	// walk through it — which is no check at all. The consequence is a real
+	// precondition on activation, and it is stated rather than hidden: every
+	// founding operator must be running a binary that announces both PoPs and
+	// must have re-announced before the floor rises. The election proposer's
+	// shadow evaluation exists to measure that before the fact.
+	if se.witnessDb != nil {
+		unproven := make([]string, 0)
+		proven := make(map[string]struct{}, len(members))
+		for acct := range members {
+			// Reuses the package's existing fail-stop witness read rather than
+			// repeating it. That helper already draws the one distinction this
+			// call cannot get wrong: GetWitnessAtHeight signals "no announcement
+			// below this height" with mongo.ErrNoDocuments, and blockingRetry
+			// returns only on a nil error — so a hand-rolled version that passed
+			// that error straight through would spin forever on the first member
+			// whose record is merely absent, wedging the node at this block with
+			// no election and no progress. Absence is determinate: no record
+			// means no proof. A genuinely transient failure still blocks, because
+			// reading a blip as "unproven" would drop a legitimate operator from
+			// a registry that has no delete path.
+			w := se.getWitnessAtHeightOrBlock(acct, blockHeight)
+			if w == nil {
+				unproven = append(unproven, acct+"(no witness record)")
+				continue
+			}
+			if err := w.VerifyConsensusPoP(); err != nil {
+				unproven = append(unproven, acct+"(consensus PoP: "+err.Error()+")")
+				continue
+			}
+			if err := w.VerifyGatewayKeyPoP(); err != nil {
+				unproven = append(unproven, acct+"(gateway PoP: "+err.Error()+")")
+				continue
+			}
+			proven[acct] = struct{}{}
+		}
+
+		if len(unproven) > 0 {
+			slices.Sort(unproven)
+			log.Error("poa: bootstrap EXCLUDING committee members that cannot prove possession of their announced keys — seats are permanent, so an unproven key must not be enshrined",
+				"epoch", elecResult.Epoch, "height", blockHeight,
+				"elected", len(members), "proven", len(proven), "unproven", len(unproven),
+				"excluded", strings.Join(unproven, ","))
+		}
+
+		// Re-check the floor against what SURVIVED, not what was elected. The
+		// check above is upstream of the same reasoning: seeding a set too small
+		// to widen itself is unrecoverable, and so is refusing to seed. Refusing
+		// is the direction that keeps the chain running (the gate stays inert and
+		// candidacy continues exactly as before), so it is the one to take when
+		// the two are in tension.
+		if minMembers := se.sconf.ConsensusParams().MinMembers; minMembers > 0 && len(proven) < minMembers {
+			log.Error("poa: bootstrap REFUSED — too few of the incumbent committee can prove possession of their announced keys to found the operator set. Registry stays EMPTY and the seat gate stays INERT; the chain is unaffected but POA does not activate. Every founding operator must announce a valid consensus-key AND gateway-key proof-of-possession before the consensus floor is raised",
+				"epoch", elecResult.Epoch, "height", blockHeight,
+				"proven", len(proven), "min_members", minMembers,
+				"unproven", strings.Join(unproven, ","))
+			return
+		}
+		members = proven
+	}
+
 	// ★ ITERATE IN SORTED ORDER, NOT MAP ORDER. Go randomises map iteration per
 	// process, so seeding straight from `members` would apply writes in a
 	// different order on every node. That is invisible while all writes succeed
@@ -443,13 +570,16 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 
 	seeded := make([]string, 0, len(accounts))
 	var failed []string
+	var reseeded []string
 	for _, acct := range accounts {
 		// Fail-stop like every other registry write on this path. This is the
 		// once-ever seeding burst, so a transient DB blip here desyncs one
 		// node's registry from its peers permanently — and because bootstrap
 		// only fires at the transition, nothing ever re-runs it.
 		var err error
+		var alreadyPresent bool
 		blockingRetry(fmt.Sprintf("poaSeats.AdmitSeat(bootstrap,%s,%d)", acct, blockHeight), func() error {
+			alreadyPresent = false
 			err = se.poaSeats.AdmitSeat(poaseats.Seat{
 				Account:          acct,
 				AdmittedHeight:   blockHeight,
@@ -459,10 +589,28 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 			// A duplicate-key error is DETERMINISTIC (every node sees it) and
 			// must not be retried forever; only infra errors are transient.
 			if err != nil && isDuplicateSeatErr(err) {
+				alreadyPresent = true
 				return nil
 			}
 			return err
 		})
+		// ★ A DUPLICATE IS A SUCCESS, NOT A FAILURE.
+		//
+		// The closure above already stops retrying on a duplicate, but `err` is
+		// the OUTER variable and is still non-nil, so without this the account
+		// was counted as `failed`. That was cosmetic only while bootstrap could
+		// run at most once per network. It is not cosmetic now: bootstrap is
+		// replay-complete, so the ordinary case on any replay of the transition
+		// block is that EVERY account is a duplicate. Left as-is, a healthy
+		// replay would report the entire committee as failed and fire the
+		// partial-bootstrap alarm below every single time — and an alarm that
+		// cries wolf on the happy path is an alarm the operator learns to
+		// ignore, which is worse than not having one.
+		if alreadyPresent {
+			reseeded = append(reseeded, acct)
+			seeded = append(seeded, acct)
+			continue
+		}
 		if err != nil {
 			log.Error("poa: bootstrap seat write failed", "account", acct, "height", blockHeight, "err", err)
 			failed = append(failed, acct)
@@ -490,6 +638,8 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		"epoch", elecResult.Epoch,
 		"height", blockHeight,
 		"seats", len(seeded),
+		"already_present", len(reseeded),
+		"newly_written", len(seeded)-len(reseeded),
 		"accounts", strings.Join(seeded, ","))
 }
 
