@@ -156,10 +156,24 @@ type fakeWitnesses struct {
 	fakePlugin
 	seats    *fakeSeats
 	disabled map[string]uint64 // acct -> the height it disabled its witness (0 = active)
+	// brokenPoP marks accounts whose announced keys carry no valid
+	// proof-of-possession. The DEFAULT is a healthy operator (both PoPs valid),
+	// because that is what a node running the current binary announces; a
+	// fixture defaulting to "no proofs" would make every bootstrap test fail for
+	// a reason none of them are about.
+	brokenPoP map[string]string // acct -> "consensus" | "gateway"
 }
 
 func newFakeWitnesses(seats *fakeSeats) *fakeWitnesses {
-	return &fakeWitnesses{seats: seats, disabled: map[string]uint64{}}
+	return &fakeWitnesses{seats: seats, disabled: map[string]uint64{}, brokenPoP: map[string]string{}}
+}
+
+func (f *fakeWitnesses) breakConsensusPoP(acct string) {
+	f.brokenPoP[poaseats.NormalizeAccount(acct)] = "consensus"
+}
+
+func (f *fakeWitnesses) breakGatewayPoP(acct string) {
+	f.brokenPoP[poaseats.NormalizeAccount(acct)] = "gateway"
 }
 
 // disable records that acct turned its witness off at height dh (a dated
@@ -192,15 +206,22 @@ func (f *fakeWitnesses) GetWitnessesByPeerId(_ []string, _ ...witnesses.SearchOp
 }
 func (f *fakeWitnesses) GetWitnessAtHeight(account string, bh *uint64) (*witnesses.Witness, error) {
 	acct := poaseats.NormalizeAccount(account)
-	if _, held := f.seats.seats[acct]; !held {
-		return nil, nil // never a witness
+	// Bootstrap reads this for accounts that do NOT yet hold a seat (that is the
+	// point of bootstrap), so presence in the registry cannot be the test for
+	// "is a witness". Only the exit-halt path cares about the disabled case.
+	w := provenWitnessRecord(acct)
+	switch f.brokenPoP[acct] {
+	case "consensus":
+		w.DidKeys = nil
+	case "gateway":
+		w.GatewayKeyPoP = ""
 	}
 	if dh, ok := f.disabledAt(acct); ok && (bh == nil || dh < *bh) {
 		// Latest announcement is the disable, dated at dh.
-		return &witnesses.Witness{Account: acct, Enabled: false, Height: dh}, nil
+		w.Enabled, w.Height = false, dh
+		return &w, nil
 	}
-	// Active: an enabled announcement dated long ago (height 1).
-	return &witnesses.Witness{Account: acct, Enabled: true, Height: 1}, nil
+	return &w, nil
 }
 func (f *fakeWitnesses) StoreNodeAnnouncement(string) error                    { return nil }
 func (f *fakeWitnesses) SetWitnessUpdate(witnesses.SetWitnessUpdateType) error { return nil }
@@ -779,7 +800,11 @@ func TestBootstrapAt090SeatsIncumbentLeftOutOfTransition(t *testing.T) {
 		t.Fatalf("dave = %+v, want seated then exited at 100", dave)
 	}
 
-	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 11, "alice", "bob", "carol", "dave"), &prev, 200)
+	// The next election's predecessor is the transition election itself (at
+	// 0.9.0), not the pre-transition one: a predecessor below the POA line marks
+	// the transition, which re-runs bootstrap instead of seat maintenance.
+	transition := ratifiedAtVersion(9, 10, "alice", "bob", "carol")
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 11, "alice", "bob", "carol", "dave"), &transition, 200)
 	dave, _, _ = seats.GetSeat("dave")
 	if !dave.Seated() || dave.LastSeatedHeight != 200 {
 		t.Fatalf("dave = %+v after re-election, want seated at 200", dave)

@@ -586,6 +586,17 @@ func PoaBootstrapFromPriorCommitteeActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
 
+// PoaBootstrapProvesKeysActive reports whether the one-time seat bootstrap
+// verifies each founding member's consensus-key and gateway-key proof of
+// possession before writing its seat, and refuses to seed if fewer than
+// MinMembers can prove both. Seats are permanent, so an unproven key must not be
+// enshrined. Resolve `active` from the version of the election being processed,
+// like PoaBootstrapFromPriorCommitteeActive: testnet bootstrapped at 0.7.0
+// without this check, and its bootstrap must replay byte for byte.
+func PoaBootstrapProvesKeysActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
 // TssReshareKeepsThresholdActive reports whether a reshare is refused when its
 // new party set would leave a key that fewer than a majority of the current
 // committee can sign (threshold+1 <= electionSize/2). The new key's threshold follows
