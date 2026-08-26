@@ -193,7 +193,54 @@ func (se *StateEngine) upsertVersionProposal(p consensus_state.VersionProposal) 
 
 // ActiveConsensusVersion returns the chain-active consensus triple at a block height,
 // sourced purely from the on-chain election (deterministic and height-addressable).
+//
+// ★ FAIL-STOP, NOT FAIL-OPEN. This previously returned the zero Version on ANY read
+// error, which silently reported "consensus 0.0.0" and therefore turned EVERY gate
+// resolved through it OFF for that block on that node alone. Those gates are not
+// cosmetic: IsPoaExitHalted (poa_seats.go) resolves through here and decides whether
+// a consensus bond payout is HELD (state_engine.go, transactions.go). So a single
+// transient Mongo blip on one node made it release a bond its peers refused — a
+// divergent, fund-moving TxResult with no error surfaced anywhere. Silent one-node
+// ledger divergence is the worst failure mode available; a stall is strictly better.
+//
+// The transient/deterministic split is load-bearing IN BOTH DIRECTIONS, and copies
+// the reasoning already written at bond_lock.go isTransientReadErr:
+//
+//   - mongo.ErrNoDocuments is a DETERMINISTIC absence. GetElectionByHeight queries
+//     block_height $lt height, so before the first election is processed EVERY block
+//     legitimately has no election below it. Retrying that would wedge every node at
+//     genesis, forever, on every network. It must return the zero Version, which is
+//     the correct pre-genesis answer.
+//   - ANY OTHER error is a per-node infra blip. Retrying is what prevents the fork.
+//
+// Callers on API/display paths must NOT use this; see displayActiveConsensusVersion.
 func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
+	var elec elections.ElectionResult
+	var found bool
+	blockingRetry("ActiveConsensusVersion.GetElectionByHeight", func() error {
+		e, err := se.electionDb.GetElectionByHeight(blockHeight)
+		if err != nil {
+			if isTransientReadErr(err) {
+				return err // blip: block and retry rather than diverge
+			}
+			// Deterministic absence: no election below this height yet.
+			found = false
+			return nil
+		}
+		elec, found = e, true
+		return nil
+	})
+	if !found {
+		return consensusversion.Version{}
+	}
+	return elections.ResultVersion(elec)
+}
+
+// displayActiveConsensusVersion is the NON-BLOCKING variant for API/display paths.
+// It deliberately keeps the old fail-open behaviour: a display value is not a
+// consensus decision, and blocking an API handler on a DB blip is its own outage.
+// Never use this on a path that affects state.
+func (se *StateEngine) displayActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
 	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
 	if err != nil {
 		return consensusversion.Version{}
@@ -233,7 +280,7 @@ func (se *StateEngine) ElectionMinimumVersion(e *elections.ElectionResult) conse
 
 // DisplayConsensusVersion returns the string to show in APIs: provisional during suspended recovery.
 func (se *StateEngine) DisplayConsensusVersion() string {
-	active := se.ActiveConsensusVersion(uint64(se.BlockHeight))
+	active := se.displayActiveConsensusVersion(uint64(se.BlockHeight))
 	if se.chainProcessingSuspended() {
 		return consensusversion.FormatProvisional(active)
 	}
