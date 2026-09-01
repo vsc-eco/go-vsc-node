@@ -30,6 +30,18 @@ func (m *MockElectionDb) GetElection(epoch uint64) *elections.ElectionResult {
 	return nil
 }
 
+// GetElectionStrict mirrors the production strict variant: a genuine absence
+// returns mongo.ErrNoDocuments (deterministic) so the #11 bond-lock fail-stop path
+// can tell absence from a transient error.
+func (m *MockElectionDb) GetElectionStrict(epoch uint64) (*elections.ElectionResult, error) {
+	if m.Elections != nil {
+		if r, ok := m.Elections[epoch]; ok {
+			return r, nil
+		}
+	}
+	return nil, mongo.ErrNoDocuments
+}
+
 func (m *MockElectionDb) GetPreviousElections(beforeEpoch uint64, limit int) []elections.ElectionResult {
 	if m.PreviousElections == nil {
 		return nil

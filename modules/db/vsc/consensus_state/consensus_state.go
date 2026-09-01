@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
+	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
-	a "vsc-node/modules/aggregate"
 
 	"github.com/chebyrash/promise"
 	"go.mongodb.org/mongo-driver/bson"
@@ -46,6 +46,11 @@ type ConsensusState interface {
 	SetScheduledActivation(ctx context.Context, s *ScheduledActivation) error
 	ClearScheduledActivation(ctx context.Context) error
 	SetProcessingSuspended(ctx context.Context, suspended bool) error
+	// SetBtcKeysignHalt sets/clears the BTC TSS keysign halt flag (vsc.tss_halt,
+	// Build Map §5b). height is the block the halt was set (0 when clearing).
+	SetBtcKeysignHalt(ctx context.Context, halted bool, height uint64) error
+	// SetBtcTheftHalt sets/clears the M1.1b contract theft-halt mirror flag (btc_theft_halted).
+	SetBtcTheftHalt(ctx context.Context, halted bool, height uint64) error
 	// SetForcedActivationAndClearSuspension is the recovery path: schedule a Forced
 	// switch and lift the processing halt in one update.
 	SetForcedActivationAndClearSuspension(ctx context.Context, s *ScheduledActivation) error
@@ -99,6 +104,24 @@ func (c *consensusState) SetProcessingSuspended(ctx context.Context, suspended b
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		bson.M{"$set": bson.M{"processing_suspended": suspended}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetBtcKeysignHalt(ctx context.Context, halted bool, height uint64) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"btc_keysign_halted": halted, "btc_keysign_halt_height": height}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetBtcTheftHalt(ctx context.Context, halted bool, height uint64) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"btc_theft_halted": halted, "btc_theft_halt_height": height}},
 		options.Update().SetUpsert(true),
 	)
 	return err

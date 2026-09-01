@@ -93,6 +93,16 @@ func (e *elections) StoreElection(a ElectionResult) error {
 }
 
 func (e *elections) GetElection(epoch uint64) *ElectionResult {
+	res, err := e.GetElectionStrict(epoch)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+// GetElectionStrict is GetElection but returns the error instead of swallowing it
+// to nil (see the interface doc) — for the #11 bond-lock consensus fail-stop path.
+func (e *elections) GetElectionStrict(epoch uint64) (*ElectionResult, error) {
 	findQuery := bson.M{
 		"epoch": epoch,
 	}
@@ -100,23 +110,22 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	findResult := e.FindOne(ctx, findQuery)
 
 	if findResult.Err() != nil {
-		return nil
-	} else {
-		electionResult := ElectionResult{}
-		findResult.Decode(&electionResult)
-
-		electionRecord := ElectionResultRecord{}
-		err := findResult.Decode(&electionRecord)
-		if err != nil {
-			return nil
-		}
-
-		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
-		if err != nil {
-			return nil
-		}
-		return &electionResult
+		return nil, findResult.Err()
 	}
+	electionResult := ElectionResult{}
+	findResult.Decode(&electionResult)
+
+	electionRecord := ElectionResultRecord{}
+	err := findResult.Decode(&electionRecord)
+	if err != nil {
+		return nil, err
+	}
+
+	err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+	if err != nil {
+		return nil, err
+	}
+	return &electionResult, nil
 }
 
 func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []ElectionResult {

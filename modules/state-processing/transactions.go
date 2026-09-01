@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -156,6 +157,14 @@ func (t TxVscCallContract) ExecuteTx(
 		// a coordinated version floor.
 		contract_execution_context.WithTryCatch(
 			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
+		),
+		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on the
+		// chain-active vault-rotation-v2 flag so the contract-execution output
+		// format changes only at a coordinated height (fork-safe rolling deploy;
+		// byte-identical when off). se is the StateEngine interface here, so read
+		// the flag through SystemConfig() rather than the concrete sconf field.
+		contract_execution_context.WithVaultRotationV2(
+			se.SystemConfig() != nil && se.SystemConfig().ConsensusParams().VaultRotationV2Enabled(t.Self.BlockHeight),
 		),
 	)
 
@@ -822,6 +831,49 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 			Ret:     fmt.Errorf("Invalid amount: %w", err).Error(),
 			RcUsed:  50,
 		}
+	}
+
+	// #11 bond-lock-until-drained: a witness whose committee holds a fund-holding
+	// retiring/draining BTC-vault key's shares cannot unstake its consensus bond
+	// until that generation is drained — otherwise the churning old committee banks
+	// its keygen reward, leaves, and drops the retiring key below threshold so the
+	// migration can never sign (C-A/V-A permanent freeze, no attacker). Deterministic
+	// (consensus state at height, via the same predicate as tss signing eligibility);
+	// inert unless vault-rotation-v2 is chain-active AND a retiring gen exists → the
+	// gate is byte-identical / never fires on mainnet today. The member re-submits
+	// after the migration drains its generation.
+	if se.IsBondLockedRetiringMember(tx.From, tx.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "consensus bond is locked: your committee holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
+			RcUsed:  50,
+		}
+	}
+
+	// POA collateral exit-halt (B1). A seat that still holds threshold BTC
+	// shares — or left the set less than PoaExitHaltBlocks ago — cannot walk its
+	// collateral out. That window is what makes the bond a deterrent rather than
+	// a formality: theft cannot be prevented (a threshold signature confirms on
+	// Bitcoin in ~10 minutes whatever Magi does), so it is deterred by
+	// collateral the thief cannot extract before the theft is detected.
+	//
+	// This composes with, and never replaces, the 5-epoch unstake maturity
+	// below: the two are a MAX, enforced again at payout-release time so an
+	// unstake submitted just BEFORE exiting cannot slip out just after.
+	//
+	// Inert below consensus 0.7.0 and for any account with no seat.
+	if se.IsPoaExitHalted(tx.From, tx.Self.BlockHeight) {
+		// Two shapes of hold: (a) still an electable witness — no fixed release,
+		// the operator must stop being electable (disable its witness) before the
+		// clock starts; (b) winding down — a concrete release height exists.
+		var msg string
+		if release, armed := se.PoaExitHaltReleaseHeight(tx.From, tx.Self.BlockHeight); armed {
+			msg = "consensus bond is locked: POA collateral exit-halt runs until block " +
+				strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+		} else {
+			msg = "consensus bond is locked: POA collateral exit-halt. Your seat is still an electable committee candidate. Disable your witness so it can no longer be elected; the halt then expires a fixed number of blocks later"
+		}
+		return TxResult{Success: false, Ret: msg, RcUsed: 50}
 	}
 
 	// review4 HIGH #96 (fail-stop): the unstake lock epoch comes from an

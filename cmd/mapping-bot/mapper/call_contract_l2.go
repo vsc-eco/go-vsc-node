@@ -42,7 +42,9 @@ func (b *Bot) callContractL2(
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
 	}
 
-	rcLimit := b.BotConfig.RcLimit()
+	// Per-action: the vault-rotation ops need a far higher ceiling than the bot's
+	// configured default, which every other action keeps unchanged (see rcLimitFor).
+	rcLimit := b.rcLimitFor(action)
 	call := &transactionpool.VscContractCall{
 		ContractId: b.BotConfig.ContractId(),
 		Action:     action,

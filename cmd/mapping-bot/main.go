@@ -42,6 +42,15 @@ func main() {
 
 	sysConfig := systemconfig.FromNetwork(args.network)
 	if args.sysconfigPath != "" {
+		// L8-03 (FULL-PRUNED 2026-07-09): a -sysconfig override rewrites ConsensusParams/
+		// OracleParams, which the node repo requires to be network-baked and identical on
+		// every node (params.go:118-129). Restrict it to devnet/mocknet — the SAME guard as
+		// cmd/vsc-node/main.go — so a production -sysconfig can't silently misdirect this
+		// privileged oracle binary (its BTC L1 endpoint / target contract id).
+		if args.network != "devnet" && args.network != "mocknet" {
+			fmt.Println("Error: sysconfig overrides only allowed on devnet/mocknet, not", args.network)
+			os.Exit(1)
+		}
 		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
 			fmt.Println("Error loading sysconfig overrides:", err)
 			os.Exit(1)
@@ -187,6 +196,7 @@ func main() {
 			// At head — still run unmap/confirmations, then sleep before checking again
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			bot.HandleVaultRotation()
 			releaseBlockLease(bot, blockHeight, instanceID)
 			time.Sleep(chainCfg.SleepInterval)
 			cancel()
@@ -219,6 +229,11 @@ func main() {
 			defer wg.Done()
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			// Drive the vault-rotation lifecycle (build the next migration tranche /
+			// write off an un-sweepable residual / advance retire→purge). Runs after
+			// confirmations so a sweep that just settled is seen as settled. No-op on a
+			// contract with no vault registry, and internally rate-limited.
+			bot.HandleVaultRotation()
 		}()
 		wg.Wait()
 		releaseBlockLease(bot, blockHeight, instanceID)

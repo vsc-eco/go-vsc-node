@@ -190,6 +190,15 @@ func ExecuteOplog(oplog []OpLogEvent, startHeight uint64, endBlock uint64) struc
 				Type:   "consensus_unstake",
 				Params: map[string]interface{}{
 					"epoch": v.Params["epoch"],
+					// #11 F4 (front-run hold-release): carry the BONDED account
+					// (v.From) — the record's To is the payout destination, which may
+					// differ. At maturity the release path holds this payout while
+					// From is still a bond-locked retiring committee member (a member
+					// who unstaked BEFORE its gen went retiring still holds the key's
+					// TSS share via V-A eligibility, so holding the payout keeps the
+					// economic pull to finish the migration). Absent on pre-this-change
+					// records → the release path treats it as not-locked (inert).
+					"from": v.From,
 				},
 				BlockHeight: endBlock,
 			})

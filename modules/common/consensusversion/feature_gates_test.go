@@ -44,10 +44,7 @@ func TestV0_3_0Gates(t *testing.T) {
 			t.Errorf("SafetySlashBurnDelay7dActive(%s) = false, want true", v.Format())
 		}
 	}
-
-	// The shipped binary must run the version it implements, so the floor can rise.
-	if RunningVersion().Cmp(V0_3_0) != 0 {
-		t.Errorf("RunningVersion() = %s, want %s (bump in the same commit as the v0.3.0 gates)",
-			RunningVersion().Format(), V0_3_0.Format())
-	}
+	// The "shipped binary runs the version it implements" tripwire moved to
+	// poa_gates_test.go (TestRunningVersionImplementsPoa) when the highest batch
+	// became 0.7.0 — RunningVersion tracks the highest batch, not 0.3.0.
 }

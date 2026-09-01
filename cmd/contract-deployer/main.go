@@ -35,6 +35,15 @@ func main() {
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	sysConfig := systemconfig.FromNetwork(args.network)
 	if args.sysconfigPath != "" {
+		// L8-03 (FULL-PRUNED 2026-07-09): a -sysconfig override rewrites ConsensusParams/
+		// OracleParams, which the node repo requires to be network-baked and identical on
+		// every node (params.go:118-129). Restrict it to devnet/mocknet — the SAME guard as
+		// cmd/vsc-node/main.go — so a production -sysconfig can't silently redirect a deploy
+		// to the wrong contract id / gateway.
+		if args.network != "devnet" && args.network != "mocknet" {
+			fmt.Println("Error: sysconfig overrides only allowed on devnet/mocknet, not", args.network)
+			os.Exit(1)
+		}
 		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
 			fmt.Println("Error loading sysconfig overrides:", err)
 			os.Exit(1)

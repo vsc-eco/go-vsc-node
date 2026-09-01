@@ -20,14 +20,19 @@ func isRecoveryAllowlistedCustomJSON(id string) bool {
 }
 
 func (se *StateEngine) refreshChainConsensusCache() {
-	var next consensus_state.ChainConsensusState
-	if se.consensusState != nil {
-		if st, err := se.consensusState.Get(context.Background()); err == nil {
-			next = st
-		}
+	if se.consensusState == nil {
+		return
+	}
+	st, err := se.consensusState.Get(context.Background())
+	if err != nil {
+		// Fail CLOSED: a transient consensus-state read error must NOT silently reset
+		// the safety flags (BtcKeysignHalted / ProcessingSuspended) to their zero
+		// value — retain the last-known cache and retry next block
+		// (pruned-methodology F1: halt read-path fail-open).
+		return
 	}
 	se.chainConsensusMu.Lock()
-	se.chainConsensusCache = next
+	se.chainConsensusCache = st
 	se.chainConsensusMu.Unlock()
 }
 
@@ -35,6 +40,80 @@ func (se *StateEngine) chainProcessingSuspended() bool {
 	se.chainConsensusMu.RLock()
 	defer se.chainConsensusMu.RUnlock()
 	return se.chainConsensusCache.ProcessingSuspended
+}
+
+// BtcKeysignHalted reports whether the governance multisig has frozen BTC TSS
+// keysign via vsc.tss_halt (Build Map §5b). Read by the TSS solvency gate
+// through the GetScheduler interface. Mirrors chainProcessingSuspended's cache
+// read — deterministic once the halt op has been processed on every node.
+func (se *StateEngine) BtcKeysignHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.BtcKeysignHalted
+}
+
+// BtcTheftHalted reports whether the BTC mapping contract's deterministic theft-halt flag
+// ("th", M1.1b SPV-proven auto-trip) is set, mirrored into the consensus cache each block by
+// refreshBtcTheftHalt. Read by the TSS solvency gate through GetScheduler — a set flag freezes
+// BTC keysign exactly like the governance vsc.tss_halt flag. Deterministic once the tripping
+// contract output has been processed on every node.
+func (se *StateEngine) BtcTheftHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.BtcTheftHalted
+}
+
+// refreshBtcTheftHalt mirrors the BTC mapping contract's "th" theft-halt flag into the
+// consensus cache each block (M1.1b, Design C — the anti-theft auto-trip's node consumer).
+// DETERMINISTIC: every node reads the SAME committed contract output at `height` and writes
+// the identical consensus_state. FAIL-SAFE: a transient per-node datalayer/Mongo blip KEEPS
+// the last cached value (never resets the safety flag; a rare per-node lag is harmless — the
+// keysign gate needs 100% of parties, so a node that missed the halt just stalls the sign,
+// never forks). Writes consensus_state only on a CHANGE (no per-block write). The gate then
+// reads the mirrored bool with zero I/O — as robust as the governance flag.
+func (se *StateEngine) refreshBtcTheftHalt(height uint64) {
+	if se.consensusState == nil {
+		return
+	}
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" {
+		return // no BTC contract on this network → nothing to mirror
+	}
+	var transient error
+	read := se.btcContractStateReaderAtStrict(btcContract, height, &transient)
+	// "th" == btc-mapping-contract constants.BtcTheftHaltKey (a contract-owned key; the node
+	// reads it by literal, as it does "s"/"v"). Set by reportUnauthorizedSpend, cleared by
+	// clearTheftHalt.
+	raw, found := read("th")
+	if transient != nil {
+		// Per-node datalayer/Mongo blip → KEEP the last value, retry next block (mirrors
+		// refreshChainConsensusCache's fail-closed). Never un-halt on a transient error.
+		return
+	}
+	// Any non-empty "th" is a halt. ★ CROSS-REPO LOCK-STEP (M1.1b council L-3): this relies
+	// on the contract CLEARING by DELETION (clearTheftHalt → StateDeleteObject("th") → absent
+	// → found=false). If the contract ever "cleared" by writing "0"/"false", this would read
+	// len>0 and stay HALTED — which fails SAFE (toward the halt, governance-recoverable, never
+	// toward signing), but the two repos MUST keep "clear ⇒ key absent."
+	halted := found && len(raw) > 0
+	se.chainConsensusMu.RLock()
+	cur := se.chainConsensusCache.BtcTheftHalted
+	se.chainConsensusMu.RUnlock()
+	if halted == cur {
+		return // unchanged → no consensus_state write
+	}
+	h := uint64(0)
+	if halted {
+		h = height
+	}
+	if err := se.consensusState.SetBtcTheftHalt(context.Background(), halted, h); err != nil {
+		// ERROR: this node did NOT apply the theft-halt mirror update; it may keep signing
+		// while others freeze (a self-healing stall, not a fork) until a later block succeeds.
+		log.Error("M1.1b: SetBtcTheftHalt FAILED — theft-halt mirror not updated on this node",
+			"halted", halted, "height", height, "err", err)
+		return
+	}
+	se.refreshChainConsensusCache()
 }
 
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
