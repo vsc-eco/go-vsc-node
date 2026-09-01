@@ -57,6 +57,17 @@ type contractExecutionContext struct {
 	// across binaries. Set once per tx by the state engine and propagated into
 	// nested calls.
 	tryCatchActive bool
+
+	// strictIntentLimits gates refusing a transfer.allow whose limit does not
+	// parse, instead of recording whatever strconv.ParseInt happened to return —
+	// which for an out-of-range value is math.MaxInt64, i.e. no ceiling at all.
+	// See buildTokenLimits for the reasoning and why this must be coordinated.
+	//
+	// DEFAULT FALSE = previous behaviour, byte for byte. Set it from the
+	// chain-active consensus version exactly as tryCatchActive is set, and
+	// propagate it into nested calls, so the network switches at one line rather
+	// than forking across a rollout.
+	strictIntentLimits bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -99,10 +110,62 @@ func New(
 	recursionDepth int,
 	opts ...Option,
 ) ContractExecutionContext {
+	ctx := &contractExecutionContext{
+		ledger:          ledger,
+		env:             env,
+		rcLimit:         rcLimit,
+		rcFreeRemaining: rcFreeRemaining,
+		gasRemain:       gasRemain,
+		callSession:     callSession,
+		recursion:       recursionDepth,
+	}
+	for _, opt := range opts {
+		opt(ctx)
+	}
+	// AFTER the options, because the limit parse is gated by one of them
+	// (strictIntentLimits). Nothing between the struct literal and here reads
+	// tokenLimits, so moving the computation below the option loop is
+	// behaviour-preserving.
+	ctx.tokenLimits = buildTokenLimits(env.Intents, ctx.strictIntentLimits)
+	return ctx
+}
+
+// buildTokenLimits turns the transaction's signed intents into the per-token
+// ceilings that bound PullBalance.
+//
+// ★ THE PARSE FAILURE MODE, and why it is gated.
+//
+// `common.ParseDecimalsToBaseUnits` ends in `strconv.ParseInt`, which is
+// asymmetric on failure: a SYNTAX error returns 0, but an OUT-OF-RANGE value
+// returns math.MaxInt64 — in both cases alongside an error. That error was
+// discarded here, so the two malformed cases degraded in opposite directions:
+//
+//	limit "abc"                    -> 0        -> contract can draw nothing (safe)
+//	limit "99999999999999999999"   -> MaxInt64 -> effectively unbounded (NOT safe)
+//
+// The second is a defence-in-depth failure on the one mechanism that exists to
+// bound what a contract may take from a caller. A client that displays "1.000"
+// while signing an oversized limit obtains an allowance the user never intended
+// to grant, and the clamp is what makes the malformed value permissive instead
+// of refused.
+//
+// ★ IT IS NOT FIXED UNCONDITIONALLY, because it cannot be. This function feeds
+// contract execution, so its output decides state transitions. Changing what a
+// malformed limit resolves to changes whether a draw succeeds — which changes
+// state — so a node running the new rule and a node running the old one disagree,
+// and a replay from genesis no longer reproduces the chain. That is a fork, and
+// it is the same hazard ConsensusParams.EvmAddressChecksumHeight documents at
+// length.
+//
+// So the strict rule rides a gate, DEFAULT OFF: with `strict` false this is
+// byte-identical to the previous behaviour, MaxInt64 clamp included. Activate it
+// the way WithTryCatch is activated — resolved by the state engine from the
+// chain-active consensus version — so the whole network switches at one line.
+func buildTokenLimits(intents []contracts.Intent, strict bool) map[string]*int64 {
 	seenTypes := make(map[string]bool)
 	tokenLimits := make(map[string]*int64)
 
-	for _, intent := range env.Intents {
+	for _, intent := range intents {
 		if intent.Type == "transfer.allow" {
 			limit, ok := intent.Args["limit"]
 			if !ok {
@@ -120,30 +183,25 @@ func New(
 					decimals = dec
 				}
 			}
+			// NOTE: first intent wins for a given (type, token). Not the largest,
+			// not the last — array order. Worth knowing before relying on either.
 			key := intent.Type + "-" + token
 			seen := seenTypes[key]
 			if seen {
 				continue
 			}
 			seenTypes[key] = true
-			val, _ := common.ParseDecimalsToBaseUnits(limit, decimals)
+			val, err := common.ParseDecimalsToBaseUnits(limit, decimals)
+			if err != nil && strict {
+				// Refuse the slip rather than record a ceiling nobody signed for.
+				// No entry means no limit for this token, and PullBalance's own
+				// missing-limit path refuses the draw — fail closed.
+				continue
+			}
 			tokenLimits[token] = &val
 		}
 	}
-	ctx := &contractExecutionContext{
-		ledger:          ledger,
-		env:             env,
-		rcLimit:         rcLimit,
-		rcFreeRemaining: rcFreeRemaining,
-		gasRemain:       gasRemain,
-		callSession:     callSession,
-		recursion:       recursionDepth,
-		tokenLimits:     tokenLimits,
-	}
-	for _, opt := range opts {
-		opt(ctx)
-	}
-	return ctx
+	return tokenLimits
 }
 
 // Option mutates a fresh contractExecutionContext during construction.
@@ -161,6 +219,15 @@ func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 // coordinated version floor.
 func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
+}
+
+// WithStrictIntentLimits makes an unparseable transfer.allow limit refuse the
+// draw instead of silently granting math.MaxInt64. Mirror of WithTryCatch: the
+// state engine resolves `active` from the chain-active consensus version so this
+// activates only at a coordinated line. Off by default, and off is exactly the
+// previous behaviour — see buildTokenLimits.
+func WithStrictIntentLimits(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.strictIntentLimits = active }
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -653,7 +720,11 @@ func (ctx *contractExecutionContext) ContractCall(
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
 				WithPendulumApplier(ctx.pendulumApplier),
-				WithTryCatch(ctx.tryCatchActive))
+				WithTryCatch(ctx.tryCatchActive),
+				// Propagate the intent-limit gate: a nested call builds its OWN
+				// tokenLimits from opts.Intents, so without this one transaction
+				// would parse limits under two different rules depending on depth.
+				WithStrictIntentLimits(ctx.strictIntentLimits))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
