@@ -487,6 +487,72 @@ func vfBroadcastAndMine(t *testing.T, d *Devnet, ctx context.Context, rawHex str
 // 2-tx-block merkle proof. Returns the confirmSpend status string.
 func vfRelayAndConfirm(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid, bcTxid string, h uint64) string {
 	t.Helper()
+	return vfRelayAndConfirmIndex(t, d, ctx, callNode, cid, bcTxid, h, 0)
+}
+
+// vfChangeVout returns the index of the first output of txid whose address is NOT
+// `dest` (the vault change of a withdrawal), or -1.
+func vfChangeVout(d *Devnet, ctx context.Context, txid, dest string) int {
+	raw, err := d.bitcoinCli(ctx, "getrawtransaction", txid, "1")
+	if err != nil {
+		return -1
+	}
+	var tx struct {
+		Vout []struct {
+			N            int `json:"n"`
+			ScriptPubKey struct {
+				Address string `json:"address"`
+			} `json:"scriptPubKey"`
+		} `json:"vout"`
+	}
+	if json.Unmarshal([]byte(raw), &tx) != nil {
+		return -1
+	}
+	for _, o := range tx.Vout {
+		if o.ScriptPubKey.Address != dest {
+			return o.N
+		}
+	}
+	return -1
+}
+
+// vfDumpRegistry logs every UTXO registry entry of the contract as read from node:
+// id, pool (confirmed when id >= 1024), amount and generation (contract layout: a
+// blob whose length modulo 4 is 0 is legacy gen 0, otherwise the trailing 4 bytes).
+func vfDumpRegistry(t *testing.T, d *Devnet, ctx context.Context, node int, cid, label string) {
+	t.Helper()
+	st, err := getStateHex(d, ctx, node, cid, []string{"r"})
+	if err != nil {
+		t.Logf("registry dump %s: %v", label, err)
+		return
+	}
+	reg := st["r"]
+	line := fmt.Sprintf("registry %s (magi-%d): %d entries;", label, node, len(reg)/8)
+	for off := 0; off+8 <= len(reg); off += 8 {
+		id := uint16(reg[off])<<8 | uint16(reg[off+1])
+		amt := uint64(0)
+		for _, b := range reg[off+2 : off+8] {
+			amt = amt<<8 | uint64(b)
+		}
+		gen := "?"
+		if us, err := getStateHex(d, ctx, node, cid, []string{"u-" + fmt.Sprintf("%x", id)}); err == nil {
+			raw := us["u-"+fmt.Sprintf("%x", id)]
+			if len(raw) >= 4 {
+				gen = fmt.Sprint(uint32(raw[len(raw)-4])<<24 | uint32(raw[len(raw)-3])<<16 | uint32(raw[len(raw)-2])<<8 | uint32(raw[len(raw)-1]))
+			}
+		}
+		pool := "unconfirmed"
+		if id >= 1024 {
+			pool = "confirmed"
+		}
+		line += fmt.Sprintf(" [id=%d %s %d sats gen=%s]", id, pool, amt, gen)
+	}
+	t.Logf("%s", line)
+}
+
+// vfRelayAndConfirmIndex is vfRelayAndConfirm with an explicit output index.
+func vfRelayAndConfirmIndex(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid, bcTxid string, h uint64, index int) string {
+	t.Helper()
 	last := contractLastHeight(t, d, ctx, cid)
 	for hh := last + 1; hh <= h; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
@@ -506,7 +572,7 @@ func vfRelayAndConfirm(t *testing.T, d *Devnet, ctx context.Context, callNode in
 	rawTx, _ := d.bitcoinCli(ctx, "getrawtransaction", bcTxid)
 	proof := reverseHexBytes(blk.Tx[0])
 	return vstatus(t, d, ctx, callNode, cid, "confirmSpend", fmt.Sprintf(
-		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"indices":[0]}`, h, rawTx, proof))
+		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"indices":[%d]}`, h, rawTx, proof, index))
 }
 
 // vfStopNodes / vfStartNodes stop or start a set of magi nodes, logging each.

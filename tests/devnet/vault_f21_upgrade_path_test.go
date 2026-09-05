@@ -271,8 +271,15 @@ func TestVaultF21UpgradePath(t *testing.T) {
 			c.rec("F21-LEGACY-UNMAP-SETTLES", "the v1-built withdrawal settles under v2 code", false,
 				fmt.Sprintf("regtest refused the legacy withdrawal: %v", berr))
 		} else {
-			cs := vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, h)
+			// The withdrawal's vout 0 pays the user; the vault CHANGE is the other output and
+			// is the one confirmSpend must promote (run 2 passed index 0 and was refused with
+			// "no unconfirmed outputs matched", a harness bug, not a product fault).
+			changeVout := vfChangeVout(d, ctx, bcTxid, unmapDest)
+			t.Logf("legacy withdrawal %s: change vout=%d (dest=%s)", bcTxid, changeVout, unmapDest)
+			vfDumpRegistry(t, d, ctx, 2, cid, "before legacy confirmSpend")
+			cs := vfRelayAndConfirmIndex(t, d, ctx, 1, cid, bcTxid, h, changeVout)
 			gone := f21WaitSpendGone(t, d, ctx, cid, unmapTxid, 4*time.Minute)
+			vfDumpRegistry(t, d, ctx, 2, cid, "after legacy confirmSpend")
 			balOwnerSettled := balanceSats(t, d, ctx, cid, owner)
 			c.rec("F21-LEGACY-UNMAP-SETTLES", "the v1-built withdrawal settles under v2 code", gone && balOwnerSettled < balOwnerFunded,
 				fmt.Sprintf("bcTxid=%s height=%d confirmSpend=%s, pending spend gone=%v, owner %d (funded) to %d sats",
@@ -302,6 +309,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 		// The first tranche is capped at MigrationCanaryValue and always carries exactly
 		// one input, so a multi-UTXO legacy generation needs several tranches to drain.
 		for i := 0; i < 5 && left > 0; i++ {
+			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("before sweep tranche %d", i+1))
 			migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 			tranches++
 			next := f21WaitGenDrained(d, ctx, 2, cid, 0, 3*time.Minute)
