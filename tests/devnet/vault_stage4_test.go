@@ -181,6 +181,8 @@ func TestVaultStage4Rotation(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -222,7 +224,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 	// BRK-2: activateKey only succeeds once the node's check-sig for gen-1 lands
 	// (admitted by output-scoping because gen-0 is Active → view resolves).
 	activated := false
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			activated = true
 			break

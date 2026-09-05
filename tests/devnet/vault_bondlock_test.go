@@ -111,6 +111,8 @@ func TestVaultBondLock(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -132,7 +134,7 @@ func TestVaultBondLock(t *testing.T) {
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen1 register: %s", s)
 	}
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			break
 		}
