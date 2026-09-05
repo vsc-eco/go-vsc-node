@@ -325,8 +325,15 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	if fundSats > 0 {
 		fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, fundSats, seedH)
-		if !balanceCredited(t, d, ctx, cid, owner) {
-			t.Fatalf("gen-0 funding failed")
+		// The map is CONFIRMED on the calling node before magi-2 (the reading node) has
+		// applied it; F13 run 1 died here on a stale read. Poll for up to 2 minutes.
+		credited := balanceCredited(t, d, ctx, cid, owner)
+		for i := 0; i < 12 && !credited; i++ {
+			time.Sleep(10 * time.Second)
+			credited = balanceCredited(t, d, ctx, cid, owner)
+		}
+		if !credited {
+			t.Fatalf("gen-0 funding failed: %s balance still 0 on magi-2 two minutes after the CONFIRMED map", owner)
 		}
 		t.Logf("gen-0 funded: %s = %d sats", owner, balanceSats(t, d, ctx, cid, owner))
 	}
