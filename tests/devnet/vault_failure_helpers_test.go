@@ -536,10 +536,7 @@ func vfDumpRegistry(t *testing.T, d *Devnet, ctx context.Context, node int, cid,
 		}
 		gen := "?"
 		if us, err := getStateHex(d, ctx, node, cid, []string{"u-" + fmt.Sprintf("%x", id)}); err == nil {
-			raw := us["u-"+fmt.Sprintf("%x", id)]
-			if len(raw) >= 4 {
-				gen = fmt.Sprint(uint32(raw[len(raw)-4])<<24 | uint32(raw[len(raw)-3])<<16 | uint32(raw[len(raw)-2])<<8 | uint32(raw[len(raw)-1]))
-			}
+			gen = vfUtxoGenLabel(us["u-"+fmt.Sprintf("%x", id)])
 		}
 		pool := "unconfirmed"
 		if id >= 1024 {
@@ -673,4 +670,28 @@ func vfExcept(nodes []int, excl ...int) []int {
 		}
 	}
 	return out
+}
+
+// vfUtxoGenLabel decodes the generation of a MarshalUtxo blob (txid 32, vout 4, amount 8,
+// pkScript len+bytes, tag len+bytes, then an OPTIONAL 4-byte generation). Pre-S1 blobs
+// have no generation field and belong to gen-0 by definition (contract UnmarshalUtxo);
+// reading their last four bytes as a generation printed garbage in earlier dumps.
+func vfUtxoGenLabel(raw []byte) string {
+	off := 32 + 4 + 8
+	if len(raw) < off+1 {
+		return "?"
+	}
+	off += 1 + int(raw[off])
+	if len(raw) < off+1 {
+		return "?"
+	}
+	off += 1 + int(raw[off])
+	switch {
+	case len(raw) == off:
+		return "0(legacy)"
+	case len(raw) == off+4:
+		return fmt.Sprint(uint32(raw[off])<<24 | uint32(raw[off+1])<<16 | uint32(raw[off+2])<<8 | uint32(raw[off+3]))
+	default:
+		return fmt.Sprintf("?(len=%d)", len(raw))
+	}
 }
