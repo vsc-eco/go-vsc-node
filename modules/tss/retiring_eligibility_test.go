@@ -151,3 +151,96 @@ func TestComputeRetiringSignerSet_PurgedSkipsReshareButReleasesBond(t *testing.T
 		t.Errorf("retiring gen-1 key %q must be in KeyIds (still fund-holding)", gen1KeyId)
 	}
 }
+
+// TestComputeRetiringSignerSet_CorruptRegistryUnresolvable — F14 (vault-v2 failure
+// state "corrupt or ambiguous vault registry"). A PRESENT but undecodable "v" must
+// come back Unresolvable (the #11 bond-lock reads that as everybody-locked, V-A as a
+// freeze), an ABSENT "v" must stay resolvable-and-empty (pre-rotation, nobody locked),
+// and the moment "v" decodes again the set is computed normally (the freeze is
+// recoverable, no sticky state). Decodable-but-ambiguous registries (0 or 2 Active)
+// are NOT unresolvable here: this predicate only ADDS lockers from retiring gens, so
+// ambiguity cannot release a bond; the sign-side refusal for those lives in
+// output_scoping.resolveVaultView (TestEvaluateScope_UnresolvableRegistryFailsClosed).
+func TestComputeRetiringSignerSet_CorruptRegistryUnresolvable(t *testing.T) {
+	mk := func(reg []byte, present bool) vaultrotation.RetiringSignerDeps {
+		return vaultrotation.RetiringSignerDeps{
+			BtcContract: scopeContract,
+			ReadKey: func(k string) ([]byte, bool) {
+				if k == "v" && present {
+					return reg, true
+				}
+				return nil, false
+			},
+			GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
+				return tss_db.TssCommitment{Epoch: 5, Commitment: bitsetB64(0, 2)}, nil
+			},
+			GetElection: func(epoch uint64) *elections.ElectionResult {
+				return vaElection(epoch, "alice", "bob", "carol")
+			},
+		}
+	}
+
+	// 1. Corrupt: length is not a multiple of the 91-byte entry size.
+	corrupt := make([]byte, btcvault.VaultEntrySize+7)
+	set := vaultrotation.ComputeRetiringSignerSet(mk(corrupt, true))
+	if !set.Unresolvable {
+		t.Fatalf("corrupt 'v' must be Unresolvable (fail closed), got resolvable set %v", set.SignerElection)
+	}
+	if len(set.SignerElection) != 0 || len(set.KeyIds) != 0 || len(set.ReshareSkipKeyIds) != 0 {
+		t.Fatalf("corrupt 'v' must return an EMPTY set alongside Unresolvable, got signers=%v keys=%v skip=%v",
+			set.SignerElection, set.KeyIds, set.ReshareSkipKeyIds)
+	}
+
+	// 2. Absent: the benign pre-rotation state, resolvable and empty.
+	set = vaultrotation.ComputeRetiringSignerSet(mk(nil, false))
+	if set.Unresolvable {
+		t.Fatal("an ABSENT 'v' must NOT be Unresolvable (pre-rotation: nobody is locked)")
+	}
+	if len(set.SignerElection) != 0 {
+		t.Fatalf("absent 'v' must lock nobody, got %v", set.SignerElection)
+	}
+	// An empty-but-present blob is the same benign case (contract writes "" before fold).
+	set = vaultrotation.ComputeRetiringSignerSet(mk([]byte{}, true))
+	if set.Unresolvable {
+		t.Fatal("an EMPTY 'v' must NOT be Unresolvable")
+	}
+
+	// 3. Recovery: a valid registry again → normal computation, no sticky freeze.
+	valid := marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusRetiring},
+		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+	)
+	set = vaultrotation.ComputeRetiringSignerSet(mk(valid, true))
+	if set.Unresolvable {
+		t.Fatal("a valid 'v' must be resolvable again (the corrupt-registry freeze is recoverable)")
+	}
+	if !set.Has("alice") || !set.Has("carol") || set.Has("bob") {
+		t.Fatalf("valid 'v' after recovery must lock exactly gen-0's committee (alice, carol), got %v", set.SignerElection)
+	}
+
+	// 4. Decodable but ambiguous (two Active gens, one Retiring): still resolvable, and
+	// the retiring committee stays locked. Ambiguity never RELEASES a bond.
+	ambiguous := marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusRetiring},
+		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+		btcvault.Vault{Generation: 2, Primary: scopePub(4), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+	)
+	set = vaultrotation.ComputeRetiringSignerSet(mk(ambiguous, true))
+	if set.Unresolvable {
+		t.Fatal("a decodable two-Active registry is ambiguous for SIGNING (refused in output_scoping) but must not be Unresolvable here")
+	}
+	if !set.Has("alice") || !set.Has("carol") {
+		t.Fatalf("two-Active registry must still lock gen-0's retiring committee, got %v", set.SignerElection)
+	}
+	// Duplicate generation entries (Retiring then Active for the same gen): the
+	// retiring entry's committee is locked; the duplicate cannot un-lock it.
+	dup := marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusRetiring},
+		btcvault.Vault{Generation: 0, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+	)
+	set = vaultrotation.ComputeRetiringSignerSet(mk(dup, true))
+	if !set.Has("alice") || !set.Has("carol") {
+		t.Fatalf("duplicate-generation registry must still lock the retiring entry's committee, got %v", set.SignerElection)
+	}
+}
