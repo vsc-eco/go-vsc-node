@@ -154,18 +154,29 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 		c.rec("F1-KEY", "gen-1 keygen completes after the committee is restored", true,
 			fmt.Sprintf("keyId=%s epoch=%d pubkey=%s", keyId1, kd1.Epoch, primary1))
 
-		identical := true
+		// A node ingests the keygen commitment when it processes that Hive block, so a
+		// lagging node can still show status "created" seconds after magi-2 shows "active"
+		// (run 1 read magi-1 too early and recorded a false divergence; F1-IDENT later
+		// proved the fleet identical). Poll every node for up to 3 minutes.
+		identical := false
 		detail := ""
-		for _, n := range vfAllNodes(5) {
-			docs, err := d.GetTssKeys(ctx, n, bson.M{"id": keyId1})
-			if err != nil || len(docs) == 0 {
-				identical = false
-				detail += fmt.Sprintf(" magi-%d=UNREADABLE(err=%v,docs=%d)", n, err, len(docs))
-				continue
+		for attempt := 0; attempt < 18 && !identical; attempt++ {
+			identical = true
+			detail = ""
+			for _, n := range vfAllNodes(5) {
+				docs, err := d.GetTssKeys(ctx, n, bson.M{"id": keyId1})
+				if err != nil || len(docs) == 0 {
+					identical = false
+					detail += fmt.Sprintf(" magi-%d=UNREADABLE(err=%v,docs=%d)", n, err, len(docs))
+					continue
+				}
+				detail += fmt.Sprintf(" magi-%d=(pk=%s,epoch=%d,status=%s)", n, docs[0].PublicKey, docs[0].Epoch, docs[0].Status)
+				if docs[0].PublicKey != primary1 || docs[0].Epoch != kd1.Epoch {
+					identical = false
+				}
 			}
-			detail += fmt.Sprintf(" magi-%d=(pk=%s,epoch=%d,status=%s)", n, docs[0].PublicKey, docs[0].Epoch, docs[0].Status)
-			if docs[0].PublicKey != primary1 || docs[0].Epoch != kd1.Epoch {
-				identical = false
+			if !identical {
+				time.Sleep(10 * time.Second)
 			}
 		}
 		c.rec("F1-KEY", "gen-1 commitment is byte-identical on all 5 nodes (same PublicKey and Epoch)",
