@@ -176,18 +176,28 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	// sweep with it. A half-written share on magi-3 would show up as a divergent
 	// public key here, or as a sweep that never gathers its signatures.
 	activated2 := vfRegisterAndActivate(t, d, ctx, cid, primary2, 12)
-	sameKey := true
+	// Each node flips the row to active when IT ingests the commitment's Hive block, so
+	// a lagging node is polled for up to 3 minutes before being called divergent (F1 run
+	// 1 recorded a false divergence from a single early read).
+	sameKey := false
 	rows := ""
-	for _, n := range vfAllNodes(5) {
-		docs, e := d.GetTssKeys(ctx, n, bson.M{"id": mainv2})
-		if e != nil || len(docs) == 0 {
-			sameKey = false
-			rows += fmt.Sprintf(" magi-%d=<absent err=%v>", n, e)
-			continue
+	for attempt := 0; attempt < 18 && !sameKey; attempt++ {
+		sameKey = true
+		rows = ""
+		for _, n := range vfAllNodes(5) {
+			docs, e := d.GetTssKeys(ctx, n, bson.M{"id": mainv2})
+			if e != nil || len(docs) == 0 {
+				sameKey = false
+				rows += fmt.Sprintf(" magi-%d=<absent err=%v>", n, e)
+				continue
+			}
+			rows += fmt.Sprintf(" magi-%d=%s/e%d/%s", n, f3TruncHex(docs[0].PublicKey), docs[0].Epoch, docs[0].Status)
+			if docs[0].PublicKey != primary2 || docs[0].Epoch != kd2.Epoch {
+				sameKey = false
+			}
 		}
-		rows += fmt.Sprintf(" magi-%d=%s/e%d/%s", n, f3TruncHex(docs[0].PublicKey), docs[0].Epoch, docs[0].Status)
-		if docs[0].PublicKey != primary2 || docs[0].Epoch != kd2.Epoch {
-			sameKey = false
+		if !sameKey {
+			time.Sleep(10 * time.Second)
 		}
 	}
 
