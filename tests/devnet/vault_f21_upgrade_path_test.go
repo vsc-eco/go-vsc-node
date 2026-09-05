@@ -142,10 +142,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 	// The map tx is CONFIRMED on the calling node before the READ node (magi-2) has
 	// applied it; poll for the credit instead of reading once (first run recorded
 	// owner2=0 sats and utxos=1 from a read that raced the settle).
-	if !balanceCredited(t, d, ctx, cid, owner2) {
-		t.Logf("owner2 credit not visible on magi-2 yet after the poll window")
-	}
-	for i := 0; i < 12 && f21GenUtxoCountOn(d, ctx, 2, cid, 0) < 2; i++ {
+	for i := 0; i < 24 && (balanceSats(t, d, ctx, cid, owner2) <= 0 || f21GenUtxoCountOn(d, ctx, 2, cid, 0) < 2); i++ {
 		time.Sleep(5 * time.Second)
 	}
 	balOwnerFunded := balanceSats(t, d, ctx, cid, owner)
