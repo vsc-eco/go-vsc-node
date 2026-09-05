@@ -139,6 +139,15 @@ func TestVaultF21UpgradePath(t *testing.T) {
 	owner2 := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 2)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 30_000_000, seedH)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner2, 20_000_000, contractLastHeight(t, d, ctx, cid))
+	// The map tx is CONFIRMED on the calling node before the READ node (magi-2) has
+	// applied it; poll for the credit instead of reading once (first run recorded
+	// owner2=0 sats and utxos=1 from a read that raced the settle).
+	if !balanceCredited(t, d, ctx, cid, owner2) {
+		t.Logf("owner2 credit not visible on magi-2 yet after the poll window")
+	}
+	for i := 0; i < 12 && f21GenUtxoCountOn(d, ctx, 2, cid, 0) < 2; i++ {
+		time.Sleep(5 * time.Second)
+	}
 	balOwnerFunded := balanceSats(t, d, ctx, cid, owner)
 	balOwner2Funded := balanceSats(t, d, ctx, cid, owner2)
 	pre, err := getStateHex(d, ctx, 2, cid, []string{"mv", "v"})
