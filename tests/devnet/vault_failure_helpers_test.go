@@ -456,12 +456,45 @@ func vfRotate(t *testing.T, d *Devnet, ctx context.Context, cid string, nextGen 
 	if !ok {
 		return "", false
 	}
-	// 20 attempts (about 10 minutes with the call round-trips): F19 run 1 saw no
-	// check-signature within 12 attempts (~6.5 min) under two-lane load.
+	// After a DKG every node regenerates its TSS pre-parameters (1024-bit safe primes)
+	// at full CPU for up to 10 minutes, and on this 10-CPU box with two devnets the
+	// check-signature sign sessions time out until that finishes (VR2-09, F5/F19 run 1:
+	// issuing=12, signed=0, timeout_result 2-14). Wait for the pool before asking for
+	// the check-sig so the rest of the test measures the product, not CPU starvation.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
+	// 20 attempts (about 10 minutes with the call round-trips).
 	if !vfRegisterAndActivate(t, d, ctx, cid, p, 20) {
 		return p, false
 	}
 	return p, true
+}
+
+// vfWaitPreparams returns once every node has logged at least as many "preparams
+// generated successfully" lines as "need to generate preparams" lines (the pool is
+// refilled), or after `within`. Logs how long it waited and the per-node counts.
+func vfWaitPreparams(t *testing.T, d *Devnet, ctx context.Context, within time.Duration) {
+	t.Helper()
+	start := time.Now()
+	deadline := start.Add(within)
+	for {
+		pending := ""
+		for _, n := range vfAllNodes(d.cfg.Nodes) {
+			need := vfCountLogs(d, ctx, n, "need to generate preparams")
+			done := vfCountLogs(d, ctx, n, "preparams generated successfully")
+			if done < need {
+				pending += fmt.Sprintf(" magi-%d(%d/%d)", n, done, need)
+			}
+		}
+		if pending == "" {
+			t.Logf("preparams pool refilled on every node after %s", time.Since(start).Round(time.Second))
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Logf("preparams still regenerating after %s on:%s (continuing; the check-sig may time out under CPU starvation)", within, pending)
+			return
+		}
+		time.Sleep(15 * time.Second)
+	}
 }
 
 // vfBuildSweep issues migrateVault from opNode and returns the new pending sweep txid
