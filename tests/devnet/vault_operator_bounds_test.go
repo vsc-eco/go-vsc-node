@@ -92,9 +92,10 @@ func TestVaultOperatorBounds(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 80_000_000, seedH)
 
 	// ── rotate to gen-1 so gen-0 is retiring + still holds its 80M UTXO ──
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("wait hpin: %v", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd1, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-mainv1", "status": "active"}, 8*time.Minute)
 	if err != nil {

@@ -197,9 +197,10 @@ func TestVaultStage4Rotation(t *testing.T) {
 
 	// ── wait until v2 is ACTIVE (VSC height > hpin) ──
 	t.Logf("waiting for VSC height > hpin=%d (v2 on)...", hpin)
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("WaitForBlockProcessing: %v (continuing)", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	t.Logf("v2 now ACTIVE — rotating gen-0 → gen-1")
 
 	// ── rotate: createKey gen-1 → keygen → register → BRK-2 check-sig → activate ──
