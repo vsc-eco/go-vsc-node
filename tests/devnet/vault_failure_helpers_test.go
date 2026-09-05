@@ -393,7 +393,48 @@ func vfRegisterAndActivate(t *testing.T, d *Devnet, ctx context.Context, cid, pr
 		t.Logf("activateKey not yet (awaiting BRK-2 check-sig)... retry %d", i)
 		time.Sleep(15 * time.Second)
 	}
+	vfDumpCheckSigDiagnostics(t, d, ctx, cid)
 	return false
+}
+
+// vfDumpCheckSigDiagnostics explains a check-signature that never landed: which
+// generation is Pending, how many sign requests its key has (and how many carry a
+// signature) on every node, and the node-log counts that name the mechanism (the
+// scoping gate issuing or refusing the sign, and TSS session timeouts). F19 run 1 failed
+// here with no evidence; this makes the next failure self-explaining.
+func vfDumpCheckSigDiagnostics(t *testing.T, d *Devnet, ctx context.Context, cid string) {
+	t.Helper()
+	keyId := ""
+	for g := uint32(1); g <= 4 && keyId == ""; g++ {
+		if vfVaultStatusOn(d, ctx, 2, cid, g) == 0 {
+			keyId = cid + "-" + btcvault.VaultKeyName(g)
+		}
+	}
+	t.Logf("CHECK-SIG DIAGNOSTICS: pending keyId=%q", keyId)
+	for _, n := range vfAllNodes(d.cfg.Nodes) {
+		reqs, sigs := 0, 0
+		if keyId != "" {
+			if rs, err := d.GetTssRequests(ctx, n, keyId); err == nil {
+				reqs = len(rs)
+				for _, r := range rs {
+					if r.Sig != "" {
+						sigs++
+					}
+				}
+			}
+		}
+		keys, _ := d.GetTssKeys(ctx, n, bson.M{"id": keyId})
+		keyStatus := "absent"
+		if len(keys) > 0 {
+			keyStatus = keys[0].Status
+		}
+		t.Logf("  magi-%d: tss_key=%s sign_requests=%d signed=%d | logs: issuing=%d scoping_refused=%d timeout_result=%d successor_refused=%d",
+			n, keyStatus, reqs, sigs,
+			vfCountLogs(d, ctx, n, "BRK-2 check-signature for a pending vault generation; issuing"),
+			vfCountLogs(d, ctx, n, "BTC keysign refused by output scoping"),
+			vfCountLogs(d, ctx, n, "timeout result"),
+			vfCountLogs(d, ctx, n, "successor key not committed/active"))
+	}
 }
 
 // vfRotate performs the full gen-N -> gen-N+1 rotation (mint, keygen, register,
@@ -404,7 +445,9 @@ func vfRotate(t *testing.T, d *Devnet, ctx context.Context, cid string, nextGen 
 	if !ok {
 		return "", false
 	}
-	if !vfRegisterAndActivate(t, d, ctx, cid, p, 12) {
+	// 20 attempts (about 10 minutes with the call round-trips): F19 run 1 saw no
+	// check-signature within 12 attempts (~6.5 min) under two-lane load.
+	if !vfRegisterAndActivate(t, d, ctx, cid, p, 20) {
 		return p, false
 	}
 	return p, true
