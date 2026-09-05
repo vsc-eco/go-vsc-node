@@ -212,16 +212,35 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 		fmt.Sprintf("signed requests on %s-main %d to %d, owner balance %d to %d sats", cid, sigs0, sigs1, bal0, bal1))
 
 	// ---- step 4: a full rotation on top of the pre-fold pin ----
+	vfDumpRegistry(t, d, ctx, 2, cid, "after the pre-rotation withdrawal settled, before rotation")
 	primary1, rotated := vfRotate(t, d, ctx, cid, 1)
 	c.rec("F8-ROTATE", "gen-0 to gen-1 rotation activates after a pre-fold pin", rotated,
 		fmt.Sprintf("gen-1 primary=%s, gen-0 status=%d, gen-1 status=%d",
 			primary1, vfVaultStatusOn(d, ctx, 2, cid, 0), vfVaultStatusOn(d, ctx, 2, cid, 1)))
 	if rotated {
 		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
-		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
-		left := f8WaitGenDrained(t, d, ctx, cid, 0, 3*time.Minute)
-		c.rec("F8-DRAIN", "gen-0 drains into gen-1 (the retiring key still signs its successor sweep)", left == 0,
-			fmt.Sprintf("gen-0 utxo count=%d, gen-1 utxo count=%d", left, genUtxoCount(t, d, ctx, cid, 1)))
+		// Run 1 (2026-09-05) left gen-0 with THREE registry entries after one tranche
+		// (gen-1 had two) with no registry dump to explain them; the first tranche of a
+		// Retiring gen is also capped at MigrationCanaryValue (1,000,000 sats), so a
+		// single tranche is not a drain by design. Dump the registry at every step and
+		// sweep up to four tranches, stopping when a tranche makes no progress.
+		vfDumpRegistry(t, d, ctx, 2, cid, "after rotation + fee top-up, before tranche 1")
+		left := genUtxoCount(t, d, ctx, cid, 0)
+		tranches := 0
+		for i := 0; i < 4 && left > 0; i++ {
+			migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
+			tranches++
+			next := f8WaitGenDrained(t, d, ctx, cid, 0, 3*time.Minute)
+			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", tranches))
+			if next >= left {
+				t.Logf("tranche %d did not reduce the gen-0 UTXO count (still %d), stopping the sweep loop", tranches, next)
+				left = next
+				break
+			}
+			left = next
+		}
+		c.rec("F8-DRAIN", "gen-0 drains into gen-1 (the retiring key still signs its successor sweeps)", left == 0,
+			fmt.Sprintf("%d tranche(s), gen-0 utxo count=%d, gen-1 utxo count=%d", tranches, left, genUtxoCount(t, d, ctx, cid, 1)))
 	} else {
 		t.Logf("skipping the fee reserve and the migration sweep: gen-1 never activated, so there is no successor to sweep to")
 	}
