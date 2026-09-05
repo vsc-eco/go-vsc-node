@@ -65,6 +65,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -602,7 +603,7 @@ func vfF18BuildBackupSpend(u *vfF18Utxo, witnessScript []byte, destAddress strin
 func vfF18DeleteTssKeys(t *testing.T, d *Devnet, node int) (before, after int) {
 	t.Helper()
 	nodeRoot := filepath.Join(d.DataDir(), "devnet-data", fmt.Sprintf("data-%d", node))
-	before = len(findTSSShareFiles(t, nodeRoot))
+	before = len(vfF18ShareFiles(nodeRoot))
 	if before == 0 {
 		t.Fatalf("PRECONDITION FAILED: magi-%d has no TSS share files under %s, so the share-loss step has no instrument (the host cannot see the keystore, or keygen never persisted a share)", node, nodeRoot)
 	}
@@ -613,7 +614,7 @@ func vfF18DeleteTssKeys(t *testing.T, d *Devnet, node int) (before, after int) {
 	if err != nil {
 		t.Logf("docker rm of magi-%d tss-keys returned %v: %s", node, err, string(out))
 	}
-	after = len(findTSSShareFiles(t, nodeRoot))
+	after = len(vfF18ShareFiles(nodeRoot))
 	if after != 0 {
 		t.Fatalf("PRECONDITION FAILED: magi-%d still has %d TSS share file(s) under %s after the delete (docker output: %s); the share loss did not happen and F18-STUCK would prove nothing",
 			node, after, nodeRoot, string(out))
@@ -628,7 +629,7 @@ func vfF18CountShareHolders(t *testing.T, d *Devnet, nodes []int) []int {
 	var out []int
 	for _, n := range nodes {
 		root := filepath.Join(d.DataDir(), "devnet-data", fmt.Sprintf("data-%d", n))
-		if len(findTSSShareFiles(t, root)) > 0 {
+		if len(vfF18ShareFiles(root)) > 0 {
 			out = append(out, n)
 		}
 	}
@@ -791,4 +792,24 @@ func vfF18WaitSignTicks(t *testing.T, d *Devnet, ctx context.Context, signInterv
 	}
 	h, _ := getHeadBlock(d.HiveRPCEndpoint())
 	t.Logf("F18: WARNING Hive head %d did not reach %d within %v, fewer than %d sign ticks may have fired", h, target, maxWait, ticks)
+}
+
+// vfF18ShareFiles lists the flatfs keystore files (data-N/tss-keys/**/*.data) of one node
+// THROUGH A ROOT CONTAINER. The node writes its data dir as root, so a host-side walk gets
+// "Permission denied" and reports zero shares (run 1 died on exactly that false reading).
+func vfF18ShareFiles(nodeRoot string) []string {
+	out, err := exec.Command("docker", "run", "--rm",
+		"-v", nodeRoot+":/d",
+		"alpine", "sh", "-c", "find /d/tss-keys -type f -name '*.data' 2>/dev/null",
+	).CombinedOutput()
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if strings.HasSuffix(line, ".data") {
+			files = append(files, line)
+		}
+	}
+	return files
 }
