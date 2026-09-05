@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"testing"
@@ -434,6 +435,16 @@ func vfDumpCheckSigDiagnostics(t *testing.T, d *Devnet, ctx context.Context, cid
 			vfCountLogs(d, ctx, n, "BTC keysign refused by output scoping"),
 			vfCountLogs(d, ctx, n, "timeout result"),
 			vfCountLogs(d, ctx, n, "successor key not committed/active"))
+	}
+	// The mechanism lives in the node logs: every line naming the pending key (session
+	// ids, rounds, culprits, timeouts) plus the generic TSS tail, per node.
+	for _, n := range vfAllNodes(d.cfg.Nodes) {
+		if keyId != "" {
+			out, _ := exec.CommandContext(ctx, "bash", "-c",
+				fmt.Sprintf("docker logs %s 2>&1 | grep -F %q | grep -viE 'getCommitmentByHeight|TRACE' | tail -40", d.containerName(n), keyId)).CombinedOutput()
+			t.Logf("  magi-%d log lines naming %s (last 40):\n%s", n, keyId, string(out))
+		}
+		d.dumpTssLogs(ctx, t, n)
 	}
 }
 
