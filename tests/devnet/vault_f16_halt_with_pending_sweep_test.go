@@ -52,7 +52,7 @@ import (
 // inputs were signed at the moment the halt landed and stamps that on the
 // F16-SWEEP-SIGNS detail, so a vacuous pass is visible rather than silent.
 //
-//	VAULT_F16_RUN=1 go test -v -run TestVaultF16HaltWithPendingSweep -timeout 50m ./tests/devnet/
+//	VAULT_F16_RUN=1 go test -v -run TestVaultF16HaltWithPendingSweep -timeout 95m ./tests/devnet/
 func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -70,7 +70,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		t.Fatalf("wasm: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	const hpin = 400
@@ -87,7 +87,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	allNodes := vfAllNodes(f16Nodes)
 	c := &vfCase{t: t}

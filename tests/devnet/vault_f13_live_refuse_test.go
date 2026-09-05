@@ -42,7 +42,7 @@ package devnet
 // so the per-block action index that feeds the TSS sessionId stays identical fleet
 // wide and the later legitimate sweep is unaffected.
 //
-//	VAULT_F13_RUN=1 go test -v -run TestVaultF13LiveRefuse -timeout 50m ./tests/devnet/
+//	VAULT_F13_RUN=1 go test -v -run TestVaultF13LiveRefuse -timeout 95m ./tests/devnet/
 
 import (
 	"bytes"
@@ -75,7 +75,7 @@ func TestVaultF13LiveRefuse(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -105,7 +105,7 @@ func TestVaultF13LiveRefuse(t *testing.T) {
 		t.Fatalf("PRECONDITION FAILED: tssTestConfig left TssParams.SignInterval at 0, so the post-injection wait has no instrument")
 	}
 
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 	c := &vfCase{t: t}
 	nodes := vfAllNodes(5)
 

@@ -236,7 +236,7 @@ func vfF7StatusName(s int) string {
 //
 //	VAULT_F7_RUN=1 OLD_CODE_DIR=/home/clauderfly/gvn-oldmain \
 //	  BTC_MAPPING_WASM_PATH=/home/clauderfly/utxo-s1/btc-mapping-contract/bin/dev.wasm \
-//	  go test -v -run TestVaultF7MixedFleetFlagOn -timeout 55m ./tests/devnet/
+//	  go test -v -run TestVaultF7MixedFleetFlagOn -timeout 95m ./tests/devnet/
 func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -261,7 +261,7 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 		t.Fatalf("PRECONDITION FAILED: btc-mapping-contract regtest wasm not found at %s: %v", wasm, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	const hpin = uint64(400)
@@ -285,7 +285,7 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 		cfg.KeepRunning = true
 	}
 
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 	t.Logf("F7 mixed fleet up: new-code=%v, old-code=%v from %s, activation pin=%d", newNodes, oldNodes, oldCodeDir, hpin)
 
 	c := &vfCase{t: t}

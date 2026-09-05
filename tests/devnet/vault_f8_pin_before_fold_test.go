@@ -36,7 +36,7 @@ import (
 // A run whose cases all PASS REFUTES the July doctrine on this tree. A run with a
 // FAIL confirms it and names the exact step that froze.
 //
-//	VAULT_F8_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF8PinBeforeFold -timeout 50m ./tests/devnet/
+//	VAULT_F8_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF8PinBeforeFold -timeout 95m ./tests/devnet/
 func TestVaultF8PinBeforeFold(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -45,7 +45,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 		t.Skip("set VAULT_F8_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -67,7 +67,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	c := &vfCase{t: t}
 

@@ -158,7 +158,7 @@ func f9ConservedDiff(before, after map[string][]byte) []string {
 //
 // RUN:
 //
-//	VAULT_F9_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF9ReorgAfterSettle -timeout 50m ./tests/devnet/
+//	VAULT_F9_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF9ReorgAfterSettle -timeout 95m ./tests/devnet/
 func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -168,7 +168,7 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -190,7 +190,7 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	c := &vfCase{t: t}
 

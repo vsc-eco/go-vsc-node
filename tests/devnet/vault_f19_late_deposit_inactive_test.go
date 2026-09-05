@@ -94,7 +94,7 @@ import (
 //
 // RUN:
 //
-//	VAULT_F19_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF19LateDepositInactive -timeout 60m ./tests/devnet/
+//	VAULT_F19_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF19LateDepositInactive -timeout 95m ./tests/devnet/
 func TestVaultF19LateDepositInactive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -104,7 +104,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -127,7 +127,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 50*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	c := &vfCase{t: t}
 

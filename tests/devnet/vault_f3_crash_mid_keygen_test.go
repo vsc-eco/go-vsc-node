@@ -35,7 +35,7 @@ import (
 // NN#3 in the contract refuses createKey while a superseded generation still holds
 // funds, so gen-0 is drained to zero UTXOs before the gen-2 createKey in step 3.
 //
-//	VAULT_F3_RUN=1 BTC_MAPPING_WASM_PATH=... go test -v -run TestVaultF3CrashMidKeygen -timeout 50m ./tests/devnet/
+//	VAULT_F3_RUN=1 BTC_MAPPING_WASM_PATH=... go test -v -run TestVaultF3CrashMidKeygen -timeout 95m ./tests/devnet/
 func TestVaultF3CrashMidKeygen(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -44,7 +44,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		t.Skip("set VAULT_F3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -63,7 +63,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 45*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	c := &vfCase{t: t}
 

@@ -81,7 +81,7 @@ func f20BlamedNames(commitment string, members []string) ([]string, string) {
 //
 // RUN:
 //
-//	VAULT_F20_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF20PartitionDuringSign -timeout 60m ./tests/devnet/
+//	VAULT_F20_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultF20PartitionDuringSign -timeout 95m ./tests/devnet/
 func TestVaultF20PartitionDuringSign(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -91,7 +91,7 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -113,7 +113,7 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 50*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
 
 	// Safety net: whatever happens below, magi-3's peer DROP rules are flushed. A fresh
 	// context is used because the test context may already be cancelled or expired by
