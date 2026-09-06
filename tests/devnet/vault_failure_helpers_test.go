@@ -849,15 +849,28 @@ func TestVfSlowReshareConfigIsNotRecursive(t *testing.T) {
 // data dirs are root-owned, so a host-side os.WriteFile gets "permission denied"
 // (F22 run 1). rel is relative to dir and must not start with a slash.
 func vfWriteNodeFileAsRoot(dir, rel string, data []byte) error {
-	cmd := exec.Command("docker", "run", "--rm", "-i",
-		"-v", dir+":/d",
-		"alpine", "sh", "-c", "cat > /d/"+rel)
-	cmd.Stdin = bytes.NewReader(data)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("root write of %s: %v: %s", rel, err, string(out))
+	// H-36: the docker run is bounded by a context deadline and retried. An un-timed
+	// CombinedOutput here hung F22 for ~49 minutes on a contended docker daemon (goroutine
+	// dump: blocked in Cmd.Wait on the second misconf node's write), and the whole test
+	// sat until the 95-minute go-test limit. A bounded write fails fast so the caller sees
+	// a real error instead of a silent hang; a transient daemon stall is absorbed by the
+	// retry.
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		cctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		cmd := exec.CommandContext(cctx, "docker", "run", "--rm", "-i",
+			"-v", dir+":/d",
+			"alpine", "sh", "-c", "cat > /d/"+rel)
+		cmd.Stdin = bytes.NewReader(data)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("root write of %s (attempt %d): %v: %s", rel, attempt, err, string(out))
+		time.Sleep(3 * time.Second)
 	}
-	return nil
+	return lastErr
 }
 
 // vfUnstakeVerdict broadcasts a 1.000 consensus_unstake for witness `node`, waits up to
