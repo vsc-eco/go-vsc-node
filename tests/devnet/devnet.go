@@ -229,11 +229,11 @@ func (d *Devnet) Start(ctx context.Context) error {
 	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute); werr != nil {
 		if got == 0 {
 			d.dumpBootAbortDiagnostics(ctx)
-			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m (block %d): %w", d.cfg.GenesisNode, bh, werr)
+			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m (highest stored block %d): %w", d.cfg.GenesisNode, bh, werr)
 		}
 		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
 	} else {
-		log.Printf("[devnet] %d witnesses registered, genesis node at block %d; forming genesis election", got, bh)
+		log.Printf("[devnet] %d witnesses registered, genesis node highest stored block %d; forming genesis election", got, bh)
 	}
 
 	// Step 7: genesis election

@@ -180,6 +180,55 @@ func (d *Devnet) seedProcessedUnderVersion(ctx context.Context, node int, major,
 // witness registration in the given node's DB. Every such record carries a
 // consensus key (SetWitnessUpdate rejects records without one), so this is the
 // pool genesis-elector draws the genesis committee from.
+// getHighestStoredBlock mirrors hive_blocks.GetHighestBlock, the read
+// genesis-elector uses as "head": the highest Hive block the streamer has stored,
+// independent of the replay checkpoint (H-33). 0 when nothing is stored yet.
+func (d *Devnet) getHighestStoredBlock(ctx context.Context, node int) (uint64, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Disconnect(ctx)
+	coll := client.Database(d.nodeDbName(node)).Collection("hive_blocks")
+	var result struct {
+		Block struct {
+			BlockNumber uint64 `bson:"block_number"`
+		} `bson:"block"`
+	}
+	err = coll.FindOne(ctx, bson.M{"type": "hive_block"}, options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return result.Block.BlockNumber, nil
+}
+
+// maxWitnessRegistrationHeight returns the highest registration height in the
+// node's witnesses collection (0 when empty). genesis-elector only seats
+// witnesses registered strictly below its head, so the boot gate needs the
+// stored head to be past this (H-33).
+func (d *Devnet) maxWitnessRegistrationHeight(ctx context.Context, node int) (uint64, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Disconnect(ctx)
+	coll := client.Database(d.nodeDbName(node)).Collection("witnesses")
+	var result struct {
+		Height uint64 `bson:"height"`
+	}
+	err = coll.FindOne(ctx, bson.M{"account": bson.M{"$ne": ""}}, options.FindOne().SetSort(bson.D{{Key: "height", Value: -1}})).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return result.Height, nil
+}
+
 func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, error) {
 	client, err := d.mongoClient(ctx)
 	if err != nil {
@@ -195,7 +244,20 @@ func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, e
 }
 
 // waitForWitnessRegistrations polls the node's DB until at least want witnesses
-// are registered AND the node has processed past minHeight, or timeout.
+// are registered AND the node's highest STORED Hive block is past minHeight and
+// strictly past every registration height, or timeout.
+//
+// INSTRUMENT (H-33): the gate used to read hive_blocks metadata
+// last_processed_block. That number is a replay checkpoint, not the processed
+// height: StateEngine.SaveBlockHeight pins it at firstTxHeight-1 while any tx
+// output is pending and no VSC block exists yet, i.e. from the first announcement
+// until the genesis election. So whenever the announcements landed below block
+// 30 the gate could never be met and every boot burned the full 12 minutes
+// before "proceeding anyway" (F27, F1, F5, GenesisV2Fix), while the nodes were
+// in fact processing (their witnesses collection kept filling from later
+// blocks). genesis-elector itself uses GetHighestBlock (highest stored block)
+// and GetWitnessesAtBlockHeight(head) (registration height strictly below it),
+// so the gate now mirrors exactly those two reads.
 //
 // The minHeight gate is essential: genesis-elector includes only witnesses whose
 // registration height is strictly < the node's highest block. Node self-
@@ -209,27 +271,31 @@ func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, e
 func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int, minHeight uint64, timeout time.Duration) (int, uint64, error) {
 	deadline := time.Now().Add(timeout)
 	var lastN int
-	var lastBh uint64
-	var lastErrN, lastErrB error
+	var lastBh, lastReg uint64
+	var lastErrN, lastErrB, lastErrR error
 	for {
 		n, errN := d.CountRegisteredWitnesses(ctx, node)
-		bh, errB := d.getLastProcessedBlock(ctx, node)
-		lastErrN, lastErrB = errN, errB
+		bh, errB := d.getHighestStoredBlock(ctx, node)
+		reg, errR := d.maxWitnessRegistrationHeight(ctx, node)
+		lastErrN, lastErrB, lastErrR = errN, errB, errR
 		if errN == nil {
 			lastN = n
 		}
 		if errB == nil {
 			lastBh = bh
 		}
-		if errN == nil && errB == nil && n >= want && bh >= minHeight {
+		if errR == nil {
+			lastReg = reg
+		}
+		if errN == nil && errB == nil && errR == nil && n >= want && bh >= minHeight && bh > reg {
 			return n, bh, nil
 		}
 		if time.Now().After(deadline) {
 			// The last read errors are part of the reading: a stuck count can be a
 			// stuck node OR a failing query, and the caller cannot tell them apart
 			// otherwise (H-32).
-			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, block %d/%d (last reads: witnesses err=%v, block err=%v)",
-				timeout, lastN, want, lastBh, minHeight, lastErrN, lastErrB)
+			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, highest stored block %d/%d, max registration height %d (last reads: witnesses err=%v, block err=%v, reg err=%v)",
+				timeout, lastN, want, lastBh, minHeight, lastReg, lastErrN, lastErrB, lastErrR)
 		}
 		select {
 		case <-ctx.Done():
