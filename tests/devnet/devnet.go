@@ -223,7 +223,13 @@ func (d *Devnet) Start(ctx context.Context) error {
 	want := d.cfg.Nodes
 	const genesisMinHeight = 30
 	log.Printf("[devnet] waiting for >=%d witnesses and block >=%d before genesis election...", want, genesisMinHeight)
-	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 5*time.Minute); werr != nil {
+	// 12 minutes: under two concurrent devnets the witness announcements can take longer
+	// than 5 to be indexed. With ZERO registrations the elector panics "No members
+	// found" (F18 run 2), so that case aborts here with the count instead.
+	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute); werr != nil {
+		if got == 0 {
+			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m (block %d): %w", d.cfg.GenesisNode, bh, werr)
+		}
 		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
 	} else {
 		log.Printf("[devnet] %d witnesses registered, genesis node at block %d; forming genesis election", got, bh)
