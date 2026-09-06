@@ -45,11 +45,12 @@ import (
 //  7. F10-BOND: a committee member's consensus_unstake is still refused (bond lock).
 //  8. F10-IDENT: all five nodes hold byte-identical vault state.
 //
-// Header relay: regtest addBlocks accepts any batch size (IsTestnet includes Regtest),
-// so headers are pulled in bulk with one shell loop inside the bitcoind container and
-// submitted VAULT_F10_BATCH (default 40) per call, fire-and-forget, two calls per Hive
-// block; a wave that makes no progress halves the batch (gas). The contract's own
-// height is the only progress instrument.
+// Crossing the window: run 1 showed that relaying 4,658 headers from the single
+// oracle-eligible account exhausts its resource credits after ~32 calls. The test now
+// uses the contract's own owner route (testnet/regtest only): initPruning pins the
+// prune floor at the sweep height, seedBlocks re-seeds FORWARD past height+retention,
+// and admin prune calls delete the old headers, which is the state 32 days of natural
+// relaying leave on mainnet. The bulk relay helper stays in the file for reuse.
 //
 //	VAULT_F10_RUN=1 go test -v -run TestVaultF10RetentionPrunedSweep -timeout 95m ./tests/devnet/
 func TestVaultF10RetentionPrunedSweep(t *testing.T) {
@@ -148,26 +149,46 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	}
 
 	// The outage: Bitcoin keeps going for longer than the contract's retention window.
+	// Run 1 tried to RELAY all 4,658 headers through addBlocks from the owner account and
+	// stalled after 32 calls (the caller's resource credits), then choked the devnet with
+	// the retries. The contract offers a cheaper, legitimate route on testnet/regtest:
+	// SeedBlocks re-seeds FORWARD for the owner (main.go: HandleSeedBlocks(params,
+	// IsTestnet)), and InitPruning pins the prune floor. With the floor pinned at the
+	// sweep height and the chain re-seeded past height+retention, the next prune calls
+	// delete the sweep's header exactly as 32 days of natural relaying would. Mainnet has
+	// no re-seed; the pruning there is the slow path, the terminal state is identical.
 	target := hMined + retention + margin
 	if _, err := d.MineBlocks(ctx, int(target-hMined)); err != nil {
 		t.Fatalf("PRECONDITION FAILED: mining %d regtest blocks: %v", target-hMined, err)
 	}
-	calls, dur, reached := f10RelayTo(t, d, ctx, 1, cid, target, batch)
-	lastH := contractLastHeight(t, d, ctx, cid)
+	relayStart := time.Now()
+	ip := vstatus(t, d, ctx, 1, cid, "initPruning", fmt.Sprintf("%d", hMined))
+	hdrT, herr := btcBlockHeaderHex(ctx, d, target)
+	if herr != nil {
+		t.Fatalf("PRECONDITION FAILED: header at %d: %v", target, herr)
+	}
+	rs := vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdrT, target))
+	calls := 2
+	lastH := uint64(0)
+	for i := 0; i < 12 && lastH < target; i++ {
+		time.Sleep(10 * time.Second)
+		lastH = contractLastHeight(t, d, ctx, cid)
+	}
+	reached := lastH >= target
 	c.rec("F10-RELAY", "instrument: the contract's last height passed the sweep height by more than the retention window",
 		reached && lastH >= hMined+retention+margin,
-		fmt.Sprintf("contract_last=%d target=%d (mined %d + retention %d + margin %d) addBlocks_calls=%d relay_time=%s batch=%d", lastH, target, hMined, retention, margin, calls, dur.Round(time.Second), batch))
+		fmt.Sprintf("route=initPruning(%d)=%s + owner re-seed at %d=%s; contract_last=%d target=%d (mined %d + retention %d + margin %d) calls=%d time=%s", hMined, ip, target, rs, lastH, target, hMined, retention, margin, calls, time.Since(relayStart).Round(time.Second)))
 	if !reached {
-		t.Errorf("relay never reached %d (contract last=%d); the retention window was not crossed so nothing below proves pruning", target, lastH)
+		t.Errorf("the re-seed never landed (contract last=%d, target %d); the retention window was not crossed so nothing below proves pruning", lastH, target)
 		finish()
 		return
 	}
 
-	// Prune is 50 headers per addBlocks call; drive the admin prune until the sweep
-	// header is gone (bounded), then read it on two nodes with the tip as the control.
+	// Prune is 50 headers per call; drive the admin prune until the sweep header is
+	// gone (bounded), then read it on two nodes with the tip as the control.
 	pruneCalls := 0
 	pruneStatus := ""
-	for i := 0; i < 6 && f10HeaderPresent(d, ctx, 2, cid, hMined); i++ {
+	for i := 0; i < 8 && f10HeaderPresent(d, ctx, 2, cid, hMined); i++ {
 		pruneStatus = vstatus(t, d, ctx, 1, cid, "prune", "")
 		pruneCalls++
 		time.Sleep(5 * time.Second)

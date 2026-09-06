@@ -10,18 +10,29 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// TestVaultWriteOffDust proves the deadlock ESCAPE HATCH end-to-end: a retiring
-// generation whose only residual is provably un-sweepable (a sub-dust UTXO that
-// cannot cover its own miner fee) can be force-retired via writeOffDust, so the
-// drain reaches zero and the generation retires. Without this, that residual
-// would pin the generation "funded" forever and rotation would stall permanently.
+// TestVaultWriteOffDust, rewritten 2026-09-06 as the VR2-11 on/off measurement.
 //
-// The sub-dust deposit is credited because the min-deposit floor is gated on
-// hasSupersededGen — it engages only AFTER the first rotation — so a pre-rotation
-// deposit below the floor is credited to gen-0, then becomes an un-sweepable
-// residual once gen-0 is superseded. This is exactly the real mainnet path.
+// The July version deposited 600 sats expecting the min-deposit floor to be OFF before
+// the first rotation. PR #29's contract enforces MinDepositSats = 1,000 unconditionally
+// (Stage7 MD03-EDGE-07), and with that floor a residual is ALWAYS sweepable at the
+// minimum fee (1,000 - ~144 = 856 > 546), so isResidualUnsweepableAtMinFee can never be
+// true on a fresh v2 deploy: the write-off positive path is unreachable by design.
 //
-//	VAULT_WOD_RUN=1 go test -v -run TestVaultWriteOffDust -timeout 42m ./tests/devnet/
+// What IS reachable is worse. The sweep builder defers a tranche when the fee at the
+// CURRENT oracle rate exceeds half its value (migration.go:209), while writeOffDust judges
+// dust at the MINIMUM rate (dust_writeoff.go:59). A 1,000-sat residual is therefore
+// deferred whenever fees are above ~3.5 sat/vB AND refused by write-off, so the retiring
+// generation stays "funded": createKey (NN#3) and retireVault refuse, bonds stay locked,
+// until fees fall. This test proves both halves:
+//
+//	WOD-00  the 600-sat deposit is refused (floor unconditional); 1,000 sats is credited.
+//	WOD-01  at latest_fee 10 the sweep is DEFERRED (migrateVault not OK, residual stays).
+//	WOD-02  writeOffDust REFUSES the same residual (not dust at the minimum rate).
+//	WOD-03  retireVault leaves gen-0 Retiring and createKey is refused: the deadlock.
+//	WOD-04  one addBlocks with latest_fee 1 and the same sweep succeeds and settles.
+//	WOD-05  retireVault then moves gen-0 to Inactive.
+//
+//	VAULT_WOD_RUN=1 go test -v -run TestVaultWriteOffDust -timeout 45m ./tests/devnet/
 func TestVaultWriteOffDust(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -91,11 +102,20 @@ func TestVaultWriteOffDust(t *testing.T) {
 
 	// 600 sats: at the fixed 1 sat/vByte floor a 1-input sweep costs ~144 sat, leaving
 	// 456 <= the 546 dustThreshold — provably un-sweepable at ANY fee rate.
-	const dustSats = 600
-	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, dustSats, seedH)
-	n0 := genUtxoCount(t, d, ctx, cid, 0)
-	rec("WOD-00", "sub-dust deposit credited to gen-0 (floor off pre-rotation)", n0 == 1,
-		fmt.Sprintf("gen-0 holds %d UTXO(s), balance=%d", n0, balanceSats(t, d, ctx, cid, owner)))
+	// The floor is unconditional: a 600-sat deposit maps but is not credited.
+	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 600, seedH)
+	time.Sleep(10 * time.Second)
+	nSub := genUtxoCount(t, d, ctx, cid, 0)
+	// The smallest accepted deposit is the residual under test.
+	const residualSats = 1000
+	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, residualSats, contractLastHeight(t, d, ctx, cid))
+	n0 := 0
+	for i := 0; i < 12 && n0 == 0; i++ {
+		time.Sleep(10 * time.Second)
+		n0 = genUtxoCount(t, d, ctx, cid, 0)
+	}
+	rec("WOD-00", "the 600-sat deposit is refused (min-deposit floor is unconditional) and the 1,000-sat minimum is credited", nSub == 0 && n0 == 1,
+		fmt.Sprintf("after 600 sats gen-0 held %d UTXO(s); after 1,000 sats gen-0 holds %d, balance=%d", nSub, n0, balanceSats(t, d, ctx, cid, owner)))
 	if n0 != 1 {
 		t.Logf("WOD SUMMARY: %d PASS %d FAIL", pass, fail)
 		return
@@ -133,43 +153,51 @@ func TestVaultWriteOffDust(t *testing.T) {
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 
 	// ── WOD-01: migrateVault must REFUSE the all-dust residual (uneconomic). ──
+	// WOD-01: at the devnet's relayed rate (latest_fee 10) the 1,000-sat tranche is
+	// DEFERRED: fee ~1,410 sats > 500 (half the value).
 	mig := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
-	rec("WOD-01", "migrateVault refuses the un-sweepable dust residual", !isOK(mig), "status="+mig)
-	stillDust := genUtxoCount(t, d, ctx, cid, 0)
-	rec("WOD-01b", "the dust residual is still on gen-0 after the refused sweep", stillDust == 1,
-		fmt.Sprintf("gen-0 holds %d UTXO(s)", stillDust))
+	time.Sleep(10 * time.Second)
+	stillThere := genUtxoCount(t, d, ctx, cid, 0)
+	rec("WOD-01", "at latest_fee 10 the sweep of the 1,000-sat residual is DEFERRED (fee > half the tranche) and the residual stays on gen-0", !isOK(mig) && stillThere == 1,
+		fmt.Sprintf("migrateVault status=%s (want refused), gen-0 holds %d UTXO(s)", mig, stillThere))
 
-	// ── WOD-02: writeOffDust force-retires the residual. ──
+	// WOD-02: writeOffDust judges at the MINIMUM rate, where 1,000 sats IS sweepable, so it refuses.
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
-	rec("WOD-02", "writeOffDust accepted", isOK(wod), "status="+wod)
+	time.Sleep(10 * time.Second)
+	afterWod := genUtxoCount(t, d, ctx, cid, 0)
+	rec("WOD-02", "writeOffDust REFUSES the same residual (sweepable at the minimum rate: 1,000 - ~144 > 546)", !isOK(wod) && afterWod == 1,
+		fmt.Sprintf("writeOffDust status=%s (want refused), gen-0 holds %d UTXO(s)", wod, afterWod))
 
-	// ── WOD-03: gen-0 now holds NOTHING (the escape hatch actually drained it). Poll:
-	// the writeOffDust output commits a beat after the tx confirms, and genUtxoCount
-	// reads a possibly-behind node — a single read races the commit (a unit test with the
-	// identical 600-sat/BaseFeeRate=10 scenario proves the contract deletes it). ──
-	after := 1
-	for i := 0; i < 8; i++ {
-		after = genUtxoCount(t, d, ctx, cid, 0)
-		if after == 0 {
-			break
-		}
-		time.Sleep(10 * time.Second)
-	}
-	rec("WOD-03", "gen-0 drained to zero via writeOffDust", after == 0,
-		fmt.Sprintf("gen-0 holds %d UTXO(s)", after))
+	// WOD-03: nothing else can move it either: the deadlock.
+	rv := vstatus(t, d, ctx, 1, cid, "retireVault", "")
+	ck := vstatus(t, d, ctx, 1, cid, "createKey", "")
+	time.Sleep(10 * time.Second)
+	st := vaultStatusOf(t, d, ctx, cid, 0)
+	gen2 := vaultStatusOf(t, d, ctx, cid, 2)
+	rec("WOD-03", "retireVault leaves gen-0 Retiring and createKey is refused (NN#3): a 1,000-sat residual freezes the rotation while fees are high",
+		st == 2 && !isOK(ck) && gen2 < 0,
+		fmt.Sprintf("retireVault=%s gen-0 status=%s (want Retiring), createKey=%s (want refused), gen-2 status=%d (want absent)", rv, statusStr(st), ck, gen2))
 
-	// ── WOD-04: with the residual gone, retire advances gen-0 to Inactive. ──
+	// WOD-04 (on/off): drop the relayed fee rate to 1 sat/vB and the SAME sweep goes through.
+	h, _ := d.MineBlocks(ctx, 1)
+	hx, _ := btcBlockHeaderHex(ctx, d, h)
+	ab := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":1}`, hx))
+	migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
+	after := vfWaitGenBelow(t, d, ctx, cid, 0, 1, 3*time.Minute)
+	rec("WOD-04", "with latest_fee 1 the identical residual sweeps and settles (the freeze is purely the fee-rate mismatch between the two gates)", isOK(ab) && after == 0,
+		fmt.Sprintf("addBlocks(latest_fee=1)=%s, gen-0 holds %d UTXO(s) after the sweep", ab, after))
+
 	if after == 0 {
 		vstatus(t, d, ctx, 1, cid, "retireVault", "")
-		st := -1
+		st2 := -1
 		for i := 0; i < 8; i++ {
-			st = vaultStatusOf(t, d, ctx, cid, 0)
-			if st == 4 {
+			st2 = vaultStatusOf(t, d, ctx, cid, 0)
+			if st2 == 4 {
 				break
 			}
 			time.Sleep(10 * time.Second)
 		}
-		rec("WOD-04", "gen-0 retired (Inactive) once the dust was written off", st == 4, "gen-0 status="+statusStr(st))
+		rec("WOD-05", "gen-0 retires (Inactive) once the residual is gone", st2 == 4, "gen-0 status="+statusStr(st2))
 	}
 
 	t.Logf("WOD SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
