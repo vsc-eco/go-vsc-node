@@ -169,12 +169,17 @@ func TestVaultWriteOffDust(t *testing.T) {
 	rec("WOD-01", "at latest_fee 10 the sweep of the 1,000-sat residual is DEFERRED (fee > half the tranche) and the residual stays on gen-0", !isOK(mig) && stillThere == 1,
 		fmt.Sprintf("migrateVault status=%s (want refused), gen-0 holds %d UTXO(s)", mig, stillThere))
 
-	// WOD-02: writeOffDust judges at the MINIMUM rate, where 1,000 sats IS sweepable, so it refuses.
+	// WOD-02: writeOffDust judges at the MINIMUM rate, where 1,000 sats IS sweepable, so it
+	// is a NO-OP: the call succeeds ("nothing to write off") and LEAVES the residual — it
+	// never destroys a residual that could still be swept. The signal is the EFFECT (the
+	// residual stays), NOT the call status: writeOffDust does not FAIL when nothing
+	// qualifies, so the earlier !isOK(wod) assertion was wrong (run 4: status CONFIRMED,
+	// residual correctly left in place).
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
 	time.Sleep(10 * time.Second)
 	afterWod := genUtxoCount(t, d, ctx, cid, 0)
-	rec("WOD-02", "writeOffDust REFUSES the same residual (sweepable at the minimum rate: 1,000 - ~144 > 546)", !isOK(wod) && afterWod == 1,
-		fmt.Sprintf("writeOffDust status=%s (want refused), gen-0 holds %d UTXO(s)", wod, afterWod))
+	rec("WOD-02", "writeOffDust does NOT clear the 1,000-sat residual (sweepable at the minimum rate, so write-off leaves it): the residual stays on gen-0 and the deadlock persists", afterWod == 1,
+		fmt.Sprintf("writeOffDust status=%s (a no-op: nothing to write off at the minimum rate), gen-0 holds %d UTXO(s) (want 1, still stuck)", wod, afterWod))
 
 	// WOD-03: nothing else can move it either: the deadlock.
 	rv := vstatus(t, d, ctx, 1, cid, "retireVault", "")
