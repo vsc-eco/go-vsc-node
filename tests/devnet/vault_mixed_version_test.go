@@ -140,7 +140,10 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 	// until the authority is live.
 	payload, _ := json.Marshal(map[string]any{"active": true, "keyId": cid + "-main"})
 	var haltTx string
-	deadline := time.Now().Add(10 * time.Minute)
+	// Run 2 on a main/develop mixed fleet never saw the vsc.gateway authority go live in
+	// 10 minutes (30 retries) while the all-new TssHalt fleet needed none: give it 25 so
+	// the verdict separates "slow" from "never" (VR2-13 candidate).
+	deadline := time.Now().Add(25 * time.Minute)
 	for time.Now().Before(deadline) {
 		haltTx, err = broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), signWith)
 		if err == nil {
