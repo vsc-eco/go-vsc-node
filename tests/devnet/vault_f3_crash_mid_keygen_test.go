@@ -181,11 +181,21 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	// Each node flips the row to active when IT ingests the commitment's Hive block, so
 	// a lagging node is polled for up to 3 minutes before being called divergent (F1 run
 	// 1 recorded a false divergence from a single early read).
+	// A pending key is resharshared every epoch before activation (VR2-10): the
+	// Epoch advances on all nodes at once while the PublicKey stays byte-identical.
+	// So the integrity invariant is "every node holds the registered pubkey
+	// (primary2) AND every node is at the SAME epoch as every other node", NOT
+	// equality to the epoch captured at keygen time (kd2.Epoch is already stale by
+	// the time the fleet is polled; run 3 read e10 fleet-wide against a kd2.Epoch of
+	// 5 and mis-scored an identical fleet as a fork).
+	_ = kd2
 	sameKey := false
 	rows := ""
 	for attempt := 0; attempt < 18 && !sameKey; attempt++ {
 		sameKey = true
 		rows = ""
+		var refEpoch uint64
+		haveRef := false
 		for _, n := range vfAllNodes(5) {
 			docs, e := d.GetTssKeys(ctx, n, bson.M{"id": mainv2})
 			if e != nil || len(docs) == 0 {
@@ -194,7 +204,11 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 				continue
 			}
 			rows += fmt.Sprintf(" magi-%d=%s/e%d/%s", n, f3TruncHex(docs[0].PublicKey), docs[0].Epoch, docs[0].Status)
-			if docs[0].PublicKey != primary2 || docs[0].Epoch != kd2.Epoch {
+			if !haveRef {
+				refEpoch = docs[0].Epoch
+				haveRef = true
+			}
+			if docs[0].PublicKey != primary2 || docs[0].Epoch != refEpoch {
 				sameKey = false
 			}
 		}
@@ -203,6 +217,22 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		}
 	}
 
+	// F3-SHARE is the core claim of a crash-mid-keygen test: the gen-2 commitment did
+	// not fork across the crash. Proven by byte-identity above, independent of whether
+	// gen-2 can be activated on this cadence.
+	c.rec("F3-SHARE", "gen-2 commitment is byte-identical on all 5 nodes after the mid-keygen crash (same pubkey fleet-wide, same epoch fleet-wide; a pending key reshares but never forks)",
+		sameKey,
+		fmt.Sprintf("reference pubkey=%s (= registered primary2); the pending key reshares every epoch (VR2-10) so the epoch advances uniformly, it is NOT pinned to the keygen-time epoch |%s", f3TruncHex(primary2), rows))
+
+	// F3-SIGN is the stronger, functional proof: the crashed node's gen-2 share
+	// actually signs (activate gen-2, then drain gen-1 into it). On the 20-block
+	// devnet cadence this test REQUIRES for its crash timing, the pending gen-2
+	// key's reshare locks the BRK-2 check-signature (VR2-09), so activation cannot
+	// land and this case is RED BY DESIGN here — it is the same finding, not a new
+	// one. The functional "later generation activates and drains" is proven on the
+	// slow cadence by Stage4 and F5; and the cold-restarted magi-3's gen-1 share
+	// already signed the gen-0->gen-1 migration sweep earlier in THIS run
+	// (VL-GP-01/GP-06 above), so the crash did not corrupt that share.
 	gen1Left := -1
 	if activated2 {
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
@@ -213,9 +243,9 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		}
 		gen1Left = genUtxoCount(t, d, ctx, cid, 1)
 	}
-	c.rec("F3-SHARE", "gen-2 share identical on all 5 nodes and the crashed node's fleet signs the gen-1 sweep with it",
-		activated2 && sameKey && gen1Left == 0,
-		fmt.Sprintf("activated=%v sameKey=%v gen-1 UTXOs left=%d (want 0) |%s", activated2, sameKey, gen1Left, rows))
+	c.rec("F3-SIGN", "the crashed node's fleet activates gen-2 and drains gen-1 with it (functional share proof; RED BY DESIGN on the 20-block cadence = VR2-09)",
+		activated2 && gen1Left == 0,
+		fmt.Sprintf("activated=%v gen-1 UTXOs left=%d (want 0); gen-2 activation is gated by VR2-09 on the fast cadence F3 needs; functional later-gen activate+drain is proven by Stage4/F5, and magi-3's gen-1 share already signed the migration sweep above |%s", activated2, gen1Left, rows))
 
 	// -----------------------------------------------------------------
 	// Step 5: F3-IDENT across all 5 nodes, all of them up.

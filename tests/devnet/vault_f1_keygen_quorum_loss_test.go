@@ -163,6 +163,12 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 		for attempt := 0; attempt < 18 && !identical; attempt++ {
 			identical = true
 			detail = ""
+			// Compare each node's epoch to the FLEET (first node), not to kd1.Epoch:
+			// a pending key reshares every epoch (VR2-10), advancing the epoch on all
+			// nodes at once while the pubkey stays identical, so pinning to the
+			// keygen-time epoch can mis-score an identical fleet as a fork (see F3).
+			var refEpoch uint64
+			haveRef := false
 			for _, n := range vfAllNodes(5) {
 				docs, err := d.GetTssKeys(ctx, n, bson.M{"id": keyId1})
 				if err != nil || len(docs) == 0 {
@@ -171,7 +177,11 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 					continue
 				}
 				detail += fmt.Sprintf(" magi-%d=(pk=%s,epoch=%d,status=%s)", n, docs[0].PublicKey, docs[0].Epoch, docs[0].Status)
-				if docs[0].PublicKey != primary1 || docs[0].Epoch != kd1.Epoch {
+				if !haveRef {
+					refEpoch = docs[0].Epoch
+					haveRef = true
+				}
+				if docs[0].PublicKey != primary1 || docs[0].Epoch != refEpoch {
 					identical = false
 				}
 			}
