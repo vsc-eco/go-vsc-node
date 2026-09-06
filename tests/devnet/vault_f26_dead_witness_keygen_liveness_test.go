@@ -155,7 +155,15 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 		vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regen finish
 		activated = vfRegisterAndActivate(t, d, ctx, cid, primary1, 20)
 	}
+	// Poll the vault status: activateKey CONFIRMED (on magi-1) reflects as gen-1 vault
+	// status=Active on magi-2 a few blocks later; run 1 read it immediately as Pending and
+	// false-failed, while F26-MIGRATES then drained gen-0 into gen-1 (which requires it
+	// Active), proving it had activated. Poll up to 3 min.
 	gen1Stat := vfVaultStatusOn(d, ctx, 2, cid, gen1)
+	for i := 0; i < 18 && gen1Stat != 1; i++ {
+		time.Sleep(10 * time.Second)
+		gen1Stat = vfVaultStatusOn(d, ctx, 2, cid, gen1)
+	}
 	c.rec("F26-ACTIVATES", "the key generated with one witness down is USABLE: it activates (BRK-2 check-signature signed by the 4 live parties)",
 		activated && gen1Stat == 1,
 		fmt.Sprintf("gen-%d vault status=%d (1=Active) with magi-%d down", gen1, gen1Stat, dead))
