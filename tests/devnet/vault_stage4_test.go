@@ -269,7 +269,10 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		return
 	}
 	var txid string
-	for i := 0; i < 20 && txid == ""; i++ {
+	// Up to 3 minutes: the call is CONFIRMED on the calling node before magi-2 (the
+	// reading node) has applied it, and under two-lane load that lag exceeded the old
+	// 60 s window (F3 run 1 recorded a false "no sweep appeared").
+	for i := 0; i < 60 && txid == ""; i++ {
 		time.Sleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
@@ -279,7 +282,12 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		}
 	}
 	if txid == "" {
-		t.Errorf("CASE VL-GP-06 FAIL — no migration sweep pending spend appeared")
+		// Name the cause: a CONFIRMED migrateVault that builds nothing means the
+		// contract answered "nothing to migrate" (no selectable input), so show what the
+		// registry holds and which spends are already pending.
+		vfDumpRegistry(t, d, ctx, 2, cid, "after a CONFIRMED migrateVault that produced no sweep")
+		t.Logf("pending spend ids (magi-2): %v", txSpendIds(t, d, ctx, cid))
+		t.Errorf("CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
 		return
 	}
 	t.Logf("migration sweep txid=%s (retiring gen %s)", txid, retiringKeyId)

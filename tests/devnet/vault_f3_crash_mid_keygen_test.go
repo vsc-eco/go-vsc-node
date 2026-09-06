@@ -207,6 +207,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	if activated2 {
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
 		for i := 0; i < 6 && genUtxoCount(t, d, ctx, cid, 1) != 0; i++ {
+			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("before gen-1 drain tranche %d", i+1))
 			migrateAndSettle(t, d, ctx, cid, mainv1, primary2, backupPubKeyG)
 			fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
 		}
