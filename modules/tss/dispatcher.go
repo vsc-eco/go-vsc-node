@@ -1728,7 +1728,13 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
 		dispatcher.tssMgr.GeneratePreParams()
-		preParams := <-dispatcher.tssMgr.preParams
+		// VR2-18: bounded. A bare receive here blocked forever on an empty/failed
+		// pool while holding tssMgr.lock, silently freezing this node's entire TSS
+		// participation until restart.
+		preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+		if ppErr != nil {
+			return ppErr
+		}
 		parameters := btss.NewParameters(btss.S256(), p2pCtx, myParty, pl, threshold)
 		applySessionNonce(parameters, dispatcher.sessionId)
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)

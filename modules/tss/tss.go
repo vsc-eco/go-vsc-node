@@ -369,14 +369,76 @@ func (tssMgr *TssManager) Receive() {}
 // The timeout is configurable via TssParams.PreParamsTimeout (defaults to 1
 // minute if unset). In devnet/CI environments with many concurrent nodes,
 // a longer timeout (e.g. 10 minutes) is recommended.
+// preParamsTimeout is the network's safe-prime generation budget, with the
+// documented 1-minute fallback when unset. VR2-18: the generator and the CONSUMER
+// must share one value, or a consumer could give up while a legitimate generation
+// is still running (or wait far past the point one could still arrive).
+//
+// NOTE (open, not closed by this change): PreParamsTimeout is currently unset on
+// every network, so this returns 1 minute everywhere, while safe-prime generation
+// is documented as "15 seconds on a fast machine to several minutes on a loaded
+// server" and its concurrency scales down with core count. On a low-core witness
+// that budget may be routinely insufficient, which turns the clean-fail below into
+// a node that never completes a keygen. Benchmark on representative hardware and
+// set PreParamsTimeout per network before relying on this in production.
+func (tssMgr *TssManager) preParamsTimeout() time.Duration {
+	if tssMgr.sconf == nil {
+		return time.Minute
+	}
+	if timeout := tssMgr.sconf.TssParams().PreParamsTimeout; timeout != 0 {
+		return timeout
+	}
+	return time.Minute
+}
+
+// awaitPreParams waits for a pre-generated Paillier parameter set, BOUNDED.
+//
+// VR2-18: this used to be a bare `<-tssMgr.preParams` in KeyGenDispatcher.Start.
+// GeneratePreParams is best-effort — it TryLocks and, on contention or on a
+// generation failure, returns WITHOUT ever writing the channel. The bare receive
+// therefore blocked forever, and it runs INSIDE the RunActions dispatcher loop
+// while tssMgr.lock is held, which is only released after the loop. Every later
+// RunActions call TryLocks, logs "skipped, lock held by previous batch" and
+// returns. So a single keygen against an empty/failed pool silently froze that
+// node's ENTIRE TSS participation — all signing, resharing and keygen, for every
+// chain — until the process was restarted.
+//
+// Bounding it converts that permanent freeze into a clean failure the caller
+// retries on the next interval. The lock is released as soon as Start() returns.
+func (tssMgr *TssManager) awaitPreParams(ctx context.Context, sessionId string) (ecKeyGen.LocalPreParams, error) {
+	timeout := tssMgr.preParamsTimeout()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Defensive: every production construction site sets msgCtx, but a nil ctx
+	// here would panic in the select rather than clean-fail, which is the exact
+	// class of failure this change exists to remove.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case preParams := <-tssMgr.preParams:
+		return preParams, nil
+	case <-ctx.Done():
+		log.Error("preparams wait cancelled; keygen will retry",
+			"sessionId", sessionId, "err", ctx.Err())
+		return ecKeyGen.LocalPreParams{}, fmt.Errorf("preparams wait cancelled: %w", ctx.Err())
+	case <-timer.C:
+		// ERROR, not Warn: on a node whose hardware cannot generate within the
+		// budget this recurs every keygen, and the only other symptom is a
+		// Verbose "RunActions skipped" line.
+		log.Error("timed out waiting for preparams; keygen clean-failed and will retry",
+			"sessionId", sessionId, "timeout", timeout)
+		return ecKeyGen.LocalPreParams{}, fmt.Errorf("timed out after %s waiting for preparams", timeout)
+	}
+}
+
 func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
 	if locked {
 		if len(tssMgr.preParams) == 0 {
-			timeout := tssMgr.sconf.TssParams().PreParamsTimeout
-			if timeout == 0 {
-				timeout = time.Minute
-			}
+			timeout := tssMgr.preParamsTimeout()
 			log.Info("need to generate preparams", "timeout", timeout)
 			preParams, err := ecKeyGen.GeneratePreParams(timeout)
 			if err != nil {
