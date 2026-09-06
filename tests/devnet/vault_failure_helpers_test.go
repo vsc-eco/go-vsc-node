@@ -799,3 +799,18 @@ func vfUtxoGenLabel(raw []byte) string {
 		return fmt.Sprintf("?(len=%d)", len(raw))
 	}
 }
+
+// vfWaitGenBelow polls gen's UTXO count on the reading node until it drops below
+// `was` (progress) or reaches zero, for up to `within`; returns the last count. The
+// July loops read magi-2 immediately after a settle and stopped on a stale count
+// (DrainToPurge run 1: 2 -> 2 after a settled canary tranche).
+func vfWaitGenBelow(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, was int, within time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	n := genUtxoCount(t, d, ctx, cid, gen)
+	for n >= was && n != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Second)
+		n = genUtxoCount(t, d, ctx, cid, gen)
+	}
+	return n
+}

@@ -162,7 +162,8 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 		}
 		t.Logf("tranche %d: gen-0 still holds %d UTXO(s), sweeping", i+1, remaining)
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
-		if after := genUtxoCount(t, d, ctx, cid, 0); after >= remaining {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", i+1))
+		if after := vfWaitGenBelow(t, d, ctx, cid, 0, remaining, 3*time.Minute); after >= remaining {
 			t.Fatalf("PRECONDITION FAILED: tranche %d made no progress (%d to %d UTXOs), gen-0 cannot be drained so it can never be purged", i+1, remaining, after)
 		}
 		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)

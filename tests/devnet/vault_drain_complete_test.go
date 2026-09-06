@@ -154,7 +154,8 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Logf("tranche %d: gen-0 still holds %d UTXO(s) — sweeping", i+1, remaining)
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 		tranches++
-		if after := genUtxoCount(t, d, ctx, cid, 0); after >= remaining {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", i+1))
+		if after := vfWaitGenBelow(t, d, ctx, cid, 0, remaining, 3*time.Minute); after >= remaining {
 			t.Errorf("tranche %d made NO progress (%d -> %d UTXOs) — drain cannot converge", i+1, remaining, after)
 			break
 		}

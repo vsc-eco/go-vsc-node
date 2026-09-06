@@ -153,7 +153,8 @@ func TestVaultOperatorDrivenDrain(t *testing.T) {
 		t.Logf("operator tranche %d: gen-0 holds %d UTXO(s) — sweeping AS THE OPERATOR (node 2)", i+1, remaining)
 		migrateAndSettleAs(t, d, ctx, 2, cid, cid+"-main", primary1, backupPubKeyG)
 		tranches++
-		if after := genUtxoCount(t, d, ctx, cid, 0); after >= remaining {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", i+1))
+		if after := vfWaitGenBelow(t, d, ctx, cid, 0, remaining, 3*time.Minute); after >= remaining {
 			t.Errorf("operator tranche %d made NO progress (%d -> %d) — operator-driven drain cannot converge", i+1, remaining, after)
 			break
 		}

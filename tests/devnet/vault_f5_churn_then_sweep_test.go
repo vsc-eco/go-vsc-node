@@ -170,7 +170,8 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 		t.Logf("tranche %d: gen-0 still holds %d UTXO(s), sweeping with magi-%d down", i+1, remaining, churnNode)
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 		tranches++
-		if after := genUtxoCount(t, d, ctx, cid, 0); after >= remaining {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", i+1))
+		if after := vfWaitGenBelow(t, d, ctx, cid, 0, remaining, 3*time.Minute); after >= remaining {
 			t.Errorf("drain tranche %d made NO progress (%d -> %d UTXO(s)) with magi-%d down", i+1, remaining, after, churnNode)
 			break
 		}
