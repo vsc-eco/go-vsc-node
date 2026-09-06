@@ -279,6 +279,10 @@ func vfPreconditionV2Active(t *testing.T, d *Devnet, ctx context.Context, node i
 	t.Logf("PRECONDITION OK: magi-%d processed=%d > hpin=%d, vault registry has %d generation(s)", node, bh, hpin, len(vs))
 }
 
+// vfSetupSoftFail makes vfSetup return nil (with t.Errorf) instead of t.Fatalf when the
+// funding never lands, so a test whose SUBJECT is a stalled fleet can still measure it.
+var vfSetupSoftFail = false
+
 // vfSetup deploys the v2 contract onto a fresh devnet, seeds BTC headers, wires the
 // oracle, mints + registers gen-0 (v2 OFF at that point when hpin > genesis height,
 // which avoids the genesis path) and funds gen-0 via a real SPV deposit.
@@ -334,6 +338,12 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 			credited = balanceCredited(t, d, ctx, cid, owner)
 		}
 		if !credited {
+			if vfSetupSoftFail {
+				// F7 (mixed fleet): a setup stall IS the measurement; let the caller scan
+				// block_headers for fork-vs-halt instead of dying without evidence.
+				t.Errorf("gen-0 funding failed: %s balance still 0 on magi-2 two minutes after the map (soft-fail: caller records the fleet state)", owner)
+				return nil
+			}
 			t.Fatalf("gen-0 funding failed: %s balance still 0 on magi-2 two minutes after the CONFIRMED map", owner)
 		}
 		t.Logf("gen-0 funded: %s = %d sats", owner, balanceSats(t, d, ctx, cid, owner))

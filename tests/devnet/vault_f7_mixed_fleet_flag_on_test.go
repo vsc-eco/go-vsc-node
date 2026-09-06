@@ -292,7 +292,25 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 
 	// ---- 1. deploy, seed headers, wire the oracle, mint + register gen-0, fund it.
 	// vfSetup calls from node 1 and reads from node 2, both NEW-code nodes.
+	// Run 1 (2026-09-06) died inside vfSetup: on the 3+3 main/develop fleet every call
+	// confirmed until the first `map`, which stayed INCLUDED forever at block ~125, far
+	// below the pin. That stall is itself an upgrade-path measurement, so the setup is
+	// allowed to soft-fail and the fleet is scanned for fork-vs-halt before giving up.
+	vfSetupSoftFail = true
 	env := vfSetup(t, d, ctx, wasm, hpin, 50_000_000, "F7 mixed fleet at activation")
+	vfSetupSoftFail = false
+	if env == nil {
+		c := &vfCase{t: t}
+		processed, perr := d.getLastProcessedBlock(ctx, 2)
+		maxSlots, comparisons, fork, readErr := vfF7ScanBlockHeaders(d, ctx, cfg.Nodes)
+		grew, gStart, gLast := vfGrewWithin(d, ctx, 2, 90*time.Second)
+		c.rec("F7-SETUP-STALL", "INFO (measured, not a pass): the main/develop mixed fleet stopped finalizing BEFORE the activation pin, on the first map call",
+			false, fmt.Sprintf("node2 processed=%d (err=%v) hpin=%d; block_headers grew in 90s=%v (%d->%d); per-node max slots %s; comparisons=%d; first divergence=%q; readErr=%q",
+				processed, perr, hpin, grew, gStart, gLast, vfF7FormatMax(maxSlots, cfg.Nodes), comparisons, fork, readErr))
+		c.summary("F7")
+		t.Logf("F7 ABORTED at setup: the pin measurement is unreachable on this fleet mix; see F7-SETUP-STALL for fork-vs-halt evidence")
+		return
+	}
 	cid := env.cid
 
 	// ---- 2. F7-PRE: the fleet agrees BEFORE the pin.
