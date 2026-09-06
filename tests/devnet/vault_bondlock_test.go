@@ -143,15 +143,10 @@ func TestVaultBondLock(t *testing.T) {
 	// gen-0 is now retiring and still funded → member's bond is locked.
 
 	// ── BOND-01: the unstake is REFUSED while gen-0 is retiring+funded. ──
-	head, _ := getHeadBlock(d.HiveRPCEndpoint())
-	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake (locked) broadcast: %v", err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	lockedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
+	// Terminal-status read (H-25): FAILED + pending 0 is a refusal.
+	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	rec("BOND-01", "consensus_unstake REFUSED while the member's gen is retiring+funded (bond-locked)",
-		lockedPending == 0, fmt.Sprintf("pending consensus_unstake=%d (want 0)", lockedPending))
+		lockedStatus == "FAILED" && lockedPending == 0, fmt.Sprintf("pending consensus_unstake=%d (want 0)", lockedPending))
 
 	// ── drain gen-0 fully → the lock releases ──
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
@@ -169,15 +164,9 @@ func TestVaultBondLock(t *testing.T) {
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
 
 	// ── BOND-02: the SAME unstake is now ACCEPTED (bond released). ──
-	head2, _ := getHeadBlock(d.HiveRPCEndpoint())
-	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake (released) broadcast: %v", err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head2+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	releasedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
+	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	rec("BOND-02", "consensus_unstake ACCEPTED once the gen is drained (bond released)",
-		releasedPending > 0, fmt.Sprintf("pending consensus_unstake=%d (want >0)", releasedPending))
+		releasedStatus == "CONFIRMED" && releasedPending > 0, fmt.Sprintf("unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", releasedStatus, releasedPending))
 
 	t.Logf("BONDLOCK SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }

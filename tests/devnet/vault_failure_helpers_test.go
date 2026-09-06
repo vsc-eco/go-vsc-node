@@ -859,3 +859,42 @@ func vfWriteNodeFileAsRoot(dir, rel string, data []byte) error {
 	}
 	return nil
 }
+
+// vfUnstakeVerdict broadcasts a 1.000 consensus_unstake for witness `node`, waits up to
+// `within` for the transaction to reach a TERMINAL status, then reads the member's
+// pending consensus_unstake amount. Returns (status, pending). A fixed wait (the July
+// instrument) cannot tell "refused" from "not yet applied"; this can: FAILED with
+// pending 0 is a refusal, CONFIRMED with pending > 0 is an acceptance.
+func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, within time.Duration) (string, int64) {
+	t.Helper()
+	member := "hive:" + d.witnessAccount(node)
+	txid, err := d.ConsensusUnstake(node, "1.000")
+	if err != nil {
+		t.Logf("consensus_unstake broadcast for %s: %v", member, err)
+		return "BROADCAST_ERR", -1
+	}
+	status := ""
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		s, _ := d.FindTransactionStatus(ctx, 2, txid)
+		status = strings.ToUpper(s)
+		if status == "CONFIRMED" || status == "FAILED" || status == "REVERTED" {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	pending := int64(0)
+	for i := 0; i < 12; i++ {
+		pending = pendingConsensusUnstake(t, d, ctx, 2, member)
+		if pending > 0 || status != "CONFIRMED" {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	short := txid
+	if len(short) > 12 {
+		short = short[:12]
+	}
+	t.Logf("consensus_unstake %s for %s: status=%s pending=%d", short, member, status, pending)
+	return status, pending
+}

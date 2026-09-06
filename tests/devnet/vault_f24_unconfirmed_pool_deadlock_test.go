@@ -301,17 +301,14 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	if herr != nil {
 		t.Errorf("reading the Hive head block before the locked unstake: %v", herr)
 	}
-	_, uerr := d.ConsensusUnstake(unstakeNode, "1.000")
-	if uerr != nil {
-		t.Errorf("broadcasting the locked consensus_unstake for %s: %v", member, uerr)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	lockedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
+	_ = head
+	// Terminal-status read (H-25): FAILED + pending 0 is a refusal; a fixed wait cannot
+	// tell a refusal from an op that has not been applied yet.
+	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	c.rec("F24-BONDLOCK", "the committee member's consensus bond stays locked while the stuck UTXO keeps its generation superseded and fund-holding, so nothing in the contract can move the funds and nobody can leave",
-		uerr == nil && lockedPending == 0,
-		fmt.Sprintf("member=%s pending consensus_unstake=%d (want 0), broadcast err=%v, gen0Status=%d gen0Utxos=%d",
-			member, lockedPending, uerr, vfVaultStatusOn(d, ctx, 2, cid, 0), vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
+		lockedStatus == "FAILED" && lockedPending == 0,
+		fmt.Sprintf("member=%s unstake status=%s (want FAILED = refused) pending consensus_unstake=%d (want 0), gen0Status=%d gen0Utxos=%d",
+			member, lockedStatus, lockedPending, vfVaultStatusOn(d, ctx, 2, cid, 0), vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
 
 	// ---------------------------------------------------------------------------
 	// 5. THE ESCAPE. On devnet the unmap's header still exists, so the missing
@@ -448,13 +445,9 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	if herr2 != nil {
 		t.Errorf("reading the Hive head block before the release unstake: %v", herr2)
 	}
-	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-		t.Errorf("broadcasting the release consensus_unstake for %s: %v", member, err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head2+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	releasedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
-	releaseStage := fmt.Sprintf("stage1(retireVault status=%s, gen0Status=%d, pending=%d)", retire1, statAfterRetire, releasedPending)
+	_ = head2
+	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+	releaseStage := fmt.Sprintf("stage1(retireVault status=%s, gen0Status=%d, unstake status=%s, pending=%d)", retire1, statAfterRetire, releasedStatus, releasedPending)
 
 	if releasedPending == 0 {
 		enough := true
@@ -484,14 +477,11 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			retire2 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 			statAfterPurge := vaultStatusOf(t, d, ctx, cid, 0)
 			head3, _ := getHeadBlock(d.HiveRPCEndpoint())
-			if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-				t.Errorf("broadcasting the post-purge consensus_unstake for %s: %v", member, err)
-			}
-			waitForBlock(t, d.HiveRPCEndpoint(), head3+8, 3*time.Minute)
-			time.Sleep(5 * time.Second)
-			releasedPending = pendingConsensusUnstake(t, d, ctx, 2, member)
-			releaseStage += fmt.Sprintf("; stage2(retireVault status=%s, gen0Status=%d after mining and relaying 150 blocks for the 144-block purge grace window in batches of %d, pending=%d)",
-				retire2, statAfterPurge, relayBatch, releasedPending)
+			_ = head3
+			var releasedStatus2 string
+			releasedStatus2, releasedPending = vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+			releaseStage += fmt.Sprintf("; stage2(retireVault status=%s, gen0Status=%d after mining and relaying 150 blocks for the 144-block purge grace window in batches of %d, unstake status=%s, pending=%d)",
+				retire2, statAfterPurge, relayBatch, releasedStatus2, releasedPending)
 		}
 	}
 	c.rec("F24-BOND-RELEASED", "with the generation drained and out of the bond-locked statuses the same consensus_unstake is accepted",
