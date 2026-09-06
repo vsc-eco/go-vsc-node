@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,28 @@ type vfF7SlotRow struct {
 // The comparison is the same one requireConverged makes (same collection, same
 // slot keying, same `block` field), lifted out so it can be run repeatedly without
 // aborting the test.
+// vfF7DumpHaltLogs prints, per node, the last `tail` block-producer / ERROR / WARN
+// lines (oracle "elected members" spam excluded). At the F7 halt this is the
+// evidence the block_headers scan cannot give: which node produced the block that
+// carries the first map, which nodes rejected it and why ("CID MISMATCH", "sig
+// rejected", "not enough signatures"), and the tx-level reason on the producing
+// tree ("tx dropped - rc_limit insufficient for ops", "tx RC consume failed").
+// Run 2 measured HALT-not-fork but could not name the diverging step.
+func vfF7DumpHaltLogs(t *testing.T, d *Devnet, ctx context.Context, nodes []int, tail int) {
+	t.Helper()
+	for _, n := range nodes {
+		container := d.containerName(n)
+		out, err := exec.CommandContext(ctx, "bash", "-c",
+			fmt.Sprintf("docker logs --tail 6000 %s 2>&1 | grep -aE 'module=bp|\\[ERROR\\]|\\[WARN\\]' | grep -av 'elected members' | tail -%d", container, tail),
+		).CombinedOutput()
+		if err != nil {
+			t.Logf("F7 halt logs magi-%d: could not read: %v", n, err)
+			continue
+		}
+		t.Logf("F7 halt logs magi-%d (last %d bp/ERROR/WARN lines):\n%s", n, tail, strings.TrimSpace(string(out)))
+	}
+}
+
 func vfF7ScanBlockHeaders(d *Devnet, ctx context.Context, nodes int) (map[int]int, int, string, string) {
 	maxSlots := map[int]int{}
 	client, err := d.mongoClient(ctx)
@@ -278,6 +301,11 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 	// The old-code image's default Go base is below the merge-base go.mod's
 	// toolchain and cannot self-upgrade under GOTOOLCHAIN=local.
 	cfg.OldCodeGoImage = "golang:1.25.10"
+	// Run 3: the block producer's own view of the halt on BOTH trees (both vsclog
+	// parsers take per-module levels). At bp=debug the signer side logs "CID MISMATCH",
+	// "sig rejected", "not enough signatures" and the producer side logs the tx-level
+	// reason ("tx dropped - rc_limit insufficient for ops", "tx RC consume failed").
+	cfg.LogLevel = "error,tss=trace,bp=debug"
 	// The pin is written into the sysconfig every node reads, but only the NEW
 	// binary has the field, so the old nodes ignore it: that asymmetry IS the test.
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -307,8 +335,9 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 		c.rec("F7-SETUP-STALL", "INFO (measured, not a pass): the main/develop mixed fleet stopped finalizing BEFORE the activation pin, on the first map call",
 			false, fmt.Sprintf("node2 processed=%d (err=%v) hpin=%d; block_headers grew in 90s=%v (%d->%d); per-node max slots %s; comparisons=%d; first divergence=%q; readErr=%q",
 				processed, perr, hpin, grew, gStart, gLast, vfF7FormatMax(maxSlots, cfg.Nodes), comparisons, fork, readErr))
+		vfF7DumpHaltLogs(t, d, ctx, vfAllNodes(cfg.Nodes), 60)
 		c.summary("F7")
-		t.Logf("F7 ABORTED at setup: the pin measurement is unreachable on this fleet mix; see F7-SETUP-STALL for fork-vs-halt evidence")
+		t.Logf("F7 ABORTED at setup: the pin measurement is unreachable on this fleet mix; see F7-SETUP-STALL for fork-vs-halt evidence and the per-node halt logs above for the diverging step")
 		return
 	}
 	cid := env.cid
