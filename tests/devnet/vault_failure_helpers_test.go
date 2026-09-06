@@ -844,3 +844,18 @@ func TestVfSlowReshareConfigIsNotRecursive(t *testing.T) {
 		t.Fatalf("ElectionInterval = %d, want 20 (elections must keep churning)", got)
 	}
 }
+
+// vfWriteNodeFileAsRoot writes data to <dir>/<rel> THROUGH A ROOT CONTAINER. The node
+// data dirs are root-owned, so a host-side os.WriteFile gets "permission denied"
+// (F22 run 1). rel is relative to dir and must not start with a slash.
+func vfWriteNodeFileAsRoot(dir, rel string, data []byte) error {
+	cmd := exec.Command("docker", "run", "--rm", "-i",
+		"-v", dir+":/d",
+		"alpine", "sh", "-c", "cat > /d/"+rel)
+	cmd.Stdin = bytes.NewReader(data)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("root write of %s: %v: %s", rel, err, string(out))
+	}
+	return nil
+}

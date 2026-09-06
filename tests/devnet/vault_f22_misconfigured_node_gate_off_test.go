@@ -79,7 +79,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -367,11 +366,13 @@ func vfF22WriteOracleConfigWithoutBtc(t *testing.T, d *Devnet, nodes []int) {
 		t.Fatalf("marshaling the BTC-less oracle config: %v", err)
 	}
 	for _, n := range nodes {
-		path := filepath.Join(d.devnetDir, fmt.Sprintf("data-%d", n), "config", "oracleConfig.json")
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			t.Fatalf("writing %s: %v", path, err)
+		rel := fmt.Sprintf("data-%d/config/oracleConfig.json", n)
+		// Root-owned data dir: write through a root container (run 1 died on a
+		// host-side os.WriteFile with "permission denied").
+		if err := vfWriteNodeFileAsRoot(d.devnetDir, rel, data); err != nil {
+			t.Fatalf("writing %s/%s: %v", d.devnetDir, rel, err)
 		}
-		t.Logf("F22: rewrote %s without a BTC entry", path)
+		t.Logf("F22: rewrote %s/%s without a BTC entry", d.devnetDir, rel)
 	}
 }
 
