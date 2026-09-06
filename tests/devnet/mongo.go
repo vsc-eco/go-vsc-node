@@ -195,7 +195,10 @@ func (d *Devnet) getHighestStoredBlock(ctx context.Context, node int) (uint64, e
 			BlockNumber uint64 `bson:"block_number"`
 		} `bson:"block"`
 	}
-	err = coll.FindOne(ctx, bson.M{"type": "hive_block"}, options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})).Decode(&result)
+	// Stored blocks carry type "block" (hive_blocks.DocumentTypeHiveBlock); the
+	// first cut of this helper asked for "hive_block" and always read 0, which
+	// silently fell back to the 12-minute "proceed anyway" path.
+	err = coll.FindOne(ctx, bson.M{"type": "block"}, options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})).Decode(&result)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return 0, nil
