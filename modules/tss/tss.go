@@ -381,6 +381,61 @@ func (tssMgr *TssManager) Receive() {}
 // that budget may be routinely insufficient, which turns the clean-fail below into
 // a node that never completes a keygen. Benchmark on representative hardware and
 // set PreParamsTimeout per network before relying on this in production.
+// Session-id prefixes. Used both when a session is created and when BlockTick
+// inspects actionMap to see what is still running, so the two can never drift.
+const (
+	sessionPrefixKeygen  = "keygen-"
+	sessionPrefixSign    = "sign-"
+	sessionPrefixReshare = "reshare-"
+)
+
+// inFlightSessions reports which keys currently have a ceremony running, split by
+// kind, from the dispatchers still registered in actionMap.
+//
+// VR2-09: BlockTick's keyLocks map is rebuilt every block and is populated ONLY
+// from actions generated in THAT block, so it never saw a session started in an
+// earlier block. A reshare session runs for many blocks (up to ReshareTimeout),
+// while sign ticks come far more often — so the next sign tick scheduled a sign
+// for a key whose reshare was still running its rounds on the same nodes. The two
+// ceremonies then competed and both timed out. With a Pending vault generation
+// being reshared every epoch (VR2-10), that collision repeated until activation
+// never landed: 6 of 15 devnet rotations stalled.
+//
+// actionMap entries are removed only when the session's Done() resolves, so
+// membership here is exactly "still in flight".
+//
+// This is per-node scheduling state and MAY differ slightly between nodes (one
+// node's dispatcher can finish a moment before another's). That is safe by the
+// same argument the reshare-skip and readiness gates already rely on: choosing
+// whether to START a ceremony is a participation decision reconciled by the 2/3
+// quorum and retried next interval, not a CID-committing consensus output. It can
+// cost a retry; it cannot fork.
+func (tssMgr *TssManager) inFlightSessions() (ceremony map[string]bool, signing map[string]bool) {
+	ceremony = make(map[string]bool)
+	signing = make(map[string]bool)
+
+	tssMgr.bufferLock.RLock()
+	defer tssMgr.bufferLock.RUnlock()
+
+	for sessionId, dispatcher := range tssMgr.actionMap {
+		if dispatcher == nil {
+			continue
+		}
+		keyId := dispatcher.KeyId()
+		if keyId == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(sessionId, sessionPrefixReshare),
+			strings.HasPrefix(sessionId, sessionPrefixKeygen):
+			ceremony[keyId] = true
+		case strings.HasPrefix(sessionId, sessionPrefixSign):
+			signing[keyId] = true
+		}
+	}
+	return ceremony, signing
+}
+
 func (tssMgr *TssManager) preParamsTimeout() time.Duration {
 	if tssMgr.sconf == nil {
 		return time.Minute
@@ -605,6 +660,15 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		isLeader := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
 		keyLocks := make(map[string]bool)
+		// VR2-09: seed the locks from sessions still IN FLIGHT from earlier blocks,
+		// not just from actions generated in THIS block. Without this, a sign was
+		// scheduled for a key whose multi-block reshare was still running its
+		// rounds, the two ceremonies competed for the same parties, and both timed
+		// out — repeatedly, because a Pending generation is reshared every epoch.
+		inFlightCeremony, inFlightSign := tssMgr.inFlightSessions()
+		for keyId := range inFlightCeremony {
+			keyLocks[keyId] = true
+		}
 		generatedActions := make([]QueuedAction, 0)
 		if bh%rotateInterval == 0 {
 
@@ -626,6 +690,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// skips the identical keyId at the identical height → no divergent
 				// session/party-list. Inert until VaultRotationV2Enabled flips.
 				if tssMgr.shouldSkipReshareForVaultRotation(key.Id, bh) {
+					continue
+				}
+				// VR2-09: prefer an in-flight SIGN over starting a reshare of the
+				// same key. A sign is one round-trip and, for a pending vault
+				// generation, it is the BRK-2 check-signature that unblocks
+				// activation; starting a reshare on top of it makes both time out.
+				// The reshare is re-selected next rotate interval.
+				if inFlightSign[key.Id] {
+					log.Verbose("deferring reshare: a sign for this key is still in flight",
+						"keyId", key.Id, "blockHeight", bh)
 					continue
 				}
 				generatedActions = append(generatedActions, QueuedAction{
@@ -1040,7 +1114,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if action.Type == KeyGenAction {
 			participants := make([]Participant, 0)
 
-			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixKeygen + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			// Blame exclusion for a keygen RETRY: decode each blame in the BLAME_EXPIRE
 			// window against the blame's OWN epoch election — setToCommitment encodes bit
@@ -1178,7 +1252,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				continue
 			}
 
-			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixSign + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
 
@@ -1370,7 +1444,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 		} else if action.Type == ReshareAction {
 
-			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixReshare + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			log.Verbose("creating reshare session", "sessionId", sessionId, "keyId", action.KeyId, "blockHeight", bh)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
