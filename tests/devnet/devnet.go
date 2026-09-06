@@ -508,6 +508,22 @@ func (d *Devnet) dumpBootAbortDiagnostics(ctx context.Context) {
 	} else {
 		log.Printf("[devnet] boot-abort diagnostics: %s logs unreadable: %v", svc, err)
 	}
+	// H-34: DrainToPurge run 2 aborted with hived producing, drone healthy at boot,
+	// and ALL five nodes silent for 11 minutes (three tss lines each, no block, no
+	// error). That shape is a goroutine stuck somewhere in the streamer, and only a
+	// goroutine dump can name it. The devnet is torn down right after this call, so
+	// SIGQUIT the genesis node (Go prints every goroutine to stderr and exits) and
+	// keep the tail of its log.
+	if err := d.compose(ctx, "kill", "--signal", "QUIT", svc); err != nil {
+		log.Printf("[devnet] boot-abort diagnostics: SIGQUIT %s failed: %v", svc, err)
+		return
+	}
+	time.Sleep(3 * time.Second)
+	if gl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "600", svc); err == nil {
+		log.Printf("[devnet] boot-abort diagnostics: %s goroutine dump after SIGQUIT (last 600 lines):\n%s", svc, gl)
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: %s goroutine dump unreadable: %v", svc, err)
+	}
 }
 
 func (d *Devnet) Logs(ctx context.Context, service string) (string, error) {
