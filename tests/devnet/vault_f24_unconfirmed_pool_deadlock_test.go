@@ -360,7 +360,16 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		entries := vf24EntriesOfGen(reg, 0)
 		selectable := vf24SelectableOfGen(reg, 0)
 		promotedDetail = fmt.Sprintf("registry=[%s] gen0Entries=%d gen0Selectable=%d", vf24Line(reg), len(entries), len(selectable))
-		if len(entries) == 1 && len(selectable) == 1 && selectable[0].txid == bcTxid {
+		// The unmap builder splits its change into several outputs (four on this
+		// contract; F8 and F21 registry dumps), so the promotion yields SEVERAL selectable
+		// gen-0 entries, all belonging to the unmap transaction. Run 1 expected exactly one.
+		allFromUnmap := len(selectable) >= 1
+		for _, e := range selectable {
+			if e.txid != bcTxid {
+				allFromUnmap = false
+			}
+		}
+		if len(entries) >= 1 && len(entries) == len(selectable) && allFromUnmap {
 			promoted = true
 			break
 		}
@@ -371,7 +380,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	}
 	c.rec("F24-PROMOTED", "the confirmed change becomes a migration-selectable generation 0 UTXO (confirmed pool id, no longer reserved) belonging to the unmap transaction",
 		promoted,
-		fmt.Sprintf("%s (wanted exactly 1 selectable entry with txid=%s and change vout=%d)", promotedDetail, bcTxid, changeVout))
+		fmt.Sprintf("%s (wanted every gen-0 entry selectable and belonging to txid=%s; the change is split across several vouts, first change vout=%d)", promotedDetail, bcTxid, changeVout))
 
 	// ---- F24-DRAINED: the rotation can now finish. ----
 	drained := false
