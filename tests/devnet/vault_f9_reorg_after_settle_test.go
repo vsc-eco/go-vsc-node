@@ -397,3 +397,22 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	c.summary("F9")
 	t.Logf("F9 COMPLETE CONTRACT=%s sweepTxid=%s bcTxid=%s", cid, txid, bcTxid)
 }
+
+// f9TxConfirmed reports whether txid is in a block of the ACTIVE chain: bitcoind's txindex
+// keeps answering getrawtransaction with the blockhash of an INVALIDATED block (with
+// confirmations -1), so f9TxBlockHash alone said "still confirmed" for a reorged-out
+// transaction (F27 run 2). Returns (blockhash, confirmed).
+func f9TxConfirmed(d *Devnet, ctx context.Context, txid string) (string, bool) {
+	out, err := d.bitcoinCli(ctx, "getrawtransaction", txid, "1")
+	if err != nil {
+		return "", false
+	}
+	var v struct {
+		BlockHash     string `json:"blockhash"`
+		Confirmations int64  `json:"confirmations"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		return "", false
+	}
+	return v.BlockHash, v.BlockHash != "" && v.Confirmations > 0
+}

@@ -174,7 +174,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 
 	// ---- 5. confirm R, settle the group, drain, unwedge NN#3 ----
 	h, _ := d.MineBlocks(ctx, 1)
-	_, rMined := f9TxBlockHash(d, ctx, txR)
+	_, rMined := f9TxConfirmed(d, ctx, txR)
 	cs := vfRelayAndConfirmIndex(t, d, ctx, 1, cid, txR, h, 0)
 	time.Sleep(15 * time.Second)
 	msO, msR := vfSweepRecordOn(d, ctx, 2, cid, txO), vfSweepRecordOn(d, ctx, 2, cid, txR)

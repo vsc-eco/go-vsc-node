@@ -204,8 +204,8 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 		d.MineBlocks(ctx, 1)
 	}
 	newTip, _ := d.MineBlocks(ctx, 1)
-	_, oInChain := f9TxBlockHash(d, ctx, bcO)
-	rHash, rInChain := f9TxBlockHash(d, ctx, txR)
+	_, oInChain := f9TxConfirmed(d, ctx, bcO)
+	rHash, rInChain := f9TxConfirmed(d, ctx, txR)
 	rHeight := uint64(0)
 	if rInChain {
 		rHeight, _ = f9BlockHeightOf(d, ctx, rHash)

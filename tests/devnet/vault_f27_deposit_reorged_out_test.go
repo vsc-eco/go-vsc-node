@@ -198,8 +198,8 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 		d.MineBlocks(ctx, 1)
 	}
 	newTip, _ := d.MineBlocks(ctx, 1)
-	_, dInChain := f9TxBlockHash(d, ctx, txD)
-	cHash, cInChain := f9TxBlockHash(d, ctx, txC)
+	_, dInChain := f9TxConfirmed(d, ctx, txD)
+	cHash, cInChain := f9TxConfirmed(d, ctx, txC)
 	cHeight := uint64(0)
 	if cInChain {
 		cHeight, _ = f9BlockHeightOf(d, ctx, cHash)
