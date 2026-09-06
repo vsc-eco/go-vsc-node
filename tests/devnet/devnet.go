@@ -226,10 +226,35 @@ func (d *Devnet) Start(ctx context.Context) error {
 	// 12 minutes: under two concurrent devnets the witness announcements can take longer
 	// than 5 to be indexed. With ZERO registrations the elector panics "No members
 	// found" (F18 run 2), so that case aborts here with the count instead.
-	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute); werr != nil {
+	got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute)
+	if werr != nil && got == 0 {
+		// H-37: transient node-startup hang recovery. About 4 of 45 boots hang with a node
+		// that has stored ZERO Hive blocks after 12 minutes (early streamer head-fetch or
+		// p2p bootstrap that never completes; the hive RPC client has no timeout), which
+		// costs a full test + a re-queue every time. This branch only runs when the boot
+		// would ALREADY fail, so it cannot affect a healthy boot: restart the magi nodes
+		// once (a fresh streamer/p2p dial usually clears the hang) and re-wait a shorter
+		// window before giving up.
+		log.Printf("[devnet] 0 witness registrations after 12m (highest stored block %d); restarting %d magi nodes once and re-waiting (H-37)", bh, d.cfg.Nodes)
+		restartNames := make([]string, 0, d.cfg.Nodes+1)
+		for i := 0; i < d.cfg.Nodes; i++ {
+			restartNames = append(restartNames, fmt.Sprintf("magi-%d", i+1))
+		}
+		restartNames = append(restartNames, "feed-publisher")
+		if rerr := d.compose(ctx, append([]string{"restart"}, restartNames...)...); rerr != nil {
+			log.Printf("[devnet] H-37 restart failed: %v (falling through to abort)", rerr)
+		} else {
+			time.Sleep(10 * time.Second)
+			got, bh, werr = d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 8*time.Minute)
+			if werr == nil {
+				log.Printf("[devnet] H-37 recovered after magi restart: %d witnesses, highest stored block %d", got, bh)
+			}
+		}
+	}
+	if werr != nil {
 		if got == 0 {
 			d.dumpBootAbortDiagnostics(ctx)
-			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m (highest stored block %d): %w", d.cfg.GenesisNode, bh, werr)
+			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m + an 8m restart retry (highest stored block %d): %w", d.cfg.GenesisNode, bh, werr)
 		}
 		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
 	} else {
