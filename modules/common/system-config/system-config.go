@@ -49,8 +49,8 @@ type config struct {
 	contractUpdateTimelockBlocks uint64
 	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-	rcHiveFreeAmount int64
-	oracleParams     params.OracleParams
+	rcHiveFreeAmount             int64
+	oracleParams                 params.OracleParams
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
 }

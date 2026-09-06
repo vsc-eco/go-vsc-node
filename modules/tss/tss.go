@@ -2,12 +2,14 @@ package tss
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -388,6 +390,50 @@ const (
 	sessionPrefixSign    = "sign-"
 	sessionPrefixReshare = "reshare-"
 )
+
+// participantSetTag is a short, order-independent fingerprint of the OLD and NEW
+// participant sets chosen for a reshare.
+//
+// B9 (GV-H8 family): both sets are filtered by `readyAccounts`, which is built
+// from the gossip attestations THIS node happened to receive — it is convergent,
+// not consensus. Two nodes can therefore choose different sets for the same
+// reshare, and the NEW set's size feeds the VSS polynomial degree
+// (GetThreshold(origNewSize)) and the pre-flight quorum floor. Today the session
+// id carries no participant information at all, so nodes with divergent views
+// join the SAME session and abort mid-protocol.
+//
+// Binding this tag into the session id makes a divergent view a clean MISS: such a
+// node forms a different session id, never joins, and simply retries next
+// interval, instead of contributing to a session whose degree it disagrees with.
+//
+// Accounts are sorted so the tag depends on set MEMBERSHIP, not on iteration or
+// registry order.
+//
+// This does NOT make the chosen set deterministic — that requires an additive,
+// per-interval on-chain readiness commitment, which is a larger change (and must
+// never be a frozen snapshot: that variant was reverted as GV-H8). It bounds the
+// damage of divergence rather than removing divergence.
+func participantSetTag(oldSet, newSet []Participant) string {
+	accounts := func(ps []Participant) []string {
+		out := make([]string, 0, len(ps))
+		for _, p := range ps {
+			out = append(out, p.Account)
+		}
+		sort.Strings(out)
+		return out
+	}
+	h := sha256.New()
+	for _, a := range accounts(oldSet) {
+		h.Write([]byte(a))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte{1}) // domain separator between the old and new sets
+	for _, a := range accounts(newSet) {
+		h.Write([]byte(a))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
 
 // inFlightSessions reports which keys currently have a ceremony running, split by
 // kind, from the dispatchers still registered in actionMap.
@@ -1635,6 +1681,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
 				continue
 			}
+
+			// B9: bind the chosen participant sets into the session id, so a node
+			// whose gossip view differs forms a DIFFERENT session and cleanly misses
+			// rather than joining one whose VSS degree it disagrees with.
+			sessionId += "-" + participantSetTag(commitedMembers, newParticipants)
 
 			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
 

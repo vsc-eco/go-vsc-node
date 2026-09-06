@@ -93,3 +93,54 @@ func TestInFlightSessions_SkipsNilAndKeylessEntries(t *testing.T) {
 		t.Fatalf("expected nothing locked, got ceremony=%v signing=%v", ceremony, signing)
 	}
 }
+
+// B9 (GV-H8 family) regression guard.
+//
+// Both reshare participant sets are filtered by the gossip readiness set this
+// node happened to receive, and the NEW set's SIZE feeds the VSS polynomial
+// degree. The session id carried no participant information, so two nodes with
+// different views joined the SAME session and aborted mid-protocol.
+//
+// Binding a fingerprint of both sets into the session id turns that into a clean
+// miss: divergent nodes form different ids and retry, rather than contributing to
+// a session whose degree they disagree with.
+func TestParticipantSetTag_DiffersWhenTheChosenSetDiffers(t *testing.T) {
+	p := func(accounts ...string) []Participant {
+		out := make([]Participant, 0, len(accounts))
+		for _, a := range accounts {
+			out = append(out, Participant{Account: a})
+		}
+		return out
+	}
+	oldSet := p("alice", "bob", "carol")
+
+	full := participantSetTag(oldSet, p("alice", "bob", "carol"))
+	missingOne := participantSetTag(oldSet, p("alice", "bob"))
+	if full == missingOne {
+		t.Fatal("a different NEW participant set must produce a different tag — " +
+			"otherwise nodes that disagree on the set (and therefore on the VSS degree) " +
+			"still join the same session, which is the GV-H8 failure")
+	}
+
+	// The OLD set is equally gossip-filtered, so it must bind too.
+	if participantSetTag(p("alice", "bob"), p("alice")) == participantSetTag(p("alice", "carol"), p("alice")) {
+		t.Fatal("a different OLD participant set must produce a different tag")
+	}
+}
+
+// The tag must depend on MEMBERSHIP, not on ordering, or honest nodes that agree
+// on the set but iterate it differently would needlessly fail to meet.
+func TestParticipantSetTag_IsOrderIndependent(t *testing.T) {
+	p := func(accounts ...string) []Participant {
+		out := make([]Participant, 0, len(accounts))
+		for _, a := range accounts {
+			out = append(out, Participant{Account: a})
+		}
+		return out
+	}
+	a := participantSetTag(p("carol", "alice", "bob"), p("bob", "alice"))
+	b := participantSetTag(p("alice", "bob", "carol"), p("alice", "bob"))
+	if a != b {
+		t.Fatalf("tag must be order-independent: %s != %s", a, b)
+	}
+}
