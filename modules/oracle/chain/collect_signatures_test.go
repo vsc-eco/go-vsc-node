@@ -3,7 +3,6 @@ package chain
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 	"vsc-node/lib/dids"
@@ -63,17 +62,16 @@ func runCollectionScenario(
 		return weightMap[string(did)]
 	}
 
-	// Track which DIDs have already been added so the verifier matches the
-	// real BlsCircuit semantics: AddAndVerify returns added=false on duplicate.
-	addedDids := make(map[string]struct{})
-	var addedMu sync.Mutex
+	// VR2-19: this stub used to return added=false on a repeat and claimed to
+	// "match the real BlsCircuit semantics". It does not. BlsCircuit.addRaw
+	// (lib/dids/bls.go) has NO duplicate check: on a valid signature it OVERWRITES
+	// b.sigs[DID] and returns true every time. The old stub therefore performed the
+	// deduplication that production lacked, so these tests could never have caught
+	// the double-counting bug — nor could they validate its fix.
+	//
+	// The stub now mirrors production: a genuine signature always verifies, however
+	// many times it arrives. Dedup must come from collectChainSignatures itself.
 	addAndVerify := func(member dids.BlsDID, signature string) (bool, error) {
-		addedMu.Lock()
-		defer addedMu.Unlock()
-		if _, ok := addedDids[string(member)]; ok {
-			return false, nil
-		}
-		addedDids[string(member)] = struct{}{}
 		return true, nil
 	}
 
@@ -549,4 +547,115 @@ func TestCollectChainSignatures_InitialWeightAlreadyAboveThreshold(t *testing.T)
 	assert.Equal(t, uint64(100), result.SignedWeight)
 	assert.Less(t, elapsed, 100*time.Millisecond,
 		"should return instantly when initial weight already exceeds threshold")
+}
+
+// VR2-19 regression guard.
+//
+// A witness that re-broadcasts its OWN valid signature must be credited ONCE.
+// Nothing upstream deduplicates: receiveSignature enqueues every inbound message,
+// and BlsCircuit.addRaw reports success on every valid signature (it overwrites
+// the stored entry rather than rejecting a repeat). Before the fix, each copy
+// added the signer's weight again, and because the collection loop exits on
+// `signedWeight > threshold`, a single witness could satisfy the threshold alone.
+//
+// The verifier stub here deliberately does NOT deduplicate — that is production's
+// real behaviour — so this test fails if the dedup is removed from
+// collectChainSignatures.
+func TestCollectChainSignatures_DuplicateSignerCreditedOnce(t *testing.T) {
+	self := dids.BlsDID("did:key:self")
+	attacker := dids.BlsDID("did:key:attacker")
+
+	sigChan := make(chan signatureMessage, 16)
+	// One witness, replaying the same valid signature many times.
+	for i := 0; i < 8; i++ {
+		sigChan <- signatureMessage{BlsDid: string(attacker), Signature: "valid", Account: "attacker"}
+	}
+
+	// Production semantics: a genuine signature always verifies, every time.
+	addAndVerify := func(member dids.BlsDID, signature string) (bool, error) { return true, nil }
+	weightOf := func(did dids.BlsDID) uint64 { return 100 }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Threshold 250: unreachable with ONE signer worth 100, but trivially passed by
+	// 8 replays if each is credited (800).
+	res := collectChainSignatures(
+		ctx, vsclog.Module("oracle-chain-test"), sigChan, 300*time.Millisecond,
+		0, 250, self, addAndVerify, weightOf, "BTC",
+	)
+
+	if res.SignedWeight != 100 {
+		t.Fatalf("replayed signer credited %d, want 100 (credited exactly once); "+
+			"a single witness must not be able to reach the threshold by re-sending", res.SignedWeight)
+	}
+	if !res.TimedOut {
+		t.Fatal("collection must time out short of the threshold: one signer's weight cannot satisfy it")
+	}
+}
+
+// Positive control: distinct signers still accumulate normally, so the dedup does
+// not break legitimate collection.
+func TestCollectChainSignatures_DistinctSignersStillAccumulate(t *testing.T) {
+	self := dids.BlsDID("did:key:self")
+
+	sigChan := make(chan signatureMessage, 8)
+	for _, who := range []string{"a", "b", "c"} {
+		sigChan <- signatureMessage{BlsDid: "did:key:" + who, Signature: "valid", Account: who}
+	}
+
+	addAndVerify := func(member dids.BlsDID, signature string) (bool, error) { return true, nil }
+	weightOf := func(did dids.BlsDID) uint64 { return 100 }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	res := collectChainSignatures(
+		ctx, vsclog.Module("oracle-chain-test"), sigChan, 500*time.Millisecond,
+		0, 250, self, addAndVerify, weightOf, "BTC",
+	)
+	if res.SignedWeight != 300 {
+		t.Fatalf("three distinct signers credited %d, want 300", res.SignedWeight)
+	}
+}
+
+// VR2-19 (second half): a repeat must be rejected at INTAKE, before it consumes
+// one of the session buffer's 8 slots.
+//
+// The collection loop already credits each signer once, so this is not about
+// weight — it is about a single witness rapid-firing duplicates to fill the
+// buffer faster than the collection goroutine drains it (each drain performs a
+// BLS verify), which would push GENUINE signatures from other witnesses into
+// errChannelFull. That grief is reachable by one node with no special access.
+func TestReceiveSignature_RejectsDuplicateBeforeConsumingBufferSlot(t *testing.T) {
+	sc := makeSignatureChannels()
+	ch, err := sc.makeSession("session-1")
+	if err != nil {
+		t.Fatalf("makeSession: %v", err)
+	}
+
+	msg := signatureMessage{BlsDid: "did:key:attacker", Signature: "valid", Account: "attacker"}
+	if err := sc.receiveSignature("session-1", msg); err != nil {
+		t.Fatalf("first signature must be accepted, got %v", err)
+	}
+	// Every subsequent copy must be refused rather than buffered.
+	for i := 0; i < 20; i++ {
+		if err := sc.receiveSignature("session-1", msg); err != errDuplicateSig {
+			t.Fatalf("repeat %d: got %v, want errDuplicateSig", i, err)
+		}
+	}
+	if got := len(ch); got != 1 {
+		t.Fatalf("buffer holds %d messages, want 1 — duplicates must not occupy slots "+
+			"that honest witnesses need", got)
+	}
+
+	// A DIFFERENT signer must still get through.
+	if err := sc.receiveSignature("session-1", signatureMessage{
+		BlsDid: "did:key:honest", Signature: "valid", Account: "honest",
+	}); err != nil {
+		t.Fatalf("a distinct signer must still be accepted, got %v", err)
+	}
+	if got := len(ch); got != 2 {
+		t.Fatalf("buffer holds %d, want 2 after one honest signature", got)
+	}
 }
