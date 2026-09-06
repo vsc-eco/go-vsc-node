@@ -44,7 +44,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		t.Skip("set VAULT_F3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -56,14 +56,20 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	}
 
 	const hpin = 400 // v2 activation AFTER genesis, so gen-0 mints on the v2-off path
-	cfg := tssTestConfig()
+	// Slow cadence: F3's crash timing (kill magi-3 ~5s after a createKey) is relative to
+	// the keygen, not the rotate interval, so it works on any cadence. On the 20-block
+	// tssTestConfig cadence every TSS-sign step (the gen-0->gen-1 migration and the gen-2
+	// activation) is VR2-09-flaky and blocked the test from reaching its own subject
+	// (run 4: VL-GP-06 migration never produced a pending spend, looping out before
+	// F3-KEY2/F3-SHARE). The 60-block cadence removes that confounder (H-17).
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
-	d, _ := startDevnetNoKey(t, cfg, 85*time.Minute)
+	d, _ := startDevnetNoKey(t, cfg, 90*time.Minute)
 
 	c := &vfCase{t: t}
 
@@ -224,15 +230,10 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		sameKey,
 		fmt.Sprintf("reference pubkey=%s (= registered primary2); the pending key reshares every epoch (VR2-10) so the epoch advances uniformly, it is NOT pinned to the keygen-time epoch |%s", f3TruncHex(primary2), rows))
 
-	// F3-SIGN is the stronger, functional proof: the crashed node's gen-2 share
-	// actually signs (activate gen-2, then drain gen-1 into it). On the 20-block
-	// devnet cadence this test REQUIRES for its crash timing, the pending gen-2
-	// key's reshare locks the BRK-2 check-signature (VR2-09), so activation cannot
-	// land and this case is RED BY DESIGN here — it is the same finding, not a new
-	// one. The functional "later generation activates and drains" is proven on the
-	// slow cadence by Stage4 and F5; and the cold-restarted magi-3's gen-1 share
-	// already signed the gen-0->gen-1 migration sweep earlier in THIS run
-	// (VL-GP-01/GP-06 above), so the crash did not corrupt that share.
+	// F3-SIGN is the stronger, functional proof: the crashed node's gen-2 share actually
+	// signs — activate gen-2, then drain gen-1 into it. On the slow (60-block) cadence the
+	// activation check-signature has a window (no VR2-09 reshare lock), so this is expected
+	// to PASS: it proves the mid-keygen crash did not corrupt magi-3's gen-2 share.
 	gen1Left := -1
 	if activated2 {
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
@@ -243,9 +244,9 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		}
 		gen1Left = genUtxoCount(t, d, ctx, cid, 1)
 	}
-	c.rec("F3-SIGN", "the crashed node's fleet activates gen-2 and drains gen-1 with it (functional share proof; RED BY DESIGN on the 20-block cadence = VR2-09)",
+	c.rec("F3-SIGN", "the crashed node's fleet activates gen-2 and drains gen-1 with it (functional share proof: the mid-keygen crash did not corrupt magi-3's share)",
 		activated2 && gen1Left == 0,
-		fmt.Sprintf("activated=%v gen-1 UTXOs left=%d (want 0); gen-2 activation is gated by VR2-09 on the fast cadence F3 needs; functional later-gen activate+drain is proven by Stage4/F5, and magi-3's gen-1 share already signed the migration sweep above |%s", activated2, gen1Left, rows))
+		fmt.Sprintf("activated=%v gen-1 UTXOs left=%d (want 0) |%s", activated2, gen1Left, rows))
 
 	// -----------------------------------------------------------------
 	// Step 5: F3-IDENT across all 5 nodes, all of them up.
