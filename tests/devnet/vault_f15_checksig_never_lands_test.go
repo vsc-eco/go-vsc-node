@@ -120,48 +120,44 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 	primary1 := kd1.PublicKey
 	t.Logf("gen-1 keygen active: keyId=%s epoch=%d pubkey=%s", keyId1, kd1.Epoch, primary1)
 
-	// ---- step 1b: drop 2 of 5 immediately, in parallel, to beat the sign interval ----
-	stopTook := f15StopFast(t, d, ctx, []int{4, 5})
-	t.Logf("magi-4 and magi-5 stopped %v after the key flipped active (SignInterval is 10 hive blocks, about 30s, so anything well under that wins the race)", stopTook)
-
-	// The exact BRK-2 check message the state engine enqueued for this key. Having
-	// it makes the precondition instrument DIRECT (is the signature there or not)
-	// instead of inferred from an activateKey outcome.
-	var checkMsg []byte
-	if pub, derr := hex.DecodeString(primary1); derr == nil && len(pub) == btcvault.CompressedPubKeyLen {
-		checkMsg = btcvault.CheckSigMessage(keyId1, 1, pub)
-		t.Logf("BRK-2 check message for %s gen-1: %s", keyId1, hex.EncodeToString(checkMsg))
-	} else {
-		t.Logf("could not recompute the BRK-2 check message (pubkey %q decode err=%v), falling back to the activateKey outcome as the precondition instrument", primary1, derr)
-	}
-
-	// ---- step 1c: observe the halt, which doubles as the settle window for any
-	// check-signature that was already in flight when the nodes went down ----
-	grew, haltStart, haltLast := vfGrewWithin(d, ctx, 1, 60*time.Second)
-	t.Logf("halt instrument: block_headers max slot on magi-1 start=%d last=%d over 60s, grew=%v (3 of 5 cannot reach the 4 of 5 BLS quorum)", haltStart, haltLast, grew)
-
-	if checkMsg != nil && vfSignatureLanded(d, ctx, 1, keyId1, checkMsg) {
-		t.Logf("WARNING: the BRK-2 check-signature for gen-1 ALREADY landed on magi-1 before the two nodes were stopped")
-	}
-
-	// ---- step 1d: register the pending generation's keys DURING the halt ----
-	// For a rotation (non-genesis) RegisterVaultKeys only stores the keys, it does
-	// not attest, so this succeeds locally even with the check-signature missing.
-	// Confirming the stored primary matters: without it an activateKey refusal
-	// could be blamed on a missing registration instead of on BRK-2.
-	regStatus := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
-		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG))
-	registered := false
+	// ---- step 1b: make the check-signature UNVERIFIABLE, deterministically ----
+	// Runs 1 and 2 tried to beat the sign tick by stopping two nodes the instant the key
+	// flipped active and lost the race both times (the request is enqueued at the commit
+	// and can be signed in the same tick). BRK-2 does not need a halt to be proven: the
+	// contract verifies the check-signature against the REGISTERED primary
+	// (attestPrimaryKey). Registering a DIFFERENT key first, which the per-generation
+	// set-once rule then freezes, leaves a generation whose committee agreed on a key but
+	// whose registered key can never produce a valid check-signature: the stalled state
+	// F15 is about, without a race.
+	bogus := flipLastHex(primary1)
+	regBogus := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, bogus, backupPubKeyG))
+	stored := ""
 	regDeadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(regDeadline) {
-		if f15PrimaryHexOn(d, ctx, 1, cid, 1) == primary1 {
-			registered = true
+		stored = f15PrimaryHexOn(d, ctx, 1, cid, 1)
+		if stored == bogus {
 			break
 		}
 		time.Sleep(10 * time.Second)
 	}
-	t.Logf("registerPublicKey during the halt: status=%s, gen-1 primary stored on magi-1=%v (stored=%q)",
-		regStatus, registered, f15PrimaryHexOn(d, ctx, 1, cid, 1))
+	registered := stored == bogus
+	t.Logf("registered a WRONG primary for gen-1 first: status=%s stored=%q bogus=%v", regBogus, stored, registered)
+	regReal := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG))
+	time.Sleep(10 * time.Second)
+	stillBogus := f15PrimaryHexOn(d, ctx, 1, cid, 1) == bogus
+	c.rec("F15-SETONCE", "the pending generation's primary is set-once: registering the real key after a different one is refused (RegisterVaultKeys, every network)",
+		!isOK(regReal) && stillBogus,
+		fmt.Sprintf("second registerPublicKey status=%s (want refused), stored primary still the wrong one=%v", regReal, stillBogus))
+
+	// The BRK-2 check message for the REAL key: its signature may well land (the
+	// committee is intact); it is irrelevant to the contract, which checks the
+	// registered (wrong) primary. Recorded for transparency.
+	var checkMsg []byte
+	if pub, derr := hex.DecodeString(primary1); derr == nil && len(pub) == btcvault.CompressedPubKeyLen {
+		checkMsg = btcvault.CheckSigMessage(keyId1, 1, pub)
+	}
 
 	// ---- step 2: F15-REFUSED, activateKey must be refused while the check-sig is absent ----
 	anyOK := false
@@ -186,15 +182,14 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 	// a pass. The direct instrument is the landed signature; a successful
 	// activateKey is the fallback instrument when the message could not be
 	// recomputed.
-	missed := sigLanded || anyOK
+	missed := anyOK
 	if missed {
-		c.rec("F15-REFUSED", "activateKey is refused while the BRK-2 check-signature is missing (gen-1 stays Pending)",
-			false, fmt.Sprintf("PRECONDITION-MISSED, RERUN: the check-signature landed before magi-4 and magi-5 were stopped (stop took %v, sigLanded=%v, activateKey ok=%v,%s). The agreed-but-unsignable state was never established, so nothing below could be tested. Rerun the test.",
-				stopTook, sigLanded, anyOK, statuses))
+		c.rec("F15-REFUSED", "activateKey is refused while no valid BRK-2 check-signature exists for the REGISTERED primary (gen-1 stays Pending)",
+			false, fmt.Sprintf("PRODUCT: activateKey succeeded although the registered primary %q is not the committee's key %q; BRK-2 did not hold:%s", bogus, primary1, statuses))
 	} else {
-		c.rec("F15-REFUSED", "activateKey is refused while the BRK-2 check-signature is missing (gen-1 stays Pending)",
+		c.rec("F15-REFUSED", "activateKey is refused while no valid BRK-2 check-signature exists for the REGISTERED primary (gen-1 stays Pending)",
 			gen1Status == int(btcvault.VaultStatusPending),
-			fmt.Sprintf("3 activateKey tries 20s apart, none ok:%s; check-signature landed on magi-1=%v; gen-1 status on magi-1=%d (want 0 Pending); gen-0 status=%d (1 Active, untouched); registered=%v",
+			fmt.Sprintf("3 activateKey tries 20s apart, none ok:%s; the REAL key's check-signature landed on magi-1=%v (irrelevant, the registered primary is the wrong one); gen-1 status=%d (want 0 Pending); gen-0 status=%d (1 Active, untouched); wrong key registered=%v",
 				statuses, sigLanded, gen1Status, gen0Status, registered))
 	}
 
@@ -203,9 +198,9 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 	func() {
 		if missed {
 			c.rec("F15-DISCARD", "discardPendingKey removes the stalled gen-1 during the halt", false,
-				"NOT EXERCISED: the F15-REFUSED precondition was missed, there was no stalled pending generation to discard")
+				"NOT EXERCISED: activateKey unexpectedly succeeded, so there was no stalled pending generation to discard")
 			c.rec("F15-REMINT", "a re-mint after the discard gets a FRESH generation number (never reuses 1)", false,
-				"NOT EXERCISED: the F15-REFUSED precondition was missed, nothing was discarded so there is no re-mint to check")
+				"NOT EXERCISED: activateKey unexpectedly succeeded, nothing was discarded so there is no re-mint to check")
 			return
 		}
 
@@ -220,7 +215,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 			}
 			time.Sleep(10 * time.Second)
 		}
-		c.rec("F15-DISCARD", "discardPendingKey removes the stalled gen-1 during the halt (executed locally by the surviving nodes)",
+		c.rec("F15-DISCARD", "discardPendingKey removes the stalled gen-1 (its registered key can never activate)",
 			discarded, fmt.Sprintf("tx status=%s (non-terminal is expected during a halt, the verdict is contract STATE); gen-1 status on magi-1=%d (want -1 absent); gen-0 status=%d (want 1 Active, the live vault is never touched)",
 				discardStatus, vfVaultStatusOn(d, ctx, 1, cid, 1), vfVaultStatusOn(d, ctx, 1, cid, 0)))
 		if !discarded {
@@ -229,7 +224,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 		}
 
 		// ---- step 4a: restore the committee ----
-		vfStartNodes(t, d, ctx, []int{4, 5})
+		// (no nodes were stopped in the deterministic variant)
 		resumed, resStart, resLast := vfGrewWithin(d, ctx, 1, 5*time.Minute)
 		t.Logf("resume: block_headers max slot on magi-1 start=%d last=%d over 5m, grew=%v", resStart, resLast, resumed)
 		if !resumed {
