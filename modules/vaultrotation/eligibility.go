@@ -35,6 +35,23 @@ type RetiringSignerSet struct {
 	// to recognise a migration sign and exempt those parties from the CURRENT
 	// version floor — V5-6).
 	KeyIds map[string]bool
+	// PendingSignerElection maps a PENDING generation's keygen-committee members to
+	// the election carrying their BLS keys, so they stay READINESS-eligible for that
+	// generation's BRK-2 check-signature even if they churn out of the current
+	// election before it activates.
+	//
+	// DELIBERATELY SEPARATE from SignerElection: that field is also read by the #11
+	// bond-lock (state-processing/bond_lock.go), and a Pending generation holds NO
+	// funds. Folding Pending into it would bond-lock the very committee this fix
+	// exists to keep signing — and because the bond releases only when a generation
+	// DRAINS, a generation that never activates would never drain, so those members
+	// would be locked permanently. That is strictly worse than the stall being
+	// fixed. Consumers must union this in for READINESS only, never for bond-lock.
+	PendingSignerElection map[string]elections.ElectionResult
+	// PendingKeyIds is the set of PENDING generation keyIds. Kept separate from
+	// KeyIds so a pending generation's activation sign can be recognised without
+	// granting it the retiring-gen V-A semantics KeyIds carries.
+	PendingKeyIds map[string]bool
 	// ReshareSkipKeyIds is the set of BTC-vault keyIds the reshare loop must SKIP:
 	// every non-active generation — retiring/draining/inactive AND the terminal
 	// PURGED. It is deliberately SEPARATE from KeyIds: a purged (fully retired) key
@@ -58,6 +75,24 @@ func (s RetiringSignerSet) Has(account string) bool {
 	return ok
 }
 
+// HasReadiness reports whether account should be treated as READINESS-eligible:
+// a member of a fund-holding retiring/draining generation's committee, OR of a
+// PENDING generation's keygen committee (so it can still produce that
+// generation's BRK-2 check-signature after churning out of the current election).
+//
+// Use this ONLY for readiness/signing eligibility. Do NOT use it for the #11
+// bond-lock: a pending generation holds no funds, and because the bond releases
+// only when a generation DRAINS, a generation that never activates would never
+// drain and its members would be locked forever. Has() is the bond-lock predicate
+// and deliberately excludes Pending.
+func (s RetiringSignerSet) HasReadiness(account string) bool {
+	if _, ok := s.SignerElection[account]; ok {
+		return true
+	}
+	_, ok := s.PendingSignerElection[account]
+	return ok
+}
+
 // RetiringSignerDeps are the injectable dependencies of the pure computation, so
 // the deterministic core is unit-testable without a live datalayer / Mongo and can
 // be driven from either consumer's own accessors.
@@ -75,9 +110,11 @@ type RetiringSignerDeps struct {
 // compute the identical result.
 func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	out := RetiringSignerSet{
-		SignerElection:    map[string]elections.ElectionResult{},
-		KeyIds:            map[string]bool{},
-		ReshareSkipKeyIds: map[string]bool{},
+		SignerElection:        map[string]elections.ElectionResult{},
+		PendingSignerElection: map[string]elections.ElectionResult{},
+		KeyIds:                map[string]bool{},
+		PendingKeyIds:         map[string]bool{},
+		ReshareSkipKeyIds:     map[string]bool{},
 	}
 	if d.BtcContract == "" {
 		return out
@@ -108,9 +145,32 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		// single Active gen reshares. Just the keyId string (no committee needed), so it does
 		// not depend on the commitment/election reads below.
 		switch v.Status {
-		case btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining,
+		case btcvault.VaultStatusPending,
+			btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining,
 			btcvault.VaultStatusInactive, btcvault.VaultStatusPurged:
 			out.ReshareSkipKeyIds[keyId] = true
+		}
+
+		// VR2-10: a PENDING generation must not be reshared before it activates.
+		// Its tss_key row is already status:"active" the moment keygen commits, so
+		// FindEpochKeys selects it, and resharing it collides with the very
+		// check-signature that would activate it (VR2-09). It is added to the skip
+		// set above; here it contributes its keygen committee to readiness ONLY, so
+		// skipping the reshare cannot strand the signers that must produce that
+		// signature if the election churns first.
+		//
+		// Window note: a key committed in epoch E carries Epoch=E, and FindEpochKeys
+		// selects strictly `epoch < current`, so it is not reshare-eligible until
+		// E+1. Registration (which writes this registry) therefore has a full epoch
+		// of head-room; the gap only reopens if registration is slower than an epoch.
+		if v.Status == btcvault.VaultStatusPending {
+			if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
+				for _, account := range accounts {
+					out.PendingSignerElection[account] = elec
+				}
+				out.PendingKeyIds[keyId] = true
+			}
+			continue
 		}
 
 		// L4-C1 (FULL-PRUNED): include INACTIVE, in lock-step with the contract's
@@ -123,28 +183,44 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 			v.Status != btcvault.VaultStatusInactive {
 			continue
 		}
-		commitment, cerr := d.GetCommitment(keyId)
-		if cerr != nil {
+		elec, accounts, ok := commitmentCommittee(d, keyId)
+		if !ok {
 			continue
 		}
-		commitElection := d.GetElection(commitment.Epoch)
-		if commitElection == nil || commitElection.Members == nil {
-			continue
-		}
-		bv := new(big.Int)
-		if cb, derr := base64.RawURLEncoding.DecodeString(commitment.Commitment); derr == nil {
-			bv.SetBytes(cb)
-		}
-		for midx, member := range commitElection.Members {
-			if bv.Bit(midx) == 1 {
-				// Any election carrying the member is a valid verification target; if
-				// a member sits in more than one retiring gen's committee, LAST-WRITE-
-				// WINS in "v" registry iteration order — deterministic across nodes
-				// (same committed blob), so arbitrary-but-identical everywhere.
-				out.SignerElection[member.Account] = *commitElection
-			}
+		for _, account := range accounts {
+			// Any election carrying the member is a valid verification target; if
+			// a member sits in more than one retiring gen's committee, LAST-WRITE-
+			// WINS in "v" registry iteration order — deterministic across nodes
+			// (same committed blob), so arbitrary-but-identical everywhere.
+			out.SignerElection[account] = elec
 		}
 		out.KeyIds[keyId] = true
 	}
 	return out
+}
+
+// commitmentCommittee resolves a keyId's keygen/reshare commitment to the election
+// that carries its members' BLS keys, plus the accounts whose commitment bit is
+// set. Anchored on the COMMITMENT's own epoch, not the current one, so a
+// generation's committee stays resolvable across later election churn.
+func commitmentCommittee(d RetiringSignerDeps, keyId string) (elections.ElectionResult, []string, bool) {
+	commitment, cerr := d.GetCommitment(keyId)
+	if cerr != nil {
+		return elections.ElectionResult{}, nil, false
+	}
+	commitElection := d.GetElection(commitment.Epoch)
+	if commitElection == nil || commitElection.Members == nil {
+		return elections.ElectionResult{}, nil, false
+	}
+	bv := new(big.Int)
+	if cb, derr := base64.RawURLEncoding.DecodeString(commitment.Commitment); derr == nil {
+		bv.SetBytes(cb)
+	}
+	accounts := make([]string, 0, len(commitElection.Members))
+	for midx, member := range commitElection.Members {
+		if bv.Bit(midx) == 1 {
+			accounts = append(accounts, member.Account)
+		}
+	}
+	return *commitElection, accounts, true
 }

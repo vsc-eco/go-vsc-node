@@ -589,7 +589,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Deterministic on-chain set; empty/inert unless VaultRotationV2Enabled AND a
 		// retiring/draining BTC gen exists. Widens the convergent gossip set, does
 		// NOT replace it (not GV-H8).
-		retiringEligible := tssMgr.retiringGenSignerSet(bh).Has(selfAccount)
+		// VR2-10: include a PENDING generation's keygen committee, so skipping its
+		// pre-activation reshare cannot strand the signers that must still produce
+		// its BRK-2 check-signature after an election churn. HasReadiness (not Has)
+		// keeps this out of the bond-lock predicate.
+		retiringEligible := tssMgr.retiringGenSignerSet(bh).HasReadiness(selfAccount)
 
 		if isMember || retiringEligible {
 			for targetBlock := range gossipTargets {
@@ -1362,7 +1366,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// the current floor. Deterministic on-chain set; inert unless v2 + a
 			// retiring gen exists.
 			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
-			isRetiringSign := signRetiringSet.KeyIds[action.KeyId]
+			isRetiringSign := signRetiringSet.KeyIds[action.KeyId] ||
+				signRetiringSet.PendingKeyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
@@ -1370,7 +1375,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			for account, att := range signAttMap {
 				if att.Version().MeetsConsensusMin(minSignVer) {
 					signReadyAccounts[account] = true
-				} else if isRetiringSign && signRetiringSet.Has(account) {
+				} else if isRetiringSign && signRetiringSet.HasReadiness(account) {
 					signReadyAccounts[account] = true
 				}
 			}
