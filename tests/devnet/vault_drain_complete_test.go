@@ -98,8 +98,19 @@ func TestVaultDrainToPurge(t *testing.T) {
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 60_000_000, seedH)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 40_000_000, contractLastHeight(t, d, ctx, cid))
+	// map CONFIRMED means node 1 executed the deposit, but genUtxoCount reads magi-2,
+	// which processes that block a moment later; run 3 read 1 UTXO immediately after
+	// the second deposit and false-failed while run 1 (same funding code) saw 2. Poll
+	// magi-2 for the second deposit to register (read-lag, H-03 class), dumping the
+	// registry on each miss so a genuinely lost deposit is still visible.
 	n0 := genUtxoCount(t, d, ctx, cid, 0)
-	rec("DRAIN-00", "gen-0 funded with multiple UTXOs", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXOs", n0))
+	d00Deadline := time.Now().Add(3 * time.Minute)
+	for n0 < 2 && time.Now().Before(d00Deadline) {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("DRAIN-00 waiting for the 2nd deposit to register on magi-2 (have %d)", n0))
+		time.Sleep(10 * time.Second)
+		n0 = genUtxoCount(t, d, ctx, cid, 0)
+	}
+	rec("DRAIN-00", "gen-0 funded with multiple UTXOs", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXOs (after polling magi-2 up to 3m for the 2nd deposit)", n0))
 	if n0 < 2 {
 		return
 	}
