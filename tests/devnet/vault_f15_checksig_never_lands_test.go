@@ -236,9 +236,15 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 		// counter back and reused generation 1 this would time out, so the wait
 		// itself is the monotonicity assertion.
 		primary2, rotated := vfRotate(t, d, ctx, cid, 2)
-		gen1After := vfVaultStatusOn(d, ctx, 2, cid, 1)
-		gen2After := vfVaultStatusOn(d, ctx, 2, cid, 2)
-		c.rec("F15-REMINT", "the re-mint gets a FRESH generation number (gen-2), the discarded gen-1 is never reused",
+		// Poll: after vfRotate activates gen-2, the discarded gen-1 clearing to absent and
+		// gen-2 flipping to Active on magi-2 lag the rotation by a few blocks; run 1 read
+		// both immediately and false-failed while the drain step below then passed.
+		gen1After, gen2After := vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 2)
+		for i := 0; i < 12 && (gen1After != -1 || gen2After != int(btcvault.VaultStatusActive)); i++ {
+			time.Sleep(10 * time.Second)
+			gen1After, gen2After = vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 2)
+		}
+		c.rec("F15-REMINT-GEN", "the re-mint gets a FRESH generation number (gen-2), the discarded gen-1 is never reused",
 			rotated && gen1After == -1 && gen2After == int(btcvault.VaultStatusActive),
 			fmt.Sprintf("rotate to gen-2 ok=%v, key=%s-mainv2 pubkey=%s; gen-1 status on magi-2=%d (want -1 absent); gen-2 status=%d (want 1 Active); gen-0 status=%d (want 2 Retiring)",
 				rotated, cid, primary2, gen1After, gen2After, vfVaultStatusOn(d, ctx, 2, cid, 0)))
@@ -249,14 +255,14 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 		// ---- step 4c: F15-REMINT, gen-0 really drains into the re-minted gen-2 ----
 		gen0Before := genUtxoCount(t, d, ctx, cid, 0)
 		if gen0Before <= 0 {
-			c.rec("F15-REMINT", "gen-0 drains into the re-minted gen-2 with a signed migration sweep", false,
+			c.rec("F15-REMINT-DRAIN", "gen-0 drains into the re-minted gen-2 with a signed migration sweep", false,
 				fmt.Sprintf("PRECONDITION: gen-0 held %d UTXOs before the sweep, there was nothing to migrate", gen0Before))
 			return
 		}
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary2, backupPubKeyG)
 		gen0After := genUtxoCount(t, d, ctx, cid, 0)
-		c.rec("F15-REMINT", "gen-0 drains into the re-minted gen-2 with a signed migration sweep (the vault survived the stalled rotation)",
+		c.rec("F15-REMINT-DRAIN", "gen-0 drains into the re-minted gen-2 with a signed migration sweep (the vault survived the stalled rotation)",
 			gen0After >= 0 && gen0After < gen0Before,
 			fmt.Sprintf("gen-0 UTXO count %d -> %d, gen-2 UTXO count=%d", gen0Before, gen0After, genUtxoCount(t, d, ctx, cid, 2)))
 	}()
