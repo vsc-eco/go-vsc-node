@@ -476,8 +476,14 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	amount := int64(0)
 
 	if strings.HasPrefix(account, "hive:") {
-		maxRcs = maxRcs + params.RC_HIVE_FREE_AMOUNT
-		amount = params.RC_HIVE_FREE_AMOUNT
+		// VR2-17: report the network-resolved allowance so this query cannot
+		// disagree with what the RC subsystem actually enforces.
+		freeAmt := params.RC_HIVE_FREE_AMOUNT
+		if r.StateEngine != nil && r.StateEngine.RcSystem != nil {
+			freeAmt = r.StateEngine.RcSystem.HiveFreeAmount
+		}
+		maxRcs = maxRcs + freeAmt
+		amount = freeAmt
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)

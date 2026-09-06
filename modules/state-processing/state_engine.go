@@ -2923,7 +2923,11 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 		// to prevent frozen RC from accumulating beyond what the user owns.
 		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
 		if strings.HasPrefix(k, "hive:") {
-			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+			// VR2-17: read the network-resolved allowance, NOT the params global.
+			// This site is a per-slot consensus path (it clamps the persisted RC
+			// checkpoint), so a stale value here would silently disagree with the
+			// budget CanConsume computed in the same block.
+			balAmt = balAmt + se.RcSystem.HiveFreeAmount
 		}
 		if rcBal > balAmt {
 			rcBal = balAmt
@@ -3153,6 +3157,17 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	return m
 }
 
+// resolveRcHiveFreeAmount returns the network's free-RC allowance from SystemConfig,
+// falling back to the production default when sconf is absent (tests construct a
+// StateEngine without one). VR2-17: this is the single place the value enters the
+// RC subsystem, so every reader downstream shares one network-derived number.
+func resolveRcHiveFreeAmount(sconf systemconfig.SystemConfig) int64 {
+	if sconf == nil {
+		return params.RC_HIVE_FREE_AMOUNT
+	}
+	return sconf.RcHiveFreeAmount()
+}
+
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
@@ -3221,7 +3236,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		txDb:           txDb,
 		rcDb:           rcDb,
 		nonceDb:        nonceDb,
-		RcSystem:       rcSystem.New(rcDb, ls),
+		RcSystem:       rcSystem.New(rcDb, ls, resolveRcHiveFreeAmount(sconf)),
 		RcMap:          make(map[string]int64),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
