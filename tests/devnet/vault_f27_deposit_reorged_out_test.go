@@ -136,19 +136,24 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	prevJSON, _ := d.bitcoinCli(ctx, "getrawtransaction", dtx.Vin[0].Txid, "1")
 	var ptx struct {
 		Vout []struct {
-			Value float64 `json:"value"`
-			N     uint32  `json:"n"`
+			Value        float64 `json:"value"`
+			N            uint32  `json:"n"`
+			ScriptPubKey struct {
+				Hex string `json:"hex"`
+			} `json:"scriptPubKey"`
 		} `json:"vout"`
 	}
 	json.Unmarshal([]byte(prevJSON), &ptx)
 	inValue := 0.0
+	inScript := ""
 	for _, o := range ptx.Vout {
 		if o.N == dtx.Vin[0].Vout {
 			inValue = o.Value
+			inScript = o.ScriptPubKey.Hex
 		}
 	}
-	if inValue <= 0.0002 {
-		t.Fatalf("PRECONDITION FAILED: cannot read the deposit's input value (%f)", inValue)
+	if inValue <= 0.0002 || inScript == "" {
+		t.Fatalf("PRECONDITION FAILED: cannot read the deposit's input value/script (%f, %q)", inValue, inScript)
 	}
 	back, _ := d.bitcoinCli(ctx, "getnewaddress")
 	rawC, err := d.bitcoinCli(ctx, "createrawtransaction",
@@ -157,7 +162,11 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PRECONDITION FAILED: createrawtransaction (conflict): %v", err)
 	}
-	signedJSON, err := d.bitcoinCli(ctx, "signrawtransactionwithwallet", rawC)
+	// The input is already SPENT by the mined deposit from the wallet's point of view, so
+	// the signer cannot look it up in its UTXO set (run 1: complete=false). Hand it the
+	// previous output explicitly (prevtxs); the wallet still holds the key.
+	prevtxs := fmt.Sprintf(`[{"txid":"%s","vout":%d,"scriptPubKey":"%s","amount":%.8f}]`, dtx.Vin[0].Txid, dtx.Vin[0].Vout, inScript, inValue)
+	signedJSON, err := d.bitcoinCli(ctx, "signrawtransactionwithwallet", rawC, prevtxs)
 	if err != nil {
 		t.Fatalf("PRECONDITION FAILED: signrawtransactionwithwallet (conflict): %v", err)
 	}
