@@ -35,24 +35,28 @@ import (
 // CASES
 //
 //  1. F26-BLOCKS: 4 of 5 keep producing VSC blocks (block_headers instrument).
-//
-//  2. F26-FROZEN: after createKey, the gen-1 key never reaches active across many
-//     rotate intervals; timeout/retry log lines accumulate; the generation stays Pending.
-//
-//  3. F26-SIGN-OK: an ordinary withdrawal from the ACTIVE gen-0 is fully signed by the
-//     four live parties and accepted by Bitcoin (signing liveness is intact, so the
-//     freeze is keygen-specific).
-//
-//  4. F26-ELECTION: two elections later the dead witness is still a committee member.
-//
-//  5. F26-DISCARD: discardPendingKey abandons the stuck generation (the state machine
-//     has an exit), but a fresh createKey freezes exactly the same way (F26-REKEY-FROZEN).
-//
-//  6. F26-RECOVER: bringing the witness back lets the retried keygen complete.
-//
+//  2. F26-KEYGEN-COMPLETES: the gen-1 keygen COMPLETES with one witness permanently
+//     down. VSC keygen/reshare is threshold-based (t+1 = 4 of 5), not all-parties: the
+//     dispatcher runs on the readiness-filtered subset with the original-size threshold
+//     (dispatcher.go:180) and a tss_key is marked active only on a BLS-threshold-verified
+//     keygen commitment (state_engine.go:1651). So n-(t+1)=1 missing party is tolerated.
+//  3. F26-ACTIVATES: the dead-witness key is USABLE — it activates (BRK-2 check-signature
+//     signed by the 4 live parties).
+//  4. F26-MIGRATES: the dead-witness key SIGNS the gen-0 -> gen-1 migration sweep, so the
+//     rotation actually completes with one witness down.
+//  5. F26-ELECTION: the dead-but-enabled witness stays a committee member (elections have
+//     no liveness score; only its own key could remove it) — the residual VR2-08 concern:
+//     it erodes the failure margin, but does not freeze rotation.
+//  6. F26-RECOVER: the returned witness rejoins and catches up (full 5-of-5 restored).
 //  7. F26-IDENT: all five nodes agree.
 //
-//     VAULT_F26_RUN=1 go test -v -run TestVaultF26DeadWitnessKeygenLiveness -timeout 95m ./tests/devnet/
+// This REPLACES the earlier "the keygen freezes with one dead witness" premise, which was
+// wrong: run 1 saw the key reach active with one node down (the gen stayed Pending only
+// because of the fast cadence's VR2-09 lock). A two-down boundary is not testable here —
+// for n=5 the keygen threshold (t+1=4) equals the BLS block quorum (4 of 5), so two down
+// halts the chain first (see F1-HALT), not the keygen specifically.
+//
+//	VAULT_F26_RUN=1 go test -v -run TestVaultF26DeadWitnessKeygenLiveness -timeout 95m ./tests/devnet/
 func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -74,7 +78,11 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	}
 
 	const hpin = 400
-	cfg := tssTestConfig()
+	// Slow cadence: F26 activates and migrates the dead-witness key, and on the 20-block
+	// tssTestConfig cadence VR2-09 would block that activation independently of the dead
+	// witness (confounding the measurement). The 60-block cadence gives the check-sig a
+	// window (H-17).
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -120,13 +128,8 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 		return
 	}
 
-	// ---- 2. start a keygen; it can never complete ----
+	// ---- 2. a keygen COMPLETES with one witness down (threshold t+1 = 4 of 5) ----
 	e0 := currentEpoch(t, d, ctx, 1, 2*time.Minute)
-	timeouts0 := vfCountLogs(d, ctx, 1, "timeout result")
-	retries0 := vfCountLogs(d, ctx, 1, "will retry at next rotate interval")
-	// With one node down the fleet sits at exactly the 4-of-5 block quorum, so a call
-	// can still read INCLUDED at the end of vstatus's 90 s window and the reading node
-	// lags; run 1 died here on a single immediate read. Poll for the Pending gen.
 	ckStatus := vstatus(t, d, ctx, 1, cid, "createKey", "")
 	keyId1, gen1 := pendingKeyId()
 	for i := 0; i < 24 && keyId1 == ""; i++ {
@@ -134,54 +137,41 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 		keyId1, gen1 = pendingKeyId()
 	}
 	if keyId1 == "" {
-		t.Fatalf("PRECONDITION FAILED: createKey status=%s and no Pending generation visible after 4 min, no keygen to freeze", ckStatus)
+		t.Fatalf("PRECONDITION FAILED: createKey status=%s and no Pending generation visible after 4 min", ckStatus)
 	}
 	t.Logf("createKey status=%s; pending gen-%d keyId=%s", ckStatus, gen1, keyId1)
-	frozenFor := 7 * time.Minute
-	became, status := f26WaitKeyActive(d, ctx, 1, keyId1, frozenFor)
-	timeouts1 := vfCountLogs(d, ctx, 1, "timeout result")
-	retries1 := vfCountLogs(d, ctx, 1, "will retry at next rotate interval")
-	genStat := vfVaultStatusOn(d, ctx, 2, cid, gen1)
-	c.rec("F26-FROZEN", "the keygen never completes while one committee member is permanently down (DKG needs every party, unlike signing)",
-		!became && genStat == 0 && timeouts1 > timeouts0,
-		fmt.Sprintf("keyId=%s status after %s=%q, gen-%d vault status=%d (0=Pending), magi-1 'timeout result' %d->%d, 'will retry' %d->%d",
-			keyId1, frozenFor, status, gen1, genStat, timeouts0, timeouts1, retries0, retries1))
-
-	// ---- 3. signing still works: a withdrawal from the active gen-0 ----
-	dest, _ := d.bitcoinCli(ctx, "getnewaddress")
-	spendsBefore := txSpendIds(t, d, ctx, cid)
-	um := vstatus(t, d, ctx, 1, cid, "unmap", fmt.Sprintf(`{"amount":"%d","to":"%s"}`, 5_000_000, dest))
-	txU := ""
-	for i := 0; i < 20 && isOK(um) && txU == ""; i++ {
-		time.Sleep(3 * time.Second)
-		for _, id := range txSpendIds(t, d, ctx, cid) {
-			if !contains(spendsBefore, id) {
-				txU = id
-			}
-		}
+	became, kstatus := f26WaitKeyActive(d, ctx, 1, keyId1, 12*time.Minute)
+	primary1 := ""
+	if docs, e := d.GetTssKeys(ctx, 2, bson.M{"id": keyId1}); e == nil && len(docs) > 0 {
+		primary1 = docs[0].PublicKey
 	}
-	signDetail := fmt.Sprintf("unmap=%s txid=%s", um, txU)
-	signOK := false
-	if txU != "" {
-		if sdU := waitSigningData(t, d, ctx, cid, txU); sdU != nil {
-			rawU, signedU := "", false
-			for attempt := 1; attempt <= 3 && !signedU; attempt++ {
-				rawU, signedU = f25AwaitSignatures(t, d, ctx, cid+"-main", sdU)
-			}
-			if signedU {
-				bc, berr := d.bitcoinCli(ctx, "sendrawtransaction", rawU)
-				signOK = berr == nil
-				signDetail += fmt.Sprintf(" signed_by_4_of_5=true broadcast=%s err=%v", bc, berr)
-			} else {
-				signDetail += " signed=false (no full witness within three sign intervals)"
-			}
-		} else {
-			signDetail += " no signing data"
-		}
-	}
-	c.rec("F26-SIGN-OK", "an ordinary withdrawal from the active generation is still signed (4 of 5 meets the threshold) and accepted by Bitcoin",
-		signOK, signDetail)
+	c.rec("F26-KEYGEN-COMPLETES", "the gen-1 keygen COMPLETES with one committee member permanently down (threshold t+1 = 4 of 5; DKG is not all-parties)",
+		became && primary1 != "",
+		fmt.Sprintf("keyId=%s status after 12m=%q pubkey=%s (magi-%d down the whole time)", keyId1, kstatus, f3TruncHex(primary1), dead))
 
+	// ---- 3. the dead-witness key ACTIVATES (BRK-2 check-sig signed by 4 of 5) ----
+	activated := false
+	if became && primary1 != "" {
+		vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regen finish
+		activated = vfRegisterAndActivate(t, d, ctx, cid, primary1, 20)
+	}
+	gen1Stat := vfVaultStatusOn(d, ctx, 2, cid, gen1)
+	c.rec("F26-ACTIVATES", "the key generated with one witness down is USABLE: it activates (BRK-2 check-signature signed by the 4 live parties)",
+		activated && gen1Stat == 1,
+		fmt.Sprintf("gen-%d vault status=%d (1=Active) with magi-%d down", gen1, gen1Stat, dead))
+
+	// ---- 4. the dead-witness key SIGNS a migration sweep (gen-0 drains into gen-1) ----
+	if activated {
+		gen0Before := genUtxoCount(t, d, ctx, cid, 0)
+		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
+		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
+		gen0After := genUtxoCount(t, d, ctx, cid, 0)
+		c.rec("F26-MIGRATES", "the dead-witness key SIGNS the gen-0 -> gen-1 migration sweep (4 of 5 sign), so the rotation completes with one witness down",
+			gen0Before > 0 && gen0After < gen0Before,
+			fmt.Sprintf("gen-0 UTXO %d -> %d with magi-%d down", gen0Before, gen0After, dead))
+	} else {
+		c.rec("F26-MIGRATES", "the dead-witness key SIGNS the gen-0 -> gen-1 migration sweep", false, "not reached: gen-1 did not activate")
+	}
 	// ---- 4. elections keep the dead witness ----
 	elDetail := ""
 	stillElected := false
@@ -199,42 +189,16 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	c.rec("F26-ELECTION", "two elections later the dead-but-enabled witness is still a committee member (elections have no liveness score)",
 		stillElected, elDetail)
 
-	// ---- 5. the state machine has an exit, keygen liveness does not ----
-	disc := vstatus(t, d, ctx, 1, cid, "discardPendingKey", "")
-	time.Sleep(10 * time.Second)
-	afterDisc := vfVaultStatusOn(d, ctx, 2, cid, gen1)
-	c.rec("F26-DISCARD", "discardPendingKey abandons the stuck Pending generation",
-		isOK(disc) && afterDisc != 0, fmt.Sprintf("discardPendingKey=%s gen-%d status after=%d (want not 0)", disc, gen1, afterDisc))
-
-	rekey := vstatus(t, d, ctx, 1, cid, "createKey", "")
-	keyId2, gen2 := pendingKeyId()
-	for i := 0; i < 24 && keyId2 == ""; i++ { // same 4-of-5 lag as the first createKey
-		time.Sleep(10 * time.Second)
-		keyId2, gen2 = pendingKeyId()
-	}
-	became2, status2 := false, "(no pending gen)"
-	if keyId2 != "" {
-		became2, status2 = f26WaitKeyActive(d, ctx, 1, keyId2, 4*time.Minute)
-	}
-	c.rec("F26-REKEY-FROZEN", "a fresh createKey after the discard freezes the same way while the witness is still down",
-		isOK(rekey) && keyId2 != "" && !became2,
-		fmt.Sprintf("createKey=%s keyId=%s gen=%d status after 4m=%q", rekey, keyId2, gen2, status2))
-
-	// ---- 6. only the witness's return unblocks it ----
+	// ---- 6. the dead witness returns, rejoins and catches up (5-of-5 margin restored) ----
 	vfStartNodes(t, d, ctx, []int{dead})
-	recoverKey := keyId2
-	if recoverKey == "" {
-		recoverKey = keyId1
+	target, terr := d.getLastProcessedBlock(ctx, 1)
+	caughtUp := false
+	if terr == nil {
+		caughtUp = vfWaitProcessed(t, d, ctx, dead, target, 10*time.Minute)
 	}
-	kd, err := d.WaitForTssKey(ctx, 2, bson.M{"id": recoverKey, "status": "active"}, 14*time.Minute)
-	recDetail := fmt.Sprintf("keyId=%s", recoverKey)
-	if err == nil && kd != nil {
-		recDetail += fmt.Sprintf(" active epoch=%d pubkey=%s", kd.Epoch, f3TruncHex(kd.PublicKey))
-	} else {
-		recDetail += fmt.Sprintf(" err=%v", err)
-	}
-	c.rec("F26-RECOVER", "once the witness is back the retried keygen completes",
-		err == nil && kd != nil, recDetail)
+	bhDead, _ := d.getLastProcessedBlock(ctx, dead)
+	c.rec("F26-RECOVER", "the returned witness rejoins and catches up to the fleet (full 5-of-5 margin restored; the rotation had already completed without it)",
+		caughtUp, fmt.Sprintf("target(magi-1)=%d magi-%d processed=%d within 10m (err=%v)", target, dead, bhDead, terr))
 
 	finish()
 }
