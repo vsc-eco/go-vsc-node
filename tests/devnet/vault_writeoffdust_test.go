@@ -10,27 +10,30 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// TestVaultWriteOffDust, rewritten 2026-09-06 as the VR2-11 on/off measurement.
+// TestVaultWriteOffDust proves the VR2-11 fee-window deadlock.
 //
-// The July version deposited 600 sats expecting the min-deposit floor to be OFF before
-// the first rotation. PR #29's contract enforces MinDepositSats = 1,000 unconditionally
-// (Stage7 MD03-EDGE-07), and with that floor a residual is ALWAYS sweepable at the
-// minimum fee (1,000 - ~144 = 856 > 546), so isResidualUnsweepableAtMinFee can never be
-// true on a fresh v2 deploy: the write-off positive path is unreachable by design.
+// CORRECTION 2026-09-06: the min-deposit floor (constants.MinDepositSats = 1,000) is NOT
+// unconditional. mapping.go:87 gates the sub-min skip on hasSupersededGen, so it is INERT
+// until the first rotation: pre-rotation a sub-min deposit (above Bitcoin's own ~546-sat
+// dust limit) IS credited. The earlier "unconditional floor" reading (from Stage7
+// MD03-EDGE-07, whose 500-sat deposit is below Bitcoin dust and never reached the floor)
+// was wrong; run 3 observed a 600-sat pre-rotation deposit credited. The write-off
+// positive path is therefore REACHABLE (see TestVaultWriteOffDustOrphansBalance / VR2-15).
 //
-// What IS reachable is worse. The sweep builder defers a tranche when the fee at the
+// The deadlock itself stands: the sweep builder defers a tranche when the fee at the
 // CURRENT oracle rate exceeds half its value (migration.go:209), while writeOffDust judges
-// dust at the MINIMUM rate (dust_writeoff.go:59). A 1,000-sat residual is therefore
-// deferred whenever fees are above ~3.5 sat/vB AND refused by write-off, so the retiring
-// generation stays "funded": createKey (NN#3) and retireVault refuse, bonds stay locked,
-// until fees fall. This test proves both halves:
+// dust at the MINIMUM rate (dust_writeoff.go:59). A 1,000-sat residual is sweepable at the
+// minimum rate (1,000 - ~144 = 856 > 546) so write-off REFUSES it, yet it is deferred
+// whenever fees are above ~3.5 sat/vB, so the retiring generation stays "funded":
+// createKey (NN#3) and retireVault refuse, bonds stay locked, until fees fall.
 //
-//	WOD-00  the 600-sat deposit is refused (floor unconditional); 1,000 sats is credited.
-//	WOD-01  at latest_fee 10 the sweep is DEFERRED (migrateVault not OK, residual stays).
-//	WOD-02  writeOffDust REFUSES the same residual (not dust at the minimum rate).
-//	WOD-03  retireVault leaves gen-0 Retiring and createKey is refused: the deadlock.
-//	WOD-04  one addBlocks with latest_fee 1 and the same sweep succeeds and settles.
-//	WOD-05  retireVault then moves gen-0 to Inactive.
+//	WOD-00   the 1,000-sat deposit is credited pre-rotation (floor inert until rotation).
+//	WOD-00b  post-rotation a 700-sat deposit to the active gen is SKIPPED (floor engaged).
+//	WOD-01   at latest_fee 10 the sweep is DEFERRED (migrateVault not OK, residual stays).
+//	WOD-02   writeOffDust REFUSES the same residual (not dust at the minimum rate).
+//	WOD-03   retireVault leaves gen-0 Retiring and createKey is refused: the deadlock.
+//	WOD-04   one addBlocks with latest_fee 1 and the same sweep succeeds and settles.
+//	WOD-05   retireVault then moves gen-0 to Inactive.
 //
 //	VAULT_WOD_RUN=1 go test -v -run TestVaultWriteOffDust -timeout 45m ./tests/devnet/
 func TestVaultWriteOffDust(t *testing.T) {
@@ -100,22 +103,17 @@ func TestVaultWriteOffDust(t *testing.T) {
 	}
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 
-	// 600 sats: at the fixed 1 sat/vByte floor a 1-input sweep costs ~144 sat, leaving
-	// 456 <= the 546 dustThreshold — provably un-sweepable at ANY fee rate.
-	// The floor is unconditional: a 600-sat deposit maps but is not credited.
-	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 600, seedH)
-	time.Sleep(10 * time.Second)
-	nSub := genUtxoCount(t, d, ctx, cid, 0)
-	// The smallest accepted deposit is the residual under test.
+	// Pre-rotation (only gen-0 active) the min-deposit floor is inert (mapping.go:87 gates
+	// on hasSupersededGen), so the 1,000-sat residual under test is credited normally.
 	const residualSats = 1000
-	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, residualSats, contractLastHeight(t, d, ctx, cid))
+	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, residualSats, seedH)
 	n0 := 0
 	for i := 0; i < 12 && n0 == 0; i++ {
 		time.Sleep(10 * time.Second)
 		n0 = genUtxoCount(t, d, ctx, cid, 0)
 	}
-	rec("WOD-00", "the 600-sat deposit is refused (min-deposit floor is unconditional) and the 1,000-sat minimum is credited", nSub == 0 && n0 == 1,
-		fmt.Sprintf("after 600 sats gen-0 held %d UTXO(s); after 1,000 sats gen-0 holds %d, balance=%d", nSub, n0, balanceSats(t, d, ctx, cid, owner)))
+	rec("WOD-00", "the 1,000-sat deposit is credited pre-rotation (min-deposit floor is inert until the first rotation)", n0 == 1,
+		fmt.Sprintf("gen-0 holds %d UTXO(s), balance=%d", n0, balanceSats(t, d, ctx, cid, owner)))
 	if n0 != 1 {
 		t.Logf("WOD SUMMARY: %d PASS %d FAIL", pass, fail)
 		return
@@ -151,6 +149,16 @@ func TestVaultWriteOffDust(t *testing.T) {
 	// Fund a fee reserve so a FAILED migrateVault can only be due to dustiness, not a
 	// missing reserve (the reserve funds gen-1, not gen-0).
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
+
+	// ── WOD-00b: with gen-0 now Retiring (a superseded gen exists), the floor engages. ──
+	// A 700-sat deposit (above Bitcoin dust, below MinDepositSats) to the active gen-1 is
+	// skipped per-output: the map op succeeds but credits nothing.
+	subBefore := genUtxoCount(t, d, ctx, cid, 1)
+	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, owner, 700, contractLastHeight(t, d, ctx, cid))
+	time.Sleep(20 * time.Second)
+	subAfter := genUtxoCount(t, d, ctx, cid, 1)
+	rec("WOD-00b", "post-rotation the min-deposit floor engages: a 700-sat deposit to the active gen-1 is skipped (hasSupersededGen)", subAfter == subBefore,
+		fmt.Sprintf("gen-1 UTXO count %d -> %d after a 700-sat deposit (want unchanged)", subBefore, subAfter))
 
 	// ── WOD-01: migrateVault must REFUSE the all-dust residual (uneconomic). ──
 	// WOD-01: at the devnet's relayed rate (latest_fee 10) the 1,000-sat tranche is
