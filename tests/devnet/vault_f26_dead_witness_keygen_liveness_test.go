@@ -124,13 +124,19 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	e0 := currentEpoch(t, d, ctx, 1, 2*time.Minute)
 	timeouts0 := vfCountLogs(d, ctx, 1, "timeout result")
 	retries0 := vfCountLogs(d, ctx, 1, "will retry at next rotate interval")
-	if s := vstatus(t, d, ctx, 1, cid, "createKey", ""); !isOK(s) {
-		t.Fatalf("PRECONDITION FAILED: createKey status=%s, no keygen to freeze", s)
-	}
+	// With one node down the fleet sits at exactly the 4-of-5 block quorum, so a call
+	// can still read INCLUDED at the end of vstatus's 90 s window and the reading node
+	// lags; run 1 died here on a single immediate read. Poll for the Pending gen.
+	ckStatus := vstatus(t, d, ctx, 1, cid, "createKey", "")
 	keyId1, gen1 := pendingKeyId()
-	if keyId1 == "" {
-		t.Fatalf("PRECONDITION FAILED: createKey accepted but no Pending generation is visible")
+	for i := 0; i < 24 && keyId1 == ""; i++ {
+		time.Sleep(10 * time.Second)
+		keyId1, gen1 = pendingKeyId()
 	}
+	if keyId1 == "" {
+		t.Fatalf("PRECONDITION FAILED: createKey status=%s and no Pending generation visible after 4 min, no keygen to freeze", ckStatus)
+	}
+	t.Logf("createKey status=%s; pending gen-%d keyId=%s", ckStatus, gen1, keyId1)
 	frozenFor := 7 * time.Minute
 	became, status := f26WaitKeyActive(d, ctx, 1, keyId1, frozenFor)
 	timeouts1 := vfCountLogs(d, ctx, 1, "timeout result")
@@ -202,6 +208,10 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 
 	rekey := vstatus(t, d, ctx, 1, cid, "createKey", "")
 	keyId2, gen2 := pendingKeyId()
+	for i := 0; i < 24 && keyId2 == ""; i++ { // same 4-of-5 lag as the first createKey
+		time.Sleep(10 * time.Second)
+		keyId2, gen2 = pendingKeyId()
+	}
 	became2, status2 := false, "(no pending gen)"
 	if keyId2 != "" {
 		became2, status2 = f26WaitKeyActive(d, ctx, 1, keyId2, 4*time.Minute)
