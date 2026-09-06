@@ -210,9 +210,11 @@ func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int
 	deadline := time.Now().Add(timeout)
 	var lastN int
 	var lastBh uint64
+	var lastErrN, lastErrB error
 	for {
 		n, errN := d.CountRegisteredWitnesses(ctx, node)
 		bh, errB := d.getLastProcessedBlock(ctx, node)
+		lastErrN, lastErrB = errN, errB
 		if errN == nil {
 			lastN = n
 		}
@@ -223,8 +225,11 @@ func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int
 			return n, bh, nil
 		}
 		if time.Now().After(deadline) {
-			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, block %d/%d",
-				timeout, lastN, want, lastBh, minHeight)
+			// The last read errors are part of the reading: a stuck count can be a
+			// stuck node OR a failing query, and the caller cannot tell them apart
+			// otherwise (H-32).
+			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, block %d/%d (last reads: witnesses err=%v, block err=%v)",
+				timeout, lastN, want, lastBh, minHeight, lastErrN, lastErrB)
 		}
 		select {
 		case <-ctx.Done():

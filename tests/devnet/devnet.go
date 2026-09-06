@@ -228,6 +228,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 	// found" (F18 run 2), so that case aborts here with the count instead.
 	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute); werr != nil {
 		if got == 0 {
+			d.dumpBootAbortDiagnostics(ctx)
 			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m (block %d): %w", d.cfg.GenesisNode, bh, werr)
 		}
 		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
@@ -485,6 +486,30 @@ ENTRYPOINT ["/home/app/app/entrypoint.sh"]
 }
 
 // Logs returns the docker compose logs for a service.
+// dumpBootAbortDiagnostics prints what the zero-registration abort cannot tell on
+// its own: whether hived was producing blocks at all, and what the genesis node was
+// doing (its Hive streamer, not just the tss module). F3 run 2 aborted with
+// "block 1" on the genesis node after 12 minutes and nothing recorded why (H-32).
+func (d *Devnet) dumpBootAbortDiagnostics(ctx context.Context) {
+	if hl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "500", "haf"); err == nil {
+		last := ""
+		for _, ln := range strings.Split(hl, "\n") {
+			if strings.Contains(ln, "Generated block") {
+				last = ln
+			}
+		}
+		log.Printf("[devnet] boot-abort diagnostics: hived last 'Generated block' line within its last 500 log lines: %q", strings.TrimSpace(last))
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: hived logs unreadable: %v", err)
+	}
+	svc := fmt.Sprintf("magi-%d", d.cfg.GenesisNode)
+	if nl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "60", svc); err == nil {
+		log.Printf("[devnet] boot-abort diagnostics: %s last 60 log lines (all modules):\n%s", svc, nl)
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: %s logs unreadable: %v", svc, err)
+	}
+}
+
 func (d *Devnet) Logs(ctx context.Context, service string) (string, error) {
 	return d.composeOutput(ctx, "logs", "--no-color", service)
 }
