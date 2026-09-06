@@ -75,7 +75,7 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 	}
 
 	const hpin = 400 // v2 activation height, AFTER genesis so gen-0 mints on the v2-off path
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

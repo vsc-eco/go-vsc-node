@@ -113,7 +113,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	// path (no fresh-genesis deadlock) and v2 is ON for the rotation under test.
 	const hpin uint64 = 400
 
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

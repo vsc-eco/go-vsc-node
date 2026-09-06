@@ -90,7 +90,7 @@ func TestVaultF13LiveRefuse(t *testing.T) {
 	// v2-off genesis path and the flag is live well before the rotation.
 	const hpin = 400
 
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

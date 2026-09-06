@@ -147,7 +147,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 
 	const hpin = 400 // v2 activation height — AFTER genesis (~block 190), so genesis
 	// activates v2-off (no deadlock) and v2 turns on before the rotation.
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

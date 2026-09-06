@@ -57,7 +57,7 @@ func TestVaultF4FullRestartPendingSweep(t *testing.T) {
 	// v2 activation AFTER genesis (~block 190) so gen-0 mints on the v2-off path and
 	// the rotation itself runs with the v2 gates live.
 	const hpin = 400
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

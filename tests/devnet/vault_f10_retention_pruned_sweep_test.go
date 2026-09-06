@@ -79,7 +79,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	const margin = 50
 
 	const hpin = 400
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

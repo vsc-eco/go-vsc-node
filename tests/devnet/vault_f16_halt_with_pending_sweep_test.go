@@ -76,7 +76,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 	const hpin = 400
 	const f16Nodes = 6
 
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.Nodes = f16Nodes
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true

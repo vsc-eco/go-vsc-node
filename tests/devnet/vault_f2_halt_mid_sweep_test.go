@@ -66,7 +66,7 @@ func TestVaultF2HaltMidSweep(t *testing.T) {
 	// fresh-genesis deadlock) and v2 is ON for the rotation and the sweep.
 	const hpin uint64 = 400
 
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

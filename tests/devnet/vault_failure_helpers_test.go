@@ -814,3 +814,17 @@ func vfWaitGenBelow(t *testing.T, d *Devnet, ctx context.Context, cid string, ge
 	}
 	return n
 }
+
+// vfSlowReshareConfig is tssTestConfig with the reshare cadence relaxed from 20 to 60
+// blocks. VR2-09: on devnet a still-Pending key is reshared every epoch and the reshare
+// locks the key at its tick (sign skipped) and overlaps the next sign tick (both time
+// out), so with 20-block epochs the BRK-2 check-signature could collide forever (5 of
+// 14 rotations on 2026-09-06). A 60-block reshare cadence leaves the sign five free
+// ticks per reshare; elections still churn every 20 blocks. Tests that MEASURE the
+// keygen/reshare cadence (F1, F3, F6, F9, F18, F26) keep tssTestConfig unchanged.
+// The product mechanism stays recorded as VR2-09/VR2-10.
+func vfSlowReshareConfig() *Config {
+	cfg := vfSlowReshareConfig()
+	cfg.SysConfigOverrides.TssParams.RotateInterval = 60
+	return cfg
+}

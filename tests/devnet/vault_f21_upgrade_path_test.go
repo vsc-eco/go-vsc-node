@@ -79,7 +79,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 	// the node-side rotation gates OFF, exactly like testnet today. The gates only come
 	// on after the fold has already populated the registry.
 	const hpin uint64 = 600
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin

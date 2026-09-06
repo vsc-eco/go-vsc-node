@@ -268,7 +268,7 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 	newNodes := []int{1, 2, 3}
 	oldNodes := []int{4, 5, 6}
 
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.Nodes = 6
 	cfg.SkipFunding = false // contract deploy needs the deployer funded
 	cfg.EnableBitcoind = true

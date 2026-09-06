@@ -60,7 +60,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 	// has no vault registry at all. Every other test in this suite pins at 400,
 	// AFTER a v2-off genesis, which is the ordering this one deliberately inverts.
 	const hpin = 250
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
