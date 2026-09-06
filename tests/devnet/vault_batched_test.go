@@ -115,7 +115,14 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	// a different key (flip last hex char)
 	diff := flipLastHex(pub)
 	s2 := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, diff, diff))
-	record("VL-PEN-15", "set-once: re-register different primary rejected", !isOK(s2), "status="+s2)
+	record("VL-PEN-15", "set-once: re-register different primary rejected (mainnet builds; regtest/testnet builds ALLOW the genesis overwrite, main.go IsTestnet override, VR2-12)", !isOK(s2), "status="+s2)
+	if isOK(s2) {
+		// The regtest build just replaced the flat genesis primary with a bogus key; put
+		// the REAL key back (the same override allows it) so the activation and every
+		// later case measure the state machine instead of a self-inflicted mismatch.
+		s2r := vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg1)
+		t.Logf("VL-PEN-15 aftermath: restored the real primary via registerPublicKey (status=%s)", s2r)
+	}
 
 	// ---- VL-GP-11: activateKey (BRK-2 check-sig gated under v2) ----
 	// A single sleep races the check-sig ceremony (stage-4/5 retry for the same reason).
