@@ -55,7 +55,7 @@ func TestVaultBondLock(t *testing.T) {
 		t.Skip("set VAULT_BONDLOCK_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 43*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -164,9 +164,46 @@ func TestVaultBondLock(t *testing.T) {
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
 
 	// ── BOND-02: the SAME unstake is now ACCEPTED (bond released). ──
+	// Run 3 (terminal-status instrument): right after drain + retireVault the unstake is
+	// still REFUSED. That is the node's design since L4-C1: Inactive counts as
+	// fund-holding (modules/vaultrotation/eligibility.go), only Purged releases. So the
+	// Inactive probe records the design and the release is measured at Purged.
+	inactiveStatus, inactivePending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+	stInactive := vaultStatusOf(t, d, ctx, cid, 0)
+	rec("BOND-02", "at Inactive the bond is STILL locked by design (L4-C1: Inactive is fund-holding)",
+		inactiveStatus == "FAILED" && inactivePending == 0 && stInactive == 4,
+		fmt.Sprintf("gen-0 status=%s, unstake status=%s (design: FAILED) pending=%d (design: 0)", statusStr(stInactive), inactiveStatus, inactivePending))
+
+	// BOND-03: mine and relay the 144-block purge grace, retire again to Purged, then
+	// the SAME unstake must be ACCEPTED (VR2-14 if it is not).
+	lastH := contractLastHeight(t, d, ctx, cid)
+	h, merr := d.MineBlocks(ctx, 150)
+	if merr != nil {
+		t.Errorf("mining the purge grace window: %v", merr)
+	}
+	const relayBatch = 25
+	for start := lastH + 1; start <= h; start += relayBatch {
+		var hexBatch string
+		for hh := start; hh < start+relayBatch && hh <= h; hh++ {
+			hx, _ := btcBlockHeaderHex(ctx, d, hh)
+			hexBatch += hx
+		}
+		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hexBatch)); !isOK(s) {
+			t.Logf("purge relay batch from %d status=%s", start, s)
+		}
+	}
+	retire2 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
+	stPurged := -1
+	for i := 0; i < 12 && stPurged != 5; i++ {
+		stPurged = vaultStatusOf(t, d, ctx, cid, 0)
+		if stPurged != 5 {
+			time.Sleep(10 * time.Second)
+		}
+	}
 	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
-	rec("BOND-02", "consensus_unstake ACCEPTED once the gen is drained (bond released)",
-		releasedStatus == "CONFIRMED" && releasedPending > 0, fmt.Sprintf("unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", releasedStatus, releasedPending))
+	rec("BOND-03", "consensus_unstake ACCEPTED once the generation is PURGED (bond released)",
+		stPurged == 5 && releasedStatus == "CONFIRMED" && releasedPending > 0,
+		fmt.Sprintf("retireVault(after grace)=%s gen-0 status=%s (want Purged), unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", retire2, statusStr(stPurged), releasedStatus, releasedPending))
 
 	t.Logf("BONDLOCK SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }
