@@ -267,9 +267,19 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	gen0Stat := vfVaultStatusOn(d, ctx, 2, cid, 0)
 	gen2Stat := vfVaultStatusOn(d, ctx, 2, cid, 2)
 	gen0Final := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
-	c.rec("F10-NO-RECOVERY-OPS", "writeOffDust, retireVault and createKey leave gen-0 Retiring and funded and mint no gen-2: the rotation is permanently stuck",
-		gen0Stat == 2 && gen2Stat == -1 && gen0Final == gen0Before && !isOK(ck),
-		fmt.Sprintf("writeOffDust=%s retireVault=%s createKey=%s (want refused) | gen-0 status=%d (want 2 Retiring) gen-0 utxos=%d (want %d) gen-2 status=%d (want -1 absent)", wod, rv, ck, gen0Stat, gen0Final, gen0Before, gen2Stat))
+	// gen-0 stays FUNDED (confirmSpend was refused, so its input is never deleted) and
+	// therefore can never leave the drain: ReconcileRetiringVaults only advances
+	// Draining->Inactive when !funded and Inactive->Purged via the grace check
+	// (vault_lifecycle.go), so a funded gen is pinned in a locked state forever. retireVault
+	// legitimately moves it Retiring(2)->Draining(3) (the "start draining" transition);
+	// writeOffDust is a no-op here (the 50M input is far above the dust floor). The stuck
+	// invariant is therefore "still funded AND not Purged (status in 2/3/4) AND createKey
+	// refused AND no gen-2", NOT specifically Retiring — run 1 pinned status==2 and
+	// false-failed on the benign advance to Draining.
+	genStuckLocked := gen0Stat == 2 || gen0Stat == 3 || gen0Stat == 4
+	c.rec("F10-NO-RECOVERY-OPS", "writeOffDust/retireVault/createKey cannot recover the stuck sweep: gen-0 stays funded in a locked state (Retiring/Draining/Inactive, never Purged) and no gen-2 is minted — the rotation is permanently stuck",
+		genStuckLocked && gen2Stat == -1 && gen0Final == gen0Before && gen0Final > 0 && !isOK(ck),
+		fmt.Sprintf("writeOffDust=%s retireVault=%s createKey=%s (want refused) | gen-0 status=%d (want 2/3/4 = still locked, NOT 5 Purged) gen-0 utxos=%d (want %d, still funded) gen-2 status=%d (want -1 absent)", wod, rv, ck, gen0Stat, gen0Final, gen0Before, gen2Stat))
 
 	// The committee stays bond-locked behind the stuck generation.
 	const unstakeNode = 3
@@ -284,7 +294,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 		bondLocked = pending == 0
 		bondDetail = fmt.Sprintf("member=%s pending consensus_unstake amount=%d (want 0 = refused)", member, pending)
 	}
-	c.rec("F10-BOND", "a committee member's consensus_unstake is still refused while the stuck generation is Retiring (bond lock has no escape either)",
+	c.rec("F10-BOND", "a committee member's consensus_unstake is still refused while the stuck generation is locked (Retiring/Draining, never Purged; bond lock has no escape either)",
 		bondLocked, bondDetail)
 
 	finish()
