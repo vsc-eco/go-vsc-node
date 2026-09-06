@@ -183,7 +183,8 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 			identical, "reference pk="+primary1+detail)
 
 		// ---- step 6: F1-ACTIVATE, the BRK-2 check-sig lands with 5 of 5 ----
-		activated := vfRegisterAndActivate(t, d, ctx, cid, primary1, 12)
+		vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regeneration finish first
+		activated := vfRegisterAndActivate(t, d, ctx, cid, primary1, 20)
 		c.rec("F1-ACTIVATE", "gen-1 registers and activates (BRK-2 check-signature verified with the full committee)",
 			activated, fmt.Sprintf("gen-1 status on magi-2=%d (1=Active), gen-0 status=%d (2=Retiring)",
 				vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 0)))

@@ -116,7 +116,8 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	// Step 3: activate gen-1, drain gen-0 (NN#3 precondition for the next
 	// createKey), then crash magi-3 in the middle of the gen-2 keygen.
 	// -----------------------------------------------------------------
-	if !vfRegisterAndActivate(t, d, ctx, cid, primary1, 12) {
+	vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regeneration finish first
+	if !vfRegisterAndActivate(t, d, ctx, cid, primary1, 20) {
 		t.Errorf("gen-1 never activated (BRK-2 check-signature never admitted); cannot reach the gen-2 keygen")
 		finish()
 		return
@@ -175,7 +176,8 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	// (magi-3 included, back up and holding an active mainv2 row) signs the gen-1
 	// sweep with it. A half-written share on magi-3 would show up as a divergent
 	// public key here, or as a sweep that never gathers its signatures.
-	activated2 := vfRegisterAndActivate(t, d, ctx, cid, primary2, 12)
+	vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regeneration finish first
+	activated2 := vfRegisterAndActivate(t, d, ctx, cid, primary2, 20)
 	// Each node flips the row to active when IT ingests the commitment's Hive block, so
 	// a lagging node is polled for up to 3 minutes before being called divergent (F1 run
 	// 1 recorded a false divergence from a single early read).

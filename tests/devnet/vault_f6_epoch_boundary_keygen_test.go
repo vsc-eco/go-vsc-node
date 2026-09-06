@@ -236,7 +236,8 @@ func TestVaultF6EpochBoundaryKeygen(t *testing.T) {
 		}
 
 		// ---- step 6: the boundary key is usable, activate then drain gen-0 ----
-		if !vfRegisterAndActivate(t, d, ctx, cid, primary1, 12) {
+		vfWaitPreparams(t, d, ctx, 12*time.Minute) // VR2-09: let the post-DKG pre-parameter regeneration finish first
+		if !vfRegisterAndActivate(t, d, ctx, cid, primary1, 20) {
 			t.Errorf("gen-1 never activated after the boundary keygen (BRK-2 check-signature not admitted): gen-1 status on magi-2=%d, gen-0 status=%d",
 				vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 0))
 			return
