@@ -824,7 +824,23 @@ func vfWaitGenBelow(t *testing.T, d *Devnet, ctx context.Context, cid string, ge
 // keygen/reshare cadence (F1, F3, F6, F9, F18, F26) keep tssTestConfig unchanged.
 // The product mechanism stays recorded as VR2-09/VR2-10.
 func vfSlowReshareConfig() *Config {
-	cfg := vfSlowReshareConfig()
+	cfg := tssTestConfig()
 	cfg.SysConfigOverrides.TssParams.RotateInterval = 60
 	return cfg
+}
+
+// TestVfSlowReshareConfigIsNotRecursive guards the helper above: a mechanical rename
+// once turned its tssTestConfig() call into a self-call (stack overflow at the start
+// of every rotation test, 2026-09-06). Runs without Docker.
+func TestVfSlowReshareConfigIsNotRecursive(t *testing.T) {
+	cfg := vfSlowReshareConfig()
+	if cfg == nil || cfg.SysConfigOverrides == nil || cfg.SysConfigOverrides.TssParams == nil {
+		t.Fatal("vfSlowReshareConfig returned an incomplete config")
+	}
+	if got := cfg.SysConfigOverrides.TssParams.RotateInterval; got != 60 {
+		t.Fatalf("RotateInterval = %d, want 60", got)
+	}
+	if got := cfg.SysConfigOverrides.ConsensusParams.ElectionInterval; got != 20 {
+		t.Fatalf("ElectionInterval = %d, want 20 (elections must keep churning)", got)
+	}
 }
