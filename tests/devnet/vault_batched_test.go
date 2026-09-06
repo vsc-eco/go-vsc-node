@@ -41,7 +41,11 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 		t.Fatalf("wasm not found: %v", err)
 	}
 
-	cfg := tssTestConfig()
+	// VL-GP-11 (activateKey / BRK-2 check-sig) cannot land on the 20-block tssTestConfig
+	// cadence: the pending genesis key reshares every rotate tick and locks the check-sig
+	// (VR2-09). This test measures the state machine, not the reshare cadence, so it runs
+	// on the 60-block vfSlowReshareConfig where the check-sig has a window (H-17).
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false // contract DEPLOY needs the deployer funded with HBD
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = 1
