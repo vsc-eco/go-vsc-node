@@ -140,14 +140,11 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 	// Same-amount control for F5-RELEASE: the small amount that IS accepted after the
 	// generation is finished must be refused now, so the pair isolates the bond lock
 	// from any amount-dependent refusal.
-	if _, err := d.ConsensusUnstake(churnNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake 1.000 (locked) broadcast: %v", err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	lockedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
+	_ = head
+	// Terminal-status read (H-25): FAILED + pending 0 is a refusal.
+	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, churnNode, 3*time.Minute)
 	c.rec("F5-LOCK", "consensus_unstake REFUSED while the member's generation is retiring and funded (no election churn possible)",
-		lockedPending == 0,
+		lockedStatus == "FAILED" && lockedPending == 0,
 		fmt.Sprintf("member=%s amounts=1999.000+1.000 gen-0=%s utxos=%d pending consensus_unstake=%d (want 0)",
 			member, statusStr(gen0Status), funded, lockedPending))
 
@@ -194,13 +191,9 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hive head before the stage-A release unstake: %v", err)
 	}
-	if _, err := d.ConsensusUnstake(churnNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake 1.000 (stage A release) broadcast: %v", err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), headA+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	pendingA := pendingConsensusUnstake(t, d, ctx, 2, member)
-	t.Logf("stage A (gen-0 %s): pending consensus_unstake=%d", statusStr(statusA), pendingA)
+	_ = headA
+	unstakeStatusA, pendingA := vfUnstakeVerdict(t, d, ctx, churnNode, 3*time.Minute)
+	t.Logf("stage A (gen-0 %s): unstake status=%s pending consensus_unstake=%d", statusStr(statusA), unstakeStatusA, pendingA)
 
 	releasedAt := statusStr(statusA)
 	pending := pendingA
@@ -233,12 +226,10 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 		if err != nil {
 			t.Fatalf("hive head before the stage-B release unstake: %v", err)
 		}
-		if _, err := d.ConsensusUnstake(churnNode, "1.000"); err != nil {
-			t.Fatalf("consensus_unstake 1.000 (stage B release) broadcast: %v", err)
-		}
-		waitForBlock(t, d.HiveRPCEndpoint(), headB+8, 3*time.Minute)
-		time.Sleep(5 * time.Second)
-		pending = pendingConsensusUnstake(t, d, ctx, 2, member)
+		_ = headB
+		var unstakeStatusB string
+		unstakeStatusB, pending = vfUnstakeVerdict(t, d, ctx, churnNode, 3*time.Minute)
+		t.Logf("stage B (gen-0 %s): unstake status=%s pending consensus_unstake=%d", statusStr(statusB), unstakeStatusB, pending)
 		releasedAt = statusStr(statusB)
 	}
 	c.rec("F5-RELEASE", "the SAME consensus_unstake is ACCEPTED once the member's generation is finished (bond released)",
