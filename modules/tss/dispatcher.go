@@ -236,6 +236,33 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
 
+		// B1: pre-warm the NEW party's Paillier parameters.
+		//
+		// Unlike keygen, reshare had no pre-parameter pool read, so `save` went to
+		// NewLocalParty zero-valued. tss-lib then falls through
+		// resharing/round_2_new_step_1.go's else-branch and generates 1024-bit safe
+		// primes SYNCHRONOUSLY, inside round 2, under the party mutex. Its budget
+		// (SafePrimeGenTimeout, 5 min) can exceed the outer ReshareTimeout (2 min),
+		// so for a new-only node the held mutex froze the idle timer into a hard
+		// ceiling and the reshare wedged. Supplying validated pre-params makes
+		// round 2 take the fast path instead (it uses them iff ValidateWithProof).
+		//
+		// ECDSA ONLY: the EdDSA save data has no LocalPreParams/Paillier fields and
+		// its resharing round 2 never calls GeneratePreParams, so mirroring this
+		// into the EdDSA branch below would be a no-op.
+		//
+		// Only a node joining the NEW committee needs them. The read is bounded
+		// (VR2-18): an empty or failing pool must clean-fail and retry next
+		// interval, never block while tssMgr.lock is held.
+		if myNewParty != nil {
+			dispatcher.tssMgr.GeneratePreParams()
+			preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+			if ppErr != nil {
+				return ppErr
+			}
+			save.LocalPreParams = preParams
+		}
+
 		go dispatcher.reshareMsgs()
 
 		// Wait for sync delay (reduced from 15s to configurable 5s)

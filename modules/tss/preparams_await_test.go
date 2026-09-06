@@ -141,3 +141,30 @@ func TestPreParamsTimeout_FallsBackWhenUnset(t *testing.T) {
 		t.Fatalf("unset PreParamsTimeout: got %s, want the 1m fallback", got)
 	}
 }
+
+// B1 mechanism guard.
+//
+// The reshare fix works by assigning pool-generated pre-parameters to
+// save.LocalPreParams before NewLocalParty. tss-lib only takes the fast path if
+// they satisfy ValidateWithProof (ecdsa/resharing/round_2_new_step_1.go); a
+// zero-valued LocalPreParams falls through to GeneratePreParams SYNCHRONOUSLY,
+// inside round 2, under the party mutex — the B1 wedge.
+//
+// This pins the two halves of that contract:
+//   - a zero value must NOT validate (so the pre-fix state really did generate
+//     synchronously, i.e. the bug was real), and
+//   - the fast path is keyed on ValidateWithProof, so if a tss-lib upgrade ever
+//     changes that condition, supplying params would silently become a no-op and
+//     the wedge would return with no test going red.
+func TestB1_ZeroPreParamsDoNotValidate_SoTheFixMustSupplyRealOnes(t *testing.T) {
+	var zero ecKeyGen.LocalPreParams
+
+	if zero.Validate() {
+		t.Fatal("a zero-valued LocalPreParams unexpectedly passes Validate(); " +
+			"the B1 premise (reshare fell through to synchronous safe-prime generation) no longer holds")
+	}
+	if zero.ValidateWithProof() {
+		t.Fatal("a zero-valued LocalPreParams unexpectedly passes ValidateWithProof(); " +
+			"tss-lib would have taken the fast path and B1 would not have been a wedge")
+	}
+}
