@@ -354,6 +354,22 @@ func BlsWeightDedupActive(active Version) bool {
 	return Version0_8_0Active(active)
 }
 
+// TssCommitmentBundleCapActive reports whether an oversized vsc.tss_commitment
+// bundle is rejected outright (M-1).
+//
+// The ingest loop does a staleness check, a DB lookup, a CID hash, a BLS circuit
+// deserialisation and a pairing verification PER ELEMENT, off an unauthenticated
+// custom_json payload that carried no length check — so one cheap transaction
+// could impose all of it on every node.
+//
+// Version-gated because dropping a transaction's commitments changes indexed
+// state: an ungated flip would make a reindex of any historical oversized bundle
+// diverge. It is named separately from BlsWeightDedupActive despite resolving to
+// the same line, so each call site still reads by FEATURE rather than by batch.
+func TssCommitmentBundleCapActive(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
 // PoaExitHaltActive reports whether the collateral exit-halt binds: a seat's
 // consensus bond stays unwithdrawable until PoaExitHaltBlocks after it LEAVES
 // the elected set. Resolve `active` from the version active at the height the

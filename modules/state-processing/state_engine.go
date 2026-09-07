@@ -1540,6 +1540,34 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 
+					// M-1: bound the bundle before iterating it.
+					//
+					// Everything below runs PER ELEMENT and none of it is cheap: a
+					// staleness check, a database lookup, a CID hash, a BLS circuit
+					// deserialisation and a pairing verification. The array came
+					// straight off an unauthenticated custom_json payload with no
+					// length check at all, so a single transaction carrying a few
+					// hundred thousand entries made every node on the network do that
+					// work — a denial of service against the whole fleet from one
+					// cheap transaction.
+					//
+					// Rejected wholesale rather than truncated: a legitimate bundle
+					// carries at most one commitment per committee member per ceremony,
+					// which is orders of magnitude below this cap, so an oversized one
+					// is not a large honest bundle to be salvaged. Truncating would
+					// also make WHICH commitments survive depend on payload ordering.
+					//
+					// Version-gated because dropping a transaction's commitments
+					// changes indexed state: flipping this ungated would make a reindex
+					// of any historical oversized bundle diverge.
+					if len(commitments) > params.MAX_TSS_COMMITMENTS_PER_TX &&
+						consensusversion.TssCommitmentBundleCapActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+						tssLog.Warn("vsc.tss_commitment bundle rejected: too many entries",
+							"txId", tx.TransactionID, "count", len(commitments),
+							"max", params.MAX_TSS_COMMITMENTS_PER_TX)
+						continue
+					}
+
 					se.tssLogSync(block.BlockNumber, "processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
 					for _, commitment := range commitments {

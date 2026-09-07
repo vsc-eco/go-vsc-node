@@ -191,6 +191,21 @@ var LEDGER_REMEDIATIONS = []LedgerRemediation{
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
+// MAX_TSS_COMMITMENTS_PER_TX bounds how many TSS commitments one custom_json
+// transaction may carry.
+//
+// M-1: the ingest loop does real work per element — a staleness check, a DB
+// lookup, a CID hash, a BLS circuit deserialisation and a pairing verification —
+// and had no length check whatsoever. One cheap transaction carrying a few
+// hundred thousand entries therefore made every node in the network do all of it:
+// a fleet-wide denial of service with no privilege required.
+//
+// Set far above any legitimate bundle. A real one carries at most one commitment
+// per committee member per ceremony, and committees are tens of members, so this
+// cap cannot bite honest traffic — which matters, because the bundle is rejected
+// wholesale rather than truncated.
+const MAX_TSS_COMMITMENTS_PER_TX = 256
+
 // RC_HIVE_FREE_AMOUNT is the PRODUCTION default free-RC allowance for Hive
 // accounts (5 HBD worth), used by MainnetConfig/TestnetConfig.
 //
