@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
 )
@@ -199,6 +200,45 @@ func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversi
 		return consensusversion.Version{}
 	}
 	return elections.ResultVersion(elec)
+}
+
+// VaultRotationV2InForce is the SINGLE definition of "is the BTC
+// vault-rotation-v2 batch active at this height", shared by every gate site so
+// they can never drift apart. Two nodes disagreeing here compute different
+// contract-execution output and different block CIDs, which is a stall, so the
+// answer has to come from one place.
+//
+// Two inputs, deliberately:
+//
+//   - the chain-active consensus version (the attested election floor). This is
+//     the intended mainnet path: the floor cannot rise to 0.8.0 until a
+//     stake-supermajority attests it is RUNNING code that implements the batch, so
+//     a laggard fails to drag the floor up rather than silently diverging across a
+//     rolling upgrade. That is the whole reason this batch moved off a bare height.
+//
+//   - ConsensusParams.VaultRotationV2ActivationHeight, retained as an override,
+//     exactly as PoaChurnCapActive leaves MaxNewMembersActivationHeight
+//     authoritative. It is what keeps ephemeral networks working: a fresh-genesis
+//     devnet has no stored election, so ActiveConsensusVersion returns 0.0.0 and a
+//     floor-only gate would be INERT at block 1 — where the height pin is true
+//     immediately. The pin is 0 (disabled) on all four shipped networks and must
+//     stay 0 on mainnet, where the attested floor is the only intended path.
+func VaultRotationV2InForce(cp params.ConsensusParams, blockHeight uint64, active consensusversion.Version) bool {
+	return cp.VaultRotationV2Enabled(blockHeight) || consensusversion.VaultRotationV2Active(active)
+}
+
+// vaultRotationV2InForce is the StateEngine-side form. It short-circuits on the
+// height pin so a pinned ephemeral network never pays for the election read that
+// resolving the chain-active version costs.
+func (se *StateEngine) vaultRotationV2InForce(blockHeight uint64) bool {
+	if se.sconf == nil {
+		return false
+	}
+	cp := se.sconf.ConsensusParams()
+	if cp.VaultRotationV2Enabled(blockHeight) {
+		return true
+	}
+	return VaultRotationV2InForce(cp, blockHeight, se.ActiveConsensusVersion(blockHeight))
 }
 
 // delegatedStakeActive reports whether per-delegator consensus stake/unstake

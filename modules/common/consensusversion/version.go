@@ -87,9 +87,19 @@ import (
 //     exact coordinated-activation property this mechanism exists to provide.
 //     Until 0.7.0 is chain-active every POA rule is inert and behaviour stays
 //     byte-identical, so old and new binaries interoperate until activation.
+//   - 0.8.0 — the Consensus 7→8 bump gates the BTC VAULT-ROTATION-V2 batch
+//     (consensusversion.V0_8_0): the per-generation keygen cutover, the BRK-2
+//     SignatureVerified contract-output field, keygen-exclusion scoring, the
+//     keyId-reuse rejection, and the retiring-member bond lock. These previously
+//     coordinated on a bare ConsensusParams.VaultRotationV2ActivationHeight, which
+//     carries the rolling-upgrade footgun this mechanism exists to remove. The
+//     height pin is retained as an override for ephemeral networks (a fresh-genesis
+//     devnet has no election yet, so the floor gate is inert at block 1) and is 0
+//     on every shipped network. Until 0.8.0 is chain-active every v2 rule is inert
+//     and behaviour stays byte-identical, so old and new binaries interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 7
+	currentConsensus    uint64 = 8
 	currentNonConsensus uint64 = 0
 )
 

@@ -136,6 +136,12 @@ func (t TxVscCallContract) ExecuteTx(
 	// ensure entrypoint contract is appended to outputs regardless of state access or logs
 	callSession.GetContractSession(t.ContractId)
 
+	// Resolve the chain-active consensus version ONCE. Two gates below read it, and
+	// it costs an election lookup, so resolving it per-gate would double that on
+	// every contract call — and would leave two reads that could, in principle,
+	// disagree.
+	activeVersion := se.ActiveConsensusVersion(t.Self.BlockHeight)
+
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,
 		ContractOwner:        info.Owner,
@@ -157,15 +163,20 @@ func (t TxVscCallContract) ExecuteTx(
 		// (deterministic, height-addressable) so the new semantics activate only at
 		// a coordinated version floor.
 		contract_execution_context.WithTryCatch(
-			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
+			activeVersion.MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
-		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on the
-		// chain-active vault-rotation-v2 flag so the contract-execution output
-		// format changes only at a coordinated height (fork-safe rolling deploy;
-		// byte-identical when off). se is the StateEngine interface here, so read
-		// the flag through SystemConfig() rather than the concrete sconf field.
+		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on
+		// vault-rotation-v2 so the contract-execution output FORMAT changes only at a
+		// coordinated activation (fork-safe rolling deploy; byte-identical when off).
+		// This is the one v2 gate whose result feeds HASHED contract state, so the
+		// conditional-field-emission discipline matters here: when off, the field is
+		// ABSENT rather than present-and-empty.
+		//
+		// se is the StateEngine interface here, so the config is read through
+		// SystemConfig() rather than the concrete sconf field.
 		contract_execution_context.WithVaultRotationV2(
-			se.SystemConfig() != nil && se.SystemConfig().ConsensusParams().VaultRotationV2Enabled(t.Self.BlockHeight),
+			se.SystemConfig() != nil &&
+				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
 		),
 	)
 

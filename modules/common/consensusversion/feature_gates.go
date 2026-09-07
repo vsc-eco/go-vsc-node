@@ -274,6 +274,48 @@ func PoaChurnCapActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
 
+// V0_8_0 is the consensus version line at which the BTC vault-rotation-v2 batch
+// activates.
+//
+// Why 0.8.0: the line is a fleet-wide namespace, not a per-branch one. 0.4.0 and
+// 0.5.0 belong to the delegated-consensus-stake batch, 0.6.0 to
+// feat/vault-protection, and 0.7.0 to the POA admission batch — so 0.8.0 is the
+// first line free across every branch. Reusing a taken line would mean one floor
+// rise silently activates two unrelated batches at once, which is exactly the
+// coordinated-activation property this mechanism exists to provide.
+//
+// The ordering is deliberate and not merely numeric: POA (0.7.0) is the staged
+// answer to seat-vs-stake weighting, and vault-rotation-v2 follows it.
+var V0_8_0 = Version{Major: 0, Consensus: 8, NonConsensus: 0}
+
+// VaultRotationV2Active reports whether the BTC vault-rotation-v2 batch is in
+// force given the chain-active consensus version. Below the line every v2 rule is
+// inert and behaviour stays byte-identical, so old and new binaries interoperate
+// until the floor reaches 0.8.0.
+//
+// This replaces a BARE ACTIVATION HEIGHT as the coordination mechanism. A height
+// pin carries the rolling-upgrade footgun this package exists to remove: every
+// witness must be running a binary that carries the pinned height BEFORE the chain
+// reaches it, or upgraded and not-yet-upgraded nodes compute different results
+// across the gap. The version floor cannot rise until a stake-supermajority
+// attests it is RUNNING the code, so a laggard simply fails to drag the floor up
+// instead of silently diverging.
+//
+// Resolve `active` from the version active at the decision point's block height
+// (StateEngine.ActiveConsensusVersion(blockHeight)) so a replay recomputes the
+// identical verdict.
+//
+// The explicit ConsensusParams.VaultRotationV2ActivationHeight pin still wins
+// where it is set, exactly as PoaChurnCapActive leaves MaxNewMembersActivationHeight
+// authoritative. That is what keeps ephemeral networks working: a fresh-genesis
+// devnet has no stored election yet, so ActiveConsensusVersion returns 0.0.0 and a
+// floor-only gate would be inert at genesis — where the height pin is true from
+// block 1. The pin is 0 (disabled) on every shipped network and must stay 0 on
+// mainnet, where the attested floor is the only intended path.
+func VaultRotationV2Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_8_0)
+}
+
 // PoaExitHaltActive reports whether the collateral exit-halt binds: a seat's
 // consensus bond stays unwithdrawable until PoaExitHaltBlocks after it LEAVES
 // the elected set. Resolve `active` from the version active at the height the

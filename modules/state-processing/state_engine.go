@@ -268,11 +268,17 @@ func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
 // (consensus flag, config-derived BTC contract id, committed pubkey), so all
 // honest nodes compute the same M or all skip.
 func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) ([]byte, bool) {
-	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+	if se.sconf == nil {
 		return nil, false
 	}
+	// Cheap, purely local checks FIRST: resolving the chain-active consensus
+	// version costs an election read, and the overwhelming majority of calls here
+	// are for keys that are not BTC vault keys at all.
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
 	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
+		return nil, false
+	}
+	if !se.vaultRotationV2InForce(bh) {
 		return nil, false
 	}
 	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
@@ -1678,7 +1684,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								// funds (split-brain FREEZE). Reject it. A RESHARE legitimately
 								// re-keys an active key WITHOUT changing the pubkey → unaffected.
 								// Gated on the flag → byte-identical when inert (flag 0 default).
-								if commitment.Type == "keygen" && se.sconf != nil && se.sconf.ConsensusParams().VaultRotationV2Enabled(block.BlockNumber) {
+								if commitment.Type == "keygen" && se.vaultRotationV2InForce(block.BlockNumber) {
 									tssLog.Warn("rejecting keygen commitment for an already-active keyId (v2 rotation must use a fresh keyId; contract keyId-reuse would split-brain the vault)", "keyId", commitment.KeyId, "activeEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 									continue
 								}
@@ -2048,8 +2054,7 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 		// instead of reshare, so skipping the security-critical new-vault DKG
 		// must cost the same as skipping a reshare. Nil-guard sconf so a
 		// minimal (test) engine keeps base behavior.
-		keygenScoringEnabled := se.sconf != nil &&
-			se.sconf.ConsensusParams().VaultRotationV2Enabled(tickHeight)
+		keygenScoringEnabled := se.vaultRotationV2InForce(tickHeight)
 		commitTypes := []string{"reshare", "blame", "sign_result"}
 		if keygenScoringEnabled {
 			commitTypes = append(commitTypes, "keygen")
