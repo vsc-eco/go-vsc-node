@@ -829,17 +829,44 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	weightTotal := uint64(0)
-	for _, weight := range election.Weights {
-		weightTotal += weight
+	// B13: fold weight through the canonical primitive, and account for a signature
+	// by the KEY that verified it rather than by the account label that carried it.
+	//
+	// The `account` field is self-declared in an unauthenticated JSON body
+	// (block-producer/p2p.go), and gossipsub's StrictSign authenticates the libp2p
+	// PEER, not the claimed account. So a seat whose BLS key duplicates an honest
+	// witness's needed no private key and no cooperation: it watched the honest
+	// broadcast, re-emitted the identical signature bytes under its own label, and
+	// AddAndVerify passed — it checks the cryptography, not who sent it. The same
+	// signature was then credited twice under two account labels. Free-riding at
+	// zero marginal cost.
+	//
+	// Keying on the DID closes that, and folding through dids.FoldSignedWeight
+	// means the leader measures quorum exactly the way the chain does when it
+	// validates the block: duplicate seats collapse to one, first occurrence
+	// winning, in the numerator and the denominator alike. Leaving the phantom seat
+	// in the denominator would make the leader wait for weight that cannot exist.
+	//
+	// This is the leader's local decision to broadcast, not a replayed rule — the
+	// on-chain check is TxProposeBlock.ValidateDetailed — so it needs no version
+	// gate. The produced block is unaffected either way: the circuit stores by DID,
+	// so a replayed duplicate was never in the aggregate, only in this counter.
+	memberKeys := make([]string, len(election.Members))
+	accountSeat := make(map[string]dids.BlsDID, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+		accountSeat[m.Account] = dids.BlsDID(m.Key)
 	}
+
+	_, weightTotal, _ := dids.FoldSignedWeight(memberKeys, election.Weights, nil)
 
 	bp.sigMu.RLock()
 	sigChan := bp.sigChannels[signing.slotHeight]
 	bp.sigMu.RUnlock()
 
 	signedWeight := uint64(0)
-	signedAccounts := make(map[string]bool)
+	var included []dids.BlsDID
+	signedDIDs := make(map[dids.BlsDID]bool)
 	for signedWeight < (weightTotal * 9 / 10) {
 		select {
 		case <-ctx.Done():
@@ -856,19 +883,10 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				if !ok {
 					continue
 				}
-				if signedAccounts[account] {
-					continue
-				}
-				var member dids.Member
-				var index int = -1
-				for i, data := range election.Members {
-					if data.Account == account {
-						member = dids.BlsDID(data.Key)
-						index = i
-						break
-					}
-				}
-				if index == -1 {
+				// The account only selects which seat is being claimed; from here
+				// on the key is the identity.
+				member, seated := accountSeat[account]
+				if !seated || signedDIDs[member] {
 					continue
 				}
 
@@ -880,9 +898,10 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				} else if !added {
 					vlog.Warn("sig rejected", "account", account)
 				} else {
-					signedAccounts[account] = true
-					signedWeight += election.Weights[index]
-					vlog.Trace("sig accepted", "account", account, "weight", election.Weights[index], "totalSigned", signedWeight)
+					signedDIDs[member] = true
+					included = append(included, member)
+					signedWeight, _, _ = dids.FoldSignedWeight(memberKeys, election.Weights, included)
+					vlog.Trace("sig accepted", "account", account, "totalSigned", signedWeight)
 				}
 			}
 		}

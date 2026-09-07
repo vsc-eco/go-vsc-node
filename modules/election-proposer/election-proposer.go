@@ -1909,10 +1909,15 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 		ep.sigMu.Unlock()
 	}()
 
-	weightTotal := uint64(0)
-	for _, weight := range election.Weights {
-		weightTotal += weight
+	// B13: fold weight through the canonical primitive so this collector measures
+	// quorum the same way the chain does, with duplicate seats collapsed to one.
+	memberKeys := make([]string, len(election.Members))
+	accountSeat := make(map[string]dids.BlsDID, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+		accountSeat[m.Account] = dids.BlsDID(m.Key)
 	}
+	_, weightTotal, _ := dids.FoldSignedWeight(memberKeys, election.Weights, nil)
 
 	end := make(chan struct{})
 
@@ -1929,6 +1934,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	var err error
 	var signedWeight uint64
+	var included []dids.BlsDID
+	signedDIDs := make(map[dids.BlsDID]bool)
 	go func() {
 		signedWeight = 0
 
@@ -1974,14 +1981,22 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			sigStr := signResp.Sig
 			account := signResp.Account
 
-			var member dids.Member
-			var index int
-			for i, data := range election.Members {
-				if data.Account == account {
-					member = dids.BlsDID(data.Key)
-					index = i
-					break
-				}
+			// B13: the account is a self-declared field on an unauthenticated
+			// message — gossipsub authenticates the libp2p PEER, not the claimed
+			// account — so it may only SELECT which seat is being claimed. From
+			// there the verifying key is the identity, and weight is folded
+			// through the canonical primitive.
+			//
+			// Two defects closed here. There was no dedup at all, so a seat whose
+			// BLS key duplicates an honest witness's could re-emit the identical
+			// signature bytes under its own label and be credited again — no
+			// private key, no cooperation, since AddAndVerify checks the
+			// cryptography rather than the sender. And `index` defaulted to 0 for
+			// an account that matched NO member, so an unrecognised sender was
+			// credited member 0's weight.
+			member, seated := accountSeat[account]
+			if !seated || signedDIDs[member] {
+				continue
 			}
 
 			c := *circuit
@@ -1995,12 +2010,13 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 					"account", account,
 					"err", err)
 			} else if added {
-				signedWeight += election.Weights[index]
+				signedDIDs[member] = true
+				included = append(included, member)
+				signedWeight, _, _ = dids.FoldSignedWeight(memberKeys, election.Weights, included)
 				log.Verbose("signature aggregated",
 					"block_height", block,
 					"epoch", epoch,
 					"account", account,
-					"added_weight", election.Weights[index],
 					"signed_weight", signedWeight,
 					"weight_required", weightRequired)
 			} else {
