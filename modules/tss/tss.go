@@ -72,6 +72,28 @@ const (
 	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
+	// BLAME_WINDOW_MAX_ROWS bounds how many blame commitments a blame-window query
+	// returns. It is a memory bound, NOT a policy knob: it must sit far above
+	// anything the window can legitimately hold, because the query sorts by height
+	// DESCENDING and truncating keeps only the NEWEST rows.
+	//
+	// M-4: this used to be 100, which silently turned "blames in the last 24 hours"
+	// into "the last 100 blames". At the roughly two-minute ceremony cadence a day
+	// holds ~720 rounds, so a sustained fault rate above ~14% overflows it. Worse,
+	// it is directly attackable: a member who generates 100 fresh blames naming
+	// OTHERS evicts every older blame naming THEMSELVES, dropping their own count to
+	// zero while the denominator stays full — escaping the ban threshold on demand.
+	//
+	// The truncation was also a divergence risk. Rows tie on block_height, so two
+	// nodes could truncate a different 100 and compute DIFFERENT excluded sets for
+	// the same ceremony. A bound no honest window reaches removes that too.
+	//
+	// Sized against the WORST honest case, not the typical one: every ceremony in
+	// the window failing and every member of a large committee blaming — roughly
+	// 720 ceremonies x 30 members = 21,600 rows. Blames are rare in a healthy
+	// network, but the statistics matter most precisely when they are not, so the
+	// bound has to survive sustained failure rather than only normal operation.
+	BLAME_WINDOW_MAX_ROWS = 50000
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
 
@@ -124,6 +146,23 @@ func attestationCID(account string, targetBlock uint64, ver consensusversion.Ver
 
 // signReadyAttestation creates a BLS-signed readiness attestation for this node, tagged with
 // this binary's running consensus version.
+// warnIfBlameWindowSaturated reports when a blame-window query came back at its
+// row bound.
+//
+// M-4: at that point the result is no longer "the blames in the last 24 hours" —
+// it is the newest BLAME_WINDOW_MAX_ROWS of them, and every older blame in the
+// window has silently vanished from both the numerator and the denominator. The
+// bound is set far above any honest window, so reaching it means either a genuine
+// fault storm or someone deliberately flushing their own blame history, and both
+// are things an operator needs to be told about rather than left to infer.
+func warnIfBlameWindowSaturated(rows int, ceremony, sessionId string) {
+	if rows >= BLAME_WINDOW_MAX_ROWS {
+		log.Warn("blame window saturated: statistics no longer cover the full window",
+			"ceremony", ceremony, "sessionId", sessionId,
+			"rows", rows, "max", BLAME_WINDOW_MAX_ROWS)
+	}
+}
+
 func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttestation, error) {
 	account := tssMgr.config.Get().HiveUsername
 	ver := consensusversion.RunningVersion()
@@ -1232,11 +1271,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				blameExpireBlock = bh - BLAME_EXPIRE
 			}
 			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
-				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, 100,
+				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, BLAME_WINDOW_MAX_ROWS,
 			)
 			if blameErr != nil {
 				log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
 			}
+			warnIfBlameWindowSaturated(len(allBlames), "keygen", sessionId)
 			blameCount := make(map[string]int) // account → number of blames naming this account
 			blameOpportunities := 0            // total blame commitments in window (denominator)
 			for _, blame := range allBlames {
@@ -1406,8 +1446,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&signBlameExpireBlock,
 				&bh,
-				100,
+				BLAME_WINDOW_MAX_ROWS,
 			)
+			warnIfBlameWindowSaturated(len(signBlames), "sign", sessionId)
 			if signBlameErr != nil {
 				log.Warn("failed to fetch blame commitments for signing", "sessionId", sessionId, "err", signBlameErr)
 			}
@@ -1579,8 +1620,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&blameExpireBlock,
 				&bh,
-				100,
+				BLAME_WINDOW_MAX_ROWS,
 			)
+			warnIfBlameWindowSaturated(len(allBlames), "reshare", sessionId)
 			if blameErr != nil {
 				log.Warn("failed to fetch blame commitments", "sessionId", sessionId, "err", blameErr)
 			}
