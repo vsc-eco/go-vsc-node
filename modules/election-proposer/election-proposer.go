@@ -451,9 +451,47 @@ func resolveVersionFloor(
 	num, den int64,
 ) consensusversion.Version {
 	// stakeReady: >= num/den of committee STAKE announces a version meeting target.
+	//
+	// B13: seats sharing a consensus BLS key collapse to one. Without this, the
+	// metric that decides whether it is safe to RAISE the version floor is itself
+	// manipulable by the very bug a floor rise would fix — an attacker seating a
+	// copy of an honest witness's key gets a second vote on readiness, on both
+	// sides of the ratio, with their own announced version deciding whether it
+	// counts as ready. Ties break on the lexicographically-smallest account rather
+	// than on slice position, so the verdict does not depend on the order the
+	// witness list happens to arrive in; every proposer regenerating this election
+	// must reach the identical result or the election CIDs diverge.
+	//
+	// Gated on the PRIOR ratified election's version, like every other fold in this
+	// change: resolveVersionFloor's output is part of the election, so flipping it
+	// ungated would change historical elections on a reindex. The rise TO the line
+	// is therefore computed under the old fold — acceptable only because a live
+	// check confirmed all 19 mainnet witnesses hold distinct consensus keys, so
+	// there is nothing for the old fold to double-count.
+	dedupSeats := previousElection != nil &&
+		consensusversion.BlsWeightDedupActive(elections.ResultVersion(*previousElection))
 	stakeReady := func(target consensusversion.Version) bool {
 		var totalWeight, readyWeight uint64
+		counted := make(map[dids.BlsDID]string, len(witnessList))
+		if dedupSeats {
+			// First pass: pick the winning account per key, order-independently.
+			for _, w := range witnessList {
+				key, err := w.ConsensusKey()
+				if err != nil {
+					continue // an unreadable key cannot vouch for readiness
+				}
+				if held, seen := counted[key]; !seen || w.Account < held {
+					counted[key] = w.Account
+				}
+			}
+		}
 		for _, w := range witnessList {
+			if dedupSeats {
+				key, err := w.ConsensusKey()
+				if err != nil || counted[key] != w.Account {
+					continue
+				}
+			}
 			wt := weightMap[w.Account]
 			totalWeight += wt
 			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {

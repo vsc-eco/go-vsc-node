@@ -489,8 +489,22 @@ func (se *StateEngine) PruneVersionProposalsAfterElection(elec elections.Electio
 // versionProposalReadyWeight sums the election weight of members whose announced
 // version meets target — the same readiness basis the election proposer uses.
 func versionProposalReadyWeight(elec elections.ElectionResult, target consensusversion.Version) uint64 {
+	// B13: seats sharing a BLS key are one signing entity and get one seat's
+	// weight, first occurrence winning — the same rule dids.FoldSignedWeight
+	// applies. Members arrive account-sorted, so first-wins is the
+	// lexicographically-first account. Gated on the version this election was
+	// ratified under: this weight prunes version proposals from consensus state,
+	// so an ungated change would drop different proposals on a reindex.
+	dedup := consensusversion.BlsWeightDedupActive(elections.ResultVersion(elec))
+	seen := make(map[string]bool, len(elec.Members))
 	var total uint64
 	for i, m := range elec.Members {
+		if dedup {
+			if seen[m.Key] {
+				continue
+			}
+			seen[m.Key] = true
+		}
 		if elections.MemberConsensusVersion(m, elec).MeetsConsensusMin(target) {
 			total += electionWeightAt(elec, i)
 		}
