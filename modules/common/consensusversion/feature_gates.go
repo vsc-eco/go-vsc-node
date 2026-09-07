@@ -313,7 +313,45 @@ var V0_8_0 = Version{Major: 0, Consensus: 8, NonConsensus: 0}
 // block 1. The pin is 0 (disabled) on every shipped network and must stay 0 on
 // mainnet, where the attested floor is the only intended path.
 func VaultRotationV2Active(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
+// Version0_8_0Active reports whether the 0.8.0 release batch is in force. Feature
+// resolvers on this line delegate here, mirroring Version0_7_0Active, so the line
+// is stated once and each call site still reads by FEATURE.
+func Version0_8_0Active(active Version) bool {
 	return active.MeetsConsensusMin(V0_8_0)
+}
+
+// BlsWeightDedupActive reports whether committee weight folds collapse duplicate
+// BLS keys to a single seat (B13).
+//
+// A committee holding the same key at two seats produces an aggregate that
+// VERIFIES by construction — BlsCircuit walks the keyset by index while
+// signatures are keyed by DID, so one honest signature is credited at both
+// indices and the aggregate pairs correctly as 2S against 2P. The signature check
+// therefore cannot catch it; only the weight fold can, and every fold must do it
+// identically or they disagree about whether a block or commitment carries
+// quorum.
+//
+// Version-gated because these folds are consensus accept/reject gates: the
+// election-ratification and block-validation folds decide whether a historical
+// block or election was VALID, so changing them ungated would flip past verdicts
+// during a reindex and fork the chain. Below the line the old fold runs
+// byte-identically.
+//
+// Deliberately NOT WitnessKeyStrictActive. That flag also excludes witnesses
+// whose proof-of-possession fails, and enabling it once already starved the
+// mainnet committee below the election floor and halted elections (epoch 1699).
+// Reusing it would tie this weight fix to that liveness risk and let the PoP
+// re-announcement campaign block a fund-safety fix; a separate line keeps the two
+// rollouts independent.
+//
+// Resolve `active` from the PRIOR ratified election's version wherever the result
+// feeds an election being built, so the gate stays out of the version-rise
+// readiness loop.
+func BlsWeightDedupActive(active Version) bool {
+	return Version0_8_0Active(active)
 }
 
 // PoaExitHaltActive reports whether the collateral exit-halt binds: a seat's

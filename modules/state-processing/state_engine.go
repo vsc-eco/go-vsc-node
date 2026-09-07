@@ -1608,7 +1608,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// rule the leader enforces in waitForSigs. Without this,
 						// a sub-quorum commitment (e.g. 3/6) was accepted and
 						// could activate a TSS key.
-						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights) {
+						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights,
+							consensusversion.BlsWeightDedupActive(se.ActiveConsensusVersion(block.BlockNumber))) {
 							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
 							continue
 						}

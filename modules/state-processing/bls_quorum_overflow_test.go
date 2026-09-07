@@ -6,7 +6,6 @@ import (
 
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/elections"
-	state_engine "vsc-node/modules/state-processing"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -42,11 +41,11 @@ func TestBlsQuorumMet_GVL9_Overflow(t *testing.T) {
 
 	// Zero signers must be REJECTED. Old code: `0 >= 0` → true (false accept).
 	// Fixed code: `0 >= ceil(2N/3)` → false (correct reject).
-	assert.False(t, state_engine.BlsQuorumMet(nil, members, weights),
+	assert.False(t, quorumBothGates(t, nil, members, weights),
 		"GV-L9: zero signed weight must be rejected even at overflow-scale total")
 
 	// The single big member signing = 100% of weight → genuinely meets quorum.
-	assert.True(t, state_engine.BlsQuorumMet([]dids.BlsDID{bigDID}, members, weights),
+	assert.True(t, quorumBothGates(t, []dids.BlsDID{bigDID}, members, weights),
 		"GV-L9: 100%% signed weight must be accepted at overflow-scale total")
 
 	// Now a two-member case where signedWeight is a genuine minority but
@@ -64,11 +63,11 @@ func TestBlsQuorumMet_GVL9_Overflow(t *testing.T) {
 
 	// 'b' alone = 4e18 of 7e18 < ceil(2/3)=4.67e18 → must be REJECTED.
 	assert.Less(t, b, threshold2, "sanity: b is below the honest 2/3 threshold")
-	assert.False(t, state_engine.BlsQuorumMet([]dids.BlsDID{dids.BlsDID("did:key:b")}, members2, weights2),
+	assert.False(t, quorumBothGates(t, []dids.BlsDID{dids.BlsDID("did:key:b")}, members2, weights2),
 		"GV-L9: a sub-2/3 signer must be rejected (signedWeight*3 must not wrap into a false accept)")
 
 	// Both 'a'+'b' = 100% → accepted.
-	assert.True(t, state_engine.BlsQuorumMet(
+	assert.True(t, quorumBothGates(t, 
 		[]dids.BlsDID{dids.BlsDID("did:key:a"), dids.BlsDID("did:key:b")}, members2, weights2),
 		"GV-L9: full weight must be accepted")
 }
@@ -98,7 +97,7 @@ func TestBlsQuorumMet_GVL9_HappyPathInvariance(t *testing.T) {
 				{Key: "did:key:o", Account: "o"},
 			}
 			w := []uint64{sw, total - sw}
-			got := state_engine.BlsQuorumMet([]dids.BlsDID{dids.BlsDID("did:key:s")}, m, w)
+			got := quorumBothGates(t, []dids.BlsDID{dids.BlsDID("did:key:s")}, m, w)
 			want := oldPredicate(sw, total)
 			assert.Equalf(t, want, got,
 				"non-overflow domain: total=%d signedWeight=%d must match original predicate", total, sw)
