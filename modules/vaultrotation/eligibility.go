@@ -145,8 +145,7 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		// single Active gen reshares. Just the keyId string (no committee needed), so it does
 		// not depend on the commitment/election reads below.
 		switch v.Status {
-		case btcvault.VaultStatusPending,
-			btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining,
+		case btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining,
 			btcvault.VaultStatusInactive, btcvault.VaultStatusPurged:
 			out.ReshareSkipKeyIds[keyId] = true
 		}
@@ -164,12 +163,27 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		// E+1. Registration (which writes this registry) therefore has a full epoch
 		// of head-room; the gap only reopens if registration is slower than an epoch.
 		if v.Status == btcvault.VaultStatusPending {
-			if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
-				for _, account := range accounts {
-					out.PendingSignerElection[account] = elec
-				}
-				out.PendingKeyIds[keyId] = true
+			elec, accounts, ok := commitmentCommittee(d, keyId)
+			if !ok {
+				// SYMMETRIC FAIL-MODE (deliberate): if this key's committee cannot be
+				// resolved we do NOT skip its reshare either. Skipping while the
+				// readiness widening silently did not apply would strand exactly the
+				// signers this fix exists to protect. Falling back to "reshare it"
+				// reinstates only the original, RECOVERABLE collision (the ceremonies
+				// contend and retry), which is strictly better than a generation whose
+				// activation signature can never be produced.
+				// (No logging here: this package is the pure, deterministic core that
+				// both modules/tss and modules/state-processing import, and it
+				// deliberately carries no logger dependency. The condition is
+				// observable to callers as a Pending generation absent from both
+				// PendingKeyIds and ReshareSkipKeyIds.)
+				continue
 			}
+			for _, account := range accounts {
+				out.PendingSignerElection[account] = elec
+			}
+			out.PendingKeyIds[keyId] = true
+			out.ReshareSkipKeyIds[keyId] = true
 			continue
 		}
 

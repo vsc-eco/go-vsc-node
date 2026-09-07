@@ -55,6 +55,18 @@ const (
 	DEFAULT_ROTATE_INTERVAL  = 20 * 5 // 5 minutes in L1 blocks
 	DEFAULT_READINESS_OFFSET = 30     // blocks before reshare to broadcast readiness
 
+	// MAX_RESHARE_DEFERRALS bounds how many consecutive rotate intervals a key's
+	// reshare may be deferred because a sign is in flight (VR2-09). Deferring is
+	// right — a sign is one round-trip and starting a reshare on top makes both
+	// time out — but it must not be unbounded: ROTATE_INTERVAL is an exact
+	// multiple of SIGN_INTERVAL, so every rotate check lands on a sign tick, and
+	// keyLocks only blocks a NEW sign while a CEREMONY is running, never while
+	// another sign is. A key under continuous signing load could therefore be
+	// deferred forever and NEVER reshare. After this many consecutive deferrals
+	// the reshare proceeds anyway: one collided ceremony that retries is strictly
+	// better than a key that never rotates its shares.
+	MAX_RESHARE_DEFERRALS = 3
+
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
 	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
@@ -308,6 +320,10 @@ type TssManager struct {
 	preParamsLock sync.Mutex
 
 	actionMap      map[string]Dispatcher
+	// reshareDeferrals counts consecutive rotate intervals a key's reshare has
+	// been skipped because a sign was in flight (VR2-09 starvation bound).
+	reshareDeferrals   map[string]int
+	reshareDeferralLock sync.Mutex
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]sessionResultEntry
 
@@ -383,6 +399,11 @@ func (tssMgr *TssManager) Receive() {}
 // that budget may be routinely insufficient, which turns the clean-fail below into
 // a node that never completes a keygen. Benchmark on representative hardware and
 // set PreParamsTimeout per network before relying on this in production.
+//
+// This is ONE budget, not two: callers kick GeneratePreParams off asynchronously,
+// so the caller waits at most this long in total. Calling it inline would have
+// blocked for a full budget generating, then waited another full budget here — 2x,
+// all with tssMgr.lock held.
 // Session-id prefixes. Used both when a session is created and when BlockTick
 // inspects actionMap to see what is still running, so the two can never drift.
 const (
@@ -390,6 +411,34 @@ const (
 	sessionPrefixSign    = "sign-"
 	sessionPrefixReshare = "reshare-"
 )
+
+// deferReshare records one more consecutive deferral for keyId and reports whether
+// the reshare should still be skipped. It returns false once MAX_RESHARE_DEFERRALS
+// consecutive deferrals have been made, so a key under continuous signing load
+// eventually reshares instead of being starved forever (VR2-09).
+func (tssMgr *TssManager) deferReshare(keyId string) bool {
+	tssMgr.reshareDeferralLock.Lock()
+	defer tssMgr.reshareDeferralLock.Unlock()
+
+	if tssMgr.reshareDeferrals == nil {
+		tssMgr.reshareDeferrals = make(map[string]int)
+	}
+	tssMgr.reshareDeferrals[keyId]++
+	if tssMgr.reshareDeferrals[keyId] > MAX_RESHARE_DEFERRALS {
+		log.Warn("reshare deferral limit reached; proceeding despite an in-flight sign",
+			"keyId", keyId, "deferrals", tssMgr.reshareDeferrals[keyId])
+		delete(tssMgr.reshareDeferrals, keyId)
+		return false
+	}
+	return true
+}
+
+// clearReshareDeferrals resets the streak once a key's reshare actually proceeds.
+func (tssMgr *TssManager) clearReshareDeferrals(keyId string) {
+	tssMgr.reshareDeferralLock.Lock()
+	defer tssMgr.reshareDeferralLock.Unlock()
+	delete(tssMgr.reshareDeferrals, keyId)
+}
 
 // participantSetTag is a short, order-independent fingerprint of the OLD and NEW
 // participant sets chosen for a reshare.
@@ -747,11 +796,12 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// generation, it is the BRK-2 check-signature that unblocks
 				// activation; starting a reshare on top of it makes both time out.
 				// The reshare is re-selected next rotate interval.
-				if inFlightSign[key.Id] {
+				if inFlightSign[key.Id] && tssMgr.deferReshare(key.Id) {
 					log.Verbose("deferring reshare: a sign for this key is still in flight",
 						"keyId", key.Id, "blockHeight", bh)
 					continue
 				}
+				tssMgr.clearReshareDeferrals(key.Id)
 				generatedActions = append(generatedActions, QueuedAction{
 					Type:  ReshareAction,
 					KeyId: key.Id,
@@ -1412,8 +1462,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// the current floor. Deterministic on-chain set; inert unless v2 + a
 			// retiring gen exists.
 			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
-			isRetiringSign := signRetiringSet.KeyIds[action.KeyId] ||
-				signRetiringSet.PendingKeyIds[action.KeyId]
+			// NOTE: PendingKeyIds is deliberately NOT included here. The waiver below
+			// exempts a signer from the CURRENT consensus-version floor, and the
+			// retiring-gen rationale is that an OLD key's protocol was fixed at its
+			// keygen epoch, so a later floor bump must not silence its committee. A
+			// PENDING generation is the opposite case: the newest, about-to-become-
+			// ACTIVE, fund-controlling key. Granting it the same waiver would let a
+			// node below the new floor help produce the BRK-2 signature that
+			// activates the fleet's next vault key — reintroducing whatever the floor
+			// bump was meant to fix, at exactly the moment a new active key is born.
+			isRetiringSign := signRetiringSet.KeyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
@@ -1421,7 +1479,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			for account, att := range signAttMap {
 				if att.Version().MeetsConsensusMin(minSignVer) {
 					signReadyAccounts[account] = true
-				} else if isRetiringSign && signRetiringSet.HasReadiness(account) {
+				} else if isRetiringSign && signRetiringSet.Has(account) {
 					signReadyAccounts[account] = true
 				}
 			}
@@ -2486,6 +2544,7 @@ func New(
 
 		queuedActions:      make([]QueuedAction, 0),
 		actionMap:          make(map[string]Dispatcher),
+		reshareDeferrals:   make(map[string]int),
 		messageBuffer:      newSessionBuffer(),
 		sessionMap:         make(map[string]sessionInfo),
 		sessionResults:     make(map[string]sessionResultEntry),

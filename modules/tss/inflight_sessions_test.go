@@ -144,3 +144,57 @@ func TestParticipantSetTag_IsOrderIndependent(t *testing.T) {
 		t.Fatalf("tag must be order-independent: %s != %s", a, b)
 	}
 }
+
+// VR2-09 starvation bound (found by adversarial review of the fix itself).
+//
+// Deferring a reshare while a sign is in flight is right — a sign is one
+// round-trip and starting a reshare on top makes both time out — but it must be
+// BOUNDED. ROTATE_INTERVAL (100) is an exact multiple of SIGN_INTERVAL (50), so
+// every rotate check lands on a sign tick, and keyLocks only blocks a NEW sign
+// while a CEREMONY is running, never while another sign is. A key under
+// continuous signing load could therefore be deferred at every single rotate
+// check and NEVER reshare — a liveness bug the original fix introduced.
+func TestDeferReshare_IsBoundedSoAKeyCannotBeStarved(t *testing.T) {
+	mgr := &TssManager{reshareDeferrals: make(map[string]int)}
+
+	for i := 1; i <= MAX_RESHARE_DEFERRALS; i++ {
+		if !mgr.deferReshare("btc-main") {
+			t.Fatalf("deferral %d/%d should still defer (a sign really is in flight)", i, MAX_RESHARE_DEFERRALS)
+		}
+	}
+	if mgr.deferReshare("btc-main") {
+		t.Fatalf("after %d consecutive deferrals the reshare MUST proceed: "+
+			"one collided ceremony that retries beats a key that never rotates its shares",
+			MAX_RESHARE_DEFERRALS)
+	}
+	// The streak resets after it fires, so the next contention window starts fresh.
+	if !mgr.deferReshare("btc-main") {
+		t.Fatal("the deferral streak must reset once the reshare has been allowed through")
+	}
+}
+
+// A reshare that actually proceeds must clear the streak, so unrelated later
+// contention gets its own full allowance rather than inheriting a stale count.
+func TestDeferReshare_ProceedingClearsTheStreak(t *testing.T) {
+	mgr := &TssManager{reshareDeferrals: make(map[string]int)}
+	mgr.deferReshare("btc-main")
+	mgr.deferReshare("btc-main")
+	mgr.clearReshareDeferrals("btc-main")
+
+	for i := 1; i <= MAX_RESHARE_DEFERRALS; i++ {
+		if !mgr.deferReshare("btc-main") {
+			t.Fatalf("after a clear, deferral %d should still defer (streak was not reset)", i)
+		}
+	}
+}
+
+// Deferral counts must be per-key: one busy key must not consume another's allowance.
+func TestDeferReshare_CountsArePerKey(t *testing.T) {
+	mgr := &TssManager{reshareDeferrals: make(map[string]int)}
+	for i := 0; i <= MAX_RESHARE_DEFERRALS; i++ {
+		mgr.deferReshare("busy-key")
+	}
+	if !mgr.deferReshare("quiet-key") {
+		t.Fatal("a different key must get its own deferral allowance")
+	}
+}

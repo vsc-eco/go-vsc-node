@@ -255,9 +255,20 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// (VR2-18): an empty or failing pool must clean-fail and retry next
 		// interval, never block while tssMgr.lock is held.
 		if myNewParty != nil {
-			dispatcher.tssMgr.GeneratePreParams()
+			// Async, for the same 2x reason as the keygen path above.
+			go dispatcher.tssMgr.GeneratePreParams()
 			preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
 			if ppErr != nil {
+				// BEHAVIOUR CHANGE, stated plainly: before this, a reshare with a cold
+				// pool fell through to tss-lib's OWN in-round generation, which carries
+				// a 5-minute SafePrimeGenTimeout — slow, mutex-held, and the wedge this
+				// fix exists to remove, but it had 5 minutes to succeed. Now a cold pool
+				// clean-fails after PreParamsTimeout (1 minute by default, since no
+				// network sets it) and retries a whole rotate interval later. That is
+				// deliberate — a predictable retry beats a mutex-held wedge that usually
+				// blew past ReshareTimeout anyway — but it NARROWS the cold-start margin
+				// on the rotation-critical path, so PreParamsTimeout must be sized from a
+				// real low-core benchmark before this is relied on in production.
 				return ppErr
 			}
 			save.LocalPreParams = preParams
@@ -1754,7 +1765,11 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
-		dispatcher.tssMgr.GeneratePreParams()
+		// Kick generation off ASYNCHRONOUSLY. Calling it inline would block this
+		// goroutine for a FULL PreParamsTimeout doing the generation itself, and
+		// awaitPreParams would then wait another full budget on top — a 2x worst
+		// case, all of it with tssMgr.lock held. Async keeps the bound at 1x.
+		go dispatcher.tssMgr.GeneratePreParams()
 		// VR2-18: bounded. A bare receive here blocked forever on an empty/failed
 		// pool while holding tssMgr.lock, silently freezing this node's entire TSS
 		// participation until restart.

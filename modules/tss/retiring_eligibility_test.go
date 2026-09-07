@@ -2,6 +2,7 @@ package tss
 
 import (
 	"encoding/base64"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -10,6 +11,9 @@ import (
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/vaultrotation"
 )
+
+// errNoCommitment stands in for a failed commitment lookup.
+var errNoCommitment = errors.New("no commitment")
 
 // bitsetB64 encodes a committee bitset (set bits at the given member indices) the
 // way the on-chain keygen/reshare commitment stores it.
@@ -319,5 +323,46 @@ func TestComputeRetiringSignerSet_PendingIsReadinessEligibleButNeverBondLocked(t
 	}
 	if len(set.KeyIds) != 0 {
 		t.Fatalf("a pending generation must not enter KeyIds (retiring-gen V-A semantics), got %v", set.KeyIds)
+	}
+}
+
+// VR2-10 symmetric fail-mode (found by adversarial review of the fix itself).
+//
+// The skip and the readiness widening must succeed or fail TOGETHER. Skipping a
+// Pending generation's reshare while its committee could not be resolved would
+// leave exactly the signers this fix protects with no readiness eligibility —
+// the strand scenario the fix exists to prevent. Falling back to "reshareable"
+// reinstates only the original, RECOVERABLE collision.
+func TestComputeRetiringSignerSet_PendingWithUnresolvableCommitteeStaysReshareable(t *testing.T) {
+	gen1KeyId := scopeContract + "-" + btcvault.VaultKeyName(1)
+	reg := marshalRegistry(
+		btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+		btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusPending},
+	)
+	deps := vaultrotation.RetiringSignerDeps{
+		BtcContract: scopeContract,
+		ReadKey: func(k string) ([]byte, bool) {
+			if k == "v" {
+				return reg, true
+			}
+			return nil, false
+		},
+		// The commitment for the pending gen cannot be resolved.
+		GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
+			return tss_db.TssCommitment{}, errNoCommitment
+		},
+		GetElection: func(epoch uint64) *elections.ElectionResult {
+			return vaElection(epoch, "alice", "bob", "carol")
+		},
+	}
+
+	set := vaultrotation.ComputeRetiringSignerSet(deps)
+
+	if set.ReshareSkipKeyIds[gen1KeyId] {
+		t.Fatal("a pending generation whose committee is unresolvable must NOT be reshare-skipped: " +
+			"skipping without the readiness widening strands its activation signers")
+	}
+	if len(set.PendingSignerElection) != 0 || set.PendingKeyIds[gen1KeyId] {
+		t.Fatal("no readiness widening should have been recorded when the committee is unresolvable")
 	}
 }
