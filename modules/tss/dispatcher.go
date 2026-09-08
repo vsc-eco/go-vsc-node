@@ -17,6 +17,7 @@ import (
 	// "github.com/btcsuite/btcd/btcec"
 
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common/consensusversion"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v3/common"
@@ -708,6 +709,37 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			culpritsList := make([]string, 0)
 			for c := range culprits {
 				culpritsList = append(culpritsList, c)
+			}
+
+			// B3a: FAIL CLEANLY rather than naming names.
+			//
+			// WaitingFor() is pure local boolean state with no cryptographic content
+			// whatsoever. It says "I have not received X's message yet", which is not
+			// evidence that X withheld it: a slow link, a partition, or a node that is
+			// itself blocked upstream all produce the identical set. Two honest nodes
+			// therefore compute DIFFERENT culprit sets for the same session, so the
+			// blame never converges — and one withholder can make every other node
+			// name an innocent third party. Blame built on it can frame an honest
+			// validator, and blame drives committee exclusion.
+			//
+			// The diagnostic above is kept in full, because locally it is genuinely
+			// useful; what stops is publishing it as an accusation. Proper attribution
+			// needs signed per-message receipts and a vote rule over them, which is a
+			// protocol layer tss-lib's message model does not have and is its own
+			// design track, not a patch.
+			//
+			// STILL OPEN, and deliberately not claimed as fixed (B3b): this removes the
+			// only path feeding a blame score for this failure mode, so a repeat
+			// griefer can wedge rotations at zero cost and never be excluded. The
+			// honest-victim half is closed; the griefer half is not.
+			if consensusversion.BlsWeightDedupActive(
+				dispatcher.tssMgr.scheduler.TssMinimumConsensusVersion(dispatcher.blockHeight)) {
+				if len(culpritsList) > 0 {
+					log.Warn("reshare timeout blame withheld: WaitingFor cannot distinguish a withholder from a victim",
+						"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+						"wouldHaveBlamed", culpritsList)
+				}
+				culpritsList = culpritsList[:0]
 			}
 			resolve(TimeoutResult{
 				tssMgr:   dispatcher.tssMgr,
