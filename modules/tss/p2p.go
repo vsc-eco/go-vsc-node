@@ -446,8 +446,10 @@ func (txp *TssManager) startP2P() error {
 }
 
 func (txp *TssManager) stopP2P() error {
-
-	return nil
+	if txp.pubsub == nil {
+		return nil
+	}
+	return txp.pubsub.Close()
 }
 
 // SendMsg sends a TSS message to a participant. This is a single-attempt send;

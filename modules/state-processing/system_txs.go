@@ -591,6 +591,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 			//Store
 			se.electionDb.StoreElection(elecResult)
+			se.onElectionStored()
 		}
 	} else {
 		//Validate normally
@@ -800,6 +801,10 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err := se.electionDb.StoreElection(elecResult); err != nil {
 				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
 			}
+			// The election may have become active (or changed) at this height —
+			// drop the key-lifecycle deprecation gate, the schedule memo and the
+			// height election cache so the next block resolves the fresh state.
+			se.onElectionStored()
 
 			// POA seat maintenance runs off the RATIFIED election, at the one
 			// point every node executes exactly once per epoch from identical
@@ -969,7 +974,7 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ValidateDetailed mirrors Validate but exposes the skip-vs-invalid
 // distinction needed by the principal-slash detectors.
 func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcome {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.electionAtHeight(t.Self.BlockHeight)
 	if err != nil {
 		// Election lookup failure is environmental, not fault of producer.
 		return BlockValidationOutcome{Kind: BlockSkip, Reason: "election lookup failed: " + err.Error()}
@@ -1095,8 +1100,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}{
 			Size: uint64(len(jsonBytes)),
 		},
-		Ts:        t.Self.Timestamp,
-		DebugData: blockContentC,
+		Ts: t.Self.Timestamp,
 	})
 
 	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)
@@ -1148,7 +1152,10 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				continue
 			}
 
-			tx.Ingest(se, t.Self.TxId, TxSelf{
+			// Ingest records the tx in the pool and returns the already-resolved
+			// op list + resolve error (resolution runs once, against the version
+			// active at this block's height — deterministic on-chain).
+			txs, txErr := tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
 				BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 				//
@@ -1171,10 +1178,6 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}
 			confirmedNonces[keyId].Nonces[tx.Headers.Nonce] = true
 
-			// Resolve op builds against the version active at this block's height
-			// (same height threaded into Ingest above) so version-gated op builds
-			// — e.g. the F14 unstake_hbd direction — are deterministic on-chain.
-			txs, txErr := tx.ToTransaction(se.ActiveConsensusVersion(uint64(t.SignedBlock.Headers.Br[1])))
 			if txErr != nil {
 				// The tx contains an op that can't be executed exactly as
 				// submitted (unknown type / undecodable payload). Fail the WHOLE

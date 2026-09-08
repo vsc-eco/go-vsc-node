@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"vsc-node/lib/vsclog"
 )
 
 // wasmEdgeVersion is the pinned WasmEdge release. The install script is fetched
@@ -35,8 +34,6 @@ const wasmEdgeInstallSHA256 = "89460d9ea15f097e2831c099ee8adb6975b9ffff8a919b338
 // hostile/MITM endpoint from forcing us to buffer an unbounded body before
 // the SHA-256 check rejects it.
 const wasmEdgeInstallMaxBytes = 1 << 20
-
-var log = vsclog.Module("wasm")
 
 func home() string {
 	return os.Getenv("HOME")

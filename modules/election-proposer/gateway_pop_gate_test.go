@@ -66,22 +66,24 @@ func h6Witness(t *testing.T, account string, seedByte byte, withGatewayPoP bool)
 // PoP is admitted, and an otherwise-identical witness whose gateway key has NO
 // PoP is excluded from the committee.
 func TestH6GatewayPoPGate(t *testing.T) {
-	// SKIPPED: the gate this exercises is switched off in production.
-	// consensusversion.WitnessKeyStrictActive is stubbed to `return false`
-	// (feature_gates.go, commit 9801c292, 2026-06-22) after the H-6 strict PoP
-	// gate starved the mainnet committee below the floor at epoch 1699 and
-	// halted elections. The gate BODY in election-proposer.go is intact; only
-	// the predicate is dead, so this test has been red on main ever since —
-	// it was never skipped alongside the disable.
+	// The gate keys off consensusversion.WitnessKeyStrictActive, which has been
+	// TEMPORARILY DISABLED since 2026-06-22 (mainnet liveness fix —
+	// feature_gates.go, commit 9801c292): the H-6 strict PoP gate starved the
+	// mainnet committee below the floor at epoch 1699 and halted elections.
+	// The gate BODY in election-proposer.go is intact — only the predicate is
+	// dead. While disabled the gate provably cannot bite, so this test can
+	// only assert its contract once the gate is restored. Skip (not fail) so
+	// the suite stays green; the conditional re-arms the test automatically
+	// when the gate is re-enabled.
 	//
 	// Consequence worth owning separately: H-6 strict admission is OFF on
 	// mainnet right now, so a witness can be elected with a consensus BLS key
 	// it does not hold the secret for, and with an unproven gateway key. That
 	// is a deliberate liveness tradeoff, ~2 months old, tracked nowhere except
 	// the comment on the stub.
-	//
-	// Un-skip together with re-enabling WitnessKeyStrictActive.
-	t.Skip("H-6 strict PoP gate disabled in production (WitnessKeyStrictActive stubbed false, 9801c292)")
+	if !consensusversion.WitnessKeyStrictActive(consensusversion.V0_2_0) {
+		t.Skip("H-6 gateway-key PoP gate is temporarily disabled on mainnet (see WitnessKeyStrictActive)")
+	}
 
 	good := h6Witness(t, "alice", 0x11, true) // valid gateway PoP → kept
 	noPoP := h6Witness(t, "bob", 0x22, false) // gateway key, no PoP → excluded
