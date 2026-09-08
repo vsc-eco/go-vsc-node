@@ -262,8 +262,21 @@ func vstatus(t *testing.T, d *Devnet, ctx context.Context, node int, cid, action
 	return strings.ToUpper(last)
 }
 
+// isOK reports whether a contract call actually SUCCEEDED.
+//
+// INCLUDED is deliberately NOT success. vstatus only ever returns INCLUDED when it gave up
+// after 90 seconds without reaching a terminal state, so treating it as OK meant "the tx was
+// accepted into a block and we stopped watching" could satisfy an assertion that the
+// operation worked. A tx sitting at INCLUDED can still end REVERTED, so a money-path case
+// could pass against an operation that never executed.
+//
+// This is inert while the network keeps up (nothing returns INCLUDED when every call reaches
+// CONFIRMED/FAILED/REVERTED in time, which is the case in the current campaign) and it
+// protects the assertions under load, which is exactly when a false PASS would be believed.
+// A case that genuinely wants to observe non-terminal inclusion should test for the string
+// itself rather than widening what "OK" means for every other case.
 func isOK(status string) bool {
-	return status == "CONFIRMED" || status == "INCLUDED"
+	return status == "CONFIRMED"
 }
 
 func flipLastHex(s string) string {
