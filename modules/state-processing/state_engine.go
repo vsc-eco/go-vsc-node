@@ -241,6 +241,12 @@ type StateEngine struct {
 	// ProcessBlock (serial), so unsynchronized.
 	scheduleRoundStart uint64
 	scheduleCached     []WitnessSlot
+
+	// profiler times each indexing phase so operators can see where block
+	// processing spends its time via the periodic "indexing profile" log
+	// summary (modules/state-processing/profiling.go). Always-on; overhead
+	// is one monotonic-clock read per sample. Constructed in New.
+	profiler *Profiler
 }
 
 // SetBlockStatus wires the block-status getter so the state engine can
@@ -486,6 +492,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 	}()
+	stopProcessBlock := se.profiler.Start(PhaseProcessBlock)
+	defer stopProcessBlock()
 
 	se.BlockHeight = int(block.BlockNumber)
 	se.refreshChainConsensusCache()
@@ -503,6 +511,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	// cure); the chain is halted anyway. Deterministic (on-chain suspend flag,
 	// refreshed just above). Resumes normally when the suspend lifts.
 	if !se.chainProcessingSuspended() {
+		keyLifecycleStart := time.Now()
 		// Deprecation only needs re-evaluation after an election is stored
 		// (the expiry clock is the epoch), so the read + FindDeprecatingKeys
 		// scan are gated on onElectionStored. The pass is only marked complete
@@ -562,6 +571,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				}
 			}
 		}
+		se.profiler.Record(PhaseKeyLifecycle, time.Since(keyLifecycleStart))
 	} // BRK-5: close the processing-suspended key-lifecycle-freeze guard
 
 	blockInfo := struct {
@@ -602,20 +612,24 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for i, virtualOp := range block.VirtualOps {
+		virtualOpStart := time.Now()
 		if virtualOp.Op.Type == "interest_operation" {
 			owner, ok := virtualOp.Op.Value["owner"].(string)
 			if !ok {
+				se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 				continue
 			}
 			if owner == se.sconf.GatewayWallet() {
 				interest, ok := virtualOp.Op.Value["interest"].(map[string]any)
 				if !ok {
 					log.Warn("interest_operation: unexpected interest field type", "block", block.BlockNumber)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				amountStr, ok := interest["amount"].(string)
 				if !ok {
 					log.Warn("interest_operation: unexpected amount field type", "block", block.BlockNumber)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
@@ -625,6 +639,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						"amount", amountStr,
 						"err", err,
 					)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				// Disambiguator for the interest ledger-record id. A Hive
@@ -637,9 +652,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				se.claimHBDInterest(blockInfo.BlockHeight, vInt1, strconv.Itoa(i))
 			}
 		}
+		se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		parseStart := time.Now()
 		if se.pendulumFeed != nil {
 			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
 		}
@@ -848,6 +865,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		//Main pipeline
 		if singleOp.Type == "account_update" {
+			accountUpdateStart := time.Now()
 			opValue := singleOp.Value
 
 			// review2 MED #86/#88 (sweep): json_metadata / account from
@@ -894,6 +912,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								"txId",
 								tx.TransactionID,
 							)
+							se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+							se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 							continue
 						}
 					}
@@ -914,6 +934,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					se.witnessDb.SetWitnessUpdate(inputData)
 				}
 			}
+			se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+			se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 			continue
 		}
 
@@ -945,10 +967,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 				if se.chainProcessingSuspended() && !isRecoveryAllowlistedCustomJSON(cj.Id) {
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 				//Start parsing block
 				if cj.Id == "vsc.produce_block" {
+					produceBlockStart := time.Now()
 					//Process block production
 					schedule := se.getScheduleForSlot(slotInfo.StartHeight)
 
@@ -1069,6 +1093,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					se.profiler.Record(PhaseProduceBlock, time.Since(produceBlockStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 				//# End parsing block
@@ -1095,6 +1121,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"hbd",
 						)
 						if !hasFee {
+							se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 							continue
 						}
 
@@ -1129,6 +1156,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					} else {
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.update_contract" {
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
@@ -1176,6 +1204,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.cancel_contract_update" {
 					// Cancel a contract update still inside its timelock window.
@@ -1197,6 +1226,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						json.Unmarshal(cj.Json, &parsedTx)
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.election_result" {
 					parsedTx := &TxElectionResult{
@@ -1209,21 +1239,25 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// nil receiver.
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.propose_consensus_version" {
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_suspend" {
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_require_version" {
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 			} //# End parsing system transactions
@@ -1511,6 +1545,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								keyCache[sigPack.KeyId] = &tssKey
 							}
 							if keyCache[sigPack.KeyId] != nil {
+								tssSignStart := time.Now()
 								publicKey, err := hex.DecodeString(keyCache[sigPack.KeyId].PublicKey)
 								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
@@ -1519,18 +1554,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										pubKey, err := btcec.ParsePubKey(publicKey)
 										if err != nil {
 											log.Warn("invalid TSS public key, skipping", "keyId", sigPack.KeyId, "err", err)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
 										signature, err := btcecdsa.ParseDERSignature(sigBytes)
 										if err != nil {
 											log.Warn("invalid TSS DER signature, skipping", "keyId", sigPack.KeyId, "err", err)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
 										sigS := signature.S()
 										if sigS.IsOverHalfOrder() {
 											log.Warn("TSS signature has high-S (BIP-62 non-canonical), rejecting", "keyId", sigPack.KeyId)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
@@ -1567,6 +1605,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										}
 									}
 								}
+								se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 							}
 						}
 					}
@@ -1661,12 +1700,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						// The BLS aggregate verify is the dominant cost of indexing a
+						// tss_commitment op; time it (and the deserialize + quorum
+						// check that accompany it) as the tssCommitment phase.
+						tssCommitmentStart := time.Now()
 						circuit, derr := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
 							Signature: commitment.Signature,
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 						if derr != nil || circuit == nil {
 							tssLog.Debug("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
 
@@ -1675,6 +1719,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						if !verified {
 							tssLog.Debug("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
 						// review2 CRITICAL #6: a valid aggregate is not enough —
@@ -1685,8 +1730,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights,
 							consensusversion.BlsWeightDedupActive(se.ActiveConsensusVersion(block.BlockNumber))) {
 							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
+						se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 						if block.BlockNumber <= tssIndexHeight {
 							se.tssLogSync(block.BlockNumber, "skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
@@ -1855,6 +1902,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				AnchoredIndex:        &blkIdx,
 			})
 		}
+		se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 	}
 
 	//Detects new slot and executes batch if so
@@ -1922,6 +1970,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
+
+	// Emit the periodic indexing-performance summary for the window since
+	// the last emission (once per 1000 blocks live-synced / 100000 during
+	// catch-up), then reset. Runs last so every phase above is counted.
+	se.profiler.MaybeEmit(block.BlockNumber, se.IsLiveSynced(int(block.BlockNumber)))
 }
 
 // verifyAnnouncedBlsPoP locates the consensus BLS DID key in a witness announce
@@ -2237,6 +2290,11 @@ func (se *StateEngine) ExecuteBatch() {
 	if len(se.TxBatch) == 0 {
 		return
 	}
+	// Timed after the empty-batch bail so the phase only samples real batch
+	// work — the empty calls (the reindex hot path) would otherwise flood the
+	// ring with near-zero samples and crush the percentiles.
+	stopExecuteBatch := se.profiler.Start(PhaseExecuteBatch)
+	defer stopExecuteBatch()
 
 	lastBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
 	if err != nil && err != mongo.ErrNoDocuments {
@@ -2374,7 +2432,9 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
+			execOpStart := time.Now()
 			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
+			se.profiler.Record(PhaseExecuteBatchOp(vscTx.Type()), time.Since(execOpStart))
 
 			log.Debug(
 				"TRANSACTION STATUS",
@@ -2517,6 +2577,9 @@ func isGuardedAccount(account string) bool {
 }
 
 func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
+	stopUpdateBalances := se.profiler.Start(PhaseUpdateBalances)
+	defer stopUpdateBalances()
+
 	//Sets a default start block of 0 if near block 0
 	//E2E testing starts at block 0
 	var stBlock uint64
@@ -2654,6 +2717,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	//Cleanup!
 	pendingBalanceRecords := make([]ledgerDb.BalanceRecord, 0, len(distinctAccounts))
 	for _, k := range distinctAccounts {
+		accountStart := time.Now()
 		ledgerBalances := map[string]int64{}
 		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
 		var balanceR ledgerDb.BalanceRecord
@@ -2706,6 +2770,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		//Skip accounts that have no new ledger records AND no pending claim update
 		if !hasLedgerUpdates && !needsClaimUpdate {
+			se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
 			continue
 		}
 
@@ -2831,6 +2896,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 				return v.Type == "deposit"
 			},
 		)
+		se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
 	}
 	// Fail-stop flush of the slot's balance records (see the loop above). A
 	// swallowed write here is exactly the failure the 2026-08 halt class was;
@@ -2875,16 +2941,20 @@ func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool)
 	return -unstakedAmount, true
 }
 
-func blockingRetry(what string, read func() error) {
+func blockingRetry(what string, read func() error, stallHook ...func(time.Duration)) {
 	const (
 		baseDelay = 100 * time.Millisecond
 		maxDelay  = 30 * time.Second
 	)
 	delay := baseDelay
+	stall := time.Duration(0)
 	for attempt := 1; ; attempt++ {
 		if err := read(); err == nil {
 			if attempt > 1 {
 				log.Error("DB read recovered; resuming slot", "op", what, "attempts", attempt)
+				if len(stallHook) > 0 && stall > 0 {
+					stallHook[0](stall)
+				}
 			}
 			return
 		} else {
@@ -2892,6 +2962,7 @@ func blockingRetry(what string, read func() error) {
 				"op", what, "attempt", attempt, "retryIn", delay.String(), "err", err)
 		}
 		time.Sleep(delay)
+		stall += delay
 		if delay < maxDelay {
 			if delay *= 2; delay > maxDelay {
 				delay = maxDelay
@@ -2913,6 +2984,8 @@ func (se *StateEngine) getLedgerRangeOrBlock(account string, start, end uint64, 
 		var err error
 		out, err = se.LedgerState.LedgerDb.GetLedgerRange(account, start, end, asset)
 		return err
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out
 }
@@ -2941,6 +3014,8 @@ func (se *StateEngine) GetElectionInfoOrBlock(height uint64) (elections.Election
 			return nil
 		}
 		return err // infra failure → keep blocking
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out, found
 }
@@ -2954,13 +3029,18 @@ func (se *StateEngine) getPendingActionsByEpochOrBlock(epoch uint64, t ...string
 		var err error
 		out, err = se.LedgerState.ActionDb.GetPendingActionsByEpoch(epoch, t...)
 		return err
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out
 }
 
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
+	stopUpdateRcMap := se.profiler.Start(PhaseUpdateRcMap)
+	defer stopUpdateRcMap()
 	records := make([]rcDb.RcRecord, 0, len(se.RcMap))
 	for k, v := range se.RcMap {
+		rcAccountStart := time.Now()
 		//Get the last rc record
 		rcRecord, _ := se.rcDb.GetRecord(k, blockHeight-1)
 
@@ -2991,6 +3071,7 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 		}
 
 		records = append(records, rcDb.RcRecord{Account: k, BlockHeight: blockHeight, Amount: rcBal})
+		se.profiler.Record(PhaseUpdateRcMapAccount, time.Since(rcAccountStart))
 	}
 	// Single round trip for the whole slot's RC map, under a fail-stop retry:
 	// the caller clears this slot's in-memory consumption right after, so a
@@ -3012,6 +3093,8 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 }
 
 func (se *StateEngine) Flush() {
+	stopFlush := se.profiler.Start(PhaseFlush)
+	defer stopFlush()
 	se.ContractResults = make(map[string][]ContractResult)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
@@ -3023,6 +3106,8 @@ func (se *StateEngine) Flush() {
 // If not continue parsing from lastBlk
 // Need to test
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
+	stopSaveBlockHeight := se.profiler.Start(PhaseSaveBlockHeight)
+	defer stopSaveBlockHeight()
 
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
@@ -3077,6 +3162,12 @@ func (se *StateEngine) Commit() {
 }
 
 func (se *StateEngine) Init() error {
+	initStart := time.Now()
+	defer func() {
+		se.profiler.Record(PhaseInit, time.Since(initStart))
+		seprofLog.Info("state engine init", "duration", time.Since(initStart).String())
+	}()
+
 	// One-time migration: deprecate any active keys that pre-date the expiry system.
 	// These keys have no ExpiryEpoch and would otherwise reshare forever.
 	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
@@ -3319,6 +3410,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		// First block after (re)start must run the deprecation pass — keys
 		// may have come due while this node was offline.
 		keyLifecycleEpochDirty: true,
+		profiler:               newProfiler(),
 	}
 	if identityConfig != nil {
 		se.selfHiveUsername = identityConfig.Get().HiveUsername
