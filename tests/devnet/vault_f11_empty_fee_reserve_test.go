@@ -126,9 +126,21 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 	if sup0.fee != 0 {
 		t.Fatalf("PRECONDITION FAILED: FeeSupply is %d, not 0, so migrateVault may legitimately succeed and F11 would be vacuous (active=%d user=%d baseFeeRate=%d)", sup0.fee, sup0.active, sup0.user, sup0.feeRate)
 	}
+	// The rotation is issued on node 1 but the precondition is read on magi-2, so a
+	// single read races state propagation — the same read lag the rest of this suite
+	// polls through (BondLock waits for Purged the same way). Under load the lag is
+	// longer, and a one-shot read turns it into a false precondition failure that
+	// looks exactly like the rotation not having happened.
+	//
+	// Bounded: if gen-0 is still not Retiring after this, that IS the finding and
+	// the fatal below reports it.
 	base := vf11Snap(t, d, ctx, cid)
+	for i := 0; i < 18 && base.gen0Stat != int(btcvault.VaultStatusRetiring); i++ {
+		time.Sleep(10 * time.Second)
+		base = vf11Snap(t, d, ctx, cid)
+	}
 	if base.gen0Stat != int(btcvault.VaultStatusRetiring) {
-		t.Fatalf("PRECONDITION FAILED: gen-0 status on magi-2 is %d, want %d (Retiring). The refusal path under test only applies to a retiring or draining generation", base.gen0Stat, int(btcvault.VaultStatusRetiring))
+		t.Fatalf("PRECONDITION FAILED: gen-0 status on magi-2 is %d after 3 min of polling, want %d (Retiring). The refusal path under test only applies to a retiring or draining generation", base.gen0Stat, int(btcvault.VaultStatusRetiring))
 	}
 	if base.gen0Utxo < 1 {
 		t.Fatalf("PRECONDITION FAILED: gen-0 holds %d registry UTXOs on magi-2, want at least 1. With nothing to sweep migrateVault returns 'nothing to migrate' and never reaches the fee reserve check", base.gen0Utxo)
