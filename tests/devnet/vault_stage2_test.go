@@ -214,7 +214,43 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 
 // getStateHex reads contract state keys with encoding:"hex" (NON-LOSSY, unlike the
 // default raw encoding which mangles bytes >0x7F to U+FFFD). Returns key->rawBytes.
+// getStateHex reads committed contract state, RETRYING on transport failure.
+//
+// ★ WHY THE RETRY IS LOAD-BEARING, not politeness. Every state helper in this suite
+// (vaultStatusOf, genUtxoCount, balanceSats, vf11ReadSupply, vfStateOn, ...) funnels
+// through here, and each degrades an error into a sentinel: -1, 0, false. The test then
+// reads that sentinel as a PRODUCT verdict. So one 15-second gqlQuery timeout under load
+// does not surface as "the harness could not read"; it surfaces as "the generation is not
+// Purged" or "the balance is zero" -- a failure attributed to the contract, in a case that
+// was never exercised.
+//
+// That is exactly how TestVaultDrainToPurge's DRAIN-04 failed: a single
+// "context deadline exceeded" against magi-2 became "gen-0 status=unknown(-1)". The
+// campaign runs three devnets at once, so these timeouts are expected, not exceptional.
+//
+// A contract-state read is idempotent, so retrying is always safe. A parent context that
+// is already done is NOT retried -- nothing can succeed after that, and burning the
+// remaining attempts only delays the real error.
 func getStateHex(d *Devnet, ctx context.Context, node int, cid string, keys []string) (map[string][]byte, error) {
+	const attempts = 4
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		res, err := getStateHexOnce(d, ctx, node, cid, keys)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if i < attempts-1 {
+			time.Sleep(3 * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("getStateByKeys(node %d) failed after %d attempts: %w", node, attempts, lastErr)
+}
+
+func getStateHexOnce(d *Devnet, ctx context.Context, node int, cid string, keys []string) (map[string][]byte, error) {
 	const q = `query($c:String!,$k:[String!]!,$e:String){getStateByKeys(contractId:$c,keys:$k,encoding:$e)}`
 	var out struct {
 		GetStateByKeys map[string]string `json:"getStateByKeys"`

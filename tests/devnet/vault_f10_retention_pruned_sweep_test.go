@@ -224,51 +224,29 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	// which is the whole point of retaining the header.
 	c.rec("F10-CONFIRM-SETTLES", "confirmSpend with a valid proof SETTLES because the header it needs was retained; the sweep clears and gen-0 drains to gen-1 (VR2-03)",
 		isOK(cs) && gen0After < gen0Before,
-		fmt.Sprintf("confirmSpend status=%s (want FAILED/REVERTED) ms_live=%v gen0_utxos=%d (was %d) gen1_utxos=%d (was %d)", cs, msLive, gen0After, gen0Before, gen1After, gen1Before))
+		fmt.Sprintf("confirmSpend status=%s (want CONFIRMED) ms_live=%v (want false: settled) gen0_utxos=%d (was %d) gen1_utxos=%d (was %d)", cs, msLive, gen0After, gen0Before, gen1After, gen1Before))
 
-	// Operator "recovery" attempts. None of them can move the stuck coins.
-	spendsBefore := txSpendIds(t, d, ctx, cid)
+	// ── INVERTED BY VR2-03, like F10-PRUNED and F10-CONFIRM-SETTLES above. ──
+	//
+	// These two cases used to assert that NOTHING could recover the sweep: redrive refused
+	// while the original stayed pending, gen-0 pinned funded in a locked state forever, no
+	// gen-2, rotation permanently stuck. That was the BUG, and it is gone: the header the
+	// sweep needed is retained, so confirmSpend settles it (F10-CONFIRM-SETTLES above) and
+	// the generation drains.
+	//
+	// They are turned around rather than deleted, because the recovery path is exactly what
+	// a reviewer needs proven: after the settle, there is nothing left to recover FROM, and
+	// the rotation carries on.
+
 	rd := vstatus(t, d, ctx, 1, cid, "redriveSpend", txid)
-	redriveDetail := "redriveSpend status=" + rd
-	redriveNoRecovery := false
-	if !isOK(rd) {
-		redriveNoRecovery = vfSweepRecordOn(d, ctx, 2, cid, txid)
-		redriveDetail += " (refused by the contract); original ms record live=" + fmt.Sprint(vfSweepRecordOn(d, ctx, 2, cid, txid))
-	} else {
-		newTxid := ""
-		for i := 0; i < 20 && newTxid == ""; i++ {
-			time.Sleep(3 * time.Second)
-			for _, id := range txSpendIds(t, d, ctx, cid) {
-				if !contains(spendsBefore, id) {
-					newTxid = id
-				}
-			}
-		}
-		btcErr := "(replacement never appeared in the spends registry)"
-		origLive := vfSweepRecordOn(d, ctx, 2, cid, txid)
-		if newTxid != "" {
-			sd2 := waitSigningData(t, d, ctx, cid, newTxid)
-			raw2, signed2 := "", false
-			for attempt := 1; attempt <= 2 && sd2 != nil && !signed2; attempt++ {
-				raw2, signed2 = vfAwaitSweepSignatures(t, d, ctx, cid+"-main", sd2)
-			}
-			if signed2 {
-				_, berr := d.bitcoinCli(ctx, "sendrawtransaction", raw2)
-				if berr != nil {
-					btcErr = strings.TrimSpace(berr.Error())
-				} else {
-					btcErr = "ACCEPTED BY BITCOIN (unexpected: the inputs were already spent by the mined original)"
-				}
-			} else {
-				btcErr = "(replacement built but never fully signed within two sign intervals)"
-			}
-		}
-		rejected := !strings.Contains(btcErr, "ACCEPTED")
-		redriveNoRecovery = rejected && origLive
-		redriveDetail += fmt.Sprintf(" replacement=%s bitcoin=%q original_ms_live=%v", newTxid, btcErr, origLive)
-	}
-	c.rec("F10-REDRIVE-NO-RECOVERY", "redriveSpend cannot recover a mined-but-unprovable sweep (refused, or its replacement is rejected by Bitcoin while the original stays pending)",
-		redriveNoRecovery, redriveDetail)
+	msStillLive := vfSweepRecordOn(d, ctx, 2, cid, txid)
+	// A refusal is now the CORRECT answer, and for a specific reason: the sweep already
+	// settled, so there is no in-flight record to re-drive. Asserting the record is also
+	// gone is what separates "refused because it settled" from "refused because something
+	// is wedged" -- the two the old case could not tell apart.
+	c.rec("F10-REDRIVE-NOTHING-TO-RECOVER", "redriveSpend is refused because the sweep already SETTLED, not because it is stuck: no in-flight record remains (VR2-03)",
+		!isOK(rd) && !msStillLive,
+		fmt.Sprintf("redriveSpend status=%s (want refused) original ms record live=%v (want false = already settled)", rd, msStillLive))
 
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
 	rv := vstatus(t, d, ctx, 1, cid, "retireVault", "")
@@ -277,21 +255,21 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	gen0Stat := vfVaultStatusOn(d, ctx, 2, cid, 0)
 	gen2Stat := vfVaultStatusOn(d, ctx, 2, cid, 2)
 	gen0Final := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
-	// gen-0 stays FUNDED (confirmSpend was refused, so its input is never deleted) and
-	// therefore can never leave the drain: ReconcileRetiringVaults only advances
-	// Draining->Inactive when !funded and Inactive->Purged via the grace check
-	// (vault_lifecycle.go), so a funded gen is pinned in a locked state forever. retireVault
-	// legitimately moves it Retiring(2)->Draining(3) (the "start draining" transition);
-	// writeOffDust is a no-op here (the 50M input is far above the dust floor). The stuck
-	// invariant is therefore "still funded AND not Purged (status in 2/3/4) AND createKey
-	// refused AND no gen-2", NOT specifically Retiring — run 1 pinned status==2 and
-	// false-failed on the benign advance to Draining.
-	genStuckLocked := gen0Stat == 2 || gen0Stat == 3 || gen0Stat == 4
-	c.rec("F10-NO-RECOVERY-OPS", "writeOffDust/retireVault/createKey cannot recover the stuck sweep: gen-0 stays funded in a locked state (Retiring/Draining/Inactive, never Purged) and no gen-2 is minted — the rotation is permanently stuck",
-		genStuckLocked && gen2Stat == -1 && gen0Final == gen0Before && gen0Final > 0 && !isOK(ck),
-		fmt.Sprintf("writeOffDust=%s retireVault=%s createKey=%s (want refused) | gen-0 status=%d (want 2/3/4 = still locked, NOT 5 Purged) gen-0 utxos=%d (want %d, still funded) gen-2 status=%d (want -1 absent)", wod, rv, ck, gen0Stat, gen0Final, gen0Before, gen2Stat))
+	// gen-0 is now EMPTY (its input was deleted when the sweep settled), so
+	// ReconcileRetiringVaults can advance it and NN#3 no longer blocks the next mint.
+	// The assertion is the rotation MOVING: drained, advanced past Retiring, and gen-2
+	// minted. writeOffDust remains a no-op here (the 50M input was never dust), which is
+	// why its status is reported but not asserted on.
+	rotationProceeds := gen0Final == 0 && gen0Stat >= 3 && gen2Stat >= 0 && isOK(ck)
+	c.rec("F10-ROTATION-COMPLETES", "with the sweep settled the rotation carries on: gen-0 is drained and advances, and createKey mints gen-2 (VR2-03)",
+		rotationProceeds,
+		fmt.Sprintf("writeOffDust=%s retireVault=%s createKey=%s (want accepted) | gen-0 status=%d (want >=3, advanced past Retiring) gen-0 utxos=%d (was %d, want 0) gen-2 status=%d (want >=0 = minted)", wod, rv, ck, gen0Stat, gen0Final, gen0Before, gen2Stat))
 
-	// The committee stays bond-locked behind the stuck generation.
+	// The bond stays locked, but NOT because anything is stuck any more. gen-0 has drained
+	// and reached Inactive; it cannot reach Purged until the purge grace window elapses,
+	// and the bond is held until then. The old wording ("behind the stuck generation") was
+	// describing the bug this test no longer reproduces, so a reader would have taken this
+	// PASS as evidence of a wedge that is not there.
 	const unstakeNode = 3
 	member := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, unstakeNode)
 	bondDetail := ""
@@ -304,7 +282,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 		bondLocked = pending == 0
 		bondDetail = fmt.Sprintf("member=%s pending consensus_unstake amount=%d (want 0 = refused)", member, pending)
 	}
-	c.rec("F10-BOND", "a committee member's consensus_unstake is still refused while the stuck generation is locked (Retiring/Draining, never Purged; bond lock has no escape either)",
+	c.rec("F10-BOND", "consensus_unstake is still refused while gen-0 sits Inactive awaiting the purge grace window (the bond releases on PURGE, not on drain)",
 		bondLocked, bondDetail)
 
 	finish()

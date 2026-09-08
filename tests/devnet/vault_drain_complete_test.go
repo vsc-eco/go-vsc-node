@@ -182,8 +182,9 @@ func TestVaultDrainToPurge(t *testing.T) {
 
 	// ── retire: draining → INACTIVE. Asserted on the REGISTRY, not the tx status. ──
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
-	st := vaultStatusOf(t, d, ctx, cid, 0)
-	rec("DRAIN-03", "gen-0 REALLY transitioned to Inactive (vault registry)", st == 4, "gen-0 status="+statusStr(st))
+	stInactive, readOK3 := waitVaultStatus(t, d, ctx, cid, 0, 4, 2*time.Minute)
+	rec("DRAIN-03", "gen-0 REALLY transitioned to Inactive (vault registry)", stInactive == 4 && readOK3,
+		fmt.Sprintf("gen-0 status=%s (registry readable=%v)", statusStr(stInactive), readOK3))
 
 	// ── purge after the grace window: inactive → PURGED ──
 	last := contractLastHeight(t, d, ctx, cid)
@@ -198,8 +199,9 @@ func TestVaultDrainToPurge(t *testing.T) {
 		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hexBatch))
 	}
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
-	st = vaultStatusOf(t, d, ctx, cid, 0)
-	rec("DRAIN-04", "gen-0 REALLY transitioned to Purged (vault registry)", st == 5, "gen-0 status="+statusStr(st))
+	stPurged, readOK4 := waitVaultStatus(t, d, ctx, cid, 0, 5, 2*time.Minute)
+	rec("DRAIN-04", "gen-0 REALLY transitioned to Purged (vault registry)", stPurged == 5 && readOK4,
+		fmt.Sprintf("gen-0 status=%s (registry readable=%v)", statusStr(stPurged), readOK4))
 
 	t.Logf("DRAIN SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }
@@ -215,6 +217,47 @@ func statusStr(s int) string {
 // vaultStatusOf reads the committed vault registry ("v") and returns the status
 // byte of the given generation, or -1 if absent. This is chain truth — the thing
 // a tx-status assertion cannot see.
+// waitVaultStatus polls the committed vault registry until generation `gen` reaches
+// `want`, and reports separately whether the READ ever succeeded.
+//
+// A bare vaultStatusOf taken immediately after the transaction that causes a transition
+// measures two things it cannot tell apart: the generation not having reached the status,
+// and the query node not having answered. Both come back as -1. Under a three-lane campaign
+// the second is common, and it gets attributed to the contract.
+//
+// Returning readOK separately means a case can say "the transition did not happen" and
+// "I could not read the registry" as different sentences.
+func waitVaultStatus(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, want int, within time.Duration) (int, bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	last, readOK := -1, false
+	for {
+		st, err := getStateHex(d, ctx, 2, cid, []string{"v"})
+		if err == nil {
+			readOK = true
+			if vs, derr := btcvault.UnmarshalVaultRegistry(st["v"]); derr == nil {
+				found := -1
+				for _, v := range vs {
+					if v.Generation == gen {
+						found = int(v.Status)
+						break
+					}
+				}
+				last = found
+				if found == want {
+					return found, true
+				}
+			}
+		} else {
+			t.Logf("waitVaultStatus: read failed: %v", err)
+		}
+		if time.Now().After(deadline) {
+			return last, readOK
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 func vaultStatusOf(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32) int {
 	t.Helper()
 	st, err := getStateHex(d, ctx, 2, cid, []string{"v"})
