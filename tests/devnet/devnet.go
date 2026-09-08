@@ -478,7 +478,7 @@ RUN go mod download
 COPY --chown=app:app . .
 RUN . /home/app/.wasmedge/env && \
     go run github.com/99designs/gqlgen generate && \
-    go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o magid vsc-node/cmd/vsc-node
+    go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo devnet)" -o magid vsc-node/cmd/vsc-node
 
 FROM rockylinux:9.3-minimal
 RUN microdnf install -y iptables && microdnf clean all

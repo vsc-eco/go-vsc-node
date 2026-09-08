@@ -30,7 +30,7 @@ RUN go mod download
 COPY --chown=app:app . .
 
 # Generate GraphQL code and build the application
-RUN . /home/app/.wasmedge/env && go run github.com/99designs/gqlgen generate && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o vsc-node vsc-node/cmd/vsc-node
+RUN . /home/app/.wasmedge/env && go run github.com/99designs/gqlgen generate && go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo unknown)" -o vsc-node vsc-node/cmd/vsc-node
 
 
 
