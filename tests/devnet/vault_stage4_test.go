@@ -302,16 +302,29 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		return
 	}
 	t.Logf("migration sweep txid=%s (retiring gen %s)", txid, retiringKeyId)
+	settleSweepByTxid(t, d, ctx, cid, retiringKeyId, txid)
+}
 
+// settleSweepByTxid is the second half of migrateAndSettleAs: TSS-sign an ALREADY-BUILT
+// migration sweep, broadcast it, relay its block plus the maturity margin, and settle it
+// with confirmSpend. Returns the confirmSpend status.
+//
+// Split out because a caller may already HAVE a sweep. Once VR2-11 let the builder derive an
+// affordable rate, a sweep gets built at the original relayed rate, and a later migrateVault
+// is then correctly a no-op: it must not stack a second tranche on an input the in-flight
+// sweep already owns. A test that wanted "and now it settles" had no way to say so without
+// asking for another sweep it could not get, and read the refusal as a failure.
+func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, txid string) string {
+	t.Helper()
 	sd := waitSigningData(t, d, ctx, cid, txid)
 	if sd == nil {
 		t.Errorf("CASE VL-GP-06 FAIL — no signing data for sweep %s", txid)
-		return
+		return "NO_SIGNING_DATA"
 	}
 	var mtx wire.MsgTx
 	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
 		t.Errorf("deser sweep: %v", err)
-		return
+		return "DESERIALIZE_FAILED"
 	}
 	// The RETIRING gen (gen-0) key signs the sweep — NN#1 output-scoping admits it
 	// only because every output pays the gen-1 successor P2WSH.
@@ -319,7 +332,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		sig := waitSignature(t, d, ctx, retiringKeyId, uh.SigHash)
 		if sig == nil {
 			t.Errorf("CASE VL-PEN-03/NN#1 — retiring gen did NOT sign the sweep (output-scoping refused? or slow). input %d", uh.Index)
-			return
+			return "NOT_SIGNED"
 		}
 		signature := append(append([]byte{}, sig...), byte(txscript.SigHashAll))
 		mtx.TxIn[uh.Index].Witness = wire.TxWitness{signature, []byte{0x01}, uh.WitnessScript}
@@ -329,7 +342,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	bcTxid, err := d.bitcoinCli(ctx, "sendrawtransaction", hex.EncodeToString(buf.Bytes()))
 	if err != nil {
 		t.Errorf("CASE VL-GP-06 FAIL — sweep broadcast rejected: %v", err)
-		return
+		return "BROADCAST_REJECTED"
 	}
 	t.Logf("CASE VL-GP-06/NN#1 PASS(partial) — migration sweep TSS-signed (retiring gen, successor-scoped) + broadcast: %s", bcTxid)
 
@@ -364,4 +377,5 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	} else {
 		t.Logf("CASE VL-GP-06 PASS(broadcast)/confirmSpend status=%s (settle needs review)", cs)
 	}
+	return cs
 }
