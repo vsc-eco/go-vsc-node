@@ -256,7 +256,36 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	// ---------------------------------------------------------------------------
 	// 2. F24-NOTHING: migrateVault succeeds and does absolutely nothing, three times.
 	// ---------------------------------------------------------------------------
+	// ★ TAKE THE BASELINE ONLY ONCE THE READING NODE HAS SETTLED.
+	//
+	// Every snapshot here is read from magi-2 while vstatus confirms on magi-1, so a
+	// baseline captured immediately after the rotation can be a node-behind. The whole case
+	// is a BYTE-EQUALITY comparison against that baseline, so a stale one makes
+	// rByteEqual=false for reasons that have nothing to do with migrateVault - which is
+	// exactly how this failed in the campaign: status CONFIRMED, sameSpends=true,
+	// vByteEqual=true, mslByteEqual=true, gen-0 still Retiring with 1 UTXO on all three
+	// tries, and ONLY the UTXO registry bytes differing. The deadlock was reproduced
+	// perfectly; the baseline was not settled.
+	//
+	// Wait for two consecutive identical reads before freezing it. Bounded, and it logs if
+	// it never settles rather than silently proceeding with a moving baseline.
 	base := vf24Snapshot(t, d, ctx, cid)
+	settled := false
+	for i := 0; i < 24; i++ {
+		time.Sleep(5 * time.Second)
+		next := vf24Snapshot(t, d, ctx, cid)
+		if bytes.Equal(base.utxoReg, next.utxoReg) && bytes.Equal(base.vaultReg, next.vaultReg) &&
+			bytes.Equal(base.sweepIdx, next.sweepIdx) && vf24SameIds(base.spends, next.spends) {
+			base = next
+			settled = true
+			break
+		}
+		base = next
+	}
+	if !settled {
+		t.Logf("F24-NOTHING: the reading node never produced two identical consecutive snapshots; "+
+			"the byte-equality baseline may be stale (contract=%s)", cid)
+	}
 	nothingOK := true
 	nothingDetail := ""
 	for i := 1; i <= 3; i++ {
