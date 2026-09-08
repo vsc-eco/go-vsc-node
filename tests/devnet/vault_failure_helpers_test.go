@@ -315,20 +315,46 @@ type vfEnv struct {
 
 func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uint64, fundSats int64, desc string) *vfEnv {
 	t.Helper()
+	// ★ EVERY early exit honours vfSetupSoftFail, not just the funding one.
+	//
+	// F7 (mixed fleet) sets the flag because a setup stall IS its measurement: it wants to
+	// scan block_headers for fork-vs-halt and dump per-node halt logs rather than die
+	// without evidence. Only the FUNDING failure used to respect the flag, so when the
+	// campaign's F7 run stalled earlier - at gen-0 keygen, "timeout waiting for tss_key" -
+	// it hit a bare t.Fatalf and produced no F7-SETUP-STALL, no fleet scan, no halt logs and
+	// no summary. The one test whose whole purpose is diagnosing a mixed fleet failed with
+	// nothing to diagnose.
+	//
+	// setupFail returns true when the caller has opted into soft-fail, so each site can
+	// `return nil` and let the caller do its measurement.
+	setupFail := func(format string, args ...any) bool {
+		if vfSetupSoftFail {
+			t.Errorf(format+" (soft-fail: caller records the fleet state)", args...)
+			return true
+		}
+		t.Fatalf(format, args...)
+		return false
+	}
 	seedH, err := d.MineBlocks(ctx, 101)
 	if err != nil {
-		t.Fatalf("mine: %v", err)
+		if setupFail("mine: %v", err) {
+			return nil
+		}
 	}
 	hdr1, _ := btcBlockHeaderHex(ctx, d, seedH)
 	cid, err := d.DeployContract(ctx, ContractDeployOpts{
 		WasmPath: wasm, Name: "btc-mapping-contract", Description: desc, DeployerNode: 1, GQLNode: 2,
 	})
 	if err != nil {
-		t.Fatalf("deploy: %v", err)
+		if setupFail("deploy: %v", err) {
+			return nil
+		}
 	}
 	t.Logf("CONTRACT=%s hpin=%d", cid, hpin)
 	if s := vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdr1, seedH)); !isOK(s) {
-		t.Fatalf("seedBlocks: %s", s)
+		if setupFail("seedBlocks: %s", s) {
+			return nil
+		}
 	}
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
@@ -338,12 +364,16 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd0, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 8*time.Minute)
 	if err != nil {
-		t.Fatalf("gen0 keygen: %v", err)
+		if setupFail("gen0 keygen: %v", err) {
+			return nil
+		}
 	}
 	primary0 := kd0.PublicKey
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
-		t.Fatalf("gen0 register: %s", s)
+		if setupFail("gen0 register: %s", s) {
+			return nil
+		}
 	}
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	if fundSats > 0 {
