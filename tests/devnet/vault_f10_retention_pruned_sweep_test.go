@@ -251,10 +251,20 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
 	rv := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 	ck := vstatus(t, d, ctx, 1, cid, "createKey", "")
-	time.Sleep(10 * time.Second)
-	gen0Stat := vfVaultStatusOn(d, ctx, 2, cid, 0)
-	gen2Stat := vfVaultStatusOn(d, ctx, 2, cid, 2)
-	gen0Final := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
+	// POLL for the end state rather than reading once. vfVaultStatusOn returns -1 for BOTH
+	// "unreadable" and "absent", so a single read taken right after three transactions can
+	// report a transition that simply has not propagated yet as a product failure. This is
+	// the same defect that made DRAIN-04 fail on a GQL timeout; not repeating it here.
+	gen0Stat, gen2Stat, gen0Final := -1, -1, gen0Before
+	for i := 0; i < 24; i++ {
+		time.Sleep(5 * time.Second)
+		gen0Stat = vfVaultStatusOn(d, ctx, 2, cid, 0)
+		gen2Stat = vfVaultStatusOn(d, ctx, 2, cid, 2)
+		gen0Final = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
+		if gen0Final == 0 && gen0Stat >= 3 && gen2Stat >= 0 {
+			break
+		}
+	}
 	// gen-0 is now EMPTY (its input was deleted when the sweep settled), so
 	// ReconcileRetiringVaults can advance it and NN#3 no longer blocks the next mint.
 	// The assertion is the rotation MOVING: drained, advanced past Retiring, and gen-2
