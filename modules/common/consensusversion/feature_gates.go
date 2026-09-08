@@ -323,6 +323,37 @@ func Version0_8_0Active(active Version) bool {
 	return active.MeetsConsensusMin(V0_8_0)
 }
 
+// ForcedFloorRespectsQuorumActive reports whether a FORCED version-floor advance
+// (ConsensusParams.PinnedVersionFloor / a recovery vsc.propose_consensus_version)
+// must still satisfy the H-3/C-2 outgoing-committee quorum guard.
+//
+// The override was written to bypass BOTH guards, and bypassing them is not the
+// same kind of act. The stake-readiness guard measures whether enough of the NEW
+// committee's stake has ANNOUNCED the target — a willingness question, and exactly
+// the thing an operator should be able to overrule to drag a network past nodes
+// that will not upgrade. The H-3/C-2 guard measures whether the OUTGOING committee
+// still retains reshare quorum at the target, and that is not a willingness
+// question: both signing and resharing are gated on this same floor, so advancing
+// past the outgoing committee filters its share-holders below threshold and the
+// BTC vault freezes. No later override recovers from that — the shares needed to
+// reshare are exactly what the advance filtered out.
+//
+// So the override keeps its purpose (bypass readiness) and loses the part it could
+// never undo. Overruling a guard you cannot recover from is not a recovery lever;
+// it is the event you would need to recover FROM.
+//
+// Version-gated like every other fold here: resolveVersionFloor's output is part
+// of the election, so changing which floor a forced proposal produces would alter
+// historical elections on a reindex and diverge the CID. Below the line the
+// original bypass-both behaviour runs byte-identically.
+//
+// Resolve `active` from the PRIOR ratified election's version, matching
+// BlsWeightDedupActive at the same call site, so the gate stays out of the
+// version-rise readiness loop.
+func ForcedFloorRespectsQuorumActive(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
 // BlsWeightDedupActive reports whether committee weight folds collapse duplicate
 // BLS keys to a single seat (B13).
 //

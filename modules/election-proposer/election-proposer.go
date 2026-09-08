@@ -533,9 +533,33 @@ func resolveVersionFloor(
 		return true
 	}
 
-	// Recovery override first: applies past its activation epoch, bypasses both guards.
+	// Recovery override first: applies past its activation epoch and bypasses the
+	// STAKE-READINESS guard — that is its purpose, dragging a network past witnesses
+	// that will not upgrade.
+	//
+	// It no longer bypasses H-3/C-2. Readiness is a willingness question an operator
+	// may legitimately overrule; outgoing-committee quorum is not. Signing AND
+	// resharing are both gated on this floor, so forcing the advance past the
+	// outgoing committee filters its share-holders below reshare threshold and
+	// freezes the vault — and no subsequent override recovers it, because the shares
+	// needed to reshare are precisely the ones the advance filtered out. The pin
+	// relocated that footgun rather than removing it; honouring the quorum guard
+	// removes it.
+	//
+	// Version-gated (ForcedFloorRespectsQuorumActive, resolved from the PRIOR
+	// ratified election exactly like dedupSeats above): this function's output is
+	// part of the election, so changing which floor a forced proposal yields would
+	// alter historical elections on a reindex and diverge the CID. Below the line the
+	// original bypass-both behaviour is byte-identical.
 	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target.Cmp(floor) > 0 {
-		return forced.Target
+		forcedQuorumGated := previousElection != nil &&
+			consensusversion.ForcedFloorRespectsQuorumActive(elections.ResultVersion(*previousElection))
+		if !forcedQuorumGated || prevReadyAt(forced.Target) {
+			return forced.Target
+		}
+		log.Warn("forced version-floor advance deferred: outgoing committee is below TSS-reshare quorum at the pinned target",
+			"block_height", blockHeight, "target", forced.Target.Format(),
+			"note", "upgrade the outgoing committee; forcing past this would freeze the vault, not recover it")
 	}
 
 	// Highest live candidate meeting BOTH guards.

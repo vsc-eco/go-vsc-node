@@ -18,21 +18,32 @@ import (
 // that the contract has already credited is removed from Bitcoin by a reorg carrying the
 // depositor's own conflicting spend.
 //
-// The contract enforces no confirmation depth (contract/mapping/proof.go:16, by design);
-// the node oracle relays headers `validityThreshold` blocks behind the tip, 2 on mainnet
-// and 0 on devnet (modules/oracle/chain/bitcoin.go:55,59). On devnet a one-block reorg
-// therefore reproduces what a two-block reorg would do on mainnet. This test measures
-// the consequence, not the probability: it is the SPV trust assumption made concrete.
+// Two thresholds now stack. The node oracle relays headers `validityThreshold` blocks
+// behind the tip (2 on mainnet, 0 on devnet — modules/oracle/chain/bitcoin.go:55,59), and
+// since VR2-07 the CONTRACT enforces its own maturity gate on top
+// (constants.MinConfirmationDepth: 4 on mainnet, 2 on testnet and regtest), so a credited
+// deposit is buried ~6 deep on mainnet and 2 deep on devnet before it can be credited at
+// all. This test therefore reorgs DEEPER than the gate: fundVaultViaSPV mines the
+// maturity margin on top of the deposit's block, so invalidating that block removes the
+// margin blocks with it, and the competing branch is mined past the old tip.
+//
+// That the gate cannot be reached by a shallower reorg is exactly the point — the gate
+// widens the margin, it does not remove the limitation. Deposits confirmed against
+// later-orphaned blocks still cannot be un-mapped (the contract's own docs record this as
+// an accepted SPV limitation), and this test measures the consequence when a reorg does go
+// deep enough: it is the SPV trust assumption made concrete, not a probability claim.
 //
 // SEQUENCE
 //
 //  1. The owner's 50,000,000 sat deposit backs the vault (vfSetup). A second account
-//     deposits 5,000,000 sats; map credits it (F27-CREDIT).
+//     deposits 5,000,000 sats and the maturity margin is mined; map credits it
+//     (F27-CREDIT).
 //
-//  2. invalidateblock the deposit's block; mine a competing block that contains the
-//     depositor's conflicting spend of the same input back to their own wallet
-//     (generateblock; RBF fallback), plus one more block; relay the reorg with
-//     replaceBlocks + addBlocks (F27-REORG, instrument).
+//  2. invalidateblock the deposit's block — which drops the maturity-margin blocks mined
+//     on top of it, so this is a reorg deeper than the contract's own gate; mine a
+//     competing block that contains the depositor's conflicting spend of the same input
+//     back to their own wallet (generateblock; RBF fallback), then mine PAST the old tip;
+//     relay the reorg with replaceBlocks + addBlocks (F27-REORG, instrument).
 //
 //  3. F27-PHANTOM-CREDIT: the second account's L2 balance is unchanged and the registry
 //     still lists the deposit output, which Bitcoin's UTXO set no longer holds.
@@ -113,7 +124,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	time.Sleep(10 * time.Second)
 	balDep0 := balanceSats(t, d, ctx, cid, depositor)
 	hasD, idD, amtD := f25RegistryEntryForTxid(d, ctx, 2, cid, txD)
-	c.rec("F27-CREDIT", "the second deposit is credited after one confirmation (devnet oracle lag 0)",
+	c.rec("F27-CREDIT", "the second deposit is credited once it clears the contract maturity gate (MinConfirmationDepth=2 on regtest)",
 		balDep0 == phantomSats && hasD,
 		fmt.Sprintf("deposit txid=%s block=%d balance(%s)=%d registry id=%d amount=%d", txD, hD, depositor, balDep0, idD, amtD))
 	if balDep0 != phantomSats || !hasD {
@@ -184,6 +195,15 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 		txC = ctx2.TxHash().String()
 	}
 
+	// Record the tip BEFORE invalidating. fundVaultViaSPV mined the contract's maturity
+	// margin on top of the deposit's block, so invalidating hD drops those margin blocks
+	// too — the competing branch has to be mined past this height, or the contract would
+	// still hold headers at heights the new chain never reaches and could never be brought
+	// to a canonical view (replaceBlocks would have nothing to replace them with).
+	oldTip, err := d.BitcoinHeight(ctx)
+	if err != nil {
+		t.Fatalf("PRECONDITION FAILED: read tip before the reorg: %v", err)
+	}
 	if _, err := d.bitcoinCli(ctx, "invalidateblock", hashD); err != nil {
 		t.Fatalf("PRECONDITION FAILED: invalidateblock %s: %v", hashD, err)
 	}
@@ -197,7 +217,15 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 		}
 		d.MineBlocks(ctx, 1)
 	}
+	// Extend the competing branch past the old tip (see oldTip above). Bounded so a branch
+	// that refuses to grow fails the test rather than spinning.
 	newTip, _ := d.MineBlocks(ctx, 1)
+	for i := 0; newTip <= oldTip && i < 8; i++ {
+		newTip, _ = d.MineBlocks(ctx, 1)
+	}
+	if newTip <= oldTip {
+		t.Fatalf("PRECONDITION FAILED: competing branch stuck at %d, needs to pass the pre-reorg tip %d", newTip, oldTip)
+	}
 	_, dInChain := f9TxConfirmed(d, ctx, txD)
 	cHash, cInChain := f9TxConfirmed(d, ctx, txC)
 	cHeight := uint64(0)
