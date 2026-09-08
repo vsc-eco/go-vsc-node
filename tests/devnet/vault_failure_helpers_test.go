@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strings"
@@ -196,13 +197,28 @@ func vfAssertContractIdentical(c *vfCase, d *Devnet, ctx context.Context, cid st
 
 // vfVaultStatusOn returns a generation's status as read from a specific node (-1 if
 // unreadable or absent).
+//
+// -1 means BOTH "the registry could not be read" and "that generation is not in it", and 45
+// call sites across the suite compare it directly. getStateHex retries, so the transient
+// case is absorbed at the root; what is left is a PERSISTENT read failure, which would
+// otherwise be silent and get attributed to the contract. It is logged here so that when it
+// happens the log says so, once, at the place that knows.
+//
+// Not changed to return an error: 45 call sites is too much churn to take mid-campaign for a
+// case the retry already covers, and a speculative refactor of assertions is exactly how a
+// working suite acquires new bugs. waitVaultStatus exists for the cases that need to tell
+// the two apart.
 func vfVaultStatusOn(d *Devnet, ctx context.Context, node int, cid string, gen uint32) int {
 	st, err := getStateHex(d, ctx, node, cid, []string{"v"})
 	if err != nil {
+		log.Printf("[devnet] vfVaultStatusOn: vault registry UNREADABLE on magi-%d (%s gen %d): %v "+
+			"- returning -1, which is indistinguishable from absent", node, cid, gen, err)
 		return -1
 	}
 	vs, err := btcvault.UnmarshalVaultRegistry(st["v"])
 	if err != nil {
+		log.Printf("[devnet] vfVaultStatusOn: vault registry did not DECODE on magi-%d (%s gen %d): %v "+
+			"- returning -1", node, cid, gen, err)
 		return -1
 	}
 	for _, v := range vs {
