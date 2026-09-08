@@ -25,7 +25,7 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 		t.Skip("set VAULT_STAGE7_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 33*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(33*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

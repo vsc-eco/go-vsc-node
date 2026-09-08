@@ -55,7 +55,7 @@ func TestVaultBondLock(t *testing.T) {
 		t.Skip("set VAULT_BONDLOCK_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(60*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

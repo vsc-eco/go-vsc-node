@@ -25,8 +25,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -937,4 +939,38 @@ func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, wi
 	}
 	t.Logf("consensus_unstake %s for %s: status=%s pending=%d", short, member, status, pending)
 	return status, pending
+}
+
+// vfTestBudget scales a test's own context budget for the environment it runs in.
+//
+// These per-test budgets were tuned against a box running ONE devnet. The campaign runs
+// three at once, so everything takes longer, and a test that overruns its own context does
+// not fail on its subject - it fails on whatever call happened to be in flight, with an
+// EMPTY status that reads as a refusal. That is exactly how Stage-5's VL-GP-10b failed:
+// 38m0s budget, 2299.86s elapsed, and the final retireVault came back "".
+//
+// DEVNET_TIMEOUT_SCALE (default 1, so a solo run is byte-identical) multiplies the budget.
+// The result is capped at 60 minutes so the context still expires BEFORE `go test -timeout
+// 65m` kills the process: a context deadline unwinds cleanly and reports its cases, while a
+// go-test timeout panics the whole binary and loses them. Budgets already above the cap are
+// left alone - they never bind anyway.
+func vfTestBudget(base time.Duration) time.Duration {
+	scale := 1.0
+	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			scale = f
+		}
+	}
+	const cap = 60 * time.Minute
+	if base >= cap {
+		return base
+	}
+	d := time.Duration(float64(base) * scale)
+	if d > cap {
+		d = cap
+	}
+	if d < base {
+		d = base
+	}
+	return d
 }

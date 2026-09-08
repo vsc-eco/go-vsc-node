@@ -44,7 +44,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		t.Skip("set VAULT_F3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(90*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

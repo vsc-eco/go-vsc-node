@@ -36,7 +36,7 @@ func TestOraclePrunedBlockFetchMainnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(40*time.Minute))
 	defer cancel()
 
 	// ── Build the stub BTC mapping contract ─────────────────────────────

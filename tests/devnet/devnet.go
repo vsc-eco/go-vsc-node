@@ -350,7 +350,7 @@ func (d *Devnet) Stop() error {
 	}
 
 	log.Printf("[devnet] tearing down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(2*time.Minute))
 	defer cancel()
 
 	// Include all profiles so compose down also tears down profile-gated

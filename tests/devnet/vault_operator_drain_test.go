@@ -30,7 +30,7 @@ func TestVaultOperatorDrivenDrain(t *testing.T) {
 		t.Skip("set VAULT_OPDRAIN_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 46*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(46*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

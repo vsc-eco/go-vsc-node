@@ -66,7 +66,7 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

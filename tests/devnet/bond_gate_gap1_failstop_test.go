@@ -47,7 +47,7 @@ func TestBondGateGAP1_SettlementFailStopNoFork(t *testing.T) {
 	cp.MaxNewMembersPerElection = 1
 	cp.BondInclusionEstablishedGraceBlocks = 4000
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(50*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)

@@ -79,7 +79,7 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 	cfg.MagiEnv["VSC_GATEWAY_ROTATION_INTERVAL"] = "20"
 	cfg.MagiEnv["VSC_GATEWAY_ACTION_INTERVAL"] = "20"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(55*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)

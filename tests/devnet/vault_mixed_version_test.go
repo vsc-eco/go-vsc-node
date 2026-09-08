@@ -63,7 +63,7 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 		t.Fatal("BTC_MAPPING_WASM_PATH must point at the btc-mapping-contract regtest wasm")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 42*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(42*time.Minute))
 	defer cancel()
 
 	newNodes := []int{1, 2, 3}

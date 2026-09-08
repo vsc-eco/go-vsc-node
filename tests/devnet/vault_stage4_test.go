@@ -145,7 +145,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 		t.Skip("set VAULT_STAGE4_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 38*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

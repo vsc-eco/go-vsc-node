@@ -39,7 +39,7 @@ func TestBondGateActive_NoResetOfEstablishedCommittee(t *testing.T) {
 	cfg.SysConfigOverrides.ConsensusParams.MaxNewMembersPerElection = 1
 	cfg.SysConfigOverrides.ConsensusParams.BondInclusionEstablishedGraceBlocks = 600
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)

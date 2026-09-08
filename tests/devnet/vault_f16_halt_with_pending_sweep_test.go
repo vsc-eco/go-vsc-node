@@ -70,7 +70,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		t.Fatalf("wasm: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	const hpin = 400

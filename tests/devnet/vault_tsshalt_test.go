@@ -36,7 +36,7 @@ func TestVaultTssHalt(t *testing.T) {
 		t.Skip("set VAULT_TSSHALT_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 38*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	cfg := DefaultConfig()

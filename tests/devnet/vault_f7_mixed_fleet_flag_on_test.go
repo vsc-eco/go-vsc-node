@@ -284,7 +284,7 @@ func TestVaultF7MixedFleetFlagOn(t *testing.T) {
 		t.Fatalf("PRECONDITION FAILED: btc-mapping-contract regtest wasm not found at %s: %v", wasm, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 85*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	const hpin = uint64(400)

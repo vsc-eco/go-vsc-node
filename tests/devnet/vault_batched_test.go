@@ -33,7 +33,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 		t.Skip("set VAULT_BATCH_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

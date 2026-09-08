@@ -98,7 +98,7 @@ func TestRegressionBringup(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)
@@ -131,7 +131,7 @@ func TestFullNetworkRegression(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(120*time.Minute))
 	t.Cleanup(cancel)
 
 	// Build the call-tss contract up front so the TSS stage doesn't pay the

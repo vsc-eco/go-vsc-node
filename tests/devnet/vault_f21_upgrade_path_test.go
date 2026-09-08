@@ -54,7 +54,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 		t.Skip("set VAULT_F21_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(70*time.Minute))
 	defer cancel()
 
 	// The V1 wasm has no default: rehearsing the upgrade against the v2 wasm twice
