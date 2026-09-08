@@ -155,8 +155,26 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 	// tx_index = 1.
 	proofHex := reverseHexBytes(coinbaseTxid)
 
-	// relay headers lastRelayed+1 .. h via addBlocks (each chains onto the prior)
-	for hh := lastRelayed + 1; hh <= h; hh++ {
+	// VR2-07: mature the deposit before mapping it.
+	//
+	// The contract refuses a deposit whose block is fewer than
+	// MinConfirmationDepth below its own tip, so relaying only up to the deposit's
+	// own block leaves it at depth 0 and `map` is correctly refused. That is not a
+	// contract bug and not something to work around by weakening the gate: in
+	// production the oracle keeps relaying, so a deposit matures on its own between
+	// being mined and being proven. The harness has to model that rather than
+	// mapping the instant the block lands.
+	//
+	// Mirrors constants.MinConfirmationDepth for regtest in the contract repo. Two
+	// spare blocks are mined so the tip clears the deposit by that margin.
+	const vfDepositMaturityBlocks = 2
+	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
+		t.Fatalf("mine maturity blocks: %v", err)
+	}
+	relayTo := h + uint64(vfDepositMaturityBlocks)
+
+	// relay headers lastRelayed+1 .. relayTo via addBlocks (each chains onto the prior)
+	for hh := lastRelayed + 1; hh <= relayTo; hh++ {
 		hx, err := btcBlockHeaderHex(ctx, d, hh)
 		if err != nil {
 			t.Fatalf("hdr %d: %v", hh, err)

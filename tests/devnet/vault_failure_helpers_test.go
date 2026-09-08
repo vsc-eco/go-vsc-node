@@ -654,8 +654,20 @@ func vfDumpRegistry(t *testing.T, d *Devnet, ctx context.Context, node int, cid,
 // vfRelayAndConfirmIndex is vfRelayAndConfirm with an explicit output index.
 func vfRelayAndConfirmIndex(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid, bcTxid string, h uint64, index int) string {
 	t.Helper()
+
+	// VR2-06: a settle waits the same MinConfirmationDepth as a deposit credit, so
+	// relaying only up to the spend's own block leaves it at depth 0 and
+	// confirmSpend is correctly refused. In production the oracle keeps relaying and
+	// the spend matures on its own; the harness has to model that. Mirrors
+	// constants.MinConfirmationDepth for regtest.
+	const spendMaturityBlocks = 2
+	if _, err := d.MineBlocks(ctx, spendMaturityBlocks); err != nil {
+		t.Logf("mine settle-maturity blocks: %v", err)
+	}
+	relayTo := h + uint64(spendMaturityBlocks)
+
 	last := contractLastHeight(t, d, ctx, cid)
-	for hh := last + 1; hh <= h; hh++ {
+	for hh := last + 1; hh <= relayTo; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		if s := vstatus(t, d, ctx, callNode, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)); !isOK(s) {
 			t.Logf("addBlocks %d status=%s", hh, s)

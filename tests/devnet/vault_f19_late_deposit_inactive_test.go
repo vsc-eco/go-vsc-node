@@ -403,7 +403,16 @@ func f19DepositAndMap(t *testing.T, d *Devnet, ctx context.Context, cid, primary
 	}
 	proofHex := reverseHexBytes(blk.Tx[0])
 
-	f19RelayHeaders(t, d, ctx, cid, h)
+	// VR2-07: the contract refuses a deposit fewer than MinConfirmationDepth below
+	// its own tip, so relaying only up to the deposit's own block leaves it at
+	// depth 0. In production the oracle keeps relaying and a deposit matures on its
+	// own; the harness has to model that rather than mapping the instant the block
+	// lands. Mirrors constants.MinConfirmationDepth for regtest.
+	const depositMaturityBlocks = 2
+	if _, err := d.MineBlocks(ctx, depositMaturityBlocks); err != nil {
+		t.Fatalf("mine maturity blocks: %v", err)
+	}
+	f19RelayHeaders(t, d, ctx, cid, h+uint64(depositMaturityBlocks))
 
 	mapPayload := fmt.Sprintf(
 		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"instructions":["%s"]}`,
