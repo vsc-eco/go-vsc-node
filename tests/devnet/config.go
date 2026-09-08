@@ -3,6 +3,7 @@ package devnet
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"path/filepath"
 
 	systemconfig "vsc-node/modules/common/system-config"
@@ -101,14 +102,37 @@ type Config struct {
 	OldCodeGoImage string
 }
 
+// devnetPortOffset shifts every HOST port binding by a fixed amount, so several
+// devnets can run at once.
+//
+// The base ports are constants, so two concurrent devnets collide immediately on
+// the first bind and one dies with "port is already allocated" — which made the
+// vault campaign strictly serial at roughly half an hour per test. Container and
+// network names already carry a random per-devnet id; host ports were the only
+// thing shared. Set DEVNET_PORT_OFFSET to a distinct multiple of 1000 per lane.
+//
+// Defaults to 0, so a single devnet behaves exactly as before.
+func devnetPortOffset() int {
+	raw := os.Getenv("DEVNET_PORT_OFFSET")
+	if raw == "" {
+		return 0
+	}
+	off, err := strconv.Atoi(raw)
+	if err != nil || off < 0 {
+		return 0
+	}
+	return off
+}
+
 // DefaultConfig returns a Config with sensible defaults for testing.
 func DefaultConfig() *Config {
+	off := devnetPortOffset()
 	return &Config{
 		Nodes:           5,
-		GQLBasePort:     18080,
-		P2PBasePort:     11720, // offset from mainnet/testnet nodes on 10720+
-		MongoPort:       18057,
-		HivePort:        18091,
+		GQLBasePort:     18080+off,
+		P2PBasePort:     11720+off, // offset from mainnet/testnet nodes on 10720+
+		MongoPort:       18057+off,
+		HivePort:        18091+off,
 		WitnessPrefix:   "magi.test",
 		StakeAmount:     "2000.000",
 		LogLevel:        "error,tss=trace",
@@ -121,11 +145,11 @@ func DefaultConfig() *Config {
 		PostgRESTImage:  "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
 		PgBouncerImage:  "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
 		DroneImage:      "registry.gitlab.syncad.com/hive/drone",
-		DronePort:       19000,
+		DronePort:       19000+off,
 		BitcoindImage:   "bitcoin/bitcoin:29.3",
-		BitcoindRPCPort: 18543,
+		BitcoindRPCPort: 18543+off,
 		DashdImage:      "dashpay/dashd:23.1.2",
-		DashdRPCPort:    19898,
+		DashdRPCPort:    19898+off,
 	}
 }
 
