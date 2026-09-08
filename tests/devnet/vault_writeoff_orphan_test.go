@@ -10,7 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// TestVaultWriteOffDustOrphansBalance proves VR2-15: a sub-MinDepositSats deposit made to
+// TestVaultWriteOffDustOrphansBalance is the devnet regression test for VR2-15 (FIXED). A sub-MinDepositSats deposit made to
 // a v2 vault BEFORE its first rotation is credited to the depositor's L2 balance (the
 // min-deposit floor is inert until a superseded generation exists, mapping.go:87), but
 // after rotation that lone residual can be written off by the owner-only writeOffDust,
@@ -31,12 +31,26 @@ import (
 //	ORPH-01  after rotation the lone 600 residual cannot be swept even at latest_fee 1
 //	         (600 - ~144 = 456 <= the 546 dust threshold, migrateVault aborts).
 //	ORPH-02  writeOffDust force-retires the residual (positive path REACHABLE): UTXO gone.
-//	ORPH-03  the depositor's L2 balance SURVIVES the write-off (still 600) — the fault.
-//	ORPH-04  the orphaned balance cannot be withdrawn (unmap fails, no UTXO) — the damage.
+//	ORPH-03  the depositor keeps their credit AND UserSupply is untouched (I3 exact).
+//	ORPH-04  the fee reserve is debited by EXACTLY the written-off amount.
 //
-// A GREEN run means the bug is reproduced (ORPH-03/04 assert the faulty state). Flip those
-// expectations when VR2-15 is fixed (write-off must also debit the crediting account, or
-// the floor must apply pre-rotation too).
+// ★ THIS TEST WAS INVERTED AND HAS BEEN TURNED AROUND. It used to assert the FAULT: a GREEN
+// run meant VR2-15 was reproduced, with ORPH-03/04 encoding the orphaned balance and the
+// failed withdrawal. VR2-15 is fixed, so it now asserts the FIXED state instead.
+//
+// The fix took a different route than this file anticipated. The old note said to flip these
+// by making the write-off "also debit the crediting account" -- a clawback that needs a
+// per-UTXO recipient and can still FAIL when the depositor has already moved the credit, at
+// which point the write-off either reverts (leaving NN#3 wedged, the V-1 deadlock) or forces
+// a negative balance. Instead the residual is charged to the operator's fee reserve, which
+// this contract already uses for rotation costs that must not touch principal. So the
+// depositor KEEPING their balance is now the correct outcome, and what has to be proven is
+// that the sats came out of the reserve -- which is what ORPH-04 measures, as an exact
+// equality rather than a direction.
+//
+// Note also that ORPH-04's old assertion would still PASS against the fixed contract, for
+// the wrong reason: unmap(600) is refused either way, because a 600-sat balance cannot cover
+// 600 plus the fee. A test that passes under both the bug and the fix measures neither.
 //
 //	VAULT_WOD_ORPHAN_RUN=1 go test -v -run TestVaultWriteOffDustOrphansBalance -timeout 45m ./tests/devnet/
 func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
@@ -161,6 +175,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 		fmt.Sprintf("migrateVault status=%s, gen-0 holds %d UTXO(s) (want 1, still stuck)", mig, afterMig))
 
 	// ── ORPH-02: writeOffDust force-retires it (positive path REACHABLE). ──
+	supBefore := vf11ReadSupply(d, ctx, 2, cid)
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
 	afterWod := 1
 	for i := 0; i < 12 && afterWod != 0; i++ {
@@ -170,16 +185,38 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 	rec("ORPH-02", "writeOffDust force-retires the lone sub-min residual (write-off positive path is REACHABLE)", isOK(wod) && afterWod == 0,
 		fmt.Sprintf("writeOffDust status=%s, gen-0 holds %d UTXO(s) (want 0)", wod, afterWod))
 
-	// ── ORPH-03: the depositor's balance SURVIVES the write-off (the fault). ──
+	// ── ORPH-03: the depositor keeps the credit the protocol still owes them, and
+	// UserSupply still stands for exactly the balances that exist (VR2-15 FIXED). ──
+	//
+	// This case used to assert the FAULT: the balance survived while the write-off
+	// debited UserSupply out from under it, so Sigma(balances) exceeded UserSupply
+	// forever. That is not cosmetic -- HandleUnmap decrements UserSupply with
+	// safeSubtract64 on EVERY withdrawal, so once the aggregate ran short of the
+	// balances it stood for, the LAST withdrawers underflowed and their withdrawals
+	// reverted permanently, hitting whoever happened to withdraw last rather than the
+	// depositor whose dust caused it.
+	//
+	// The write-off is now charged to the operator's fee reserve, so the balance
+	// surviving is CORRECT rather than orphaned: it is still backed.
+	supAfter := vf11ReadSupply(d, ctx, 2, cid)
 	balAfter := balanceSats(t, d, ctx, cid, owner)
-	rec("ORPH-03", "the depositor's L2 balance survives the write-off (Supply+UTXO destroyed, a-account NOT cleared) — VR2-15 fault", balAfter == 600,
-		fmt.Sprintf("balance(%s)=%d after write-off (still 600 = orphaned; write-off debited Supply and deleted the UTXO but never cleared the account)", owner, balAfter))
+	rec("ORPH-03", "the depositor keeps their credit AND UserSupply is untouched, so Sigma(balances) == UserSupply stays exact (VR2-15 fixed)",
+		balAfter == 600 && supBefore.readable && supAfter.readable &&
+			supAfter.user == supBefore.user && supAfter.active == supBefore.active,
+		fmt.Sprintf("balance(%s)=%d (want 600); user %d -> %d, active %d -> %d (both want UNCHANGED)",
+			owner, balAfter, supBefore.user, supAfter.user, supBefore.active, supAfter.active))
 
-	// ── ORPH-04: the orphaned balance cannot be withdrawn (the damage). ──
-	dest, _ := d.bitcoinCli(ctx, "getnewaddress")
-	um := vstatus(t, d, ctx, 1, cid, "unmap", fmt.Sprintf(`{"amount":"%d","to":"%s"}`, 600, dest))
-	rec("ORPH-04", "the orphaned 600 balance cannot be withdrawn (no UTXO backs it): user fund loss + broken UserSupply invariant — VR2-15 damage", !isOK(um),
-		fmt.Sprintf("unmap(600) status=%s (want refused), balance still=%d", um, balanceSats(t, d, ctx, cid, owner)))
+	// ── ORPH-04: the RESERVE absorbed it, by exactly the written-off amount. ──
+	//
+	// This is the assertion that distinguishes the fix from merely deleting the debit:
+	// the sats have to come from somewhere, and "somewhere" must be the operator's
+	// reserve, not user principal and not thin air. Conservation is checked as an
+	// equality on the fee delta, not as "fee went down".
+	feeDelta := supBefore.fee - supAfter.fee
+	rec("ORPH-04", "the fee reserve absorbed the write-off, debited by EXACTLY the residual (600) -- rotation cost, never user principal",
+		supBefore.readable && supAfter.readable && feeDelta == 600,
+		fmt.Sprintf("fee %d -> %d (delta %d, want exactly 600); active %d, user %d, balance %d",
+			supBefore.fee, supAfter.fee, feeDelta, supAfter.active, supAfter.user, balAfter))
 
 	t.Logf("WOD-ORPHAN SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }

@@ -54,7 +54,14 @@ func untaggedVaultAddr(primaryHex, backupHex string) (string, error) {
 }
 
 // fundFeeReserve seeds FeeSupply: deposit `sats` to the ACTIVE vault's untagged
-// address, relay headers from the contract's last height, and topUpFeeReserve.
+// address, relay headers from the contract's last height PLUS the maturity margin,
+// and topUpFeeReserve.
+//
+// VR2-25: topUpFeeReserve is now depth-gated like map and confirmSpend, so the
+// deposit's block must be buried MinConfirmationDepth under the contract's tip
+// before the proof is accepted. Mining only the deposit's own block would leave it
+// AT the tip and the top-up would be refused, so the margin is mined and relayed
+// here exactly as fundVaultViaSPV does for a user deposit.
 func fundFeeReserve(t *testing.T, d *Devnet, ctx context.Context, cid, activePrimary, activeBackup string, sats int64) {
 	t.Helper()
 	addr, err := untaggedVaultAddr(activePrimary, activeBackup)
@@ -68,9 +75,13 @@ func fundFeeReserve(t *testing.T, d *Devnet, ctx context.Context, cid, activePri
 	depTxid, _ := d.bitcoinCli(ctx, "getrawmempool") // ensure mempool has 1 tx
 	_ = depTxid
 	h, _ := d.MineBlocks(ctx, 1)
-	// relay from the contract's current last height +1 to h
+	// Bury the deposit's block under the contract's maturity gate (VR2-25) before
+	// proving it. `h` stays the DEPOSIT's height (that is what the proof names);
+	// tip is what the contract must have relayed to accept it.
+	tip, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// relay from the contract's current last height +1 to the matured tip
 	last := contractLastHeight(t, d, ctx, cid)
-	for hh := last + 1; hh <= h; hh++ {
+	for hh := last + 1; hh <= tip; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)); !isOK(s) {
 			t.Fatalf("fee-reserve addBlocks %d: %s", hh, s)
