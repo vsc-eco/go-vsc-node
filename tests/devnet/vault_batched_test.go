@@ -3,6 +3,7 @@ package devnet
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -120,6 +121,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	record("VL-GP-02b", "registerPublicKey(primary) accepted", isOK(s1), "status="+s1)
 	// a different key (flip last hex char)
 	diff := flipLastHex(pub)
+	keyHeld := false
 
 	// INSTRUMENT FIX: assert on the STATE, not on the transaction status.
 	//
@@ -132,16 +134,46 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	//
 	// What set-once actually means is that the stored key does not change. Read it
 	// before and after and compare.
-	preKey, preErr := getStateHex(d, ctx, 2, cid, []string{"pubkey"})
-	s2 := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, diff, diff))
-	postKey, postErr := getStateHex(d, ctx, 2, cid, []string{"pubkey"})
+	// ★ WAIT FOR THE BASELINE BEFORE MEASURING. vstatus confirms on node 1; this reads
+	// node 2, which can still be a block behind. A pre-read taken too early returns an
+	// EMPTY key, and then pre != post is trivially true whether the re-registration was
+	// correctly refused or actually overwrote the key. The case would report a set-once
+	// FAILURE either way, which means it was not measuring set-once at all.
+	//
+	// So poll node 2 until the first register is visible there, and if it never becomes
+	// visible, say THAT rather than issuing a set-once verdict off a baseline that does
+	// not exist.
+	var preKey map[string][]byte
+	var preErr error
+	for i := 0; i < 24; i++ {
+		preKey, preErr = getStateHex(d, ctx, 2, cid, []string{"pubkey"})
+		if preErr == nil && len(preKey["pubkey"]) == 33 {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+	if preErr != nil || len(preKey["pubkey"]) != 33 {
+		record("VL-PEN-15", "set-once: PRECONDITION NOT ESTABLISHED (the first register never became readable on the query node)",
+			false,
+			fmt.Sprintf("pre-read pubkey=%x err=%v after waiting 120s; no set-once verdict is possible without a baseline",
+				preKey["pubkey"], preErr))
+	} else {
+		s2 := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, diff, diff))
+		postKey, postErr := getStateHex(d, ctx, 2, cid, []string{"pubkey"})
 
-	keyHeld := preErr == nil && postErr == nil &&
-		len(preKey["pubkey"]) == 33 && bytes.Equal(preKey["pubkey"], postKey["pubkey"])
-	record("VL-PEN-15", "set-once: re-registering a DIFFERENT primary does not change the stored key",
-		keyHeld,
-		fmt.Sprintf("tx status=%s, stored primary before=%x after=%x (readErr pre=%v post=%v)",
-			s2, preKey["pubkey"], postKey["pubkey"], preErr, postErr))
+		// Two independent ways of being right, both asserted: the key did not CHANGE, and
+		// the key that is stored is the REAL one rather than the flipped one. The second is
+		// what makes a failure readable -- pre != post alone never says WHICH key won, and
+		// the flipped key differs from the real one by a single hex character.
+		wantPrimary, _ := hex.DecodeString(pub)
+		unchanged := postErr == nil && bytes.Equal(preKey["pubkey"], postKey["pubkey"])
+		isRealKey := postErr == nil && bytes.Equal(postKey["pubkey"], wantPrimary)
+		keyHeld = unchanged && isRealKey
+		record("VL-PEN-15", "set-once: re-registering a DIFFERENT primary does not change the stored key",
+			keyHeld,
+			fmt.Sprintf("tx status=%s | stored before=%x after=%x | real=%s flipped=%s | unchanged=%v storedIsReal=%v (readErr post=%v)",
+				s2, preKey["pubkey"], postKey["pubkey"], pub, diff, unchanged, isRealKey, postErr))
+	}
 
 	if !keyHeld {
 		// The build let the genesis primary be replaced with a bogus key; put the real

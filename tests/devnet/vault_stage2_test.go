@@ -120,6 +120,16 @@ func TestVaultStage2Funding(t *testing.T) {
 // block again afterwards: the contract's tip is no longer the deposit's block, it
 // is that block plus this margin, and the intervening blocks are empty. A caller
 // that assumes tip == deposit block reads a coinbase-only block and panics.
+// vfDepositMaturityBlocks is the ONE place the harness states the contract's
+// confirmation-depth gate, mirroring constants.MinConfirmationDepth for regtest.
+//
+// It covers deposits AND settles AND fee-reserve top-ups, because all three call the
+// same requireConfirmationDepth helper with the same number (VR2-07, VR2-25). This used
+// to be SEVEN separate constants under five different names, which meant seven chances
+// for the harness to drift out of step with the contract: raise the contract's regtest
+// depth and six of them go stale, and the resulting failures point at the tests' own
+// subjects rather than at the gate. One definition, so a change to the gate is a
+// one-line change here too.
 const vfDepositMaturityBlocks = 2
 
 func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryHex, backupHex, recipient string, sats int64, lastRelayed uint64) string {

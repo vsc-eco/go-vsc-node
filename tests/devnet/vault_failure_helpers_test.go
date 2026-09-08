@@ -660,11 +660,10 @@ func vfRelayAndConfirmIndex(t *testing.T, d *Devnet, ctx context.Context, callNo
 	// confirmSpend is correctly refused. In production the oracle keeps relaying and
 	// the spend matures on its own; the harness has to model that. Mirrors
 	// constants.MinConfirmationDepth for regtest.
-	const spendMaturityBlocks = 2
-	if _, err := d.MineBlocks(ctx, spendMaturityBlocks); err != nil {
+	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
 		t.Logf("mine settle-maturity blocks: %v", err)
 	}
-	relayTo := h + uint64(spendMaturityBlocks)
+	relayTo := h + uint64(vfDepositMaturityBlocks)
 
 	last := contractLastHeight(t, d, ctx, cid)
 	for hh := last + 1; hh <= relayTo; hh++ {

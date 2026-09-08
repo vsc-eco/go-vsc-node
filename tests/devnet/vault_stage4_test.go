@@ -339,8 +339,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	// settle is correctly refused — which then looks like "no pending spend
 	// appeared" several stages later. Mirrors constants.MinConfirmationDepth
 	// (regtest).
-	const settleMaturityBlocks = 2
-	tipAfter, _ := d.MineBlocks(ctx, settleMaturityBlocks)
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
 	// Relay from the CONTRACT's own height, not from the sweep's block. addBlocks
 	// requires each header to chain onto the last one the contract stored, so
 	// starting at h silently fails whenever the contract has fallen behind the

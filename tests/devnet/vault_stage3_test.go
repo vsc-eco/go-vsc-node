@@ -212,8 +212,7 @@ func unmapAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, owner str
 	// VR2-06: the settle waits MinConfirmationDepth, so relaying only up to the
 	// spend's own block leaves it at depth 0 and confirmSpend is refused. Mirrors
 	// constants.MinConfirmationDepth (regtest).
-	const settleMaturityBlocks = 2
-	tipAfter, _ := d.MineBlocks(ctx, settleMaturityBlocks)
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
 	// Relay from the CONTRACT's own height: addBlocks requires each header to chain
 	// onto the last stored one, so starting at h fails whenever the contract has
 	// fallen behind the chain.

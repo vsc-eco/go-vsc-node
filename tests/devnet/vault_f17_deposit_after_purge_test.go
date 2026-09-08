@@ -379,11 +379,10 @@ func f17DepositAndMap(t *testing.T, d *Devnet, ctx context.Context, cid, primary
 	// depth 0. In production the oracle keeps relaying and a deposit matures on its
 	// own; the harness has to model that rather than mapping the instant the block
 	// lands. Mirrors constants.MinConfirmationDepth for regtest.
-	const depositMaturityBlocks = 2
-	if _, err := d.MineBlocks(ctx, depositMaturityBlocks); err != nil {
+	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
 		t.Fatalf("mine maturity blocks: %v", err)
 	}
-	f17RelayHeaders(t, d, ctx, cid, h+uint64(depositMaturityBlocks))
+	f17RelayHeaders(t, d, ctx, cid, h+uint64(vfDepositMaturityBlocks))
 
 	mapPayload := fmt.Sprintf(
 		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"instructions":["%s"]}`,

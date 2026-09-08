@@ -320,11 +320,10 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	// leaves it at depth 0 and the escape would be refused for the wrong reason —
 	// which would make this test claim the deadlock is inescapable when it is not.
 	// Mirrors constants.MinConfirmationDepth (regtest).
-	const settleMaturityBlocks = 2
-	if _, mErr := d.MineBlocks(ctx, settleMaturityBlocks); mErr != nil {
+	if _, mErr := d.MineBlocks(ctx, vfDepositMaturityBlocks); mErr != nil {
 		t.Logf("mine settle-maturity blocks: %v", mErr)
 	}
-	relayTo := unmapHeight + uint64(settleMaturityBlocks)
+	relayTo := unmapHeight + uint64(vfDepositMaturityBlocks)
 
 	last := contractLastHeight(t, d, ctx, cid)
 	for hh := last + 1; hh <= relayTo; hh++ {
