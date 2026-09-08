@@ -113,6 +113,15 @@ func TestVaultStage2Funding(t *testing.T) {
 // to it on regtest in a block with exactly [coinbase, deposit] (so the Merkle
 // proof is just the coinbase hash), relays the intervening headers via addBlocks,
 // and calls map with a valid SPV proof. Returns the deposit address.
+// vfDepositMaturityBlocks is how far fundVaultViaSPV buries a deposit before
+// proving it, mirroring constants.MinConfirmationDepth for regtest.
+//
+// Exported at package scope because callers must be able to find the DEPOSIT's
+// block again afterwards: the contract's tip is no longer the deposit's block, it
+// is that block plus this margin, and the intervening blocks are empty. A caller
+// that assumes tip == deposit block reads a coinbase-only block and panics.
+const vfDepositMaturityBlocks = 2
+
 func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryHex, backupHex, recipient string, sats int64, lastRelayed uint64) string {
 	t.Helper()
 	instruction := "deposit_to=" + recipient
@@ -167,7 +176,6 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 	//
 	// Mirrors constants.MinConfirmationDepth for regtest in the contract repo. Two
 	// spare blocks are mined so the tip clears the deposit by that margin.
-	const vfDepositMaturityBlocks = 2
 	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
 		t.Fatalf("mine maturity blocks: %v", err)
 	}

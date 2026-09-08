@@ -120,8 +120,13 @@ func TestVaultStage6PauseTheft(t *testing.T) {
 func fundVaultCapture(t *testing.T, d *Devnet, ctx context.Context, cid, primaryHex, backupHex, recipient string, sats int64, lastRelayed uint64) (uint64, string, string, string) {
 	t.Helper()
 	fundVaultViaSPV(t, d, ctx, cid, primaryHex, backupHex, recipient, sats, lastRelayed)
-	// re-derive the last deposit's proof from the contract's current tip block
-	h := contractLastHeight(t, d, ctx, cid)
+	// Re-derive the last deposit's proof from the DEPOSIT's block.
+	//
+	// This used to read the contract's tip and assume it was the deposit's block.
+	// It no longer is: fundVaultViaSPV buries the deposit by vfDepositMaturityBlocks
+	// so the contract will accept it, and those intervening blocks are empty. Reading
+	// the tip therefore lands on a coinbase-only block and indexing Tx[1] panics.
+	h := contractLastHeight(t, d, ctx, cid) - vfDepositMaturityBlocks
 	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
 	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
 	var blk struct {
