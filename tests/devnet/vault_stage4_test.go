@@ -330,7 +330,12 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	// (regtest).
 	const settleMaturityBlocks = 2
 	tipAfter, _ := d.MineBlocks(ctx, settleMaturityBlocks)
-	for hh := h; hh <= tipAfter; hh++ {
+	// Relay from the CONTRACT's own height, not from the sweep's block. addBlocks
+	// requires each header to chain onto the last one the contract stored, so
+	// starting at h silently fails whenever the contract has fallen behind the
+	// chain — which is exactly what the maturity mining above makes more likely.
+	// The failure surfaces later as a refused settle, several stages from its cause.
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
 	}

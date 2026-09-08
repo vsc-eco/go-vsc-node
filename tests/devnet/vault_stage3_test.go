@@ -214,7 +214,10 @@ func unmapAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, owner str
 	// constants.MinConfirmationDepth (regtest).
 	const settleMaturityBlocks = 2
 	tipAfter, _ := d.MineBlocks(ctx, settleMaturityBlocks)
-	for hh := h; hh <= tipAfter; hh++ {
+	// Relay from the CONTRACT's own height: addBlocks requires each header to chain
+	// onto the last stored one, so starting at h fails whenever the contract has
+	// fallen behind the chain.
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
 	}
