@@ -319,6 +319,27 @@ func (b *Bot) HandleVaultRotation() {
 		return
 	}
 
+	// VR2-05: alarm on an empty fee reserve BEFORE the sweep is refused for it.
+	//
+	// topUpFeeReserve is the only path into FeeSupply, and migrateVault refuses
+	// outright when the reserve cannot cover the miner fee. That refusal is
+	// correct — it stops user principal being eroded to pay fees — but an operator
+	// who starts a rotation against an empty reserve only finds out once the sweep
+	// is already refused, with the generation now retiring and no way forward until
+	// someone funds it. The testnet vault sat at FeeSupply=0 with ten stale pending
+	// spends for exactly this reason.
+	//
+	// A warning, not a refusal: the contract is the authority on whether a specific
+	// sweep is affordable, and blocking the cycle here would add a second, weaker
+	// gate that could wrongly stall a rotation the contract would have allowed.
+	if feeSupply, known, feeErr := b.FetchFeeSupply(ctx); feeErr != nil {
+		b.L.Warn("vault rotation: cannot read the fee reserve", "error", feeErr)
+	} else if known && feeSupply <= 0 {
+		b.L.Warn("vault rotation: the fee reserve is EMPTY — migrateVault will refuse "+
+			"every sweep until topUpFeeReserve funds it, and the generation will sit "+
+			"retiring meanwhile", "feeSupply", feeSupply)
+	}
+
 	// A sweep already in flight is being broadcast + settled by the existing
 	// HandleUnmap/HandleConfirmations pipeline; we must not stack another tranche
 	// on top of it.

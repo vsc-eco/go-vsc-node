@@ -24,6 +24,10 @@ type GraphQLFetcher interface {
 	// FetchAccountNonce returns the next unused nonce for the given VSC account
 	// (a did:* or hive:* identifier). Used by the L2 submission path.
 	FetchAccountNonce(ctx context.Context, account string) (uint64, error)
+	// FetchAccountRC returns the account's currently available resource credits
+	// and whether the node has a record for it (VR2-04 pre-flight). An account the
+	// node cannot report on is "unknown", not zero.
+	FetchAccountRC(ctx context.Context, account string) (int64, bool, error)
 	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
 	// and signature, base64url-encoded) and returns the resulting CID tx ID.
 	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)

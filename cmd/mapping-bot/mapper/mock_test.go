@@ -16,6 +16,8 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockGraphQL struct {
+	accountRC map[string]int64 // VR2-04 RC pre-flight; nil = unknown (fail-open)
+	rcErr     error
 	mu sync.Mutex
 
 	txSpends   map[string]*contractinterface.SigningData
@@ -108,6 +110,23 @@ func (m *mockGraphQL) FetchAccountNonce(ctx context.Context, account string) (ui
 		return 0, nil
 	}
 	return m.nonces[account], nil
+}
+
+// FetchAccountRC backs the VR2-04 RC pre-flight. Default is "unknown", which the
+// pre-flight treats as fail-open, so every existing test keeps its behaviour
+// without opting in; set accountRC to exercise the refusal.
+func (m *mockGraphQL) FetchAccountRC(ctx context.Context, account string) (int64, bool, error) {
+	m.recordCall("FetchAccountRC", account)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rcErr != nil {
+		return 0, false, m.rcErr
+	}
+	if m.accountRC == nil {
+		return 0, false, nil
+	}
+	rc, ok := m.accountRC[account]
+	return rc, ok, nil
 }
 
 func (m *mockGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error) {

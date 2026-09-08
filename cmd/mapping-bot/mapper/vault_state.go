@@ -1,6 +1,7 @@
 package mapper
 
 import (
+	"encoding/binary"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -161,4 +162,27 @@ func (b *Bot) FetchContractHeight(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	return strconv.ParseUint(s, 10, 64)
+}
+
+// FetchFeeSupply reads the contract's fee reserve (the third int64 of the packed
+// supply record at "s").
+//
+// VR2-05: topUpFeeReserve is the ONLY path into FeeSupply, and migrateVault
+// refuses outright when the reserve cannot cover a sweep's miner fee. That
+// refusal is correct — it protects user principal from being eroded to pay fees —
+// but an operator starting a rotation against an empty reserve only discovers it
+// when the sweep is already refused, with the generation now retiring and no way
+// forward until the reserve is funded. The testnet vault sat at FeeSupply=0 with
+// ten stale pending spends for exactly this reason.
+func (b *Bot) FetchFeeSupply(ctx context.Context) (int64, bool, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.SupplyKey})
+	if err != nil {
+		return 0, false, err
+	}
+	raw, ok := st[contractinterface.SupplyKey]
+	if !ok || len(raw) < 24 {
+		return 0, false, nil // no supply record yet: unknown, not zero
+	}
+	// Packed as four big-endian int64s: active, user, fee, baseFeeRate.
+	return int64(binary.BigEndian.Uint64(raw[16:24])), true, nil
 }
