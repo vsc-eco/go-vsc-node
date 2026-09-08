@@ -436,9 +436,6 @@ func (s *Streamer) streamBlocks() {
 				continue
 			}
 
-			// fmt.Println("Going to fetch again!", time.Since(last), "block/s", float64(BlockBatchSize)/time.Since(last).Seconds())
-			// last = time.Now()
-
 			if *s.startBlock >= s.headHeight {
 				time.Sleep(time.Second)
 				continue
@@ -446,7 +443,7 @@ func (s *Streamer) streamBlocks() {
 
 			blocks, err := s.fetchBlockBatch(*s.startBlock, min(BlockBatchSize, s.headHeight-*s.startBlock))
 			if err != nil {
-				vlog.Error("error fetching block batch", "err", err)
+				vlog.Warn("error fetching block batch", "err", err)
 				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
 
 				continue

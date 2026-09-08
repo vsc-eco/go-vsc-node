@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"path"
+	"syscall"
 	"time"
 
 	cbortypes "vsc-node/lib/cbor-types"
@@ -398,6 +400,38 @@ func main() {
 		})
 		err = configs.Init()
 	} else {
+		// SIGINT/SIGTERM → graceful shutdown. Run() is the sole exit
+		// authority: RequestShutdown flags the request and cancels the
+		// aggregate ctx; Run's race-wait returns, Run stops every
+		// plugin in reverse order and returns nil → main exits 0, so
+		// supervisors see a clean stop, not a crash. A second signal
+		// and a 30s timer are backstops against a hung teardown (a
+		// clean one is bounded at ~10s: gql's 5s Shutdown cap plus the
+		// streamer's 5s processing wait, sequential in reverse order).
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigs)
+
+		go func() {
+			sig := <-sigs
+			log.Info("shutdown signal received; stopping node", "signal", sig.String())
+
+			// Second signal forces an immediate exit.
+			go func() {
+				sig := <-sigs
+				log.Error("second shutdown signal received; forcing immediate exit", "signal", sig.String())
+				os.Exit(1)
+			}()
+
+			// Hung-teardown backstop.
+			time.AfterFunc(30*time.Second, func() {
+				log.Error("graceful shutdown timed out after 30s; forcing exit")
+				os.Exit(1)
+			})
+
+			a.RequestShutdown()
+		}()
+
 		err = a.Run()
 	}
 	if err != nil {
