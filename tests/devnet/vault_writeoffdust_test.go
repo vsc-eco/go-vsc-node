@@ -29,9 +29,11 @@ import (
 //
 //	WOD-00   the 1,000-sat deposit is credited pre-rotation (floor inert until rotation).
 //	WOD-00b  post-rotation a 700-sat deposit to the active gen is SKIPPED (floor engaged).
-//	WOD-01   at latest_fee 10 the sweep is DEFERRED (migrateVault not OK, residual stays).
+//	WOD-01   at latest_fee 10 the sweep is ACCEPTED — the builder derives an affordable
+//	         rate under the same ceiling rather than deferring (VR2-11 fixed).
 //	WOD-02   writeOffDust REFUSES the same residual (not dust at the minimum rate).
-//	WOD-03   retireVault leaves gen-0 Retiring and createKey is refused: the deadlock.
+//	WOD-03   gen-0 has moved off Retiring (a sweep is in flight); NN#3 still refuses a
+//	         new rotation until the residual settles, which is correct.
 //	WOD-04   one addBlocks with latest_fee 1 and the same sweep succeeds and settles.
 //	WOD-05   retireVault then moves gen-0 to Inactive.
 //
@@ -166,8 +168,19 @@ func TestVaultWriteOffDust(t *testing.T) {
 	mig := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
 	time.Sleep(10 * time.Second)
 	stillThere := genUtxoCount(t, d, ctx, cid, 0)
-	rec("WOD-01", "at latest_fee 10 the sweep of the 1,000-sat residual is DEFERRED (fee > half the tranche) and the residual stays on gen-0", !isOK(mig) && stillThere == 1,
-		fmt.Sprintf("migrateVault status=%s (want refused), gen-0 holds %d UTXO(s)", mig, stillThere))
+	// INVERTED BY VR2-11. This case used to assert the DEADLOCK: at latest_fee 10 the
+	// 1,000-sat tranche priced at ~1,410 sats, more than half its value, so the sweep
+	// was deferred while write-off correctly refused the same residual — and nothing
+	// moved until fees fell, with NN#3 blocking every rotation meanwhile.
+	//
+	// The builder now derives the highest rate that fits under the SAME ceiling
+	// instead of insisting on the oracle's, so the sweep proceeds. The ceiling itself
+	// is unchanged: the fee still cannot exceed half the tranche. The UTXO stays on
+	// gen-0 until confirmSpend settles it, so this asserts the sweep was ACCEPTED,
+	// not that the generation has already drained.
+	rec("WOD-01", "at latest_fee 10 the sweep of the 1,000-sat residual is ACCEPTED: the builder derives an affordable rate under the same fee ceiling instead of deferring (VR2-11)",
+		isOK(mig),
+		fmt.Sprintf("migrateVault status=%s (want accepted), gen-0 holds %d UTXO(s) (still 1 until confirmSpend settles)", mig, stillThere))
 
 	// WOD-02: writeOffDust judges at the MINIMUM rate, where 1,000 sats IS sweepable, so it
 	// is a NO-OP: the call succeeds ("nothing to write off") and LEAVES the residual — it
@@ -187,9 +200,15 @@ func TestVaultWriteOffDust(t *testing.T) {
 	time.Sleep(10 * time.Second)
 	st := vaultStatusOf(t, d, ctx, cid, 0)
 	gen2 := vaultStatusOf(t, d, ctx, cid, 2)
-	rec("WOD-03", "retireVault leaves gen-0 Retiring and createKey is refused (NN#3): a 1,000-sat residual freezes the rotation while fees are high",
-		st == 2 && !isOK(ck) && gen2 < 0,
-		fmt.Sprintf("retireVault=%s gen-0 status=%s (want Retiring), createKey=%s (want refused), gen-2 status=%d (want absent)", rv, statusStr(st), ck, gen2))
+	// INVERTED BY VR2-11, but only partly. NN#3 still correctly refuses a new
+	// rotation while gen-0 holds an unsettled UTXO — that guard is not what was
+	// broken. What changed is WHY gen-0 still holds it: previously the sweep could
+	// never be built at all, so the wait was unbounded and ended only when fees fell.
+	// Now a sweep is in flight, so gen-0 has moved off Retiring and the residual
+	// clears on settle.
+	rec("WOD-03", "with the sweep in flight gen-0 is no longer parked in Retiring, and NN#3 still (correctly) refuses a new rotation until the residual settles",
+		st != 2 && !isOK(ck) && gen2 < 0,
+		fmt.Sprintf("retireVault=%s gen-0 status=%s (want Draining or beyond, NOT Retiring), createKey=%s (want refused while funds remain), gen-2 status=%d (want absent)", rv, statusStr(st), ck, gen2))
 
 	// WOD-04 (on/off): drop the relayed fee rate to 1 sat/vB and the SAME sweep goes through.
 	h, _ := d.MineBlocks(ctx, 1)
@@ -197,7 +216,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	ab := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":1}`, hx))
 	migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 	after := vfWaitGenBelow(t, d, ctx, cid, 0, 1, 3*time.Minute)
-	rec("WOD-04", "with latest_fee 1 the identical residual sweeps and settles (the freeze is purely the fee-rate mismatch between the two gates)", isOK(ab) && after == 0,
+	rec("WOD-04", "the residual sweeps and settles to completion (the fee-rate mismatch between the two gates no longer strands it)", isOK(ab) && after == 0,
 		fmt.Sprintf("addBlocks(latest_fee=1)=%s, gen-0 holds %d UTXO(s) after the sweep", ab, after))
 
 	if after == 0 {

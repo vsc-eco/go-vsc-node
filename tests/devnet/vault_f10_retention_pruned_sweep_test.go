@@ -33,10 +33,9 @@ import (
 //     in contract state, so the later absence is a prune, not a bad read.
 //  2. F10-RELAY (instrument): the contract's last height really passed the retention
 //     window (>= mined height + 4608 + 50); records how many addBlocks calls it took.
-//  3. F10-PRUNED: the header at the sweep height is gone on two nodes while the tip
-//     header is present (control), after at most six admin prune calls.
-//  4. F10-CONFIRM-REFUSED: confirmSpend with the correct proof is refused; the "ms-"
-//     record stays live; gen-0 keeps its UTXO count; gen-1 gains nothing.
+//  3. F10-PRUNED: the header at the sweep height is RETAINED on both nodes while a
+//     live spend needs it, even past the retention window (VR2-03 fixed).
+//  4. F10-CONFIRM-SETTLES: confirmSpend with the correct proof SETTLES; gen-0 drains.
 //  5. F10-REDRIVE-NO-RECOVERY: redriveSpend either is refused, or builds a replacement
 //     that Bitcoin rejects (its inputs are already spent by the mined original) while the
 //     original record stays live (spend-group semantics). Either way nothing recovers.
@@ -202,8 +201,16 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 		}
 	}
 	tipPresent := f10HeaderPresent(d, ctx, 2, cid, lastH)
-	c.rec("F10-PRUNED", "the header that proves the mined sweep is pruned from contract state (tip header still present as control)",
-		goneOn2 && goneOn1 && tipPresent,
+	// INVERTED BY VR2-03. This case used to assert the BUG: pruning deleted the
+	// header a pending sweep still needed, so the sweep could never settle, redrive
+	// could not help (the coins had already moved), and the generation stayed funded
+	// forever — blocking every rotation and holding every witness's bond.
+	//
+	// Pruning now refuses to go below the oldest live pending spend, so the header
+	// survives past the normal retention window for exactly as long as something
+	// still needs it. The tip header remains the control.
+	c.rec("F10-PRUNED", "the header proving a PENDING sweep is RETAINED past the normal retention window, because a live spend still needs it (VR2-03)",
+		!goneOn2 && !goneOn1 && tipPresent,
 		fmt.Sprintf("header %d gone: magi-2=%v magi-1=%v; tip header %d present=%v; admin prune calls=%d last_status=%s", hMined, goneOn2, goneOn1, lastH, tipPresent, pruneCalls, pruneStatus))
 
 	// confirmSpend with the CORRECT proof is now refused, and nothing settles.
@@ -212,8 +219,11 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	msLive := vfSweepRecordOn(d, ctx, 2, cid, txid)
 	gen0After := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 	gen1After := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
-	c.rec("F10-CONFIRM-REFUSED", "confirmSpend with a valid proof is refused once its header is pruned; the sweep stays pending, gen-0 keeps its inputs, gen-1 is not credited",
-		!isOK(cs) && msLive && gen0After == gen0Before && gen1After == gen1Before,
+	// INVERTED BY VR2-03: with the header retained the settle is possible, so the
+	// sweep is no longer stranded. gen-0 gives up its inputs and gen-1 is credited,
+	// which is the whole point of retaining the header.
+	c.rec("F10-CONFIRM-SETTLES", "confirmSpend with a valid proof SETTLES because the header it needs was retained; the sweep clears and gen-0 drains to gen-1 (VR2-03)",
+		isOK(cs) && gen0After < gen0Before,
 		fmt.Sprintf("confirmSpend status=%s (want FAILED/REVERTED) ms_live=%v gen0_utxos=%d (was %d) gen1_utxos=%d (was %d)", cs, msLive, gen0After, gen0Before, gen1After, gen1Before))
 
 	// Operator "recovery" attempts. None of them can move the stuck coins.
