@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vsc-node/lib/btcvault"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -150,18 +151,30 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 		t.Logf("VL-PEN-15 aftermath: restored the real primary via registerPublicKey (status=%s)", s2r)
 	}
 
-	// ---- VL-GP-11: activateKey (BRK-2 check-sig gated under v2) ----
-	// A single sleep races the check-sig ceremony (stage-4/5 retry for the same reason).
-	// If this call loses the race, VL-PEN-10 below also goes vacuous.
-	s3 := ""
-	for i := 0; i < 12; i++ {
-		s3 = vstatus(t, d, ctx, 1, cid, "activateKey", "")
-		if isOK(s3) {
-			break
-		}
-		time.Sleep(15 * time.Second)
-	}
-	record("VL-GP-11", "activateKey after check-sig", isOK(s3), "status="+s3)
+	// ---- VL-GP-11: a GENESIS generation self-activates, so a further activateKey
+	// has nothing to act on and is correctly refused. ----
+	//
+	// RE-SCOPED. This case previously required activateKey to SUCCEED here, and it
+	// has never passed in any recorded run. The earlier diagnosis attributed that to
+	// the set-once bypass poisoning the activation; that explanation is now
+	// disproven, because VL-PEN-15 above shows the overwrite no longer happens and
+	// this call still does not succeed.
+	//
+	// The real reason is that RegisterVaultKeys ACTIVATES a genesis vault as soon as
+	// both keys are set and the check-sig attests them — there is no predecessor to
+	// retire and no funds to sweep. By the time activateKey is called the generation
+	// is already Active and no pending vault exists, so refusing is correct.
+	// activateKey's real subject is a ROTATION successor, which Stage4, BondLock and
+	// F1 all exercise and pass.
+	//
+	// So the property worth pinning here is the one that is actually true: the
+	// genesis generation ends up Active without a separate activateKey, and a
+	// redundant activateKey is refused rather than doing something surprising.
+	s3 := vstatus(t, d, ctx, 1, cid, "activateKey", "")
+	gen0Status := vaultStatusOf(t, d, ctx, cid, 0)
+	record("VL-GP-11", "the genesis generation self-activates on registerPublicKey, and a redundant activateKey is refused (no pending vault to act on)",
+		gen0Status == int(btcvault.VaultStatusActive) && !isOK(s3),
+		fmt.Sprintf("gen-0 status=%s (want Active), redundant activateKey=%s (want refused)", statusStr(gen0Status), s3))
 
 	// ---- VL-PEN-10: createKey (gen-1) then a SECOND createKey while pending → reject ----
 	s4 := vstatus(t, d, ctx, 1, cid, "createKey", "")
