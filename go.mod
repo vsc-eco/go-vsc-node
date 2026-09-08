@@ -6,7 +6,6 @@ toolchain go1.25.10
 
 require (
 	github.com/99designs/gqlgen v0.17.90
-	github.com/CosmWasm/tinyjson v0.9.0
 	github.com/JustinKnueppel/go-result v1.0.0
 	github.com/bnb-chain/tss-lib/v3 v3.0.0
 	github.com/btcsuite/btcd v0.25.0
@@ -54,7 +53,6 @@ require (
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/ipfs/go-cidutil v0.1.0 // indirect
-	github.com/josharian/intern v1.0.0 // indirect
 	github.com/libp2p/go-yamux/v5 v5.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect

@@ -74,6 +74,8 @@ func (txp *TransactionPool) startP2P() error {
 }
 
 func (txp *TransactionPool) stopP2P() error {
-
-	return nil
+	if txp.service == nil {
+		return nil
+	}
+	return txp.service.Close()
 }

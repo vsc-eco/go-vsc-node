@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"context"
+	"sync/atomic"
 	start_status "vsc-node/modules/start-status"
 
 	"github.com/chebyrash/promise"
@@ -13,6 +14,13 @@ type Aggregate struct {
 	plugins     []Plugin
 	startStatus start_status.StartStatus
 	lastPlugin  *promise.Promise[any]
+	// stopRequested records an external graceful-shutdown request
+	// (magid's SIGINT/SIGTERM handler). While false, Run keeps its
+	// review2 contract: a plugin Start failure ends Run with an error
+	// so the supervisor restarts the node. Once requested, teardown is
+	// the operator's shutdown, so Run reports the teardown's outcome
+	// instead of the cancellation error.
+	stopRequested atomic.Bool
 }
 
 var _ Plugin = &Aggregate{}
@@ -21,11 +29,11 @@ var _ start_status.Starter = &Aggregate{}
 func New(plugins []Plugin) *Aggregate {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Aggregate{
-		ctx,
-		cancel,
-		plugins,
-		start_status.New(),
-		nil,
+		ctx:         ctx,
+		cancel:      cancel,
+		plugins:     plugins,
+		startStatus: start_status.New(),
+		lastPlugin:  nil,
 	}
 }
 
@@ -52,7 +60,15 @@ func (a *Aggregate) Run() error {
 	if _, err := promise.Race(a.ctx, a.lastPlugin, running).Await(a.ctx); err != nil {
 		// Best-effort orderly shutdown of the surviving plugins; the
 		// original error is what callers must see.
-		_ = a.Stop()
+		stopErr := a.Stop()
+		if a.stopRequested.Load() {
+			// Graceful shutdown: the race unwound because
+			// RequestShutdown canceled a.ctx. The teardown has run —
+			// report its outcome so a clean shutdown exits 0 instead
+			// of misreporting context.Canceled (or a stop-time
+			// rejection) as a startup failure.
+			return stopErr
+		}
 		return err
 	}
 
@@ -63,6 +79,18 @@ func (a *Aggregate) Run() error {
 	_, err := running.Await(a.ctx)
 
 	return err
+}
+
+// RequestShutdown flags a graceful shutdown request and cancels the
+// aggregate context. Run() awaits a.ctx at every phase (plugin
+// Started() waits in the Start loop, the shutdown race), so the cancel
+// unwinds Run to its error branch, where Run performs the full
+// reverse-order Stop itself and returns the teardown's outcome (see
+// Run). Keeping the teardown on Run's goroutine means Stop can never
+// race the Start phase, whatever the signal timing.
+func (a *Aggregate) RequestShutdown() {
+	a.stopRequested.Store(true)
+	a.cancel()
 }
 
 // Started implements start_status.Starter.

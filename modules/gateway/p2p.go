@@ -258,7 +258,9 @@ func (ms *MultiSig) startP2P() error {
 	return nil
 }
 
-func (txp *MultiSig) stopP2P() error {
-
-	return nil
+func (ms *MultiSig) stopP2P() error {
+	if ms.service == nil {
+		return nil
+	}
+	return ms.service.Close()
 }
