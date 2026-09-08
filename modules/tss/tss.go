@@ -94,6 +94,10 @@ const (
 	// network, but the statistics matter most precisely when they are not, so the
 	// bound has to survive sustained failure rather than only normal operation.
 	BLAME_WINDOW_MAX_ROWS = 50000
+	// reshareStarvationAlarmAfter is how many consecutive starved cycles pass
+	// before the condition is treated as persistent rather than transient. At the
+	// roughly two-minute cadence this is about ten minutes.
+	reshareStarvationAlarmAfter = 5
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
 
@@ -155,6 +159,45 @@ func attestationCID(account string, targetBlock uint64, ver consensusversion.Ver
 // bound is set far above any honest window, so reaching it means either a genuine
 // fault storm or someone deliberately flushing their own blame history, and both
 // are things an operator needs to be told about rather than left to infer.
+// noteReshareStarved records that a reshare could not start for want of
+// participants, and escalates once that has persisted.
+//
+// M-3/M-5: the floor below is REACTIVE only. It correctly refuses to start a
+// sub-threshold reshare — starting one would compute the VSS degree from a
+// filtered subset and corrupt the key — but nothing prevents the degradation,
+// nothing recovers from it, and nothing distinguishes "one cycle was unlucky"
+// from "this key has been unable to reshare for hours". Every cycle logged the
+// same Warn line, so a persistent starvation looked exactly like transient noise.
+//
+// This is the alarm, not the cure. Prevention (keeping enough of the old
+// committee in the new one) and recovery (a path back once overlap is lost) are
+// design work that has not been done; what is fixed here is that an operator can
+// now SEE the difference.
+func (tssMgr *TssManager) noteReshareStarved(keyId, side string, have, need int) {
+	tssMgr.starvationMu.Lock()
+	tssMgr.reshareStarved[keyId]++
+	count := tssMgr.reshareStarved[keyId]
+	tssMgr.starvationMu.Unlock()
+
+	// Escalate on a power-of-two ladder so a persistent fault keeps producing a
+	// loud line at a decreasing rate, rather than either one lost line or an
+	// unbounded flood.
+	if count >= reshareStarvationAlarmAfter && (count&(count-1)) == 0 {
+		log.Error("reshare has been unable to start for many consecutive cycles",
+			"keyId", keyId, "side", side, "have", have, "need", need,
+			"consecutiveCycles", count)
+	}
+}
+
+// clearReshareStarved resets the counter once a reshare gets past the floor.
+func (tssMgr *TssManager) clearReshareStarved(keyId string) {
+	tssMgr.starvationMu.Lock()
+	if _, seen := tssMgr.reshareStarved[keyId]; seen {
+		delete(tssMgr.reshareStarved, keyId)
+	}
+	tssMgr.starvationMu.Unlock()
+}
+
 func warnIfBlameWindowSaturated(rows int, ceremony, sessionId string) {
 	if rows >= BLAME_WINDOW_MAX_ROWS {
 		log.Warn("blame window saturated: statistics no longer cover the full window",
@@ -359,6 +402,13 @@ type TssManager struct {
 	preParamsLock sync.Mutex
 
 	actionMap      map[string]Dispatcher
+
+	// reshareStarved counts consecutive cycles a key's reshare could not start for
+	// want of participants (M-3/M-5). Node-local observability only — it never
+	// feeds a party list, a threshold or a commitment, so it cannot affect
+	// consensus.
+	reshareStarved map[string]int
+	starvationMu   sync.Mutex
 	// reshareDeferrals counts consecutive rotate intervals a key's reshare has
 	// been skipped because a sign was in flight (VR2-09 starvation bound).
 	reshareDeferrals   map[string]int
@@ -1389,6 +1439,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// never affect party lists or commitment CIDs (repo CLAUDE.md TSS
 			// Constraints 1-3). btcSignRefused logs the specific reason.
 			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) {
+				// B16: leave a trace. This skip used to `continue` with no database
+				// status update at all, so a signing request refused by policy sat
+				// unsigned forever with nothing recording why — an infinite SILENT
+				// skip, strictly worse observability than an ordinary failure, and
+				// invisible to anyone looking for stuck withdrawals.
+				//
+				// The refusal itself is unchanged and still the correct outcome: a
+				// retiring generation's key may only sign a sweep paying its committed
+				// successor. What changes is that an operator can now find these.
+				// FindUnsignedRequests revives a failed request once its key is active
+				// again, so marking it does not consume the request or foreclose a
+				// legitimate later signature — it records the current verdict.
+				tssMgr.tssRequests.UpdateRequest(tss_db.TssRequest{
+					KeyId:  action.KeyId,
+					Msg:    hex.EncodeToString(action.Args),
+					Status: tss_db.SignFailed,
+				})
+				log.Warn("BTC sign refused by policy; request marked failed for visibility",
+					"keyId", action.KeyId, "blockHeight", bh)
 				continue
 			}
 
@@ -1775,12 +1844,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 			if len(newParticipants) < minNewRequired {
 				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "readyCount", len(readyAccounts))
+				tssMgr.noteReshareStarved(commitment.KeyId, "new", len(newParticipants), minNewRequired)
 				continue
 			}
 			if len(commitedMembers) < origOldThreshold+1 {
 				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
+				tssMgr.noteReshareStarved(commitment.KeyId, "old", len(commitedMembers), origOldThreshold+1)
 				continue
 			}
+			tssMgr.clearReshareStarved(commitment.KeyId)
 
 			// B9: bind the chosen participant sets into the session id, so a node
 			// whose gossip view differs forms a DIFFERENT session and cleanly misses
@@ -2586,6 +2658,7 @@ func New(
 
 		queuedActions:      make([]QueuedAction, 0),
 		actionMap:          make(map[string]Dispatcher),
+		reshareStarved:     make(map[string]int),
 		reshareDeferrals:   make(map[string]int),
 		messageBuffer:      newSessionBuffer(),
 		sessionMap:         make(map[string]sessionInfo),
