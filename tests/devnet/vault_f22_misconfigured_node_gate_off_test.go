@@ -291,9 +291,17 @@ func TestVaultF22MisconfiguredNodeGateOff(t *testing.T) {
 	}
 
 	// ---- 5. restore the configuration, then the mandatory positive control ----
-	if err := d.WriteOracleConfigs(ctx); err != nil {
-		t.Errorf("F22 RESTORE: rewriting the per-node oracle configs failed: %v", err)
-	}
+	//
+	// Restore the SAME WAY it was broken. d.WriteOracleConfigs writes host-side with
+	// os.MkdirAll across ALL nodes, and the devnet data dirs are ROOT-owned, so it fails
+	// with "mkdir .../data-1/config: permission denied" - the exact trap
+	// vfF22WriteOracleConfigWithoutBtc already documents ("run 1 died on a host-side
+	// os.WriteFile"). The break path writes through a root container; the restore has to as
+	// well, and it only needs to touch the two nodes it actually modified.
+	//
+	// The test then completed all four cases and passed them, but the stray t.Errorf had
+	// already marked the whole test FAILED - a green run reported as red.
+	vfF22WriteOracleConfigWithBtc(t, d, misconf)
 	if err := d.SetOracleContractIDs(map[string]string{"BTC": cid}); err != nil {
 		t.Errorf("F22 RESTORE: restoring the sysconfig BTC contract id failed: %v", err)
 	}
@@ -351,6 +359,40 @@ func TestVaultF22MisconfiguredNodeGateOff(t *testing.T) {
 // node's BTC chain relay, because modules/oracle/config.go oracleConfig holds RPC
 // details and no contract id. The half that actually turns the theft gate off is the
 // empty ChainContracts BTC entry in the shared sysconfig, written by the caller.
+// vfF22WriteOracleConfigWithBtc restores the full oracle config (BTC entry present) on the
+// given nodes, through a root container for the same reason its sibling drops it that way:
+// the devnet data dirs are root-owned and a host-side write is denied.
+func vfF22WriteOracleConfigWithBtc(t *testing.T, d *Devnet, nodes []int) {
+	t.Helper()
+	chains := map[string]chainRpcConfigJSON{}
+	if d.cfg.EnableBitcoind {
+		chains["BTC"] = chainRpcConfigJSON{
+			RpcHost: d.BitcoindRPCHostPort(),
+			RpcUser: "vsc-node-user",
+			RpcPass: "vsc-node-pass",
+		}
+	}
+	if d.cfg.EnableDashd {
+		chains["DASH"] = chainRpcConfigJSON{
+			RpcHost: d.DashdRPCHostPort(),
+			RpcUser: "vsc-node-user",
+			RpcPass: "vsc-node-pass",
+		}
+	}
+	data, err := json.MarshalIndent(oracleConfigJSON{Chains: chains}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshaling the restored oracle config: %v", err)
+	}
+	for _, n := range nodes {
+		rel := fmt.Sprintf("data-%d/config/oracleConfig.json", n)
+		if err := vfWriteNodeFileAsRoot(d.devnetDir, rel, data); err != nil {
+			t.Errorf("F22 RESTORE: writing %s/%s: %v", d.devnetDir, rel, err)
+			return
+		}
+		t.Logf("F22 RESTORE: rewrote %s/%s WITH the BTC entry", d.devnetDir, rel)
+	}
+}
+
 func vfF22WriteOracleConfigWithoutBtc(t *testing.T, d *Devnet, nodes []int) {
 	t.Helper()
 	chains := map[string]chainRpcConfigJSON{}
