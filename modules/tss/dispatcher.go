@@ -938,10 +938,6 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	newPids btss.SortedPartyIDs,
 	maxWait time.Duration,
 ) bool {
-	startTime := time.Now()
-	checkInterval := 500 * time.Millisecond
-	maxChecks := int(maxWait / checkInterval)
-
 	allParticipants := make(map[string]bool)
 	for _, p := range oldPids {
 		allParticipants[p.Id] = true
@@ -949,13 +945,44 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	for _, p := range newPids {
 		allParticipants[p.Id] = true
 	}
+	return waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, allParticipants, maxWait)
+}
+
+// waitForParticipantsReady is the ABORT-GATE both key ceremonies share: it waits
+// until at least threshold+1 of the participants are reachable, and reports
+// failure if they never are.
+//
+// The important property is what it does NOT do. It never drops an unreachable
+// participant from the ceremony, and it never recomputes the threshold from a
+// filtered subset — reshare's own code warns that "using the filtered subset size
+// produces wrong coefficients and corrupts the key". The threshold always comes
+// from the FULL participant set, so unreachability can delay or abort a ceremony
+// but never resize it.
+//
+// VR2-08: keygen had no readiness check at all, so a ceremony that could not
+// possibly complete started anyway and burned its whole window before failing.
+// Gating cannot lose a ceremony that would have succeeded — below threshold+1
+// reachable it could not have — and turns a slow, opaque failure into an
+// immediate, diagnosable one.
+func waitForParticipantsReady(
+	tssMgr *TssManager,
+	sessionId string,
+	allParticipants map[string]bool,
+	maxWait time.Duration,
+) bool {
+	startTime := time.Now()
+	checkInterval := 500 * time.Millisecond
+	maxChecks := int(maxWait / checkInterval)
 
 	connectedCount := 0
 	totalCount := len(allParticipants)
+	if totalCount == 0 {
+		return false
+	}
 
-	log.Verbose("checking participant readiness", "sessionId", dispatcher.sessionId, "totalParticipants", totalCount)
+	log.Verbose("checking participant readiness", "sessionId", sessionId, "totalParticipants", totalCount)
 
-	selfAccount := dispatcher.tssMgr.config.Get().HiveUsername
+	selfAccount := tssMgr.config.Get().HiveUsername
 
 	for i := 0; i < maxChecks; i++ {
 		connectedCount = 0
@@ -966,7 +993,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
+			witness, err := tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
 			if err != nil {
 				continue
 			}
@@ -976,7 +1003,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			host := dispatcher.tssMgr.p2p.Host()
+			host := tssMgr.p2p.Host()
 			connState := host.Network().Connectedness(peerId)
 			if connState == network.Connected {
 				connectedCount++
@@ -984,21 +1011,21 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 		}
 
 		readinessPercent := float64(connectedCount) / float64(totalCount) * 100.0
-		log.Verbose("readiness check", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
+		log.Verbose("readiness check", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
 
 		// Require at least threshold+1 participants to be connected
 		threshold, _ := tss_helpers.GetThreshold(totalCount)
 		minRequired := threshold + 1
 
 		if connectedCount >= minRequired {
-			log.Verbose("sufficient participants ready", "sessionId", dispatcher.sessionId, "connected", connectedCount, "required", minRequired)
+			log.Verbose("sufficient participants ready", "sessionId", sessionId, "connected", connectedCount, "required", minRequired)
 			return true
 		}
 
 		time.Sleep(checkInterval)
 	}
 
-	log.Warn("readiness check timeout", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
+	log.Warn("readiness check timeout", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
 	return false
 }
 
@@ -1759,6 +1786,33 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 	if myParty == nil {
 		log.Verbose("node not in committee", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 		return fmt.Errorf("node not part of keygen committee")
+	}
+
+	// VR2-08: refuse to start a ceremony that cannot complete.
+	//
+	// Reshare has had this abort-gate all along; keygen had no readiness check at
+	// all, so a DKG whose committee was unreachable started regardless and consumed
+	// its entire window before failing — with no signal distinguishing "the network
+	// is not there" from "the ceremony went wrong".
+	//
+	// It cannot cost a ceremony that would have succeeded: below threshold+1
+	// reachable, the DKG could not have completed anyway. And it deliberately does
+	// NOT exclude the unreachable parties and shrink the committee — that would
+	// recompute the threshold from a filtered subset, which reshare's own code warns
+	// "produces wrong coefficients and corrupts the key". Delay or abort, never
+	// resize.
+	{
+		reachable := make(map[string]bool, len(dispatcher.participants))
+		for _, p := range dispatcher.participants {
+			reachable[p.Account] = true
+		}
+		syncDelay := dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay
+		if !waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, reachable, syncDelay) {
+			log.Warn("keygen aborted: too few participants reachable",
+				"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+				"participants", len(dispatcher.participants))
+			return fmt.Errorf("keygen aborted: fewer than threshold+1 participants reachable")
+		}
 	}
 
 	log.Info("starting DKG", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "participants", len(dispatcher.participants), "algo", dispatcher.algo)
