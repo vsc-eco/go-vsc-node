@@ -1,6 +1,7 @@
 package devnet
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -118,12 +119,33 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	record("VL-GP-02b", "registerPublicKey(primary) accepted", isOK(s1), "status="+s1)
 	// a different key (flip last hex char)
 	diff := flipLastHex(pub)
+
+	// INSTRUMENT FIX: assert on the STATE, not on the transaction status.
+	//
+	// This case used to require the re-registration to ABORT (!isOK). That cannot
+	// measure what it claims. The contract's documented behaviour -- on mainnet too
+	// -- is a reported no-op: "attempts to re-register will return the existing
+	// value without error". So a CONFIRMED transaction is consistent BOTH with the
+	// key having been overwritten and with the overwrite having been correctly
+	// refused, and the old check called both of them a failure.
+	//
+	// What set-once actually means is that the stored key does not change. Read it
+	// before and after and compare.
+	preKey, preErr := getStateHex(d, ctx, 2, cid, []string{"pubkey"})
 	s2 := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, diff, diff))
-	record("VL-PEN-15", "set-once: re-register different primary rejected (mainnet builds; regtest/testnet builds ALLOW the genesis overwrite, main.go IsTestnet override, VR2-12)", !isOK(s2), "status="+s2)
-	if isOK(s2) {
-		// The regtest build just replaced the flat genesis primary with a bogus key; put
-		// the REAL key back (the same override allows it) so the activation and every
-		// later case measure the state machine instead of a self-inflicted mismatch.
+	postKey, postErr := getStateHex(d, ctx, 2, cid, []string{"pubkey"})
+
+	keyHeld := preErr == nil && postErr == nil &&
+		len(preKey["pubkey"]) == 33 && bytes.Equal(preKey["pubkey"], postKey["pubkey"])
+	record("VL-PEN-15", "set-once: re-registering a DIFFERENT primary does not change the stored key",
+		keyHeld,
+		fmt.Sprintf("tx status=%s, stored primary before=%x after=%x (readErr pre=%v post=%v)",
+			s2, preKey["pubkey"], postKey["pubkey"], preErr, postErr))
+
+	if !keyHeld {
+		// The build let the genesis primary be replaced with a bogus key; put the real
+		// one back so the activation and every later case measure the state machine
+		// rather than a self-inflicted mismatch.
 		s2r := vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg1)
 		t.Logf("VL-PEN-15 aftermath: restored the real primary via registerPublicKey (status=%s)", s2r)
 	}
