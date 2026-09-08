@@ -315,8 +315,19 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	//    confirmSpend can still be issued. Relay whatever is not relayed yet, then
 	//    confirm the unmap with the CHANGE vout in indices.
 	// ---------------------------------------------------------------------------
+	// VR2-06: the settle waits MinConfirmationDepth, so the unmap's own block has to
+	// be buried before confirmSpend is accepted. Relaying only up to unmapHeight
+	// leaves it at depth 0 and the escape would be refused for the wrong reason —
+	// which would make this test claim the deadlock is inescapable when it is not.
+	// Mirrors constants.MinConfirmationDepth (regtest).
+	const settleMaturityBlocks = 2
+	if _, mErr := d.MineBlocks(ctx, settleMaturityBlocks); mErr != nil {
+		t.Logf("mine settle-maturity blocks: %v", mErr)
+	}
+	relayTo := unmapHeight + uint64(settleMaturityBlocks)
+
 	last := contractLastHeight(t, d, ctx, cid)
-	for hh := last + 1; hh <= unmapHeight; hh++ {
+	for hh := last + 1; hh <= relayTo; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)); !isOK(s) {
 			t.Logf("addBlocks %d status=%s", hh, s)

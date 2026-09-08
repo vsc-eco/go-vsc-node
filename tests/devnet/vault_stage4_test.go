@@ -323,8 +323,17 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	t.Logf("CASE VL-GP-06/NN#1 PASS(partial) — migration sweep TSS-signed (retiring gen, successor-scoped) + broadcast: %s", bcTxid)
 
 	h, _ := d.MineBlocks(ctx, 1)
-	hx, _ := btcBlockHeaderHex(ctx, d, h)
-	vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	// VR2-06: a settle waits MinConfirmationDepth, so the sweep's own block must be
+	// buried before confirmSpend. Relaying only up to h leaves it at depth 0 and the
+	// settle is correctly refused — which then looks like "no pending spend
+	// appeared" several stages later. Mirrors constants.MinConfirmationDepth
+	// (regtest).
+	const settleMaturityBlocks = 2
+	tipAfter, _ := d.MineBlocks(ctx, settleMaturityBlocks)
+	for hh := h; hh <= tipAfter; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	}
 	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
 	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
 	var blk struct {
