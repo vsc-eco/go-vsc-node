@@ -38,7 +38,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Skip("set VAULT_DRAIN_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 43*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(43*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -47,7 +47,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 	}
 
 	const hpin = 400
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -89,6 +89,8 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -96,16 +98,28 @@ func TestVaultDrainToPurge(t *testing.T) {
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 60_000_000, seedH)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 40_000_000, contractLastHeight(t, d, ctx, cid))
+	// map CONFIRMED means node 1 executed the deposit, but genUtxoCount reads magi-2,
+	// which processes that block a moment later; run 3 read 1 UTXO immediately after
+	// the second deposit and false-failed while run 1 (same funding code) saw 2. Poll
+	// magi-2 for the second deposit to register (read-lag, H-03 class), dumping the
+	// registry on each miss so a genuinely lost deposit is still visible.
 	n0 := genUtxoCount(t, d, ctx, cid, 0)
-	rec("DRAIN-00", "gen-0 funded with multiple UTXOs", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXOs", n0))
+	d00Deadline := time.Now().Add(3 * time.Minute)
+	for n0 < 2 && time.Now().Before(d00Deadline) {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("DRAIN-00 waiting for the 2nd deposit to register on magi-2 (have %d)", n0))
+		time.Sleep(10 * time.Second)
+		n0 = genUtxoCount(t, d, ctx, cid, 0)
+	}
+	rec("DRAIN-00", "gen-0 funded with multiple UTXOs", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXOs (after polling magi-2 up to 3m for the 2nd deposit)", n0))
 	if n0 < 2 {
 		return
 	}
 
 	// ── rotate to gen-1 ──
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("wait hpin: %v", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd1, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-mainv1", "status": "active"}, 8*time.Minute)
 	if err != nil {
@@ -117,7 +131,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Fatalf("gen1 register: %s", s)
 	}
 	activated := false
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			activated = true
 			break
@@ -151,7 +165,8 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Logf("tranche %d: gen-0 still holds %d UTXO(s) — sweeping", i+1, remaining)
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 		tranches++
-		if after := genUtxoCount(t, d, ctx, cid, 0); after >= remaining {
+		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("after tranche %d", i+1))
+		if after := vfWaitGenBelow(t, d, ctx, cid, 0, remaining, 3*time.Minute); after >= remaining {
 			t.Errorf("tranche %d made NO progress (%d -> %d UTXOs) — drain cannot converge", i+1, remaining, after)
 			break
 		}
@@ -167,8 +182,9 @@ func TestVaultDrainToPurge(t *testing.T) {
 
 	// ── retire: draining → INACTIVE. Asserted on the REGISTRY, not the tx status. ──
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
-	st := vaultStatusOf(t, d, ctx, cid, 0)
-	rec("DRAIN-03", "gen-0 REALLY transitioned to Inactive (vault registry)", st == 4, "gen-0 status="+statusStr(st))
+	stInactive, readOK3 := waitVaultStatus(t, d, ctx, cid, 0, 4, 2*time.Minute)
+	rec("DRAIN-03", "gen-0 REALLY transitioned to Inactive (vault registry)", stInactive == 4 && readOK3,
+		fmt.Sprintf("gen-0 status=%s (registry readable=%v)", statusStr(stInactive), readOK3))
 
 	// ── purge after the grace window: inactive → PURGED ──
 	last := contractLastHeight(t, d, ctx, cid)
@@ -183,8 +199,9 @@ func TestVaultDrainToPurge(t *testing.T) {
 		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hexBatch))
 	}
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
-	st = vaultStatusOf(t, d, ctx, cid, 0)
-	rec("DRAIN-04", "gen-0 REALLY transitioned to Purged (vault registry)", st == 5, "gen-0 status="+statusStr(st))
+	stPurged, readOK4 := waitVaultStatus(t, d, ctx, cid, 0, 5, 2*time.Minute)
+	rec("DRAIN-04", "gen-0 REALLY transitioned to Purged (vault registry)", stPurged == 5 && readOK4,
+		fmt.Sprintf("gen-0 status=%s (registry readable=%v)", statusStr(stPurged), readOK4))
 
 	t.Logf("DRAIN SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }
@@ -200,6 +217,47 @@ func statusStr(s int) string {
 // vaultStatusOf reads the committed vault registry ("v") and returns the status
 // byte of the given generation, or -1 if absent. This is chain truth — the thing
 // a tx-status assertion cannot see.
+// waitVaultStatus polls the committed vault registry until generation `gen` reaches
+// `want`, and reports separately whether the READ ever succeeded.
+//
+// A bare vaultStatusOf taken immediately after the transaction that causes a transition
+// measures two things it cannot tell apart: the generation not having reached the status,
+// and the query node not having answered. Both come back as -1. Under a three-lane campaign
+// the second is common, and it gets attributed to the contract.
+//
+// Returning readOK separately means a case can say "the transition did not happen" and
+// "I could not read the registry" as different sentences.
+func waitVaultStatus(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, want int, within time.Duration) (int, bool) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	last, readOK := -1, false
+	for {
+		st, err := getStateHex(d, ctx, 2, cid, []string{"v"})
+		if err == nil {
+			readOK = true
+			if vs, derr := btcvault.UnmarshalVaultRegistry(st["v"]); derr == nil {
+				found := -1
+				for _, v := range vs {
+					if v.Generation == gen {
+						found = int(v.Status)
+						break
+					}
+				}
+				last = found
+				if found == want {
+					return found, true
+				}
+			}
+		} else {
+			t.Logf("waitVaultStatus: read failed: %v", err)
+		}
+		if time.Now().After(deadline) {
+			return last, readOK
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 func vaultStatusOf(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32) int {
 	t.Helper()
 	st, err := getStateHex(d, ctx, 2, cid, []string{"v"})

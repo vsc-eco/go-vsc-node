@@ -57,7 +57,7 @@ func edgeCaseSetup(t *testing.T, cfg *Config) (*Devnet, context.Context, string,
 	t.Helper()
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	t.Cleanup(cancel)
 
 	wasmPath, err := BuildCallTssContract(ctx)
@@ -589,7 +589,7 @@ func TestEdgeKeygenBlameCrossEpoch(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	defer cancel()
 
 	wasmPath, err := BuildCallTssContract(ctx)

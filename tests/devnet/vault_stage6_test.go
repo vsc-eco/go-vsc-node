@@ -24,7 +24,7 @@ func TestVaultStage6PauseTheft(t *testing.T) {
 		t.Skip("set VAULT_STAGE6_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(28*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -109,9 +109,25 @@ func TestVaultStage6PauseTheft(t *testing.T) {
 	rec("MD07-G01d", "transfer resumes after unpause", isOK(sXferR), "status="+sXferR)
 
 	// ── MD06 P-FR: topUpFeeReserve pointing at a NON-deposit (the replay map tx) → reject ──
+	//
+	// VR2-25 added a confirmation-depth gate AHEAD of the D-1 guards on this path, and
+	// vstatus reports only CONFIRMED/FAILED/REVERTED, never the reason. A bare
+	// "it was rejected" would therefore no longer prove D-1: an immature proof is
+	// rejected too, and the case would pass while measuring the wrong gate.
+	//
+	// The depth gate is the ONLY check ahead of D-1, so establishing that fundH is
+	// buried deeper than it excludes it, and a rejection can then only be D-1. The
+	// depth is asserted (not merely logged) and carried in the detail, so this case
+	// fails loudly if its own precondition ever stops holding rather than passing
+	// vacuously.
+	pfrTip := contractLastHeight(t, d, ctx, cid)
+	pfrDepth := int64(pfrTip) - int64(fundH)
 	sBadFR := vstatus(t, d, ctx, 1, cid, "topUpFeeReserve",
 		fmt.Sprintf(`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1}}`, fundH, rawTx, proof))
-	rec("MD06-PFR", "topUpFeeReserve of a user-deposit tx rejected (D-1)", !isOK(sBadFR), "status="+sBadFR)
+	rec("MD06-PFR", "topUpFeeReserve of a user-deposit tx rejected by D-1 (not by the VR2-25 depth gate)",
+		!isOK(sBadFR) && pfrDepth >= int64(vfDepositMaturityBlocks),
+		fmt.Sprintf("status=%s fundH=%d contract_tip=%d depth=%d (needs >= %d so the depth gate is excluded)",
+			sBadFR, fundH, pfrTip, pfrDepth, vfDepositMaturityBlocks))
 
 	t.Logf("STAGE-6 SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }
@@ -120,8 +136,13 @@ func TestVaultStage6PauseTheft(t *testing.T) {
 func fundVaultCapture(t *testing.T, d *Devnet, ctx context.Context, cid, primaryHex, backupHex, recipient string, sats int64, lastRelayed uint64) (uint64, string, string, string) {
 	t.Helper()
 	fundVaultViaSPV(t, d, ctx, cid, primaryHex, backupHex, recipient, sats, lastRelayed)
-	// re-derive the last deposit's proof from the contract's current tip block
-	h := contractLastHeight(t, d, ctx, cid)
+	// Re-derive the last deposit's proof from the DEPOSIT's block.
+	//
+	// This used to read the contract's tip and assume it was the deposit's block.
+	// It no longer is: fundVaultViaSPV buries the deposit by vfDepositMaturityBlocks
+	// so the contract will accept it, and those intervening blocks are empty. Reading
+	// the tip therefore lands on a coinbase-only block and indexing Tx[1] panics.
+	h := contractLastHeight(t, d, ctx, cid) - vfDepositMaturityBlocks
 	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
 	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
 	var blk struct {

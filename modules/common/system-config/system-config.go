@@ -24,6 +24,12 @@ type SystemConfig interface {
 	// baked and NOT overridable via -sysconfig: a consensus rule every node must
 	// share so no single operator can shorten it.
 	ContractUpdateTimelockBlocks() uint64
+	// RcHiveFreeAmount is the network's free-RC allowance for Hive accounts.
+	// Network-baked and NOT overridable via -sysconfig: it feeds consensus-critical
+	// RC accounting (the WASM gas budget and the PullBalance HBD-exclusion), so two
+	// nodes that disagree on it compute different contract results, different block
+	// CIDs, and stall the fleet (VR2-17, devnet-proven). Every node must share it.
+	RcHiveFreeAmount() int64
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelist() []string
@@ -41,6 +47,9 @@ type config struct {
 	// Network-baked contract-update timelock length (Hive L1 blocks). Deliberately
 	// absent from SysConfigOverrides so it cannot be changed per-operator.
 	contractUpdateTimelockBlocks uint64
+	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
+	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
+	rcHiveFreeAmount             int64
 	oracleParams                 params.OracleParams
 	tssParams                    params.TssParams
 	pendulumPoolWhitelist        []string
@@ -87,6 +96,10 @@ func (c *config) ConsensusParams() params.ConsensusParams {
 
 func (c *config) ContractUpdateTimelockBlocks() uint64 {
 	return c.contractUpdateTimelockBlocks
+}
+
+func (c *config) RcHiveFreeAmount() int64 {
+	return c.rcHiveFreeAmount
 }
 
 func (c *config) OracleParams() params.OracleParams {
@@ -196,6 +209,7 @@ func MainnetConfig() SystemConfig {
 		startHeight:    94601000,
 		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     8, // H-5: must be >= the gateway floor (8, gateway/multisig.go) — a valid 7-member election otherwise silently wedges keyRotation forever
@@ -315,6 +329,7 @@ func TestnetConfig() SystemConfig {
 		startHeight:    2,
 		// Short (~90s) timelock so the mechanism is testable on testnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     3,
@@ -419,6 +434,7 @@ func DevnetConfig() SystemConfig {
 		startHeight:   2,
 		// Short (~90s) timelock so the mechanism is testable on devnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT_EPHEMERAL,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1000,
 			MinMembers:                    3,
@@ -497,6 +513,7 @@ func MocknetConfig() SystemConfig {
 		// Disabled (0): the in-process e2e harness updates then immediately
 		// executes a contract and relies on updates taking effect at once.
 		contractUpdateTimelockBlocks: 0,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT_EPHEMERAL,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1,
 			MinMembers:                    3,
@@ -553,13 +570,13 @@ func FromNetwork(network string) SystemConfig {
 	case "testnet":
 		return TestnetConfig()
 	case "devnet":
-		// Ephemeral test network: accounts hold ~0 HBD, so raise the free-RC allowance
-		// so integration tests can afford the gas of SPV-heavy ops (map/migrate).
-		// Mainnet/testnet keep the params.go production default (10_000).
-		params.RC_HIVE_FREE_AMOUNT = 1_000_000
+		// VR2-17: the free-RC allowance is carried on the network config
+		// (DevnetConfig sets rcHiveFreeAmount), NOT by mutating a package global
+		// here — a boot-time mutation made the value a function of which binary
+		// was compiled, so two nodes on one network computed different contract
+		// results and the fleet stalled.
 		return DevnetConfig()
 	case "mocknet":
-		params.RC_HIVE_FREE_AMOUNT = 1_000_000
 		return MocknetConfig()
 	default:
 		panic(fmt.Errorf("invalid network"))

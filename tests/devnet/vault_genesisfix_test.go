@@ -24,7 +24,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 		t.Skip("set VAULT_GENESISFIX_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 28*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(28*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")

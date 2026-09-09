@@ -33,7 +33,7 @@ func TestPendulumLPFloorDevnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(50*time.Minute))
 	t.Cleanup(cancel)
 
 	wasm, err := BuildAmmPoolContract(ctx)

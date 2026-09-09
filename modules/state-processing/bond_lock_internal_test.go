@@ -63,3 +63,38 @@ func TestBondLockMatches_StripsHivePrefix(t *testing.T) {
 		t.Fatal("an empty committee set must never lock anyone")
 	}
 }
+
+// TestBondLockMatches_UnresolvableLocksEveryone — F14 (corrupt vault registry) on the
+// #11 bond-lock consumer. When ComputeRetiringSignerSet reports Unresolvable (a
+// PRESENT but undecodable "v"), the gate must lock EVERY unstaker, member or not,
+// with or without the hive: prefix, even though the set itself is empty. The same
+// empty set WITHOUT the flag must lock nobody, otherwise the flag would be dead code
+// and a corrupt registry would silently release every bond (the L8-01 fail-open).
+func TestBondLockMatches_UnresolvableLocksEveryone(t *testing.T) {
+	frozen := vaultrotation.RetiringSignerSet{
+		SignerElection: map[string]elections.ElectionResult{},
+		KeyIds:         map[string]bool{},
+		Unresolvable:   true,
+	}
+	for _, who := range []string{"hive:alice", "alice", "hive:nobody-in-any-committee", ""} {
+		if !bondLockMatches(frozen, who) {
+			t.Fatalf("Unresolvable registry must lock %q (fail closed), got released", who)
+		}
+	}
+	released := vaultrotation.RetiringSignerSet{
+		SignerElection: map[string]elections.ElectionResult{},
+		KeyIds:         map[string]bool{},
+		Unresolvable:   false,
+	}
+	if bondLockMatches(released, "hive:alice") {
+		t.Fatal("the same EMPTY set without Unresolvable must lock nobody (control: the flag, not the emptiness, is what locks)")
+	}
+	// Recovery: a resolvable set locks exactly its members again.
+	recovered := vaultrotation.RetiringSignerSet{
+		SignerElection: map[string]elections.ElectionResult{"alice": {}},
+		KeyIds:         map[string]bool{},
+	}
+	if !bondLockMatches(recovered, "hive:alice") || bondLockMatches(recovered, "hive:bob") {
+		t.Fatal("after recovery only the retiring committee (alice) must be locked")
+	}
+}

@@ -2,12 +2,14 @@ package tss
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,11 +55,49 @@ const (
 	DEFAULT_ROTATE_INTERVAL  = 20 * 5 // 5 minutes in L1 blocks
 	DEFAULT_READINESS_OFFSET = 30     // blocks before reshare to broadcast readiness
 
+	// MAX_RESHARE_DEFERRALS bounds how many consecutive rotate intervals a key's
+	// reshare may be deferred because a sign is in flight (VR2-09). Deferring is
+	// right — a sign is one round-trip and starting a reshare on top makes both
+	// time out — but it must not be unbounded: ROTATE_INTERVAL is an exact
+	// multiple of SIGN_INTERVAL, so every rotate check lands on a sign tick, and
+	// keyLocks only blocks a NEW sign while a CEREMONY is running, never while
+	// another sign is. A key under continuous signing load could therefore be
+	// deferred forever and NEVER reshare. After this many consecutive deferrals
+	// the reshare proceeds anyway: one collided ceremony that retries is strictly
+	// better than a key that never rotates its shares.
+	MAX_RESHARE_DEFERRALS = 3
+
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
 	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
 	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
 	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
+	// BLAME_WINDOW_MAX_ROWS bounds how many blame commitments a blame-window query
+	// returns. It is a memory bound, NOT a policy knob: it must sit far above
+	// anything the window can legitimately hold, because the query sorts by height
+	// DESCENDING and truncating keeps only the NEWEST rows.
+	//
+	// M-4: this used to be 100, which silently turned "blames in the last 24 hours"
+	// into "the last 100 blames". At the roughly two-minute ceremony cadence a day
+	// holds ~720 rounds, so a sustained fault rate above ~14% overflows it. Worse,
+	// it is directly attackable: a member who generates 100 fresh blames naming
+	// OTHERS evicts every older blame naming THEMSELVES, dropping their own count to
+	// zero while the denominator stays full — escaping the ban threshold on demand.
+	//
+	// The truncation was also a divergence risk. Rows tie on block_height, so two
+	// nodes could truncate a different 100 and compute DIFFERENT excluded sets for
+	// the same ceremony. A bound no honest window reaches removes that too.
+	//
+	// Sized against the WORST honest case, not the typical one: every ceremony in
+	// the window failing and every member of a large committee blaming — roughly
+	// 720 ceremonies x 30 members = 21,600 rows. Blames are rare in a healthy
+	// network, but the statistics matter most precisely when they are not, so the
+	// bound has to survive sustained failure rather than only normal operation.
+	BLAME_WINDOW_MAX_ROWS = 50000
+	// reshareStarvationAlarmAfter is how many consecutive starved cycles pass
+	// before the condition is treated as persistent rather than transient. At the
+	// roughly two-minute cadence this is about ten minutes.
+	reshareStarvationAlarmAfter = 5
 	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
 )
 
@@ -110,6 +150,62 @@ func attestationCID(account string, targetBlock uint64, ver consensusversion.Ver
 
 // signReadyAttestation creates a BLS-signed readiness attestation for this node, tagged with
 // this binary's running consensus version.
+// warnIfBlameWindowSaturated reports when a blame-window query came back at its
+// row bound.
+//
+// M-4: at that point the result is no longer "the blames in the last 24 hours" —
+// it is the newest BLAME_WINDOW_MAX_ROWS of them, and every older blame in the
+// window has silently vanished from both the numerator and the denominator. The
+// bound is set far above any honest window, so reaching it means either a genuine
+// fault storm or someone deliberately flushing their own blame history, and both
+// are things an operator needs to be told about rather than left to infer.
+// noteReshareStarved records that a reshare could not start for want of
+// participants, and escalates once that has persisted.
+//
+// M-3/M-5: the floor below is REACTIVE only. It correctly refuses to start a
+// sub-threshold reshare — starting one would compute the VSS degree from a
+// filtered subset and corrupt the key — but nothing prevents the degradation,
+// nothing recovers from it, and nothing distinguishes "one cycle was unlucky"
+// from "this key has been unable to reshare for hours". Every cycle logged the
+// same Warn line, so a persistent starvation looked exactly like transient noise.
+//
+// This is the alarm, not the cure. Prevention (keeping enough of the old
+// committee in the new one) and recovery (a path back once overlap is lost) are
+// design work that has not been done; what is fixed here is that an operator can
+// now SEE the difference.
+func (tssMgr *TssManager) noteReshareStarved(keyId, side string, have, need int) {
+	tssMgr.starvationMu.Lock()
+	tssMgr.reshareStarved[keyId]++
+	count := tssMgr.reshareStarved[keyId]
+	tssMgr.starvationMu.Unlock()
+
+	// Escalate on a power-of-two ladder so a persistent fault keeps producing a
+	// loud line at a decreasing rate, rather than either one lost line or an
+	// unbounded flood.
+	if count >= reshareStarvationAlarmAfter && (count&(count-1)) == 0 {
+		log.Error("reshare has been unable to start for many consecutive cycles",
+			"keyId", keyId, "side", side, "have", have, "need", need,
+			"consecutiveCycles", count)
+	}
+}
+
+// clearReshareStarved resets the counter once a reshare gets past the floor.
+func (tssMgr *TssManager) clearReshareStarved(keyId string) {
+	tssMgr.starvationMu.Lock()
+	if _, seen := tssMgr.reshareStarved[keyId]; seen {
+		delete(tssMgr.reshareStarved, keyId)
+	}
+	tssMgr.starvationMu.Unlock()
+}
+
+func warnIfBlameWindowSaturated(rows int, ceremony, sessionId string) {
+	if rows >= BLAME_WINDOW_MAX_ROWS {
+		log.Warn("blame window saturated: statistics no longer cover the full window",
+			"ceremony", ceremony, "sessionId", sessionId,
+			"rows", rows, "max", BLAME_WINDOW_MAX_ROWS)
+	}
+}
+
 func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttestation, error) {
 	account := tssMgr.config.Get().HiveUsername
 	ver := consensusversion.RunningVersion()
@@ -306,6 +402,17 @@ type TssManager struct {
 	preParamsLock sync.Mutex
 
 	actionMap      map[string]Dispatcher
+
+	// reshareStarved counts consecutive cycles a key's reshare could not start for
+	// want of participants (M-3/M-5). Node-local observability only — it never
+	// feeds a party list, a threshold or a commitment, so it cannot affect
+	// consensus.
+	reshareStarved map[string]int
+	starvationMu   sync.Mutex
+	// reshareDeferrals counts consecutive rotate intervals a key's reshare has
+	// been skipped because a sign was in flight (VR2-09 starvation bound).
+	reshareDeferrals   map[string]int
+	reshareDeferralLock sync.Mutex
 	sessionMap     map[string]sessionInfo
 	sessionResults map[string]sessionResultEntry
 
@@ -369,14 +476,208 @@ func (tssMgr *TssManager) Receive() {}
 // The timeout is configurable via TssParams.PreParamsTimeout (defaults to 1
 // minute if unset). In devnet/CI environments with many concurrent nodes,
 // a longer timeout (e.g. 10 minutes) is recommended.
+// preParamsTimeout is the network's safe-prime generation budget, with the
+// documented 1-minute fallback when unset. VR2-18: the generator and the CONSUMER
+// must share one value, or a consumer could give up while a legitimate generation
+// is still running (or wait far past the point one could still arrive).
+//
+// NOTE (open, not closed by this change): PreParamsTimeout is currently unset on
+// every network, so this returns 1 minute everywhere, while safe-prime generation
+// is documented as "15 seconds on a fast machine to several minutes on a loaded
+// server" and its concurrency scales down with core count. On a low-core witness
+// that budget may be routinely insufficient, which turns the clean-fail below into
+// a node that never completes a keygen. Benchmark on representative hardware and
+// set PreParamsTimeout per network before relying on this in production.
+//
+// This is ONE budget, not two: callers kick GeneratePreParams off asynchronously,
+// so the caller waits at most this long in total. Calling it inline would have
+// blocked for a full budget generating, then waited another full budget here — 2x,
+// all with tssMgr.lock held.
+// Session-id prefixes. Used both when a session is created and when BlockTick
+// inspects actionMap to see what is still running, so the two can never drift.
+const (
+	sessionPrefixKeygen  = "keygen-"
+	sessionPrefixSign    = "sign-"
+	sessionPrefixReshare = "reshare-"
+)
+
+// deferReshare records one more consecutive deferral for keyId and reports whether
+// the reshare should still be skipped. It returns false once MAX_RESHARE_DEFERRALS
+// consecutive deferrals have been made, so a key under continuous signing load
+// eventually reshares instead of being starved forever (VR2-09).
+func (tssMgr *TssManager) deferReshare(keyId string) bool {
+	tssMgr.reshareDeferralLock.Lock()
+	defer tssMgr.reshareDeferralLock.Unlock()
+
+	if tssMgr.reshareDeferrals == nil {
+		tssMgr.reshareDeferrals = make(map[string]int)
+	}
+	tssMgr.reshareDeferrals[keyId]++
+	if tssMgr.reshareDeferrals[keyId] > MAX_RESHARE_DEFERRALS {
+		log.Warn("reshare deferral limit reached; proceeding despite an in-flight sign",
+			"keyId", keyId, "deferrals", tssMgr.reshareDeferrals[keyId])
+		delete(tssMgr.reshareDeferrals, keyId)
+		return false
+	}
+	return true
+}
+
+// clearReshareDeferrals resets the streak once a key's reshare actually proceeds.
+func (tssMgr *TssManager) clearReshareDeferrals(keyId string) {
+	tssMgr.reshareDeferralLock.Lock()
+	defer tssMgr.reshareDeferralLock.Unlock()
+	delete(tssMgr.reshareDeferrals, keyId)
+}
+
+// participantSetTag is a short, order-independent fingerprint of the OLD and NEW
+// participant sets chosen for a reshare.
+//
+// B9 (GV-H8 family): both sets are filtered by `readyAccounts`, which is built
+// from the gossip attestations THIS node happened to receive — it is convergent,
+// not consensus. Two nodes can therefore choose different sets for the same
+// reshare, and the NEW set's size feeds the VSS polynomial degree
+// (GetThreshold(origNewSize)) and the pre-flight quorum floor. Today the session
+// id carries no participant information at all, so nodes with divergent views
+// join the SAME session and abort mid-protocol.
+//
+// Binding this tag into the session id makes a divergent view a clean MISS: such a
+// node forms a different session id, never joins, and simply retries next
+// interval, instead of contributing to a session whose degree it disagrees with.
+//
+// Accounts are sorted so the tag depends on set MEMBERSHIP, not on iteration or
+// registry order.
+//
+// This does NOT make the chosen set deterministic — that requires an additive,
+// per-interval on-chain readiness commitment, which is a larger change (and must
+// never be a frozen snapshot: that variant was reverted as GV-H8). It bounds the
+// damage of divergence rather than removing divergence.
+func participantSetTag(oldSet, newSet []Participant) string {
+	accounts := func(ps []Participant) []string {
+		out := make([]string, 0, len(ps))
+		for _, p := range ps {
+			out = append(out, p.Account)
+		}
+		sort.Strings(out)
+		return out
+	}
+	h := sha256.New()
+	for _, a := range accounts(oldSet) {
+		h.Write([]byte(a))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte{1}) // domain separator between the old and new sets
+	for _, a := range accounts(newSet) {
+		h.Write([]byte(a))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
+
+// inFlightSessions reports which keys currently have a ceremony running, split by
+// kind, from the dispatchers still registered in actionMap.
+//
+// VR2-09: BlockTick's keyLocks map is rebuilt every block and is populated ONLY
+// from actions generated in THAT block, so it never saw a session started in an
+// earlier block. A reshare session runs for many blocks (up to ReshareTimeout),
+// while sign ticks come far more often — so the next sign tick scheduled a sign
+// for a key whose reshare was still running its rounds on the same nodes. The two
+// ceremonies then competed and both timed out. With a Pending vault generation
+// being reshared every epoch (VR2-10), that collision repeated until activation
+// never landed: 6 of 15 devnet rotations stalled.
+//
+// actionMap entries are removed only when the session's Done() resolves, so
+// membership here is exactly "still in flight".
+//
+// This is per-node scheduling state and MAY differ slightly between nodes (one
+// node's dispatcher can finish a moment before another's). That is safe by the
+// same argument the reshare-skip and readiness gates already rely on: choosing
+// whether to START a ceremony is a participation decision reconciled by the 2/3
+// quorum and retried next interval, not a CID-committing consensus output. It can
+// cost a retry; it cannot fork.
+func (tssMgr *TssManager) inFlightSessions() (ceremony map[string]bool, signing map[string]bool) {
+	ceremony = make(map[string]bool)
+	signing = make(map[string]bool)
+
+	tssMgr.bufferLock.RLock()
+	defer tssMgr.bufferLock.RUnlock()
+
+	for sessionId, dispatcher := range tssMgr.actionMap {
+		if dispatcher == nil {
+			continue
+		}
+		keyId := dispatcher.KeyId()
+		if keyId == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(sessionId, sessionPrefixReshare),
+			strings.HasPrefix(sessionId, sessionPrefixKeygen):
+			ceremony[keyId] = true
+		case strings.HasPrefix(sessionId, sessionPrefixSign):
+			signing[keyId] = true
+		}
+	}
+	return ceremony, signing
+}
+
+func (tssMgr *TssManager) preParamsTimeout() time.Duration {
+	if tssMgr.sconf == nil {
+		return time.Minute
+	}
+	if timeout := tssMgr.sconf.TssParams().PreParamsTimeout; timeout != 0 {
+		return timeout
+	}
+	return time.Minute
+}
+
+// awaitPreParams waits for a pre-generated Paillier parameter set, BOUNDED.
+//
+// VR2-18: this used to be a bare `<-tssMgr.preParams` in KeyGenDispatcher.Start.
+// GeneratePreParams is best-effort — it TryLocks and, on contention or on a
+// generation failure, returns WITHOUT ever writing the channel. The bare receive
+// therefore blocked forever, and it runs INSIDE the RunActions dispatcher loop
+// while tssMgr.lock is held, which is only released after the loop. Every later
+// RunActions call TryLocks, logs "skipped, lock held by previous batch" and
+// returns. So a single keygen against an empty/failed pool silently froze that
+// node's ENTIRE TSS participation — all signing, resharing and keygen, for every
+// chain — until the process was restarted.
+//
+// Bounding it converts that permanent freeze into a clean failure the caller
+// retries on the next interval. The lock is released as soon as Start() returns.
+func (tssMgr *TssManager) awaitPreParams(ctx context.Context, sessionId string) (ecKeyGen.LocalPreParams, error) {
+	timeout := tssMgr.preParamsTimeout()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Defensive: every production construction site sets msgCtx, but a nil ctx
+	// here would panic in the select rather than clean-fail, which is the exact
+	// class of failure this change exists to remove.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case preParams := <-tssMgr.preParams:
+		return preParams, nil
+	case <-ctx.Done():
+		log.Error("preparams wait cancelled; keygen will retry",
+			"sessionId", sessionId, "err", ctx.Err())
+		return ecKeyGen.LocalPreParams{}, fmt.Errorf("preparams wait cancelled: %w", ctx.Err())
+	case <-timer.C:
+		// ERROR, not Warn: on a node whose hardware cannot generate within the
+		// budget this recurs every keygen, and the only other symptom is a
+		// Verbose "RunActions skipped" line.
+		log.Error("timed out waiting for preparams; keygen clean-failed and will retry",
+			"sessionId", sessionId, "timeout", timeout)
+		return ecKeyGen.LocalPreParams{}, fmt.Errorf("timed out after %s waiting for preparams", timeout)
+	}
+}
+
 func (tssMgr *TssManager) GeneratePreParams() {
 	locked := tssMgr.preParamsLock.TryLock()
 	if locked {
 		if len(tssMgr.preParams) == 0 {
-			timeout := tssMgr.sconf.TssParams().PreParamsTimeout
-			if timeout == 0 {
-				timeout = time.Minute
-			}
+			timeout := tssMgr.preParamsTimeout()
 			log.Info("need to generate preparams", "timeout", timeout)
 			preParams, err := ecKeyGen.GeneratePreParams(timeout)
 			if err != nil {
@@ -472,7 +773,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Deterministic on-chain set; empty/inert unless VaultRotationV2Enabled AND a
 		// retiring/draining BTC gen exists. Widens the convergent gossip set, does
 		// NOT replace it (not GV-H8).
-		retiringEligible := tssMgr.retiringGenSignerSet(bh).Has(selfAccount)
+		// VR2-10: include a PENDING generation's keygen committee, so skipping its
+		// pre-activation reshare cannot strand the signers that must still produce
+		// its BRK-2 check-signature after an election churn. HasReadiness (not Has)
+		// keeps this out of the bond-lock predicate.
+		retiringEligible := tssMgr.retiringGenSignerSet(bh).HasReadiness(selfAccount)
 
 		if isMember || retiringEligible {
 			for targetBlock := range gossipTargets {
@@ -543,6 +848,15 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		isLeader := witnessSlot.Account == tssMgr.config.Get().HiveUsername
 
 		keyLocks := make(map[string]bool)
+		// VR2-09: seed the locks from sessions still IN FLIGHT from earlier blocks,
+		// not just from actions generated in THIS block. Without this, a sign was
+		// scheduled for a key whose multi-block reshare was still running its
+		// rounds, the two ceremonies competed for the same parties, and both timed
+		// out — repeatedly, because a Pending generation is reshared every epoch.
+		inFlightCeremony, inFlightSign := tssMgr.inFlightSessions()
+		for keyId := range inFlightCeremony {
+			keyLocks[keyId] = true
+		}
 		generatedActions := make([]QueuedAction, 0)
 		if bh%rotateInterval == 0 {
 
@@ -566,6 +880,17 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				if tssMgr.shouldSkipReshareForVaultRotation(key.Id, bh) {
 					continue
 				}
+				// VR2-09: prefer an in-flight SIGN over starting a reshare of the
+				// same key. A sign is one round-trip and, for a pending vault
+				// generation, it is the BRK-2 check-signature that unblocks
+				// activation; starting a reshare on top of it makes both time out.
+				// The reshare is re-selected next rotate interval.
+				if inFlightSign[key.Id] && tssMgr.deferReshare(key.Id) {
+					log.Verbose("deferring reshare: a sign for this key is still in flight",
+						"keyId", key.Id, "blockHeight", bh)
+					continue
+				}
+				tssMgr.clearReshareDeferrals(key.Id)
 				generatedActions = append(generatedActions, QueuedAction{
 					Type:  ReshareAction,
 					KeyId: key.Id,
@@ -978,7 +1303,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if action.Type == KeyGenAction {
 			participants := make([]Participant, 0)
 
-			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixKeygen + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			// Blame exclusion for a keygen RETRY: decode each blame in the BLAME_EXPIRE
 			// window against the blame's OWN epoch election — setToCommitment encodes bit
@@ -996,11 +1321,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				blameExpireBlock = bh - BLAME_EXPIRE
 			}
 			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
-				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, 100,
+				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, BLAME_WINDOW_MAX_ROWS,
 			)
 			if blameErr != nil {
 				log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
 			}
+			warnIfBlameWindowSaturated(len(allBlames), "keygen", sessionId)
 			blameCount := make(map[string]int) // account → number of blames naming this account
 			blameOpportunities := 0            // total blame commitments in window (denominator)
 			for _, blame := range allBlames {
@@ -1113,10 +1439,29 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// never affect party lists or commitment CIDs (repo CLAUDE.md TSS
 			// Constraints 1-3). btcSignRefused logs the specific reason.
 			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) {
+				// B16: leave a trace. This skip used to `continue` with no database
+				// status update at all, so a signing request refused by policy sat
+				// unsigned forever with nothing recording why — an infinite SILENT
+				// skip, strictly worse observability than an ordinary failure, and
+				// invisible to anyone looking for stuck withdrawals.
+				//
+				// The refusal itself is unchanged and still the correct outcome: a
+				// retiring generation's key may only sign a sweep paying its committed
+				// successor. What changes is that an operator can now find these.
+				// FindUnsignedRequests revives a failed request once its key is active
+				// again, so marking it does not consume the request or foreclose a
+				// legitimate later signature — it records the current verdict.
+				tssMgr.tssRequests.UpdateRequest(tss_db.TssRequest{
+					KeyId:  action.KeyId,
+					Msg:    hex.EncodeToString(action.Args),
+					Status: tss_db.SignFailed,
+				})
+				log.Warn("BTC sign refused by policy; request marked failed for visibility",
+					"keyId", action.KeyId, "blockHeight", bh)
 				continue
 			}
 
-			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixSign + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
 
@@ -1170,8 +1515,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&signBlameExpireBlock,
 				&bh,
-				100,
+				BLAME_WINDOW_MAX_ROWS,
 			)
+			warnIfBlameWindowSaturated(len(signBlames), "sign", sessionId)
 			if signBlameErr != nil {
 				log.Warn("failed to fetch blame commitments for signing", "sessionId", sessionId, "err", signBlameErr)
 			}
@@ -1226,6 +1572,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// the current floor. Deterministic on-chain set; inert unless v2 + a
 			// retiring gen exists.
 			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
+			// NOTE: PendingKeyIds is deliberately NOT included here. The waiver below
+			// exempts a signer from the CURRENT consensus-version floor, and the
+			// retiring-gen rationale is that an OLD key's protocol was fixed at its
+			// keygen epoch, so a later floor bump must not silence its committee. A
+			// PENDING generation is the opposite case: the newest, about-to-become-
+			// ACTIVE, fund-controlling key. Granting it the same waiver would let a
+			// node below the new floor help produce the BRK-2 signature that
+			// activates the fleet's next vault key — reintroducing whatever the floor
+			// bump was meant to fix, at exactly the moment a new active key is born.
 			isRetiringSign := signRetiringSet.KeyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
@@ -1308,7 +1663,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 		} else if action.Type == ReshareAction {
 
-			sessionId = "reshare-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
+			sessionId = sessionPrefixReshare + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			log.Verbose("creating reshare session", "sessionId", sessionId, "keyId", action.KeyId, "blockHeight", bh)
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "keygen", "reshare")
@@ -1334,8 +1689,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&blameExpireBlock,
 				&bh,
-				100,
+				BLAME_WINDOW_MAX_ROWS,
 			)
+			warnIfBlameWindowSaturated(len(allBlames), "reshare", sessionId)
 			if blameErr != nil {
 				log.Warn("failed to fetch blame commitments", "sessionId", sessionId, "err", blameErr)
 			}
@@ -1488,12 +1844,20 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 			if len(newParticipants) < minNewRequired {
 				log.Warn("insufficient new participants for reshare", "sessionId", sessionId, "newParticipants", len(newParticipants), "required", minNewRequired, "readyCount", len(readyAccounts))
+				tssMgr.noteReshareStarved(commitment.KeyId, "new", len(newParticipants), minNewRequired)
 				continue
 			}
 			if len(commitedMembers) < origOldThreshold+1 {
 				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
+				tssMgr.noteReshareStarved(commitment.KeyId, "old", len(commitedMembers), origOldThreshold+1)
 				continue
 			}
+			tssMgr.clearReshareStarved(commitment.KeyId)
+
+			// B9: bind the chosen participant sets into the session id, so a node
+			// whose gossip view differs forms a DIFFERENT session and cleanly misses
+			// rather than joining one whose VSS degree it disagrees with.
+			sessionId += "-" + participantSetTag(commitedMembers, newParticipants)
 
 			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
 
@@ -2294,6 +2658,8 @@ func New(
 
 		queuedActions:      make([]QueuedAction, 0),
 		actionMap:          make(map[string]Dispatcher),
+		reshareStarved:     make(map[string]int),
+		reshareDeferrals:   make(map[string]int),
 		messageBuffer:      newSessionBuffer(),
 		sessionMap:         make(map[string]sessionInfo),
 		sessionResults:     make(map[string]sessionResultEntry),

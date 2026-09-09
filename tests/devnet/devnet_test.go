@@ -44,7 +44,7 @@ func TestDevnetSetup(t *testing.T) {
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(15*time.Minute))
 	defer cancel()
 
 	if err := d.Start(ctx); err != nil {
@@ -95,7 +95,7 @@ func TestDeployCallTss(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	defer cancel()
 
 	// Build the call-tss contract

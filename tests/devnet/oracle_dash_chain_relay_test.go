@@ -61,7 +61,7 @@ func TestOracleDashChainRelay(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(20*time.Minute))
 	defer cancel()
 
 	// ── Locate the prebuilt dash-mapping-contract WASM ──────────────────

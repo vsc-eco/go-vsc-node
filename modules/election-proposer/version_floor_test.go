@@ -136,3 +136,79 @@ func TestResolveVersionFloor_SubFloorAndExpiredAndInactiveSkipped(t *testing.T) 
 		t.Fatalf("floor = %s, want unchanged %s (all candidates ineligible)", got.Format(), floor.Format())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The forced override and the H-3/C-2 outgoing-quorum guard.
+//
+// The override was written to bypass BOTH guards. Bypassing stake-readiness is its
+// purpose. Bypassing H-3/C-2 is not recoverable: signing and resharing are gated on
+// this same floor, so an advance past the outgoing committee filters its TSS
+// share-holders below reshare threshold and freezes the vault, and no later
+// override brings the shares back. From 0.8.0 the override keeps the first and
+// loses the second.
+// ---------------------------------------------------------------------------
+
+// prevAt builds an outgoing committee of `n` members at consensus version `ver`.
+func prevAt(n int, ver consensusversion.Version) *elections.ElectionResult {
+	members := make([]elections.ElectionMember, 0, n)
+	for i := 0; i < n; i++ {
+		members = append(members, elections.ElectionMember{Account: string(rune('a' + i))})
+	}
+	return &elections.ElectionResult{
+		ElectionDataInfo: elections.ElectionDataInfo{
+			Members:      members,
+			VersionMajor: ver.Major, ProtocolVersion: ver.Consensus,
+		},
+	}
+}
+
+// At/after 0.8.0 a forced advance is DEFERRED when the outgoing committee cannot
+// hold reshare quorum at the target.
+func TestResolveVersionFloor_ForcedRespectsOutgoingQuorumAt080(t *testing.T) {
+	floor := v(0, 0)
+	target := v(0, 9)
+	// Nobody announces anything above floor, so the outgoing committee (a,b,c) is
+	// entirely not-ready at the target.
+	ws, wm := wlist(5, 0, target, floor)
+	forced := &consensus_state.VersionProposal{Target: target, ActivationEpoch: 1, Forced: true}
+
+	got := resolveVersionFloor(floor, 2, 100, forced, nil, ws, wm, prevAt(3, v(0, 8)), num, den)
+	if got.Cmp(floor) != 0 {
+		t.Fatalf("floor = %s, want unchanged %s: a forced advance must not filter the outgoing "+
+			"TSS committee below reshare quorum — that freezes the vault and no override undoes it",
+			got.Format(), floor.Format())
+	}
+}
+
+// CONTROL (behaviour below the line is byte-identical): the SAME forced advance,
+// with the outgoing election below 0.8.0, still bypasses both guards. Without this
+// the test above would also pass if the override had simply been deleted.
+func TestResolveVersionFloor_ForcedStillBypassesQuorumBelow080(t *testing.T) {
+	floor := v(0, 0)
+	target := v(0, 9)
+	ws, wm := wlist(5, 0, target, floor)
+	forced := &consensus_state.VersionProposal{Target: target, ActivationEpoch: 1, Forced: true}
+
+	got := resolveVersionFloor(floor, 2, 100, forced, nil, ws, wm, prevAt(3, v(0, 7)), num, den)
+	if got.Cmp(target) != 0 {
+		t.Fatalf("floor = %s, want %s: below 0.8.0 the override must keep its original "+
+			"bypass-both behaviour, or a reindex of historical elections diverges",
+			got.Format(), target.Format())
+	}
+}
+
+// CONTROL (the guard is about quorum, not about forcing): at 0.8.0, with the
+// outgoing committee ready at the target, the forced advance goes through.
+func TestResolveVersionFloor_ForcedAdvancesWhenOutgoingQuorumHolds(t *testing.T) {
+	floor := v(0, 0)
+	target := v(0, 9)
+	// All 5 announce the target, so the outgoing committee (a,b,c) is fully ready.
+	ws, wm := wlist(5, 5, target, floor)
+	forced := &consensus_state.VersionProposal{Target: target, ActivationEpoch: 1, Forced: true}
+
+	got := resolveVersionFloor(floor, 2, 100, forced, nil, ws, wm, prevAt(3, v(0, 8)), num, den)
+	if got.Cmp(target) != 0 {
+		t.Fatalf("floor = %s, want %s: the quorum guard must not block a forced advance the "+
+			"outgoing committee can actually survive", got.Format(), target.Format())
+	}
+}

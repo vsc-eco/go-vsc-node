@@ -274,6 +274,133 @@ func PoaChurnCapActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
 
+// V0_8_0 is the consensus version line at which the BTC vault-rotation-v2 batch
+// activates.
+//
+// Why 0.8.0: the line is a fleet-wide namespace, not a per-branch one. 0.4.0 and
+// 0.5.0 belong to the delegated-consensus-stake batch, 0.6.0 to
+// feat/vault-protection, and 0.7.0 to the POA admission batch — so 0.8.0 is the
+// first line free across every branch. Reusing a taken line would mean one floor
+// rise silently activates two unrelated batches at once, which is exactly the
+// coordinated-activation property this mechanism exists to provide.
+//
+// The ordering is deliberate and not merely numeric: POA (0.7.0) is the staged
+// answer to seat-vs-stake weighting, and vault-rotation-v2 follows it.
+var V0_8_0 = Version{Major: 0, Consensus: 8, NonConsensus: 0}
+
+// VaultRotationV2Active reports whether the BTC vault-rotation-v2 batch is in
+// force given the chain-active consensus version. Below the line every v2 rule is
+// inert and behaviour stays byte-identical, so old and new binaries interoperate
+// until the floor reaches 0.8.0.
+//
+// This replaces a BARE ACTIVATION HEIGHT as the coordination mechanism. A height
+// pin carries the rolling-upgrade footgun this package exists to remove: every
+// witness must be running a binary that carries the pinned height BEFORE the chain
+// reaches it, or upgraded and not-yet-upgraded nodes compute different results
+// across the gap. The version floor cannot rise until a stake-supermajority
+// attests it is RUNNING the code, so a laggard simply fails to drag the floor up
+// instead of silently diverging.
+//
+// Resolve `active` from the version active at the decision point's block height
+// (StateEngine.ActiveConsensusVersion(blockHeight)) so a replay recomputes the
+// identical verdict.
+//
+// The explicit ConsensusParams.VaultRotationV2ActivationHeight pin still wins
+// where it is set, exactly as PoaChurnCapActive leaves MaxNewMembersActivationHeight
+// authoritative. That is what keeps ephemeral networks working: a fresh-genesis
+// devnet has no stored election yet, so ActiveConsensusVersion returns 0.0.0 and a
+// floor-only gate would be inert at genesis — where the height pin is true from
+// block 1. The pin is 0 (disabled) on every shipped network and must stay 0 on
+// mainnet, where the attested floor is the only intended path.
+func VaultRotationV2Active(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
+// Version0_8_0Active reports whether the 0.8.0 release batch is in force. Feature
+// resolvers on this line delegate here, mirroring Version0_7_0Active, so the line
+// is stated once and each call site still reads by FEATURE.
+func Version0_8_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_8_0)
+}
+
+// ForcedFloorRespectsQuorumActive reports whether a FORCED version-floor advance
+// (ConsensusParams.PinnedVersionFloor / a recovery vsc.propose_consensus_version)
+// must still satisfy the H-3/C-2 outgoing-committee quorum guard.
+//
+// The override was written to bypass BOTH guards, and bypassing them is not the
+// same kind of act. The stake-readiness guard measures whether enough of the NEW
+// committee's stake has ANNOUNCED the target — a willingness question, and exactly
+// the thing an operator should be able to overrule to drag a network past nodes
+// that will not upgrade. The H-3/C-2 guard measures whether the OUTGOING committee
+// still retains reshare quorum at the target, and that is not a willingness
+// question: both signing and resharing are gated on this same floor, so advancing
+// past the outgoing committee filters its share-holders below threshold and the
+// BTC vault freezes. No later override recovers from that — the shares needed to
+// reshare are exactly what the advance filtered out.
+//
+// So the override keeps its purpose (bypass readiness) and loses the part it could
+// never undo. Overruling a guard you cannot recover from is not a recovery lever;
+// it is the event you would need to recover FROM.
+//
+// Version-gated like every other fold here: resolveVersionFloor's output is part
+// of the election, so changing which floor a forced proposal produces would alter
+// historical elections on a reindex and diverge the CID. Below the line the
+// original bypass-both behaviour runs byte-identically.
+//
+// Resolve `active` from the PRIOR ratified election's version, matching
+// BlsWeightDedupActive at the same call site, so the gate stays out of the
+// version-rise readiness loop.
+func ForcedFloorRespectsQuorumActive(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
+// BlsWeightDedupActive reports whether committee weight folds collapse duplicate
+// BLS keys to a single seat (B13).
+//
+// A committee holding the same key at two seats produces an aggregate that
+// VERIFIES by construction — BlsCircuit walks the keyset by index while
+// signatures are keyed by DID, so one honest signature is credited at both
+// indices and the aggregate pairs correctly as 2S against 2P. The signature check
+// therefore cannot catch it; only the weight fold can, and every fold must do it
+// identically or they disagree about whether a block or commitment carries
+// quorum.
+//
+// Version-gated because these folds are consensus accept/reject gates: the
+// election-ratification and block-validation folds decide whether a historical
+// block or election was VALID, so changing them ungated would flip past verdicts
+// during a reindex and fork the chain. Below the line the old fold runs
+// byte-identically.
+//
+// Deliberately NOT WitnessKeyStrictActive. That flag also excludes witnesses
+// whose proof-of-possession fails, and enabling it once already starved the
+// mainnet committee below the election floor and halted elections (epoch 1699).
+// Reusing it would tie this weight fix to that liveness risk and let the PoP
+// re-announcement campaign block a fund-safety fix; a separate line keeps the two
+// rollouts independent.
+//
+// Resolve `active` from the PRIOR ratified election's version wherever the result
+// feeds an election being built, so the gate stays out of the version-rise
+// readiness loop.
+func BlsWeightDedupActive(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
+// TssCommitmentBundleCapActive reports whether an oversized vsc.tss_commitment
+// bundle is rejected outright (M-1).
+//
+// The ingest loop does a staleness check, a DB lookup, a CID hash, a BLS circuit
+// deserialisation and a pairing verification PER ELEMENT, off an unauthenticated
+// custom_json payload that carried no length check — so one cheap transaction
+// could impose all of it on every node.
+//
+// Version-gated because dropping a transaction's commitments changes indexed
+// state: an ungated flip would make a reindex of any historical oversized bundle
+// diverge. It is named separately from BlsWeightDedupActive despite resolving to
+// the same line, so each call site still reads by FEATURE rather than by batch.
+func TssCommitmentBundleCapActive(active Version) bool {
+	return Version0_8_0Active(active)
+}
+
 // PoaExitHaltActive reports whether the collateral exit-halt binds: a seat's
 // consensus bond stays unwithdrawable until PoaExitHaltBlocks after it LEAVES
 // the elected set. Resolve `active` from the version active at the height the

@@ -35,9 +35,11 @@ import (
 // behaviour to pre-V-A.
 func emptyRetiringSet() vaultrotation.RetiringSignerSet {
 	return vaultrotation.RetiringSignerSet{
-		SignerElection:    map[string]elections.ElectionResult{},
-		KeyIds:            map[string]bool{},
-		ReshareSkipKeyIds: map[string]bool{},
+		SignerElection:        map[string]elections.ElectionResult{},
+		PendingSignerElection: map[string]elections.ElectionResult{},
+		KeyIds:                map[string]bool{},
+		PendingKeyIds:         map[string]bool{},
+		ReshareSkipKeyIds:     map[string]bool{},
 	}
 }
 

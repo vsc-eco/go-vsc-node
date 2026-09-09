@@ -17,6 +17,7 @@ import (
 	// "github.com/btcsuite/btcd/btcec"
 
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common/consensusversion"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v3/common"
@@ -235,6 +236,44 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		endOld := make(chan *keyGenSecp256k1.LocalPartySaveData)
 
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
+
+		// B1: pre-warm the NEW party's Paillier parameters.
+		//
+		// Unlike keygen, reshare had no pre-parameter pool read, so `save` went to
+		// NewLocalParty zero-valued. tss-lib then falls through
+		// resharing/round_2_new_step_1.go's else-branch and generates 1024-bit safe
+		// primes SYNCHRONOUSLY, inside round 2, under the party mutex. Its budget
+		// (SafePrimeGenTimeout, 5 min) can exceed the outer ReshareTimeout (2 min),
+		// so for a new-only node the held mutex froze the idle timer into a hard
+		// ceiling and the reshare wedged. Supplying validated pre-params makes
+		// round 2 take the fast path instead (it uses them iff ValidateWithProof).
+		//
+		// ECDSA ONLY: the EdDSA save data has no LocalPreParams/Paillier fields and
+		// its resharing round 2 never calls GeneratePreParams, so mirroring this
+		// into the EdDSA branch below would be a no-op.
+		//
+		// Only a node joining the NEW committee needs them. The read is bounded
+		// (VR2-18): an empty or failing pool must clean-fail and retry next
+		// interval, never block while tssMgr.lock is held.
+		if myNewParty != nil {
+			// Async, for the same 2x reason as the keygen path above.
+			go dispatcher.tssMgr.GeneratePreParams()
+			preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+			if ppErr != nil {
+				// BEHAVIOUR CHANGE, stated plainly: before this, a reshare with a cold
+				// pool fell through to tss-lib's OWN in-round generation, which carries
+				// a 5-minute SafePrimeGenTimeout — slow, mutex-held, and the wedge this
+				// fix exists to remove, but it had 5 minutes to succeed. Now a cold pool
+				// clean-fails after PreParamsTimeout (1 minute by default, since no
+				// network sets it) and retries a whole rotate interval later. That is
+				// deliberate — a predictable retry beats a mutex-held wedge that usually
+				// blew past ReshareTimeout anyway — but it NARROWS the cold-start margin
+				// on the rotation-critical path, so PreParamsTimeout must be sized from a
+				// real low-core benchmark before this is relied on in production.
+				return ppErr
+			}
+			save.LocalPreParams = preParams
+		}
 
 		go dispatcher.reshareMsgs()
 
@@ -671,6 +710,37 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			for c := range culprits {
 				culpritsList = append(culpritsList, c)
 			}
+
+			// B3a: FAIL CLEANLY rather than naming names.
+			//
+			// WaitingFor() is pure local boolean state with no cryptographic content
+			// whatsoever. It says "I have not received X's message yet", which is not
+			// evidence that X withheld it: a slow link, a partition, or a node that is
+			// itself blocked upstream all produce the identical set. Two honest nodes
+			// therefore compute DIFFERENT culprit sets for the same session, so the
+			// blame never converges — and one withholder can make every other node
+			// name an innocent third party. Blame built on it can frame an honest
+			// validator, and blame drives committee exclusion.
+			//
+			// The diagnostic above is kept in full, because locally it is genuinely
+			// useful; what stops is publishing it as an accusation. Proper attribution
+			// needs signed per-message receipts and a vote rule over them, which is a
+			// protocol layer tss-lib's message model does not have and is its own
+			// design track, not a patch.
+			//
+			// STILL OPEN, and deliberately not claimed as fixed (B3b): this removes the
+			// only path feeding a blame score for this failure mode, so a repeat
+			// griefer can wedge rotations at zero cost and never be excluded. The
+			// honest-victim half is closed; the griefer half is not.
+			if consensusversion.BlsWeightDedupActive(
+				dispatcher.tssMgr.scheduler.TssMinimumConsensusVersion(dispatcher.blockHeight)) {
+				if len(culpritsList) > 0 {
+					log.Warn("reshare timeout blame withheld: WaitingFor cannot distinguish a withholder from a victim",
+						"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+						"wouldHaveBlamed", culpritsList)
+				}
+				culpritsList = culpritsList[:0]
+			}
 			resolve(TimeoutResult{
 				tssMgr:   dispatcher.tssMgr,
 				Culprits: culpritsList,
@@ -900,10 +970,6 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	newPids btss.SortedPartyIDs,
 	maxWait time.Duration,
 ) bool {
-	startTime := time.Now()
-	checkInterval := 500 * time.Millisecond
-	maxChecks := int(maxWait / checkInterval)
-
 	allParticipants := make(map[string]bool)
 	for _, p := range oldPids {
 		allParticipants[p.Id] = true
@@ -911,13 +977,44 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	for _, p := range newPids {
 		allParticipants[p.Id] = true
 	}
+	return waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, allParticipants, maxWait)
+}
+
+// waitForParticipantsReady is the ABORT-GATE both key ceremonies share: it waits
+// until at least threshold+1 of the participants are reachable, and reports
+// failure if they never are.
+//
+// The important property is what it does NOT do. It never drops an unreachable
+// participant from the ceremony, and it never recomputes the threshold from a
+// filtered subset — reshare's own code warns that "using the filtered subset size
+// produces wrong coefficients and corrupts the key". The threshold always comes
+// from the FULL participant set, so unreachability can delay or abort a ceremony
+// but never resize it.
+//
+// VR2-08: keygen had no readiness check at all, so a ceremony that could not
+// possibly complete started anyway and burned its whole window before failing.
+// Gating cannot lose a ceremony that would have succeeded — below threshold+1
+// reachable it could not have — and turns a slow, opaque failure into an
+// immediate, diagnosable one.
+func waitForParticipantsReady(
+	tssMgr *TssManager,
+	sessionId string,
+	allParticipants map[string]bool,
+	maxWait time.Duration,
+) bool {
+	startTime := time.Now()
+	checkInterval := 500 * time.Millisecond
+	maxChecks := int(maxWait / checkInterval)
 
 	connectedCount := 0
 	totalCount := len(allParticipants)
+	if totalCount == 0 {
+		return false
+	}
 
-	log.Verbose("checking participant readiness", "sessionId", dispatcher.sessionId, "totalParticipants", totalCount)
+	log.Verbose("checking participant readiness", "sessionId", sessionId, "totalParticipants", totalCount)
 
-	selfAccount := dispatcher.tssMgr.config.Get().HiveUsername
+	selfAccount := tssMgr.config.Get().HiveUsername
 
 	for i := 0; i < maxChecks; i++ {
 		connectedCount = 0
@@ -928,7 +1025,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
+			witness, err := tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
 			if err != nil {
 				continue
 			}
@@ -938,7 +1035,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			host := dispatcher.tssMgr.p2p.Host()
+			host := tssMgr.p2p.Host()
 			connState := host.Network().Connectedness(peerId)
 			if connState == network.Connected {
 				connectedCount++
@@ -946,21 +1043,21 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 		}
 
 		readinessPercent := float64(connectedCount) / float64(totalCount) * 100.0
-		log.Verbose("readiness check", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
+		log.Verbose("readiness check", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
 
 		// Require at least threshold+1 participants to be connected
 		threshold, _ := tss_helpers.GetThreshold(totalCount)
 		minRequired := threshold + 1
 
 		if connectedCount >= minRequired {
-			log.Verbose("sufficient participants ready", "sessionId", dispatcher.sessionId, "connected", connectedCount, "required", minRequired)
+			log.Verbose("sufficient participants ready", "sessionId", sessionId, "connected", connectedCount, "required", minRequired)
 			return true
 		}
 
 		time.Sleep(checkInterval)
 	}
 
-	log.Warn("readiness check timeout", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
+	log.Warn("readiness check timeout", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
 	return false
 }
 
@@ -1723,12 +1820,49 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		return fmt.Errorf("node not part of keygen committee")
 	}
 
+	// VR2-08: refuse to start a ceremony that cannot complete.
+	//
+	// Reshare has had this abort-gate all along; keygen had no readiness check at
+	// all, so a DKG whose committee was unreachable started regardless and consumed
+	// its entire window before failing — with no signal distinguishing "the network
+	// is not there" from "the ceremony went wrong".
+	//
+	// It cannot cost a ceremony that would have succeeded: below threshold+1
+	// reachable, the DKG could not have completed anyway. And it deliberately does
+	// NOT exclude the unreachable parties and shrink the committee — that would
+	// recompute the threshold from a filtered subset, which reshare's own code warns
+	// "produces wrong coefficients and corrupts the key". Delay or abort, never
+	// resize.
+	{
+		reachable := make(map[string]bool, len(dispatcher.participants))
+		for _, p := range dispatcher.participants {
+			reachable[p.Account] = true
+		}
+		syncDelay := dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay
+		if !waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, reachable, syncDelay) {
+			log.Warn("keygen aborted: too few participants reachable",
+				"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+				"participants", len(dispatcher.participants))
+			return fmt.Errorf("keygen aborted: fewer than threshold+1 participants reachable")
+		}
+	}
+
 	log.Info("starting DKG", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "participants", len(dispatcher.participants), "algo", dispatcher.algo)
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
-		dispatcher.tssMgr.GeneratePreParams()
-		preParams := <-dispatcher.tssMgr.preParams
+		// Kick generation off ASYNCHRONOUSLY. Calling it inline would block this
+		// goroutine for a FULL PreParamsTimeout doing the generation itself, and
+		// awaitPreParams would then wait another full budget on top — a 2x worst
+		// case, all of it with tssMgr.lock held. Async keeps the bound at 1x.
+		go dispatcher.tssMgr.GeneratePreParams()
+		// VR2-18: bounded. A bare receive here blocked forever on an empty/failed
+		// pool while holding tssMgr.lock, silently freezing this node's entire TSS
+		// participation until restart.
+		preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+		if ppErr != nil {
+			return ppErr
+		}
 		parameters := btss.NewParameters(btss.S256(), p2pCtx, myParty, pl, threshold)
 		applySessionNonce(parameters, dispatcher.sessionId)
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)

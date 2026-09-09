@@ -34,7 +34,7 @@ func TestVaultStage3Money(t *testing.T) {
 		t.Skip("set VAULT_STAGE3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 33*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(33*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -209,8 +209,17 @@ func unmapAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, owner str
 
 	// mine + relay + confirmSpend (settle)
 	h, _ := d.MineBlocks(ctx, 1)
-	hx, _ := btcBlockHeaderHex(ctx, d, h)
-	vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	// VR2-06: the settle waits MinConfirmationDepth, so relaying only up to the
+	// spend's own block leaves it at depth 0 and confirmSpend is refused. Mirrors
+	// constants.MinConfirmationDepth (regtest).
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// Relay from the CONTRACT's own height: addBlocks requires each header to chain
+	// onto the last stored one, so starting at h fails whenever the contract has
+	// fallen behind the chain.
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	}
 	// confirmSpend proof for the broadcast tx (2-tx block: coinbase + our tx)
 	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
 	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")

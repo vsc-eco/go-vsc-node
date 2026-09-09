@@ -55,7 +55,7 @@ func TestVaultBondLock(t *testing.T) {
 		t.Skip("set VAULT_BONDLOCK_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 43*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(60*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -64,7 +64,7 @@ func TestVaultBondLock(t *testing.T) {
 	}
 
 	const hpin = 400
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -111,6 +111,8 @@ func TestVaultBondLock(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -118,9 +120,10 @@ func TestVaultBondLock(t *testing.T) {
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 50_000_000, seedH)
 
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("wait hpin: %v", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd1, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-mainv1", "status": "active"}, 8*time.Minute)
 	if err != nil {
@@ -131,7 +134,7 @@ func TestVaultBondLock(t *testing.T) {
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen1 register: %s", s)
 	}
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			break
 		}
@@ -140,15 +143,10 @@ func TestVaultBondLock(t *testing.T) {
 	// gen-0 is now retiring and still funded → member's bond is locked.
 
 	// ── BOND-01: the unstake is REFUSED while gen-0 is retiring+funded. ──
-	head, _ := getHeadBlock(d.HiveRPCEndpoint())
-	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake (locked) broadcast: %v", err)
-	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	lockedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
+	// Terminal-status read (H-25): FAILED + pending 0 is a refusal.
+	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	rec("BOND-01", "consensus_unstake REFUSED while the member's gen is retiring+funded (bond-locked)",
-		lockedPending == 0, fmt.Sprintf("pending consensus_unstake=%d (want 0)", lockedPending))
+		lockedStatus == "FAILED" && lockedPending == 0, fmt.Sprintf("pending consensus_unstake=%d (want 0)", lockedPending))
 
 	// ── drain gen-0 fully → the lock releases ──
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
@@ -166,15 +164,46 @@ func TestVaultBondLock(t *testing.T) {
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
 
 	// ── BOND-02: the SAME unstake is now ACCEPTED (bond released). ──
-	head2, _ := getHeadBlock(d.HiveRPCEndpoint())
-	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
-		t.Fatalf("consensus_unstake (released) broadcast: %v", err)
+	// Run 3 (terminal-status instrument): right after drain + retireVault the unstake is
+	// still REFUSED. That is the node's design since L4-C1: Inactive counts as
+	// fund-holding (modules/vaultrotation/eligibility.go), only Purged releases. So the
+	// Inactive probe records the design and the release is measured at Purged.
+	inactiveStatus, inactivePending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+	stInactive := vaultStatusOf(t, d, ctx, cid, 0)
+	rec("BOND-02", "at Inactive the bond is STILL locked by design (L4-C1: Inactive is fund-holding)",
+		inactiveStatus == "FAILED" && inactivePending == 0 && stInactive == 4,
+		fmt.Sprintf("gen-0 status=%s, unstake status=%s (design: FAILED) pending=%d (design: 0)", statusStr(stInactive), inactiveStatus, inactivePending))
+
+	// BOND-03: mine and relay the 144-block purge grace, retire again to Purged, then
+	// the SAME unstake must be ACCEPTED (VR2-14 if it is not).
+	lastH := contractLastHeight(t, d, ctx, cid)
+	h, merr := d.MineBlocks(ctx, 150)
+	if merr != nil {
+		t.Errorf("mining the purge grace window: %v", merr)
 	}
-	waitForBlock(t, d.HiveRPCEndpoint(), head2+8, 3*time.Minute)
-	time.Sleep(5 * time.Second)
-	releasedPending := pendingConsensusUnstake(t, d, ctx, 2, member)
-	rec("BOND-02", "consensus_unstake ACCEPTED once the gen is drained (bond released)",
-		releasedPending > 0, fmt.Sprintf("pending consensus_unstake=%d (want >0)", releasedPending))
+	const relayBatch = 25
+	for start := lastH + 1; start <= h; start += relayBatch {
+		var hexBatch string
+		for hh := start; hh < start+relayBatch && hh <= h; hh++ {
+			hx, _ := btcBlockHeaderHex(ctx, d, hh)
+			hexBatch += hx
+		}
+		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hexBatch)); !isOK(s) {
+			t.Logf("purge relay batch from %d status=%s", start, s)
+		}
+	}
+	retire2 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
+	stPurged := -1
+	for i := 0; i < 12 && stPurged != 5; i++ {
+		stPurged = vaultStatusOf(t, d, ctx, cid, 0)
+		if stPurged != 5 {
+			time.Sleep(10 * time.Second)
+		}
+	}
+	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+	rec("BOND-03", "consensus_unstake ACCEPTED once the generation is PURGED (bond released)",
+		stPurged == 5 && releasedStatus == "CONFIRMED" && releasedPending > 0,
+		fmt.Sprintf("retireVault(after grace)=%s gen-0 status=%s (want Purged), unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", retire2, statusStr(stPurged), releasedStatus, releasedPending))
 
 	t.Logf("BONDLOCK SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }

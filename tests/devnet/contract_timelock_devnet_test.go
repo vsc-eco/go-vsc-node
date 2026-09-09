@@ -27,7 +27,7 @@ func TestContractUpdateTimelockDevnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	codeAWasm := TestContractPath()

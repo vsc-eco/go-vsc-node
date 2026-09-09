@@ -57,7 +57,7 @@ func TestBondGateActive_DipThenReturn(t *testing.T) {
 	// elections, well under the 2048 cap.
 	cp.BondInclusionEstablishedGraceBlocks = 4000
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(60*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)

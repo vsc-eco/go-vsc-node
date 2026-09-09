@@ -451,9 +451,47 @@ func resolveVersionFloor(
 	num, den int64,
 ) consensusversion.Version {
 	// stakeReady: >= num/den of committee STAKE announces a version meeting target.
+	//
+	// B13: seats sharing a consensus BLS key collapse to one. Without this, the
+	// metric that decides whether it is safe to RAISE the version floor is itself
+	// manipulable by the very bug a floor rise would fix — an attacker seating a
+	// copy of an honest witness's key gets a second vote on readiness, on both
+	// sides of the ratio, with their own announced version deciding whether it
+	// counts as ready. Ties break on the lexicographically-smallest account rather
+	// than on slice position, so the verdict does not depend on the order the
+	// witness list happens to arrive in; every proposer regenerating this election
+	// must reach the identical result or the election CIDs diverge.
+	//
+	// Gated on the PRIOR ratified election's version, like every other fold in this
+	// change: resolveVersionFloor's output is part of the election, so flipping it
+	// ungated would change historical elections on a reindex. The rise TO the line
+	// is therefore computed under the old fold — acceptable only because a live
+	// check confirmed all 19 mainnet witnesses hold distinct consensus keys, so
+	// there is nothing for the old fold to double-count.
+	dedupSeats := previousElection != nil &&
+		consensusversion.BlsWeightDedupActive(elections.ResultVersion(*previousElection))
 	stakeReady := func(target consensusversion.Version) bool {
 		var totalWeight, readyWeight uint64
+		counted := make(map[dids.BlsDID]string, len(witnessList))
+		if dedupSeats {
+			// First pass: pick the winning account per key, order-independently.
+			for _, w := range witnessList {
+				key, err := w.ConsensusKey()
+				if err != nil {
+					continue // an unreadable key cannot vouch for readiness
+				}
+				if held, seen := counted[key]; !seen || w.Account < held {
+					counted[key] = w.Account
+				}
+			}
+		}
 		for _, w := range witnessList {
+			if dedupSeats {
+				key, err := w.ConsensusKey()
+				if err != nil || counted[key] != w.Account {
+					continue
+				}
+			}
 			wt := weightMap[w.Account]
 			totalWeight += wt
 			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
@@ -495,9 +533,33 @@ func resolveVersionFloor(
 		return true
 	}
 
-	// Recovery override first: applies past its activation epoch, bypasses both guards.
+	// Recovery override first: applies past its activation epoch and bypasses the
+	// STAKE-READINESS guard — that is its purpose, dragging a network past witnesses
+	// that will not upgrade.
+	//
+	// It no longer bypasses H-3/C-2. Readiness is a willingness question an operator
+	// may legitimately overrule; outgoing-committee quorum is not. Signing AND
+	// resharing are both gated on this floor, so forcing the advance past the
+	// outgoing committee filters its share-holders below reshare threshold and
+	// freezes the vault — and no subsequent override recovers it, because the shares
+	// needed to reshare are precisely the ones the advance filtered out. The pin
+	// relocated that footgun rather than removing it; honouring the quorum guard
+	// removes it.
+	//
+	// Version-gated (ForcedFloorRespectsQuorumActive, resolved from the PRIOR
+	// ratified election exactly like dedupSeats above): this function's output is
+	// part of the election, so changing which floor a forced proposal yields would
+	// alter historical elections on a reindex and diverge the CID. Below the line the
+	// original bypass-both behaviour is byte-identical.
 	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target.Cmp(floor) > 0 {
-		return forced.Target
+		forcedQuorumGated := previousElection != nil &&
+			consensusversion.ForcedFloorRespectsQuorumActive(elections.ResultVersion(*previousElection))
+		if !forcedQuorumGated || prevReadyAt(forced.Target) {
+			return forced.Target
+		}
+		log.Warn("forced version-floor advance deferred: outgoing committee is below TSS-reshare quorum at the pinned target",
+			"block_height", blockHeight, "target", forced.Target.Format(),
+			"note", "upgrade the outgoing committee; forcing past this would freeze the vault, not recover it")
 	}
 
 	// Highest live candidate meeting BOTH guards.
@@ -1909,10 +1971,15 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 		ep.sigMu.Unlock()
 	}()
 
-	weightTotal := uint64(0)
-	for _, weight := range election.Weights {
-		weightTotal += weight
+	// B13: fold weight through the canonical primitive so this collector measures
+	// quorum the same way the chain does, with duplicate seats collapsed to one.
+	memberKeys := make([]string, len(election.Members))
+	accountSeat := make(map[string]dids.BlsDID, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+		accountSeat[m.Account] = dids.BlsDID(m.Key)
 	}
+	_, weightTotal, _ := dids.FoldSignedWeight(memberKeys, election.Weights, nil)
 
 	end := make(chan struct{})
 
@@ -1929,6 +1996,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	var err error
 	var signedWeight uint64
+	var included []dids.BlsDID
+	signedDIDs := make(map[dids.BlsDID]bool)
 	go func() {
 		signedWeight = 0
 
@@ -1974,14 +2043,22 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			sigStr := signResp.Sig
 			account := signResp.Account
 
-			var member dids.Member
-			var index int
-			for i, data := range election.Members {
-				if data.Account == account {
-					member = dids.BlsDID(data.Key)
-					index = i
-					break
-				}
+			// B13: the account is a self-declared field on an unauthenticated
+			// message — gossipsub authenticates the libp2p PEER, not the claimed
+			// account — so it may only SELECT which seat is being claimed. From
+			// there the verifying key is the identity, and weight is folded
+			// through the canonical primitive.
+			//
+			// Two defects closed here. There was no dedup at all, so a seat whose
+			// BLS key duplicates an honest witness's could re-emit the identical
+			// signature bytes under its own label and be credited again — no
+			// private key, no cooperation, since AddAndVerify checks the
+			// cryptography rather than the sender. And `index` defaulted to 0 for
+			// an account that matched NO member, so an unrecognised sender was
+			// credited member 0's weight.
+			member, seated := accountSeat[account]
+			if !seated || signedDIDs[member] {
+				continue
 			}
 
 			c := *circuit
@@ -1995,12 +2072,13 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 					"account", account,
 					"err", err)
 			} else if added {
-				signedWeight += election.Weights[index]
+				signedDIDs[member] = true
+				included = append(included, member)
+				signedWeight, _, _ = dids.FoldSignedWeight(memberKeys, election.Weights, included)
 				log.Verbose("signature aggregated",
 					"block_height", block,
 					"epoch", epoch,
 					"account", account,
-					"added_weight", election.Weights[index],
 					"signed_weight", signedWeight,
 					"weight_required", weightRequired)
 			} else {

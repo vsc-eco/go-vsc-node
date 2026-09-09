@@ -54,7 +54,14 @@ func untaggedVaultAddr(primaryHex, backupHex string) (string, error) {
 }
 
 // fundFeeReserve seeds FeeSupply: deposit `sats` to the ACTIVE vault's untagged
-// address, relay headers from the contract's last height, and topUpFeeReserve.
+// address, relay headers from the contract's last height PLUS the maturity margin,
+// and topUpFeeReserve.
+//
+// VR2-25: topUpFeeReserve is now depth-gated like map and confirmSpend, so the
+// deposit's block must be buried MinConfirmationDepth under the contract's tip
+// before the proof is accepted. Mining only the deposit's own block would leave it
+// AT the tip and the top-up would be refused, so the margin is mined and relayed
+// here exactly as fundVaultViaSPV does for a user deposit.
 func fundFeeReserve(t *testing.T, d *Devnet, ctx context.Context, cid, activePrimary, activeBackup string, sats int64) {
 	t.Helper()
 	addr, err := untaggedVaultAddr(activePrimary, activeBackup)
@@ -68,9 +75,13 @@ func fundFeeReserve(t *testing.T, d *Devnet, ctx context.Context, cid, activePri
 	depTxid, _ := d.bitcoinCli(ctx, "getrawmempool") // ensure mempool has 1 tx
 	_ = depTxid
 	h, _ := d.MineBlocks(ctx, 1)
-	// relay from the contract's current last height +1 to h
+	// Bury the deposit's block under the contract's maturity gate (VR2-25) before
+	// proving it. `h` stays the DEPOSIT's height (that is what the proof names);
+	// tip is what the contract must have relayed to accept it.
+	tip, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// relay from the contract's current last height +1 to the matured tip
 	last := contractLastHeight(t, d, ctx, cid)
-	for hh := last + 1; hh <= h; hh++ {
+	for hh := last + 1; hh <= tip; hh++ {
 		hx, _ := btcBlockHeaderHex(ctx, d, hh)
 		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)); !isOK(s) {
 			t.Fatalf("fee-reserve addBlocks %d: %s", hh, s)
@@ -134,7 +145,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 		t.Skip("set VAULT_STAGE4_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 38*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -147,7 +158,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 
 	const hpin = 400 // v2 activation height — AFTER genesis (~block 190), so genesis
 	// activates v2-off (no deadlock) and v2 turns on before the rotation.
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -181,6 +192,8 @@ func TestVaultStage4Rotation(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -197,9 +210,10 @@ func TestVaultStage4Rotation(t *testing.T) {
 
 	// ── wait until v2 is ACTIVE (VSC height > hpin) ──
 	t.Logf("waiting for VSC height > hpin=%d (v2 on)...", hpin)
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("WaitForBlockProcessing: %v (continuing)", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	t.Logf("v2 now ACTIVE — rotating gen-0 → gen-1")
 
 	// ── rotate: createKey gen-1 → keygen → register → BRK-2 check-sig → activate ──
@@ -221,7 +235,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 	// BRK-2: activateKey only succeeds once the node's check-sig for gen-1 lands
 	// (admitted by output-scoping because gen-0 is Active → view resolves).
 	activated := false
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			activated = true
 			break
@@ -266,7 +280,10 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		return
 	}
 	var txid string
-	for i := 0; i < 20 && txid == ""; i++ {
+	// Up to 3 minutes: the call is CONFIRMED on the calling node before magi-2 (the
+	// reading node) has applied it, and under two-lane load that lag exceeded the old
+	// 60 s window (F3 run 1 recorded a false "no sweep appeared").
+	for i := 0; i < 60 && txid == ""; i++ {
 		time.Sleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
@@ -276,20 +293,38 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		}
 	}
 	if txid == "" {
-		t.Errorf("CASE VL-GP-06 FAIL — no migration sweep pending spend appeared")
+		// Name the cause: a CONFIRMED migrateVault that builds nothing means the
+		// contract answered "nothing to migrate" (no selectable input), so show what the
+		// registry holds and which spends are already pending.
+		vfDumpRegistry(t, d, ctx, 2, cid, "after a CONFIRMED migrateVault that produced no sweep")
+		t.Logf("pending spend ids (magi-2): %v", txSpendIds(t, d, ctx, cid))
+		t.Errorf("CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
 		return
 	}
 	t.Logf("migration sweep txid=%s (retiring gen %s)", txid, retiringKeyId)
+	settleSweepByTxid(t, d, ctx, cid, retiringKeyId, txid)
+}
 
+// settleSweepByTxid is the second half of migrateAndSettleAs: TSS-sign an ALREADY-BUILT
+// migration sweep, broadcast it, relay its block plus the maturity margin, and settle it
+// with confirmSpend. Returns the confirmSpend status.
+//
+// Split out because a caller may already HAVE a sweep. Once VR2-11 let the builder derive an
+// affordable rate, a sweep gets built at the original relayed rate, and a later migrateVault
+// is then correctly a no-op: it must not stack a second tranche on an input the in-flight
+// sweep already owns. A test that wanted "and now it settles" had no way to say so without
+// asking for another sweep it could not get, and read the refusal as a failure.
+func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, txid string) string {
+	t.Helper()
 	sd := waitSigningData(t, d, ctx, cid, txid)
 	if sd == nil {
 		t.Errorf("CASE VL-GP-06 FAIL — no signing data for sweep %s", txid)
-		return
+		return "NO_SIGNING_DATA"
 	}
 	var mtx wire.MsgTx
 	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
 		t.Errorf("deser sweep: %v", err)
-		return
+		return "DESERIALIZE_FAILED"
 	}
 	// The RETIRING gen (gen-0) key signs the sweep — NN#1 output-scoping admits it
 	// only because every output pays the gen-1 successor P2WSH.
@@ -297,7 +332,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		sig := waitSignature(t, d, ctx, retiringKeyId, uh.SigHash)
 		if sig == nil {
 			t.Errorf("CASE VL-PEN-03/NN#1 — retiring gen did NOT sign the sweep (output-scoping refused? or slow). input %d", uh.Index)
-			return
+			return "NOT_SIGNED"
 		}
 		signature := append(append([]byte{}, sig...), byte(txscript.SigHashAll))
 		mtx.TxIn[uh.Index].Witness = wire.TxWitness{signature, []byte{0x01}, uh.WitnessScript}
@@ -307,13 +342,26 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	bcTxid, err := d.bitcoinCli(ctx, "sendrawtransaction", hex.EncodeToString(buf.Bytes()))
 	if err != nil {
 		t.Errorf("CASE VL-GP-06 FAIL — sweep broadcast rejected: %v", err)
-		return
+		return "BROADCAST_REJECTED"
 	}
 	t.Logf("CASE VL-GP-06/NN#1 PASS(partial) — migration sweep TSS-signed (retiring gen, successor-scoped) + broadcast: %s", bcTxid)
 
 	h, _ := d.MineBlocks(ctx, 1)
-	hx, _ := btcBlockHeaderHex(ctx, d, h)
-	vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	// VR2-06: a settle waits MinConfirmationDepth, so the sweep's own block must be
+	// buried before confirmSpend. Relaying only up to h leaves it at depth 0 and the
+	// settle is correctly refused — which then looks like "no pending spend
+	// appeared" several stages later. Mirrors constants.MinConfirmationDepth
+	// (regtest).
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// Relay from the CONTRACT's own height, not from the sweep's block. addBlocks
+	// requires each header to chain onto the last one the contract stored, so
+	// starting at h silently fails whenever the contract has fallen behind the
+	// chain — which is exactly what the maturity mining above makes more likely.
+	// The failure surfaces later as a refused settle, several stages from its cause.
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	}
 	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
 	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
 	var blk struct {
@@ -329,4 +377,5 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	} else {
 		t.Logf("CASE VL-GP-06 PASS(broadcast)/confirmSpend status=%s (settle needs review)", cs)
 	}
+	return cs
 }

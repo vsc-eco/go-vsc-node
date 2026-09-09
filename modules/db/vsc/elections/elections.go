@@ -247,9 +247,44 @@ func ChainActiveVersionAt(d *db.DbInstance, blockHeight uint64) (consensusversio
 }
 
 // Utility function
-func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
+// CalculateSigningScore returns the signed weight and the total weight for a
+// block's BLS aggregate.
+//
+// dedupDuplicateKeys collapses seats sharing a BLS key to a single seat (B13).
+// A duplicated key sets a bit at EVERY index holding it, because the circuit
+// matches one honest signature at each — so without the collapse one signature is
+// credited two seats' weight. This fold drives TxProposeBlock.ValidateDetailed's
+// 2/3 check, which decides BlockValid vs BlockInvalid, and an invalid proposal is
+// SLASHED — so it is consensus-critical in both directions and must be
+// version-gated: flipping it ungated would change the verdict on historical
+// blocks during a reindex.
+func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult, dedupDuplicateKeys bool) (uint64, uint64) {
 	IncludedDids := circuit.IncludedDIDs()
 	BitVector := circuit.RawBitVector()
+
+	if dedupDuplicateKeys {
+		memberKeys := make([]string, len(election.Members))
+		for i, m := range election.Members {
+			memberKeys[i] = m.Key
+		}
+		weights := election.Weights
+		if weights == nil {
+			// Legacy elections carry no weights: every member counts one.
+			weights = make([]uint64, len(election.Members))
+			for i := range weights {
+				weights[i] = 1
+			}
+		}
+		var included []dids.BlsDID
+		for idx := range election.Members {
+			if BitVector.Bit(idx) == 1 {
+				included = append(included, dids.BlsDID(election.Members[idx].Key))
+			}
+		}
+		signed, total, _ := dids.FoldSignedWeight(memberKeys, weights, included)
+		return signed, total
+	}
+
 	WeightTotal := uint64(0)
 	sum := uint64(0)
 	if election.Weights == nil {

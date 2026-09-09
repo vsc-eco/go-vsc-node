@@ -99,7 +99,7 @@ func (se *StateEngine) btcContractStateReaderAtStrict(contractID string, height 
 // false (inert) unless VaultRotationV2Enabled(height) AND a retiring/draining BTC gen
 // exists → byte-identical no-op on mainnet today.
 func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64) bool {
-	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(height) {
+	if !se.vaultRotationV2InForce(height) {
 		return false
 	}
 	btcContract := se.sconf.OracleParams().ContractId("BTC")

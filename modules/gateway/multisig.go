@@ -244,6 +244,43 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 	}
 }
 
+// shouldDecentralizeOwner reports whether the vsc.dao OWNER backstop may be
+// removed from the gateway authority.
+//
+// B15/B11: removing the backstop is gated on the consensus version alone was NOT
+// safe. Once removed, a committee that wedges below the signing threshold has NO
+// on-chain recovery — and the only sanctioned recovery mechanism,
+// vsc.recovery_suspend, is inert unless a recovery-multisig roster is configured.
+// Mainnet raised the floor past the activation line while that roster was empty on
+// every network, so the backstop was already gone with nothing behind it, guarding
+// a live gateway balance.
+//
+// The version gate is therefore necessary but not sufficient: decentralisation now
+// ALSO requires a usable recovery roster. With no roster the backstop is retained,
+// which is the safe direction — mainnet ran that way for its entire history before
+// the floor advanced, at no known cost, whereas "no backstop and no recovery"
+// risks a permanent custody freeze.
+//
+// Determinism: both inputs are consensus state — the chain-active version at this
+// height and the network-baked ConsensusParams (RecoveryMultisigAccounts/Threshold
+// are NOT -sysconfig-overridable on mainnet/testnet) — so every cosigner reaches
+// the identical verdict and builds the identical account_update.
+func (ms *MultiSig) shouldDecentralizeOwner(activeVersion consensusversion.Version) bool {
+	if !consensusversion.GatewayDecentralizationActive(activeVersion) {
+		return false
+	}
+	if ms.sconf == nil {
+		return false
+	}
+	if !stateEngine.RecoveryMultisigConfigured(ms.sconf.ConsensusParams()) {
+		log.Warn("gateway decentralization SUPPRESSED: no recovery multisig roster configured; " +
+			"retaining the vsc.dao owner backstop (removing it would leave a wedged committee " +
+			"with no on-chain recovery)")
+		return false
+	}
+	return true
+}
+
 func (ms *MultiSig) TickKeyRotation(bh uint64) {
 	signPkg, err := ms.keyRotation(bh)
 
@@ -527,7 +564,7 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	// chain-active consensus version at bh (ResultVersion of the election at bh,
 	// already loaded above) + the compile-time line, so every cosigner builds the
 	// identical account_update.
-	decentralizeOwner := consensusversion.GatewayDecentralizationActive(elections.ResultVersion(electionResult))
+	decentralizeOwner := ms.shouldDecentralizeOwner(elections.ResultVersion(electionResult))
 
 	var eb [2]interface{}
 	eb[0] = "vsc.network"

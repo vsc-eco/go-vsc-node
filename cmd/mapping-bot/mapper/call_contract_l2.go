@@ -45,6 +45,29 @@ func (b *Bot) callContractL2(
 	// Per-action: the vault-rotation ops need a far higher ceiling than the bot's
 	// configured default, which every other action keeps unchanged (see rcLimitFor).
 	rcLimit := b.rcLimitFor(action)
+
+	// VR2-04: refuse before submitting rather than stalling mid-cycle.
+	//
+	// A rotation costs roughly 28,000 RC across map, topUpFeeReserve, migrateVault
+	// and confirmSpend, and there was no pre-flight at all. Running out partway
+	// leaves a generation half-swept with an in-flight spend that the same account
+	// can no longer finish -- a testnet confirmSpend aborted at RC 83 exactly this
+	// way. Failing before the first op is recoverable; failing between them is the
+	// state that needs manual recovery.
+	//
+	// Fails OPEN on an unreadable RC balance: a monitoring outage must not become a
+	// rotation outage, and the node will still reject the op itself if the credits
+	// really are missing.
+	if available, known, rcErr := b.gql().FetchAccountRC(ctx, did.String()); rcErr != nil {
+		b.L.Warn("RC pre-flight skipped: could not read available credits",
+			"action", action, "err", rcErr)
+	} else if known && available < int64(rcLimit) {
+		return "", fmt.Errorf(
+			"insufficient RC for %s: %d available, %d needed for this op alone; "+
+				"fund the bot account before starting a rotation (a mid-cycle stall "+
+				"leaves an in-flight spend this account cannot finish)",
+			action, available, rcLimit)
+	}
 	call := &transactionpool.VscContractCall{
 		ContractId: b.BotConfig.ContractId(),
 		Action:     action,

@@ -12,10 +12,11 @@ import (
 
 // TestVaultStage7MoneyEdges batches MD-03 money-accounting EDGE cases (v2-off, gen-0 active),
 // all buildable variations of the proven Stage-3 harness:
-//   EDGE-07 dust-floor deposit not credited · EDGE-03 max_fee revert · GP-03 deduct-fee unmap ·
-//   EDGE-13 exact-balance unmap · EDGE-01 sub-dust-after-fee reject · EDGE-10 fee-rate clamp.
 //
-//	VAULT_STAGE7_RUN=1 go test -v -run TestVaultStage7MoneyEdges -timeout 35m ./tests/devnet/
+//	  EDGE-07 dust-floor deposit not credited · EDGE-03 max_fee revert · GP-03 deduct-fee unmap ·
+//	  EDGE-13 exact-balance unmap · EDGE-01 sub-dust-after-fee reject · EDGE-10 fee-rate clamp.
+//
+//		VAULT_STAGE7_RUN=1 go test -v -run TestVaultStage7MoneyEdges -timeout 35m ./tests/devnet/
 func TestVaultStage7MoneyEdges(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -24,7 +25,7 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 		t.Skip("set VAULT_STAGE7_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 33*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(33*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -76,12 +77,28 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 	}
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 
-	// ── EDGE-07: a sub-MinDepositSats(1000) deposit must NOT credit (V-1 dust-escape) ──
+	// ── EDGE-07: pre-rotation, the min-deposit floor is INERT and a sub-floor deposit IS
+	// credited. ──
+	//
+	// This case used to assert the opposite ("500 sats not credited") and failed, because it
+	// never established the precondition the floor needs. constants.MinDepositSats is gated
+	// on hasSupersededGen (mapping.go indexOutputs): the floor engages only once a
+	// SUPERSEDED generation exists, deliberately, so that a pre-rotation deploy's map
+	// behaviour is byte-identical to before the vault-v2 slice. At this point in Stage-7
+	// only the genesis gen-0 exists and nothing has rotated, so the floor cannot be engaged
+	// and 500 sats is credited exactly as it always was.
+	//
+	// So the case now asserts the DOCUMENTED pre-rotation behaviour. The other half - that
+	// the floor DOES engage once a generation is superseded - is proven where the
+	// precondition actually exists, by WOD-00/WOD-00b in vault_writeoffdust_test.go, which
+	// rotates first and then watches a 700-sat deposit be skipped. Duplicating that here
+	// would mean driving a whole rotation inside a money-edges test to re-prove it.
 	before := balanceSats(t, d, ctx, cid, owner)
-	fundVaultViaSPV(t, d, ctx, cid, primary, backupPubKeyG, owner, 500, seedH) // 500 < 1000 dust floor
+	fundVaultViaSPV(t, d, ctx, cid, primary, backupPubKeyG, owner, 500, seedH) // 500 < MinDepositSats(1000)
 	afterDust := balanceSats(t, d, ctx, cid, owner)
-	rec("MD03-EDGE-07", "sub-dust deposit (500 sats) not credited", afterDust == before,
-		fmt.Sprintf("before=%d after=%d", before, afterDust))
+	rec("MD03-EDGE-07", "pre-rotation a sub-MinDepositSats deposit IS credited: the floor is inert until a generation is superseded (post-rotation half proven by WOD-00b)",
+		afterDust == before+500,
+		fmt.Sprintf("before=%d after=%d (want +500: no superseded generation exists yet, so hasSupersededGen is false and the floor cannot engage)", before, afterDust))
 
 	// fund a real balance for the unmap edges
 	fundVaultViaSPV(t, d, ctx, cid, primary, backupPubKeyG, owner, 80_000_000, contractLastHeight(t, d, ctx, cid))

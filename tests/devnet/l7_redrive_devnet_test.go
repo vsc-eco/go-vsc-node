@@ -40,7 +40,7 @@ func TestL7RedriveSweepDevnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 38*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	// ── btc-mapping-contract WASM (built via scratchpad/build-wasm.sh) ───

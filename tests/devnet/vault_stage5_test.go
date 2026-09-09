@@ -22,7 +22,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 		t.Skip("set VAULT_STAGE5_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 38*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -34,7 +34,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	}
 
 	const hpin = 400
-	cfg := tssTestConfig()
+	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
@@ -76,6 +76,8 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
 	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
@@ -114,9 +116,10 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	rec("MD03-PEN-06", "unmapFrom beyond allowance rejected", !isOK(sUF2), "status="+sUF2)
 
 	// ── rotate to gen-1 under v2 ──
-	if err := d.WaitForBlockProcessing(ctx, 2, hpin+5, 8*time.Minute); err != nil {
-		t.Logf("wait hpin: %v", err)
-	}
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd1, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-mainv1", "status": "active"}, 8*time.Minute)
 	if err != nil {
@@ -128,7 +131,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 		t.Fatalf("gen1 register: %s", s)
 	}
 	activated := false
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 20; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			activated = true
 			break

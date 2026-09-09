@@ -268,11 +268,17 @@ func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
 // (consensus flag, config-derived BTC contract id, committed pubkey), so all
 // honest nodes compute the same M or all skip.
 func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) ([]byte, bool) {
-	if se.sconf == nil || !se.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+	if se.sconf == nil {
 		return nil, false
 	}
+	// Cheap, purely local checks FIRST: resolving the chain-active consensus
+	// version costs an election read, and the overwhelming majority of calls here
+	// are for keys that are not BTC vault keys at all.
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
 	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
+		return nil, false
+	}
+	if !se.vaultRotationV2InForce(bh) {
 		return nil, false
 	}
 	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
@@ -1534,6 +1540,34 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 					}
 
+					// M-1: bound the bundle before iterating it.
+					//
+					// Everything below runs PER ELEMENT and none of it is cheap: a
+					// staleness check, a database lookup, a CID hash, a BLS circuit
+					// deserialisation and a pairing verification. The array came
+					// straight off an unauthenticated custom_json payload with no
+					// length check at all, so a single transaction carrying a few
+					// hundred thousand entries made every node on the network do that
+					// work — a denial of service against the whole fleet from one
+					// cheap transaction.
+					//
+					// Rejected wholesale rather than truncated: a legitimate bundle
+					// carries at most one commitment per committee member per ceremony,
+					// which is orders of magnitude below this cap, so an oversized one
+					// is not a large honest bundle to be salvaged. Truncating would
+					// also make WHICH commitments survive depend on payload ordering.
+					//
+					// Version-gated because dropping a transaction's commitments
+					// changes indexed state: flipping this ungated would make a reindex
+					// of any historical oversized bundle diverge.
+					if len(commitments) > params.MAX_TSS_COMMITMENTS_PER_TX &&
+						consensusversion.TssCommitmentBundleCapActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+						tssLog.Warn("vsc.tss_commitment bundle rejected: too many entries",
+							"txId", tx.TransactionID, "count", len(commitments),
+							"max", params.MAX_TSS_COMMITMENTS_PER_TX)
+						continue
+					}
+
 					se.tssLogSync(block.BlockNumber, "processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
 
 					for _, commitment := range commitments {
@@ -1602,7 +1636,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// rule the leader enforces in waitForSigs. Without this,
 						// a sub-quorum commitment (e.g. 3/6) was accepted and
 						// could activate a TSS key.
-						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights) {
+						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights,
+							consensusversion.BlsWeightDedupActive(se.ActiveConsensusVersion(block.BlockNumber))) {
 							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
 							continue
 						}
@@ -1678,7 +1713,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								// funds (split-brain FREEZE). Reject it. A RESHARE legitimately
 								// re-keys an active key WITHOUT changing the pubkey → unaffected.
 								// Gated on the flag → byte-identical when inert (flag 0 default).
-								if commitment.Type == "keygen" && se.sconf != nil && se.sconf.ConsensusParams().VaultRotationV2Enabled(block.BlockNumber) {
+								if commitment.Type == "keygen" && se.vaultRotationV2InForce(block.BlockNumber) {
 									tssLog.Warn("rejecting keygen commitment for an already-active keyId (v2 rotation must use a fresh keyId; contract keyId-reuse would split-brain the vault)", "keyId", commitment.KeyId, "activeEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
 									continue
 								}
@@ -2048,8 +2083,7 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 		// instead of reshare, so skipping the security-critical new-vault DKG
 		// must cost the same as skipping a reshare. Nil-guard sconf so a
 		// minimal (test) engine keeps base behavior.
-		keygenScoringEnabled := se.sconf != nil &&
-			se.sconf.ConsensusParams().VaultRotationV2Enabled(tickHeight)
+		keygenScoringEnabled := se.vaultRotationV2InForce(tickHeight)
 		commitTypes := []string{"reshare", "blame", "sign_result"}
 		if keygenScoringEnabled {
 			commitTypes = append(commitTypes, "keygen")
@@ -2923,7 +2957,11 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 		// to prevent frozen RC from accumulating beyond what the user owns.
 		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
 		if strings.HasPrefix(k, "hive:") {
-			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+			// VR2-17: read the network-resolved allowance, NOT the params global.
+			// This site is a per-slot consensus path (it clamps the persisted RC
+			// checkpoint), so a stale value here would silently disagree with the
+			// budget CanConsume computed in the same block.
+			balAmt = balAmt + se.RcSystem.HiveFreeAmount
 		}
 		if rcBal > balAmt {
 			rcBal = balAmt
@@ -3153,6 +3191,17 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	return m
 }
 
+// resolveRcHiveFreeAmount returns the network's free-RC allowance from SystemConfig,
+// falling back to the production default when sconf is absent (tests construct a
+// StateEngine without one). VR2-17: this is the single place the value enters the
+// RC subsystem, so every reader downstream shares one network-derived number.
+func resolveRcHiveFreeAmount(sconf systemconfig.SystemConfig) int64 {
+	if sconf == nil {
+		return params.RC_HIVE_FREE_AMOUNT
+	}
+	return sconf.RcHiveFreeAmount()
+}
+
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
@@ -3221,7 +3270,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		txDb:           txDb,
 		rcDb:           rcDb,
 		nonceDb:        nonceDb,
-		RcSystem:       rcSystem.New(rcDb, ls),
+		RcSystem:       rcSystem.New(rcDb, ls, resolveRcHiveFreeAmount(sconf)),
 		RcMap:          make(map[string]int64),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,

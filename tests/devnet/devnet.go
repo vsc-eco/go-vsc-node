@@ -223,10 +223,42 @@ func (d *Devnet) Start(ctx context.Context) error {
 	want := d.cfg.Nodes
 	const genesisMinHeight = 30
 	log.Printf("[devnet] waiting for >=%d witnesses and block >=%d before genesis election...", want, genesisMinHeight)
-	if got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 5*time.Minute); werr != nil {
+	// 12 minutes: under two concurrent devnets the witness announcements can take longer
+	// than 5 to be indexed. With ZERO registrations the elector panics "No members
+	// found" (F18 run 2), so that case aborts here with the count instead.
+	got, bh, werr := d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 12*time.Minute)
+	if werr != nil && got == 0 {
+		// H-37: transient node-startup hang recovery. About 4 of 45 boots hang with a node
+		// that has stored ZERO Hive blocks after 12 minutes (early streamer head-fetch or
+		// p2p bootstrap that never completes; the hive RPC client has no timeout), which
+		// costs a full test + a re-queue every time. This branch only runs when the boot
+		// would ALREADY fail, so it cannot affect a healthy boot: restart the magi nodes
+		// once (a fresh streamer/p2p dial usually clears the hang) and re-wait a shorter
+		// window before giving up.
+		log.Printf("[devnet] 0 witness registrations after 12m (highest stored block %d); restarting %d magi nodes once and re-waiting (H-37)", bh, d.cfg.Nodes)
+		restartNames := make([]string, 0, d.cfg.Nodes+1)
+		for i := 0; i < d.cfg.Nodes; i++ {
+			restartNames = append(restartNames, fmt.Sprintf("magi-%d", i+1))
+		}
+		restartNames = append(restartNames, "feed-publisher")
+		if rerr := d.compose(ctx, append([]string{"restart"}, restartNames...)...); rerr != nil {
+			log.Printf("[devnet] H-37 restart failed: %v (falling through to abort)", rerr)
+		} else {
+			time.Sleep(10 * time.Second)
+			got, bh, werr = d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 8*time.Minute)
+			if werr == nil {
+				log.Printf("[devnet] H-37 recovered after magi restart: %d witnesses, highest stored block %d", got, bh)
+			}
+		}
+	}
+	if werr != nil {
+		if got == 0 {
+			d.dumpBootAbortDiagnostics(ctx)
+			return fmt.Errorf("no witness registrations indexed by magi-%d after 12m + an 8m restart retry (highest stored block %d): %w", d.cfg.GenesisNode, bh, werr)
+		}
 		log.Printf("[devnet] warning: %v; proceeding anyway (genesis may be small)", werr)
 	} else {
-		log.Printf("[devnet] %d witnesses registered, genesis node at block %d; forming genesis election", got, bh)
+		log.Printf("[devnet] %d witnesses registered, genesis node highest stored block %d; forming genesis election", got, bh)
 	}
 
 	// Step 7: genesis election
@@ -318,7 +350,7 @@ func (d *Devnet) Stop() error {
 	}
 
 	log.Printf("[devnet] tearing down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(2*time.Minute))
 	defer cancel()
 
 	// Include all profiles so compose down also tears down profile-gated
@@ -446,7 +478,7 @@ RUN go mod download
 COPY --chown=app:app . .
 RUN . /home/app/.wasmedge/env && \
     go run github.com/99designs/gqlgen generate && \
-    go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD)" -o magid vsc-node/cmd/vsc-node
+    go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo devnet)" -o magid vsc-node/cmd/vsc-node
 
 FROM rockylinux:9.3-minimal
 RUN microdnf install -y iptables && microdnf clean all
@@ -479,6 +511,46 @@ ENTRYPOINT ["/home/app/app/entrypoint.sh"]
 }
 
 // Logs returns the docker compose logs for a service.
+// dumpBootAbortDiagnostics prints what the zero-registration abort cannot tell on
+// its own: whether hived was producing blocks at all, and what the genesis node was
+// doing (its Hive streamer, not just the tss module). F3 run 2 aborted with
+// "block 1" on the genesis node after 12 minutes and nothing recorded why (H-32).
+func (d *Devnet) dumpBootAbortDiagnostics(ctx context.Context) {
+	if hl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "500", "haf"); err == nil {
+		last := ""
+		for _, ln := range strings.Split(hl, "\n") {
+			if strings.Contains(ln, "Generated block") {
+				last = ln
+			}
+		}
+		log.Printf("[devnet] boot-abort diagnostics: hived last 'Generated block' line within its last 500 log lines: %q", strings.TrimSpace(last))
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: hived logs unreadable: %v", err)
+	}
+	svc := fmt.Sprintf("magi-%d", d.cfg.GenesisNode)
+	if nl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "60", svc); err == nil {
+		log.Printf("[devnet] boot-abort diagnostics: %s last 60 log lines (all modules):\n%s", svc, nl)
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: %s logs unreadable: %v", svc, err)
+	}
+	// H-34: DrainToPurge run 2 aborted with hived producing, drone healthy at boot,
+	// and ALL five nodes silent for 11 minutes (three tss lines each, no block, no
+	// error). That shape is a goroutine stuck somewhere in the streamer, and only a
+	// goroutine dump can name it. The devnet is torn down right after this call, so
+	// SIGQUIT the genesis node (Go prints every goroutine to stderr and exits) and
+	// keep the tail of its log.
+	if err := d.compose(ctx, "kill", "--signal", "QUIT", svc); err != nil {
+		log.Printf("[devnet] boot-abort diagnostics: SIGQUIT %s failed: %v", svc, err)
+		return
+	}
+	time.Sleep(3 * time.Second)
+	if gl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "600", svc); err == nil {
+		log.Printf("[devnet] boot-abort diagnostics: %s goroutine dump after SIGQUIT (last 600 lines):\n%s", svc, gl)
+	} else {
+		log.Printf("[devnet] boot-abort diagnostics: %s goroutine dump unreadable: %v", svc, err)
+	}
+}
+
 func (d *Devnet) Logs(ctx context.Context, service string) (string, error) {
 	return d.composeOutput(ctx, "logs", "--no-color", service)
 }

@@ -191,7 +191,43 @@ var LEDGER_REMEDIATIONS = []LedgerRemediation{
 const MaxSafetySlashBurnDelayBlocks uint64 = 3_333_333
 
 var RC_RETURN_PERIOD uint64 = 120 * 60 * 20 // 5 day cool down period for RCs
-var RC_HIVE_FREE_AMOUNT int64 = 10_000      // 5 HBD worth of RCs for Hive accounts. Devnet/mocknet raise this in system-config.FromNetwork so ephemeral test accounts (which hold ~0 HBD) can afford the gas of SPV-heavy ops (map/migrate); mainnet/testnet keep this production default.
+// MAX_TSS_COMMITMENTS_PER_TX bounds how many TSS commitments one custom_json
+// transaction may carry.
+//
+// M-1: the ingest loop does real work per element — a staleness check, a DB
+// lookup, a CID hash, a BLS circuit deserialisation and a pairing verification —
+// and had no length check whatsoever. One cheap transaction carrying a few
+// hundred thousand entries therefore made every node in the network do all of it:
+// a fleet-wide denial of service with no privilege required.
+//
+// Set far above any legitimate bundle. A real one carries at most one commitment
+// per committee member per ceremony, and committees are tens of members, so this
+// cap cannot bite honest traffic — which matters, because the bundle is rejected
+// wholesale rather than truncated.
+const MAX_TSS_COMMITMENTS_PER_TX = 256
+
+// RC_HIVE_FREE_AMOUNT is the PRODUCTION default free-RC allowance for Hive
+// accounts (5 HBD worth), used by MainnetConfig/TestnetConfig.
+//
+// VR2-17: this used to be MUTATED at process start by system-config.FromNetwork
+// (devnet/mocknet raised it to 1_000_000). Because it is a package-level var that
+// feeds consensus-critical RC accounting — the WASM gas budget
+// (transactions.go: gas = min(availableGas, RcLimit)) and the HBD-exclusion
+// reservation in PullBalance — two nodes on the SAME network that disagreed on it
+// computed DIFFERENT contract results, hence different block CIDs, and never
+// reached quorum: a fleet-wide STALL (devnet-proven). The value is now carried
+// per-network on SystemConfig (RcHiveFreeAmount()), which every node derives
+// identically from its network config, and is deliberately NOT exposed to
+// -sysconfig overrides so no single operator can diverge it.
+//
+// Do NOT read this directly on a consensus path — read SystemConfig.RcHiveFreeAmount().
+var RC_HIVE_FREE_AMOUNT int64 = 10_000
+
+// RC_HIVE_FREE_AMOUNT_EPHEMERAL is the raised free-RC allowance for ephemeral
+// networks (devnet/mocknet), whose test accounts hold ~0 HBD and must still
+// afford the gas of SPV-heavy ops (map/migrate). Applied via DevnetConfig/
+// MocknetConfig, never by mutating the production default.
+var RC_HIVE_FREE_AMOUNT_EPHEMERAL int64 = 1_000_000
 var MINIMUM_RC_LIMIT uint64 = 50
 
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract

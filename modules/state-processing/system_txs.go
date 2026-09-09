@@ -651,29 +651,58 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 		verified, includedDids, err := blsCircuit.Verify()
 
-		totalWeight := uint64(0)
-		if len(prevElection.Weights) == 0 {
-			totalWeight = uint64(len(prevElection.Members))
+		// B13: fold the signing weight with duplicate seats collapsed.
+		//
+		// This fold walks the BIT VECTOR by member index, and a duplicated BLS key
+		// sets BOTH of its bits — aggregateSignaturesFrom matches the one honest
+		// signature at every index holding that DID — so both seats' weights were
+		// summed for a single signature. Because the same duplicate also inflates
+		// totalWeight, and hence the minimum, the leverage here is less than 1:1
+		// and genuinely self-limiting; that is why this site alone matches the
+		// "bounded margin erosion" framing. It is still wrong, and it decides
+		// whether an election is RATIFIED.
+		//
+		// Gated on the PRIOR ratified election's version — the same source
+		// MinimalRequiredElectionVotes already reads — so the verdict is
+		// deterministic for every node replaying this height, and historical
+		// ratifications keep their original outcome below the line.
+		memberKeys := make([]string, len(prevElection.Members))
+		for i, m := range prevElection.Members {
+			memberKeys[i] = m.Key
+		}
+		foldWeights := prevElection.Weights
+		if len(foldWeights) == 0 {
+			// Legacy elections carry no weights: every member counts one.
+			foldWeights = make([]uint64, len(prevElection.Members))
+			for i := range foldWeights {
+				foldWeights[i] = 1
+			}
+		}
+
+		bv := blsCircuit.RawBitVector()
+		var includedByBit []dids.BlsDID
+		for idx := range prevElection.Members {
+			if bv.Bit(idx) == 1 {
+				includedByBit = append(includedByBit, dids.BlsDID(prevElection.Members[idx].Key))
+			}
+		}
+
+		var realWeight, totalWeight uint64
+		if consensusversion.BlsWeightDedupActive(elections.ResultVersion(*prevElection)) {
+			realWeight, totalWeight, _ = dids.FoldSignedWeight(memberKeys, foldWeights, includedByBit)
 		} else {
-			for _, v := range prevElection.Weights {
-				totalWeight = totalWeight + v
+			for _, v := range foldWeights {
+				totalWeight += v
+			}
+			for idx := range prevElection.Members {
+				if bv.Bit(idx) == 1 {
+					realWeight += foldWeights[idx]
+				}
 			}
 		}
 
 		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
 		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight, elections.ResultVersion(*prevElection))
-
-		realWeight := uint64(0)
-		bv := blsCircuit.RawBitVector()
-		for idx := range prevElection.Members {
-			if bv.Bit(idx) == 1 {
-				if len(prevElection.Weights) == 0 {
-					realWeight += 1
-				} else {
-					realWeight += prevElection.Weights[idx]
-				}
-			}
-		}
 		log.Verbose("election verify",
 			"epoch", tx.Epoch,
 			"verified", verified,
@@ -1032,7 +1061,11 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 		return BlockValidationOutcome{Kind: BlockInvalid, Reason: "BLS aggregate failed verification"}
 	}
 
-	signingScore, total := elections.CalculateSigningScore(circuit, elecResult)
+	// B13: gate the duplicate-key collapse on the version the election that
+	// SEATED this committee was ratified under, so every node validating this
+	// block — and every reindex of it — reaches the identical verdict.
+	signingScore, total := elections.CalculateSigningScore(circuit, elecResult,
+		consensusversion.BlsWeightDedupActive(elections.ResultVersion(elecResult)))
 	t.SigningScore = signingScore
 	t.SigningTotal = total
 

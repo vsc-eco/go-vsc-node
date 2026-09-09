@@ -33,7 +33,7 @@ func TestVaultStage2Funding(t *testing.T) {
 		t.Skip("set VAULT_STAGE2_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -113,6 +113,25 @@ func TestVaultStage2Funding(t *testing.T) {
 // to it on regtest in a block with exactly [coinbase, deposit] (so the Merkle
 // proof is just the coinbase hash), relays the intervening headers via addBlocks,
 // and calls map with a valid SPV proof. Returns the deposit address.
+// vfDepositMaturityBlocks is how far fundVaultViaSPV buries a deposit before
+// proving it, mirroring constants.MinConfirmationDepth for regtest.
+//
+// Exported at package scope because callers must be able to find the DEPOSIT's
+// block again afterwards: the contract's tip is no longer the deposit's block, it
+// is that block plus this margin, and the intervening blocks are empty. A caller
+// that assumes tip == deposit block reads a coinbase-only block and panics.
+// vfDepositMaturityBlocks is the ONE place the harness states the contract's
+// confirmation-depth gate, mirroring constants.MinConfirmationDepth for regtest.
+//
+// It covers deposits AND settles AND fee-reserve top-ups, because all three call the
+// same requireConfirmationDepth helper with the same number (VR2-07, VR2-25). This used
+// to be SEVEN separate constants under five different names, which meant seven chances
+// for the harness to drift out of step with the contract: raise the contract's regtest
+// depth and six of them go stale, and the resulting failures point at the tests' own
+// subjects rather than at the gate. One definition, so a change to the gate is a
+// one-line change here too.
+const vfDepositMaturityBlocks = 2
+
 func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryHex, backupHex, recipient string, sats int64, lastRelayed uint64) string {
 	t.Helper()
 	instruction := "deposit_to=" + recipient
@@ -155,8 +174,25 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 	// tx_index = 1.
 	proofHex := reverseHexBytes(coinbaseTxid)
 
-	// relay headers lastRelayed+1 .. h via addBlocks (each chains onto the prior)
-	for hh := lastRelayed + 1; hh <= h; hh++ {
+	// VR2-07: mature the deposit before mapping it.
+	//
+	// The contract refuses a deposit whose block is fewer than
+	// MinConfirmationDepth below its own tip, so relaying only up to the deposit's
+	// own block leaves it at depth 0 and `map` is correctly refused. That is not a
+	// contract bug and not something to work around by weakening the gate: in
+	// production the oracle keeps relaying, so a deposit matures on its own between
+	// being mined and being proven. The harness has to model that rather than
+	// mapping the instant the block lands.
+	//
+	// Mirrors constants.MinConfirmationDepth for regtest in the contract repo. Two
+	// spare blocks are mined so the tip clears the deposit by that margin.
+	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
+		t.Fatalf("mine maturity blocks: %v", err)
+	}
+	relayTo := h + uint64(vfDepositMaturityBlocks)
+
+	// relay headers lastRelayed+1 .. relayTo via addBlocks (each chains onto the prior)
+	for hh := lastRelayed + 1; hh <= relayTo; hh++ {
 		hx, err := btcBlockHeaderHex(ctx, d, hh)
 		if err != nil {
 			t.Fatalf("hdr %d: %v", hh, err)
@@ -178,7 +214,43 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 
 // getStateHex reads contract state keys with encoding:"hex" (NON-LOSSY, unlike the
 // default raw encoding which mangles bytes >0x7F to U+FFFD). Returns key->rawBytes.
+// getStateHex reads committed contract state, RETRYING on transport failure.
+//
+// ★ WHY THE RETRY IS LOAD-BEARING, not politeness. Every state helper in this suite
+// (vaultStatusOf, genUtxoCount, balanceSats, vf11ReadSupply, vfStateOn, ...) funnels
+// through here, and each degrades an error into a sentinel: -1, 0, false. The test then
+// reads that sentinel as a PRODUCT verdict. So one 15-second gqlQuery timeout under load
+// does not surface as "the harness could not read"; it surfaces as "the generation is not
+// Purged" or "the balance is zero" -- a failure attributed to the contract, in a case that
+// was never exercised.
+//
+// That is exactly how TestVaultDrainToPurge's DRAIN-04 failed: a single
+// "context deadline exceeded" against magi-2 became "gen-0 status=unknown(-1)". The
+// campaign runs three devnets at once, so these timeouts are expected, not exceptional.
+//
+// A contract-state read is idempotent, so retrying is always safe. A parent context that
+// is already done is NOT retried -- nothing can succeed after that, and burning the
+// remaining attempts only delays the real error.
 func getStateHex(d *Devnet, ctx context.Context, node int, cid string, keys []string) (map[string][]byte, error) {
+	const attempts = 4
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		res, err := getStateHexOnce(d, ctx, node, cid, keys)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if i < attempts-1 {
+			time.Sleep(3 * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("getStateByKeys(node %d) failed after %d attempts: %w", node, attempts, lastErr)
+}
+
+func getStateHexOnce(d *Devnet, ctx context.Context, node int, cid string, keys []string) (map[string][]byte, error) {
 	const q = `query($c:String!,$k:[String!]!,$e:String){getStateByKeys(contractId:$c,keys:$k,encoding:$e)}`
 	var out struct {
 		GetStateByKeys map[string]string `json:"getStateByKeys"`

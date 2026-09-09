@@ -576,7 +576,7 @@ func TestInvariant_RCConservation(t *testing.T) {
 
 	db := test_utils.NewMockRcDb()
 
-	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
+	rcs := rcSystem.New(db, &mockLedgerSystem{state: state}, params.RC_HIVE_FREE_AMOUNT)
 
 	// Initially: no frozen RCs, full available
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
@@ -646,7 +646,7 @@ func TestInvariant_RCConservation_MultipleConsumptions(t *testing.T) {
 	seedBalance(state, "hive:alice", 50, 0, balance, 0)
 
 	db := test_utils.NewMockRcDb()
-	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
+	rcs := rcSystem.New(db, &mockLedgerSystem{state: state}, params.RC_HIVE_FREE_AMOUNT)
 
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
 

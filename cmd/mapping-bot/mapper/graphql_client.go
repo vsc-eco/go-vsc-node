@@ -564,3 +564,48 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 	}
 	return string(decoded), nil
 }
+
+// FetchAccountRC returns an account's currently available resource credits.
+//
+// VR2-04: a rotation cycle costs roughly 28,000 RC across map, topUpFeeReserve,
+// migrateVault and confirmSpend, and the bot had no pre-flight at all — so a
+// low-RC operator stalled a rotation MID-CYCLE, leaving a generation half-swept
+// with an in-flight spend and no way to finish it from the same account. A
+// testnet confirmSpend aborted at RC 83 exactly this way.
+//
+// Returns available RC and whether the node answered. A node that cannot report
+// RC is reported as unknown rather than as zero: refusing to act on a failed
+// query would turn a monitoring outage into a rotation outage.
+func (b *Bot) FetchAccountRC(ctx context.Context, account string) (int64, bool, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"query":     `query($a: String!){ getAccountRC(account: $a){ amount } }`,
+		"variables": map[string]any{"a": account},
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("marshal request: %w", err)
+	}
+
+	var result struct {
+		Data struct {
+			GetAccountRC *struct {
+				Amount int64 `json:"amount"`
+			} `json:"getAccountRC"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("fetch account RC: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return 0, false, fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+	if result.Data.GetAccountRC == nil {
+		return 0, false, nil // node has no RC record for this account
+	}
+	return result.Data.GetAccountRC.Amount, true, nil
+}
