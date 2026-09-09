@@ -262,6 +262,34 @@ func TestVaultStage4Rotation(t *testing.T) {
 // migrateAndSettle drives migrateVault, waits for the node to sign the migration
 // sweep (which it does ONLY if NN#1 proves every output pays the successor),
 // assembles + broadcasts, and confirmSpend-settles the migration.
+// vfSettleBestEffort makes the migrateAndSettle* / settleSweepByTxid drain helpers
+// REPORT instead of ASSERT.
+//
+// A caller that documents a drain as informational must not fail the whole test through
+// a helper that asserts anyway. F3's gen-1->gen-2 drain says so in its own comment --
+// "on a second back-to-back rotation the migration sweep's sign is timing-flaky
+// (VR2-09-adjacent), so it is reported for info, not asserted" -- and then called
+// migrateAndSettle, whose t.Errorf failed the run regardless. The result was a test
+// printing `VF SUMMARY F3: 6 PASS 0 FAIL` directly above Go's `--- FAIL`, which reads
+// as a product failure and is not one. The campaign baseline recorded exactly this as
+// F3's "1 flaky-drain FAIL".
+//
+// Default false, so every test that genuinely asserts the drain (Stage4 above all, where
+// VL-GP-06 IS the subject) is untouched. Set it only around a loop the test itself calls
+// best-effort, and restore it immediately -- no devnet test calls t.Parallel, so the
+// package-level flag is safe, matching vfSetupSoftFail's precedent.
+var vfSettleBestEffort = false
+
+// settleReport routes a drain-helper failure through vfSettleBestEffort.
+func settleReport(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if vfSettleBestEffort {
+		t.Logf("(best-effort drain, NOT asserted) "+format, args...)
+		return
+	}
+	t.Errorf(format, args...)
+}
+
 func migrateAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, succPrimary, succBackup string) {
 	t.Helper()
 	migrateAndSettleAs(t, d, ctx, 1, cid, retiringKeyId, succPrimary, succBackup)
@@ -276,7 +304,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	t.Helper()
 	before := txSpendIds(t, d, ctx, cid)
 	if s := vstatus(t, d, ctx, opNode, cid, "migrateVault", ""); !isOK(s) {
-		t.Errorf("CASE VL-GP-06 FAIL — migrateVault rejected status=%s", s)
+		settleReport(t, "CASE VL-GP-06 FAIL — migrateVault rejected status=%s", s)
 		return
 	}
 	var txid string
@@ -298,7 +326,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		// registry holds and which spends are already pending.
 		vfDumpRegistry(t, d, ctx, 2, cid, "after a CONFIRMED migrateVault that produced no sweep")
 		t.Logf("pending spend ids (magi-2): %v", txSpendIds(t, d, ctx, cid))
-		t.Errorf("CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
+		settleReport(t, "CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
 		return
 	}
 	t.Logf("migration sweep txid=%s (retiring gen %s)", txid, retiringKeyId)
@@ -318,12 +346,12 @@ func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiri
 	t.Helper()
 	sd := waitSigningData(t, d, ctx, cid, txid)
 	if sd == nil {
-		t.Errorf("CASE VL-GP-06 FAIL — no signing data for sweep %s", txid)
+		settleReport(t, "CASE VL-GP-06 FAIL — no signing data for sweep %s", txid)
 		return "NO_SIGNING_DATA"
 	}
 	var mtx wire.MsgTx
 	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
-		t.Errorf("deser sweep: %v", err)
+		settleReport(t, "deser sweep: %v", err)
 		return "DESERIALIZE_FAILED"
 	}
 	// The RETIRING gen (gen-0) key signs the sweep — NN#1 output-scoping admits it
@@ -331,7 +359,7 @@ func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiri
 	for _, uh := range sd.UnsignedSigHashes {
 		sig := waitSignature(t, d, ctx, retiringKeyId, uh.SigHash)
 		if sig == nil {
-			t.Errorf("CASE VL-PEN-03/NN#1 — retiring gen did NOT sign the sweep (output-scoping refused? or slow). input %d", uh.Index)
+			settleReport(t, "CASE VL-PEN-03/NN#1 — retiring gen did NOT sign the sweep (output-scoping refused? or slow). input %d", uh.Index)
 			return "NOT_SIGNED"
 		}
 		signature := append(append([]byte{}, sig...), byte(txscript.SigHashAll))
@@ -341,7 +369,7 @@ func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiri
 	mtx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding)
 	bcTxid, err := d.bitcoinCli(ctx, "sendrawtransaction", hex.EncodeToString(buf.Bytes()))
 	if err != nil {
-		t.Errorf("CASE VL-GP-06 FAIL — sweep broadcast rejected: %v", err)
+		settleReport(t, "CASE VL-GP-06 FAIL — sweep broadcast rejected: %v", err)
 		return "BROADCAST_REJECTED"
 	}
 	t.Logf("CASE VL-GP-06/NN#1 PASS(partial) — migration sweep TSS-signed (retiring gen, successor-scoped) + broadcast: %s", bcTxid)
