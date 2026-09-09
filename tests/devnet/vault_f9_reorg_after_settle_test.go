@@ -287,6 +287,21 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	t.Logf("sweep block before the reorg: hash=%s height=%d", sweepHash, sweepHeight)
 
 	// ---- 3. reorg regtest: invalidate the sweep's block, build a competing branch ----
+	//
+	// Read the tip BEFORE invalidating, and out-mine THAT rather than the sweep's own
+	// height. VR2-06 made a settle wait MinConfirmationDepth, so the settle above buried
+	// the sweep under maturity blocks and relayed the contract past them: the contract's
+	// stored tip is ABOVE sweepHeight, and invalidating the sweep's block drops those
+	// maturity blocks with it. A branch mined only 2 long then lands BELOW the contract's
+	// tip, and f9ReplacementHeaders' walk-back asks bitcoind for a header at a height the
+	// new chain never reaches -- "getblockhash: exit status 8" -- returns nothing to
+	// replace, and the test fails on its own premise with every case passing.
+	//
+	// This is the third appearance of the same trap (F27 first, then F25). Same remedy.
+	oldTip, err := d.BitcoinHeight(ctx)
+	if err != nil {
+		t.Fatalf("PRECONDITION FAILED: could not read the regtest tip before the reorg: %v", err)
+	}
 	if _, err := d.bitcoinCli(ctx, "invalidateblock", sweepHash); err != nil {
 		t.Fatalf("PRECONDITION FAILED: invalidateblock %s failed: %v. Without a real reorg on regtest there is nothing to relay", sweepHash, err)
 	}
@@ -297,7 +312,17 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PRECONDITION FAILED: could not mine the competing branch: %v", err)
 	}
-	t.Logf("competing branch mined, regtest tip is now %d (was %d)", newTip, sweepHeight)
+	// Bounded, so a branch that refuses to grow fails here rather than spinning.
+	for i := 0; newTip <= oldTip && i < 8; i++ {
+		newTip, err = d.MineBlocks(ctx, 1)
+		if err != nil {
+			t.Fatalf("PRECONDITION FAILED: could not extend the competing branch: %v", err)
+		}
+	}
+	if newTip <= oldTip {
+		t.Fatalf("PRECONDITION FAILED: competing branch stuck at %d, it has to pass the pre-reorg tip %d or the contract keeps headers the new chain never reaches", newTip, oldTip)
+	}
+	t.Logf("competing branch mined, regtest tip is now %d (sweep was at %d, pre-reorg tip was %d)", newTip, sweepHeight, oldTip)
 
 	// bitcoind re-mines the sweep straight out of its own mempool, so the realistic
 	// outcome is "same transaction, different block". Both outcomes are recorded.
