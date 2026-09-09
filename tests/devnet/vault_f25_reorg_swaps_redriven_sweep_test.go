@@ -173,10 +173,25 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PRECONDITION FAILED: broadcast of O rejected: %v", err)
 	}
-	f10RelayTo(t, d, ctx, 1, cid, hA, 10)
+	// VR2-06: a settle now waits the same MinConfirmationDepth as a deposit credit.
+	// Relaying only up to O's own block leaves it at depth 0, so confirmSpend is
+	// CORRECTLY refused -- and the refusal then reads as "the settled-then-dropped
+	// state cannot be built", pointing at this test's subject instead of at its own
+	// premise. Bury O first, exactly as vfRelayAndConfirmIndex does.
+	//
+	// These margin blocks sit ABOVE hA, so step 4's invalidateblock(hA) drops them
+	// with it: the competing branch has to out-mine the whole pre-reorg tip, not
+	// just hA. That is handled by the oldTip loop below -- and it is the same trap
+	// F27 hit, where a branch mined 2 long against an old chain 3 long left the
+	// contract holding headers at heights the new chain never reaches.
+	if _, err := d.MineBlocks(ctx, vfDepositMaturityBlocks); err != nil {
+		t.Fatalf("PRECONDITION FAILED: mining the settle-maturity blocks: %v", err)
+	}
+	f10RelayTo(t, d, ctx, 1, cid, hA+uint64(vfDepositMaturityBlocks), 10)
 	csO := vfConfirmSpendOnly(t, d, ctx, 1, cid, bcO, hA, 0)
 	if !isOK(csO) {
-		t.Fatalf("PRECONDITION FAILED: confirmSpend(O) status=%s; the settled-then-dropped state cannot be built", csO)
+		t.Fatalf("PRECONDITION FAILED: confirmSpend(O) status=%s (VR2-06 needs %d confirmations on O's block %d, contract last=%d); the settled-then-dropped state cannot be built",
+			csO, vfDepositMaturityBlocks, hA, contractLastHeight(t, d, ctx, cid))
 	}
 	time.Sleep(10 * time.Second)
 	gen1Settled := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
@@ -190,6 +205,12 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	hashA, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(hA))
 
 	// ---- 4. the reorg: drop O's block, mine R in its place, extend ----
+	// Read the tip BEFORE invalidating: the settle-maturity blocks above sit on top
+	// of hA and go with it, so the competing branch must pass THIS height, not hA.
+	oldTip, err := d.BitcoinHeight(ctx)
+	if err != nil {
+		t.Fatalf("PRECONDITION FAILED: read tip before the reorg: %v", err)
+	}
 	if _, err := d.bitcoinCli(ctx, "invalidateblock", hashA); err != nil {
 		t.Fatalf("PRECONDITION FAILED: invalidateblock %s: %v", hashA, err)
 	}
@@ -203,7 +224,15 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 		}
 		d.MineBlocks(ctx, 1)
 	}
+	// Extend the competing branch past the pre-reorg tip (see oldTip above).
+	// Bounded, so a branch that refuses to grow fails the test rather than spinning.
 	newTip, _ := d.MineBlocks(ctx, 1)
+	for i := 0; newTip <= oldTip && i < 8; i++ {
+		newTip, _ = d.MineBlocks(ctx, 1)
+	}
+	if newTip <= oldTip {
+		t.Fatalf("PRECONDITION FAILED: competing branch stuck at %d, needs to pass the pre-reorg tip %d", newTip, oldTip)
+	}
 	_, oInChain := f9TxConfirmed(d, ctx, bcO)
 	rHash, rInChain := f9TxConfirmed(d, ctx, txR)
 	rHeight := uint64(0)
@@ -246,9 +275,15 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 		hasO2 && !hasR && !oUnspent && rUnspent,
 		fmt.Sprintf("registry has O:0=%v (id=%d, %d sats) R:0=%v | bitcoin gettxout O:0 exists=%v R:0 exists=%v | gen-1 utxos=%d", hasO2, idO2, amtO2, hasR, oUnspent, rUnspent, vfGenUtxoCountOn(d, ctx, 2, cid, 1)))
 
+	// The refusal has to be about the CLEARED SPEND GROUP, not about depth: after
+	// the branch extension above, R sits well past MinConfirmationDepth and the
+	// contract has the headers, so VR2-06 cannot be what refuses it. Report that
+	// margin in the detail, or "refused" would not say WHICH gate refused.
+	rDepth := int64(contractLastHeight(t, d, ctx, cid)) - int64(rHeight)
 	csR := vfConfirmSpendOnly(t, d, ctx, 1, cid, txR, rHeight, 0)
 	c.rec("F25-NO-RECONCILE", "confirmSpend(R) is refused because settling O cleared the whole spend group, so nothing in-band can re-point the books at R:0",
-		!isOK(csR), fmt.Sprintf("confirmSpend(R) status=%s (want FAILED/REVERTED)", csR))
+		!isOK(csR) && rDepth >= int64(vfDepositMaturityBlocks),
+		fmt.Sprintf("confirmSpend(R) status=%s (want FAILED/REVERTED) | R is %d deep in the contract's headers, want >=%d so the VR2-06 depth gate is NOT what refused it", csR, rDepth, vfDepositMaturityBlocks))
 
 	// topUpFeeReserve with R's proof: the only op that credits an untagged vault output.
 	phantomBefore := f25PhantomSats(t, d, ctx, 2, cid)

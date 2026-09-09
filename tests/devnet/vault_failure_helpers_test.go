@@ -984,6 +984,31 @@ func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, wi
 // 65m` kills the process: a context deadline unwinds cleanly and reports its cases, while a
 // go-test timeout panics the whole binary and loses them. Budgets already above the cap are
 // left alone - they never bind anyway.
+// vfDevnetBudgetCap is the ceiling on any single test's OWN context, and the one
+// number `go test -timeout` must stay above.
+//
+// A test whose context outlives its runner cannot produce a verdict. When the
+// runner's timeout fires first, Go panics with a goroutine dump instead of
+// cancelling the context, so the test's own summary never runs: no PASS, no FAIL,
+// no case list — just a stack trace the campaign has to score as NO-VERDICT. That
+// is strictly worse than a failure, because a failure names its cause.
+//
+// This used to be a `const cap = 60m` with an early `if base >= cap { return base }`,
+// which meant the cap applied to nobody who needed it: 26 of the 45 vault tests ask
+// for 70-120m, took the bypass, and ran with a context that could never expire
+// before a 65m runner. TestVaultF3CrashMidKeygen is what that looks like from the
+// outside — `panic: test timed out after 1h5m0s` with its last four cases passing.
+//
+// Raise it and the runner's -timeout TOGETHER, never one alone.
+func vfDevnetBudgetCap() time.Duration {
+	if v := os.Getenv("DEVNET_BUDGET_CAP"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 75 * time.Minute
+}
+
 func vfTestBudget(base time.Duration) time.Duration {
 	scale := 1.0
 	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
@@ -991,16 +1016,18 @@ func vfTestBudget(base time.Duration) time.Duration {
 			scale = f
 		}
 	}
-	const cap = 60 * time.Minute
-	if base >= cap {
-		return base
-	}
+	cap := vfDevnetBudgetCap()
 	d := time.Duration(float64(base) * scale)
-	if d > cap {
-		d = cap
-	}
 	if d < base {
 		d = base
+	}
+	if d > cap {
+		// Loud, because a silently shortened budget looks like the subject failing
+		// late rather than the instrument stopping early.
+		log.Printf("[devnet] test budget %s (base %s x scale %.2f) truncated to the %s cap; "+
+			"raise DEVNET_BUDGET_CAP and `go test -timeout` together if this test needs longer",
+			d.Round(time.Minute), base, scale, cap)
+		d = cap
 	}
 	return d
 }

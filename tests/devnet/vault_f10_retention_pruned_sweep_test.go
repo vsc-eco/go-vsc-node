@@ -213,7 +213,10 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 		!goneOn2 && !goneOn1 && tipPresent,
 		fmt.Sprintf("header %d gone: magi-2=%v magi-1=%v; tip header %d present=%v; admin prune calls=%d last_status=%s", hMined, goneOn2, goneOn1, lastH, tipPresent, pruneCalls, pruneStatus))
 
-	// confirmSpend with the CORRECT proof is now refused, and nothing settles.
+	// INVERTED BY VR2-03, like the case above: confirmSpend with the CORRECT proof
+	// now SETTLES, because the header it needs was retained. (The relay loop above
+	// drove the contract far past hMined, so the VR2-06 depth gate is satisfied
+	// many times over and is not in play here.)
 	cs := vfConfirmSpendOnly(t, d, ctx, 1, cid, bcTxid, hMined, 0)
 	time.Sleep(15 * time.Second)
 	msLive := vfSweepRecordOn(d, ctx, 2, cid, txid)

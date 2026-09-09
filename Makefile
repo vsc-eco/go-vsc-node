@@ -191,9 +191,13 @@ test-full:
 # is active), deploys/calls contracts incl. TSS, and injects recoverable faults
 # at every stage. Deliberately run; excluded from `make test`/`make test-full`.
 # Requires Docker. Pass V=1 for streaming `-v` output:  make test-regression V=1
+# DEVNET_BUDGET_CAP must stay BELOW -timeout: the test's own context has to expire
+# first, or Go's runner panics with a goroutine dump and the test never prints a
+# verdict. This target asks for 120m internally, so the cap is raised from its 75m
+# default here rather than left to be silently truncated. Change the two together.
 test-regression:
 	@echo "==> Node-wide regression (TestFullNetworkRegression, ~70-110 min)"
-	$(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
+	DEVNET_BUDGET_CAP=120m $(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
 
 # In-process devnet e2e tests (TestE2E, TestPostEVM). Opt-in via E2E_DEVNET
 # because they spin up a multi-node devnet backed by MongoDB; they self-skip
