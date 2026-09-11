@@ -300,6 +300,7 @@ func MainnetConfig() SystemConfig {
 		pendulumPoolWhitelist: []string{
 			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp",
 			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM",
+			"vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr", // LASSECASH/HBD
 		},
 	}
 	return conf
