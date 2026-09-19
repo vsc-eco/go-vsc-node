@@ -2544,9 +2544,18 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	// refuse a BTC-vault reshare rather than risk enqueuing a session no other node
 	// schedules (pruned-methodology F3: the height-0 read otherwise fails OPEN). If
 	// v2 is unconfigured (height 0) it can never activate → allow.
+	// The gate is the shared in-force form (height pin OR attested 0.8.0 floor —
+	// vault_rotation_gate.go): on a floor-only network (pin 0) a runtime keygen
+	// cutover must refuse manual reshare exactly like a pinned one does, or this
+	// manual path would diverge from the per-tick loop after activation. The
+	// height-0 fail-closed clause stays pin-only (no election is stored at 0, so
+	// the floor cannot be resolved there); a floor-only network merely accepts a
+	// manual enqueue during that startup window, retried cleanly after the first
+	// BlockTick.
+	bh := tssMgr.lastBlockHeight.Load()
 	if tssMgr.isBtcVaultKey(keyId) &&
-		(tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(tssMgr.lastBlockHeight.Load()) ||
-			(tssMgr.lastBlockHeight.Load() == 0 && tssMgr.sconf.ConsensusParams().VaultRotationV2ActivationHeight != 0)) {
+		(tssMgr.vaultRotationV2InForce(bh) ||
+			(bh == 0 && tssMgr.sconf.ConsensusParams().VaultRotationV2ActivationHeight != 0)) {
 		return 0, fmt.Errorf("reshare disabled for BTC vault key %q under vault-rotation-v2; it rotates by keygen", keyId)
 	}
 	tssMgr.bufferLock.Lock()

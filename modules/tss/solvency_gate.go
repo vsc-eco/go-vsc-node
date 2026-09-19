@@ -98,9 +98,11 @@ func (tssMgr *TssManager) isBtcVaultKey(keyId string) bool {
 // action is a per-node participation decision reconciled by 2/3 BLS + retry, not a
 // CID-committing consensus output, so any residual superseded-gen divergence on a
 // degraded "v" is fail-and-retry, never a fork. Inert (always false) until
-// VaultRotationV2Enabled flips.
+// vaultRotationV2InForce flips (the height pin OR the attested 0.8.0 floor —
+// vault_rotation_gate.go; never the bare pin, or the TSS half would stay inert
+// after a floor-only activation while the contract-execution half goes live).
 func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uint64) bool {
-	if !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) || !tssMgr.isBtcVaultKey(keyId) {
+	if !tssMgr.vaultRotationV2InForce(bh) || !tssMgr.isBtcVaultKey(keyId) {
 		return false
 	}
 	return skipReshareForSupersededGen(tssMgr.retiringGenSignerSet(bh).ReshareSkipKeyIds, keyId)

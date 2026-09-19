@@ -254,11 +254,14 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 		return false // not a BTC vault key: this gate does not apply
 	}
 
-	// S3.2 — output scoping. Only under the (inert-until-pinned) rotation flag;
+	// S3.2 — output scoping. Only under the (inert-until-activated) rotation
+	// gate — the height pin OR the attested 0.8.0 floor (vault_rotation_gate.go);
 	// otherwise the verdict is scopeAllow (M1.1a-only behaviour, byte-identical
-	// to pre-S3).
+	// to pre-S3). Keying off the shared in-force form (never the bare pin) keeps
+	// the BTC-keysign protection bound on the floor-only mainnet path, where the
+	// contract-execution half of the batch assumes S3 exists.
 	verdict := scopeAllow
-	if tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+	if tssMgr.vaultRotationV2InForce(bh) {
 		btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
 		deps := btcScopeDeps{
 			contractId: btcContract,

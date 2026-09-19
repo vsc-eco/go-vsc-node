@@ -1,24 +1,31 @@
 package tss
 
 import (
+	"errors"
 	"testing"
 
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	stateEngine "vsc-node/modules/state-processing"
+
+	promise "github.com/chebyrash/promise"
 )
 
 // fakeSolvencyScheduler is a minimal GetScheduler for the gate tests: the
-// governance FLAG (halted) and the M1.1b contract theft FLAG (theftHalted).
+// governance FLAG (halted) and the M1.1b contract theft FLAG (theftHalted), plus
+// the chain-active consensus version (minVer) the vault-rotation-v2 in-force
+// gate resolves from the on-chain election floor.
 type fakeSolvencyScheduler struct {
 	halted      bool
 	theftHalted bool
+	minVer      consensusversion.Version
 }
 
 func (f *fakeSolvencyScheduler) GetSchedule(uint64) []stateEngine.WitnessSlot { return nil }
 func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusversion.Version {
-	return consensusversion.Version{}
+	return f.minVer
 }
 func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool { return f.halted }
 func (f *fakeSolvencyScheduler) BtcTheftHalted() bool   { return f.theftHalted }
@@ -149,6 +156,137 @@ func TestShouldSkipReshareForVaultRotation(t *testing.T) {
 	}
 }
 
+// TestVaultRotationV2InForce_PinOrFloor pins the TSS-side activation form
+// (vault_rotation_gate.go): the shared gate is the height pin OR the attested
+// 0.8.0 chain-active floor — never the bare pin — so the TSS half of the batch
+// (reshare skip, S3 output scoping, retiring readiness) activates together with
+// the contract-execution half on a floor-only network, where the pin must stay 0.
+// A nil scheduler resolves pin-only (fail-safe fallback for test construction).
+func TestVaultRotationV2InForce_PinOrFloor(t *testing.T) {
+	base := systemconfig.MainnetConfig()
+
+	pinned := base.ConsensusParams()
+	pinned.VaultRotationV2ActivationHeight = 100
+
+	cases := []struct {
+		name      string
+		sconf     systemconfig.SystemConfig
+		scheduler GetScheduler
+		bh        uint64
+		want      bool
+	}{
+		// Shipped networks: pin 0, floor below 0.8.0 → inert.
+		{"unpinned, floor 0.7.0 -> inert", base, &fakeSolvencyScheduler{minVer: consensusversion.V0_7_0}, 1 << 40, false},
+		{"unpinned, nil scheduler -> inert (pin-only fallback)", base, nil, 1 << 40, false},
+		// Pinned ephemeral/devnet path: the pin wins and short-circuits before the
+		// election read — the scheduler's version is IGNORED (0.0.0 here).
+		{"pinned at 100, bh=0 (below pin) -> inert", flagOnConfig{SystemConfig: base, cp: pinned}, &fakeSolvencyScheduler{}, 0, false},
+		{"pinned at 100, at pin height -> in force", flagOnConfig{SystemConfig: base, cp: pinned}, &fakeSolvencyScheduler{}, 100, true},
+		{"pinned at 100, above pin height -> in force", flagOnConfig{SystemConfig: base, cp: pinned}, &fakeSolvencyScheduler{}, 200, true},
+		// Floor-only (mainnet path): pin 0 everywhere, the attested 0.8.0 floor activates.
+		{"floor-only, 0.8.0 active -> in force", base, &fakeSolvencyScheduler{minVer: consensusversion.V0_8_0}, 1 << 40, true},
+		{"floor-only, above 0.8.0 -> in force", base, &fakeSolvencyScheduler{minVer: consensusversion.Version{Major: 0, Consensus: 9}}, 1 << 40, true},
+		{"floor-only, floor still 0.7.0 -> inert", base, &fakeSolvencyScheduler{minVer: consensusversion.V0_7_0}, 12345, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &TssManager{sconf: tc.sconf, scheduler: tc.scheduler}
+			if got := mgr.vaultRotationV2InForce(tc.bh); got != tc.want {
+				t.Fatalf("vaultRotationV2InForce(bh=%d) = %v, want %v", tc.bh, got, tc.want)
+			}
+		})
+	}
+	var noSconf TssManager
+	if noSconf.vaultRotationV2InForce(1 << 40) {
+		t.Fatal("nil sconf must resolve inert (fail-safe)")
+	}
+}
+
+// TestShouldSkipReshareForVaultRotation_FloorActivation proves the floor path
+// reaches the L9-1 set computation instead of short-circuiting at the guard: on
+// a floor-only network (pin 0, attested 0.8.0) the BTC vault key's skip decision
+// flows through the shared retiring predicate (empty set with nil deps → the
+// ACTIVE/only gen reshares), byte-identically to the pinned path.
+func TestShouldSkipReshareForVaultRotation_FloorActivation(t *testing.T) {
+	base := systemconfig.MainnetConfig()
+	btc := base.OracleParams().ContractId("BTC")
+	if btc == "" {
+		t.Fatal("expected a mainnet BTC contract id to be configured")
+	}
+	btcKey := btc + "-main"
+	mgr := &TssManager{
+		sconf:     base,
+		scheduler: &fakeSolvencyScheduler{minVer: consensusversion.V0_8_0},
+	}
+	if mgr.vaultRotationV2InForce(1<<40) != true {
+		t.Fatal("expected the floor-only gate to be in force")
+	}
+	if got := mgr.shouldSkipReshareForVaultRotation(btcKey, 1<<40); got {
+		t.Fatalf("floor-activated gate, active/only gen: shouldSkipReshareForVaultRotation(%q) = true, want false (L9-1: the active gen always reshares)", btcKey)
+	}
+}
+
+// stubTssKeys is a TssKeys that never finds a key — enough to satisfy the deps
+// construction inside btcSignRefused without a live Mongo.
+type stubTssKeys struct{}
+
+func (stubTssKeys) Init() error                                         { return nil }
+func (stubTssKeys) Start() *promise.Promise[any]                        { return nil }
+func (stubTssKeys) Stop() error                                         { return nil }
+func (stubTssKeys) InsertKey(string, tss_db.TssKeyAlgo, uint64) error   { return nil }
+func (stubTssKeys) FindKey(string) (tss_db.TssKey, error)               { return tss_db.TssKey{}, errStubNotFound }
+func (stubTssKeys) SetKey(tss_db.TssKey) error                          { return nil }
+func (stubTssKeys) FindNewKeys(uint64) ([]tss_db.TssKey, error)         { return nil, nil }
+func (stubTssKeys) FindEpochKeys(uint64) ([]tss_db.TssKey, error)       { return nil, nil }
+func (stubTssKeys) FindDeprecatingKeys(uint64) ([]tss_db.TssKey, error) { return nil, nil }
+func (stubTssKeys) FindNewlyRetired(uint64) ([]tss_db.TssKey, error)    { return nil, nil }
+func (stubTssKeys) DeprecateLegacyKeys() error                          { return nil }
+func (stubTssKeys) SetSignatureVerified(string) error                   { return nil }
+
+var errStubNotFound = errors.New("stub: not found")
+
+// TestBtcSignRefused_FloorOnlyActivation is the VR2-02 wiring-gap regression
+// test: the TSS half must be in force under EXACTLY the conditions that put the
+// contract-execution half in force — a floor-only activation (mainnet path,
+// pin 0, attested floor 0.8.0). A sign for a generation that cannot exist
+// without a vault registry (mainv1), carrying a digest that is neither the
+// BRK-2 check-sig nor a proven successor sweep, must be REFUSED once the gate
+// is active; while the floor is below 0.8.0 the gate stays byte-identically
+// inert (M1.1a-only behaviour).
+func TestBtcSignRefused_FloorOnlyActivation(t *testing.T) {
+	base := systemconfig.MainnetConfig()
+	cp := base.ConsensusParams()
+	bh := uint64(1 << 40)
+	btc := base.OracleParams().ContractId("BTC")
+	if btc == "" {
+		t.Fatal("expected a mainnet BTC contract id to be configured")
+	}
+
+	// Precondition: the pin can never activate on mainnet (0 = disabled).
+	if cp.VaultRotationV2ActivationHeight != 0 || cp.VaultRotationV2Enabled(bh) {
+		t.Fatalf("mainnet pin must be 0/inert, got pin=%d enabled(bh)=%v",
+			cp.VaultRotationV2ActivationHeight, cp.VaultRotationV2Enabled(bh))
+	}
+
+	// The contract-execution half is LIVE under floor-only activation — the
+	// same gate form drives WithVaultRotationV2 in transactions.go.
+	if !stateEngine.VaultRotationV2InForce(cp, bh, consensusversion.V0_8_0) {
+		t.Fatal("contract-execution half is not in force under floor-only activation")
+	}
+
+	// The TSS half must agree: S3 output scoping binds.
+	mgr := &TssManager{sconf: base, scheduler: &fakeSolvencyScheduler{minVer: consensusversion.V0_8_0}, tssKeys: stubTssKeys{}}
+	if !mgr.btcSignRefused(btc+"-mainv1", make([]byte, 32), bh) {
+		t.Fatal("S3 output scoping did not bind under floor-only activation — the contract-execution half is live while the TSS half stays inert (theft oracle open)")
+	}
+
+	// Below the line (floor still 0.7.0, pin 0): byte-identically inert.
+	mgrPre := &TssManager{sconf: base, scheduler: &fakeSolvencyScheduler{minVer: consensusversion.V0_7_0}, tssKeys: stubTssKeys{}}
+	if mgrPre.btcSignRefused(btc+"-mainv1", make([]byte, 32), bh) {
+		t.Fatal("S3 must stay inert while the floor is below 0.8.0")
+	}
+}
+
 // TestSkipReshareForSupersededGen is the L9-1 core: given the shared retiring
 // predicate's KeyIds (superseded = retiring/draining/inactive gens), reshare is
 // skipped IFF the key is one of those — the ACTIVE gen (never in the set) always
@@ -156,7 +294,7 @@ func TestShouldSkipReshareForVaultRotation(t *testing.T) {
 // the discrimination the datalayer-backed shouldSkip wraps; the set itself is
 // proven by TestComputeRetiringSignerSet.
 func TestSkipReshareForSupersededGen(t *testing.T) {
-	activeKey := "btcContract-main"    // gen 0, ACTIVE — must keep resharing
+	activeKey := "btcContract-main"     // gen 0, ACTIVE — must keep resharing
 	retiringKey := "btcContract-mainv1" // gen 1, superseded — skip reshare
 	drainingKey := "btcContract-mainv2" // gen 2, superseded — skip reshare
 

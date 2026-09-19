@@ -45,8 +45,11 @@ func emptyRetiringSet() vaultrotation.RetiringSignerSet {
 
 // retiringGenSignerSet computes, at height bh, the committee members of every
 // fund-holding retiring/draining BTC-vault generation (delegates to the shared
-// deterministic core). Empty (inert) unless VaultRotationV2Enabled(bh) AND a
-// retiring/draining BTC gen exists → a byte-identical no-op on mainnet today.
+// deterministic core). Empty (inert) unless vaultRotationV2InForce(bh) — the
+// height pin OR the attested 0.8.0 floor (vault_rotation_gate.go; never the bare
+// pin, or the readiness widening would stay inert after a floor-only activation
+// and reintroduce the NN#3 stranded-sweep freeze) — AND a retiring/draining BTC
+// gen exists → a byte-identical no-op on mainnet today.
 //
 // Note (devnet-validation edge, degrades SAFE): the member's readiness attestation
 // is signed with its CURRENT BLS key; verification (p2p.go) is against the retiring
@@ -54,7 +57,7 @@ func emptyRetiringSet() vaultrotation.RetiringSignerSet {
 // epoch, verification fails → the member is excluded → the migration retries /
 // falls back to the CSV backup. That is fail-and-retry, never corruption.
 func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) vaultrotation.RetiringSignerSet {
-	if tssMgr.sconf == nil || !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+	if tssMgr.sconf == nil || !tssMgr.vaultRotationV2InForce(bh) {
 		return emptyRetiringSet()
 	}
 	btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
@@ -81,13 +84,13 @@ func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) vaultrotation.Retiring
 // signature collection once v2 is live. Caching per target height collapses that
 // to at most one read per height regardless of message volume.
 //
-// It short-circuits (no cache touch, no read) while VaultRotationV2Enabled is
+// It short-circuits (no cache touch, no read) while vaultRotationV2InForce is
 // false, so it is byte-identical / allocation-parity with the inert path today.
 // The cache is node-local and holds a DETERMINISTIC value (the committed vault
 // state at bh), so it never affects consensus; the mutex is never held across the
 // datalayer read.
 func (tssMgr *TssManager) retiringGenSignerSetCached(bh uint64) vaultrotation.RetiringSignerSet {
-	if tssMgr.sconf == nil || !tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+	if tssMgr.sconf == nil || !tssMgr.vaultRotationV2InForce(bh) {
 		return emptyRetiringSet()
 	}
 	key := strconv.FormatUint(bh, 10)
