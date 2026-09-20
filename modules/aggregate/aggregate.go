@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	start_status "vsc-node/modules/start-status"
 
@@ -66,8 +67,14 @@ func (a *Aggregate) Run() error {
 			// RequestShutdown canceled a.ctx. The teardown has run —
 			// report its outcome so a clean shutdown exits 0 instead
 			// of misreporting context.Canceled (or a stop-time
-			// rejection) as a startup failure.
-			return stopErr
+			// rejection) as a startup failure. A plugin that rejected
+			// for a real reason in the same window must not be
+			// masked by the shutdown, so only cancellation is
+			// reported as a clean stop.
+			if errors.Is(err, context.Canceled) {
+				return stopErr
+			}
+			return err
 		}
 		return err
 	}

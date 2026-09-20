@@ -78,11 +78,17 @@ func (d *Devnet) waitForRcBackfill(ctx context.Context) error {
 	target := int64(rcHbdBackfillUnits)
 
 	deadline := time.Now().Add(3 * time.Minute)
+	var lastErr error
 	for {
 		missing := make([]string, 0, d.cfg.Nodes)
 		for n := 1; n <= d.cfg.Nodes; n++ {
 			bal, err := d.GetAccountBalance(ctx, 1, "hive:"+d.witnessAccount(n))
-			if err != nil || bal.Hbd < target {
+			if err != nil {
+				lastErr = err
+				missing = append(missing, d.witnessAccount(n))
+				continue
+			}
+			if bal.Hbd < target {
 				missing = append(missing, d.witnessAccount(n))
 			}
 		}
@@ -91,8 +97,15 @@ func (d *Devnet) waitForRcBackfill(ctx context.Context) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("RC backfill not credited after 3m (missing: %v, last error: %w)", missing, lastErr)
+			}
 			return fmt.Errorf("RC backfill not credited after 3m (missing: %v)", missing)
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("RC backfill not credited, waiting canceled (missing: %v): %w", missing, ctx.Err())
+		case <-time.After(3 * time.Second):
+		}
 	}
 }
