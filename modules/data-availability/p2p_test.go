@@ -49,9 +49,10 @@ func TestBasicP2P(t *testing.T) {
 	}
 	for _, peerStr := range peerAddrs {
 		peerId, _ := peer.AddrInfoFromString(peerStr)
-		ctx := context.Background()
-		ctx, _ = context.WithTimeout(ctx, 5*time.Second)
-		client.p2p.Connect(ctx, *peerId)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := client.p2p.Connect(ctx, *peerId)
+		cancel()
+		assert.NoError(t, err)
 	}
 
 	time.Sleep(time.Second)
