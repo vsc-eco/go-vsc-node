@@ -98,7 +98,7 @@ const (
 	// before the condition is treated as persistent rather than transient. At the
 	// roughly two-minute cadence this is about ten minutes.
 	reshareStarvationAlarmAfter = 5
-	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1   // Number of past epochs to include in blame scoring
+	TSS_BLAME_EPOCH_COUNT       = (4 * 7) - 1 // Number of past epochs to include in blame scoring
 )
 
 // ReadyAttestation is a BLS-signed self-attestation that a node is online and
@@ -401,7 +401,7 @@ type TssManager struct {
 	lock          sync.Mutex
 	preParamsLock sync.Mutex
 
-	actionMap      map[string]Dispatcher
+	actionMap map[string]Dispatcher
 
 	// reshareStarved counts consecutive cycles a key's reshare could not start for
 	// want of participants (M-3/M-5). Node-local observability only — it never
@@ -411,10 +411,10 @@ type TssManager struct {
 	starvationMu   sync.Mutex
 	// reshareDeferrals counts consecutive rotate intervals a key's reshare has
 	// been skipped because a sign was in flight (VR2-09 starvation bound).
-	reshareDeferrals   map[string]int
+	reshareDeferrals    map[string]int
 	reshareDeferralLock sync.Mutex
-	sessionMap     map[string]sessionInfo
-	sessionResults map[string]sessionResultEntry
+	sessionMap          map[string]sessionInfo
+	sessionResults      map[string]sessionResultEntry
 
 	// Message buffer for early-arriving messages before dispatcher registration.
 	// Priority queue keyed by block height for O(1) eviction of stale sessions.
@@ -2137,7 +2137,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// was recorded for the failed attempt.
 					ri := getRotateInterval(tssMgr.sconf)
 					if dsc.KeyId() != "" {
-						log.Info("reshare/keygen timeout, will retry at next rotate interval",
+						log.Warn("reshare/keygen timeout, will retry at next rotate interval",
 							"sessionId", dsc.SessionId(), "keyId", dsc.KeyId(),
 							"nextRetryIn", fmt.Sprintf("~%d blocks", ri-(bh%ri)))
 					}

@@ -240,7 +240,7 @@ func (bp *BlockProducer) GenerateBlock(
 		offchainTxs = append(offchainTxs, reverses...)
 	}
 
-	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
+	vlog.Debug("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
 	for i, tx := range offchainTxs {
 		vlog.Trace("GenerateBlock tx", "index", i, "type", tx.Type, "id", tx.Id)
 	}
