@@ -2,7 +2,6 @@ package ledgerSystem
 
 import (
 	"math/big"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -173,12 +172,12 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 	var dest string
 
 	if hiveAsset {
-		matchedHive, _ := regexp.MatchString(HIVE_REGEX, withdraw.To)
+		matchedHive := hiveRegex.MatchString(withdraw.To)
 		if matchedHive && len(withdraw.To) >= 3 && len(withdraw.To) < 17 {
 			dest = `hive:` + withdraw.To
 		} else if strings.HasPrefix(withdraw.To, "hive:") {
 			splitHive := strings.Split(withdraw.To, ":")[1]
-			matchedHive, _ := regexp.MatchString(HIVE_REGEX, splitHive)
+			matchedHive := hiveRegex.MatchString(splitHive)
 			if matchedHive && len(splitHive) >= 3 && len(splitHive) < 17 {
 				dest = withdraw.To
 			} else {
@@ -196,7 +195,7 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 	} else {
 		if strings.HasPrefix(withdraw.To, "eth:") {
 			ethAddr := strings.Split(withdraw.To, ":")[1]
-			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			matchedEth := ethRegex.MatchString(ethAddr)
 			if matchedEth {
 				dest = withdraw.To
 			} else {
@@ -204,7 +203,7 @@ func (ledgerSession *ledgerSession) Withdraw(withdraw WithdrawParams) LedgerResu
 			}
 		} else if strings.HasPrefix(withdraw.To, "did:pkh:eip155:1:") {
 			ethAddr := strings.TrimPrefix(withdraw.To, "did:pkh:eip155:1:")
-			matchedEth, _ := regexp.MatchString(ETH_REGEX, ethAddr)
+			matchedEth := ethRegex.MatchString(ethAddr)
 			if matchedEth {
 				dest = withdraw.To
 			} else {

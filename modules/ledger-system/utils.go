@@ -1,6 +1,7 @@
 package ledgerSystem
 
 import (
+	"regexp"
 	"slices"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 )
@@ -72,6 +73,13 @@ func opReleased(v OpLogEvent, fallback int64) int64 {
 
 const ETH_REGEX = "^0x[a-fA-F0-9]{40}$"
 const HIVE_REGEX = `^[a-z][0-9a-z\-]*[0-9a-z](\.[a-z][0-9a-z\-]*[0-9a-z])*$`
+
+// Precompiled — regexp.MatchString recompiles the pattern on every call, and
+// these run per deposit/transfer/withdraw op.
+var (
+	hiveRegex = regexp.MustCompile(HIVE_REGEX)
+	ethRegex  = regexp.MustCompile(ETH_REGEX)
+)
 
 const HBD_INSTANT_FEE = int64(1) // 1% or 100 bps
 const HBD_INSTANT_MIN = int64(1) // 0.001 HBD
