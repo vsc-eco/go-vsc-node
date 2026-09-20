@@ -387,8 +387,6 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		preOrder[i], preOrder[j] = preOrder[j], preOrder[i]
 	})
 
-	// nonceMap := make(map[string]uint64)
-
 	txMap := make(map[string][]transactions.TransactionRecord)
 
 	for _, txRecord := range txRecords {
@@ -415,7 +413,6 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		ActionDb:    bp.StateEngine.LedgerState.ActionDb,
 		BalanceDb:   bp.StateEngine.LedgerState.BalanceDb,
 	})
-	// ledgerSession := bp.StateEngine.LedgerSystem.NewSession(slotHeight)
 	rcSession := bp.rcSystem.NewSession(ledgerSession)
 
 	sequencedTxs := make([]transactions.TransactionRecord, 0)
@@ -495,7 +492,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
-	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh,
+	vlog.Debug("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh,
 		"components", comps.summary())
 
 	// TEST-ONLY (devnet) malicious DOUBLE-BLOCK-SIGN injection. When this node ==
@@ -629,7 +626,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	id, err := bp.HiveCreator.Broadcast(tx)
 
-	vlog.Info("Block produced", "blockID", id, "err", err)
+	vlog.Info("Block produced", "id", id, "err", err)
 }
 
 func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
