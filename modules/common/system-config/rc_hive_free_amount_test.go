@@ -44,16 +44,32 @@ func TestRcHiveFreeAmount_ProductionNetworksKeepDefault(t *testing.T) {
 	}
 }
 
-func TestRcHiveFreeAmount_EphemeralNetworksAreRaised(t *testing.T) {
+// TestRcHiveFreeAmount_AllNetworksCarryTheProductionDefault pins that every
+// network config resolves the SAME production allowance. Ephemeral networks
+// (devnet/mocknet) used to carry a raised 1_000_000 value; that allowance was
+// replaced by funding test accounts with real HBD (tests/devnet funding.go and
+// in-process harness deposits), so a divergent number here is never wanted —
+// the allowance feeds the WASM gas budget and the PullBalance HBD-exclusion,
+// and any per-network divergence would fork replay/consensus the moment a
+// harness was rebuilt against a different config.
+func TestRcHiveFreeAmount_AllNetworksCarryTheProductionDefault(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		cfg  SystemConfig
 	}{
+		{"mainnet", MainnetConfig()},
+		{"testnet", TestnetConfig()},
 		{"devnet", DevnetConfig()},
 		{"mocknet", MocknetConfig()},
 	} {
-		if got := tc.cfg.RcHiveFreeAmount(); got != params.RC_HIVE_FREE_AMOUNT_EPHEMERAL {
-			t.Fatalf("%s RcHiveFreeAmount = %d, want %d", tc.name, got, params.RC_HIVE_FREE_AMOUNT_EPHEMERAL)
+		got := tc.cfg.RcHiveFreeAmount()
+		if got != params.RC_HIVE_FREE_AMOUNT {
+			t.Fatalf("%s RcHiveFreeAmount = %d, want the production default %d "+
+				"(a wrong/zero value here forks a reindex)", tc.name, got, params.RC_HIVE_FREE_AMOUNT)
+		}
+		if got == 0 {
+			t.Fatalf("%s RcHiveFreeAmount is 0 — historical replay would recompute "+
+				"every Hive-account gas budget against 0 free RC", tc.name)
 		}
 	}
 }
@@ -65,16 +81,12 @@ func TestRcHiveFreeAmount_FromNetworkDoesNotMutateGlobal(t *testing.T) {
 
 	// Selecting an ephemeral network previously overwrote the global for the
 	// whole process, so a later mainnet/testnet reader saw 1_000_000.
-	devnet := FromNetwork("devnet")
-	mocknet := FromNetwork("mocknet")
+	_ = FromNetwork("devnet")
+	_ = FromNetwork("mocknet")
 
 	if params.RC_HIVE_FREE_AMOUNT != before {
 		t.Fatalf("FromNetwork mutated params.RC_HIVE_FREE_AMOUNT: %d -> %d "+
 			"(this is exactly the VR2-17 divergence)", before, params.RC_HIVE_FREE_AMOUNT)
-	}
-	if devnet.RcHiveFreeAmount() != params.RC_HIVE_FREE_AMOUNT_EPHEMERAL ||
-		mocknet.RcHiveFreeAmount() != params.RC_HIVE_FREE_AMOUNT_EPHEMERAL {
-		t.Fatal("ephemeral networks must carry the raised allowance on the config")
 	}
 	// And the production networks are unaffected by having selected an ephemeral one.
 	if FromNetwork("mainnet").RcHiveFreeAmount() != params.RC_HIVE_FREE_AMOUNT {

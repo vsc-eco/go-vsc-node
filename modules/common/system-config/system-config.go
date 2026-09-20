@@ -49,10 +49,10 @@ type config struct {
 	contractUpdateTimelockBlocks uint64
 	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-	rcHiveFreeAmount             int64
-	oracleParams                 params.OracleParams
-	tssParams                    params.TssParams
-	pendulumPoolWhitelist        []string
+	rcHiveFreeAmount      int64
+	oracleParams          params.OracleParams
+	tssParams             params.TssParams
+	pendulumPoolWhitelist []string
 }
 
 func (c *config) OnMainnet() bool {
@@ -434,7 +434,7 @@ func DevnetConfig() SystemConfig {
 		startHeight:   2,
 		// Short (~90s) timelock so the mechanism is testable on devnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
-		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT_EPHEMERAL,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1000,
 			MinMembers:                    3,
@@ -513,7 +513,7 @@ func MocknetConfig() SystemConfig {
 		// Disabled (0): the in-process e2e harness updates then immediately
 		// executes a contract and relies on updates taking effect at once.
 		contractUpdateTimelockBlocks: 0,
-		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT_EPHEMERAL,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1,
 			MinMembers:                    3,
@@ -570,11 +570,6 @@ func FromNetwork(network string) SystemConfig {
 	case "testnet":
 		return TestnetConfig()
 	case "devnet":
-		// VR2-17: the free-RC allowance is carried on the network config
-		// (DevnetConfig sets rcHiveFreeAmount), NOT by mutating a package global
-		// here — a boot-time mutation made the value a function of which binary
-		// was compiled, so two nodes on one network computed different contract
-		// results and the fleet stalled.
 		return DevnetConfig()
 	case "mocknet":
 		return MocknetConfig()

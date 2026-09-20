@@ -283,6 +283,9 @@ func (d *Devnet) Start(ctx context.Context) error {
 		if err := d.fundAccounts(); err != nil {
 			return fmt.Errorf("funding accounts: %w", err)
 		}
+		if err := d.waitForRcBackfill(ctx); err != nil {
+			return fmt.Errorf("waiting for RC backfill: %w", err)
+		}
 	} else {
 		log.Printf("[devnet] skipping account funding (SkipFunding=true)")
 	}

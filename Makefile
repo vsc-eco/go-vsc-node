@@ -124,25 +124,29 @@ KNOWN_FAILING_PACKAGES := \
 	modules/hive/streamer \
 	modules/p2p
 
-# Individual tests in otherwise-passing packages, skipped via `go test -skip`:
-#   TestFuzzAll  - modules/wasm/e2e: shared-account RC exhaustion across subtests
-#   TestBasicP2P - modules/data-availability: gossipsub mesh delivery in harness
-# NOTE: keep this non-empty; `go test -skip ''` would skip every test.
-KNOWN_FAILING_TESTS := TestFuzzAll|TestBasicP2P
+# Individual tests in otherwise-passing packages, skipped via `go test -skip`.
+# Empty again: TestBasicP2P (modules/data-availability) was skipped for gossipsub
+# dropping every pubsub message in the mocknet harness; fixed by defaulting the
+# p2p config's pubsub buffer size/concurrency limit when SetOptions leaves them 0.
+# NOTE: when this is empty, SKIP and SLOW_SKIP omit the failing-test pattern
+# entirely — an empty alternation in `go test -skip` would match every test.
+KNOWN_FAILING_TESTS :=
 # -------------------------------------------------------------------------------
 
 # grep -E fragments matching the `go list` output (vsc-node/<pkg>).
 SLOW_RE    := ^vsc-node/($(subst $(space),|,$(strip $(SLOW_PACKAGES))))$$
 # Excluded from both targets: non-host packages + currently known-failing packages.
 EXCLUDE_RE := ^vsc-node/($(subst $(space),|,$(strip $(NON_HOST_PACKAGES) $(KNOWN_FAILING_PACKAGES))))$$|^vsc-node/modules/wasm/e2e/go_wasm($$|/)
+# Pipe-joined -skip pattern for known-failing tests (empty when the list is).
+FAILING_TESTS_PAT := $(subst $(space),|,$(strip $(KNOWN_FAILING_TESTS)))
 # -skip flag (only added when there are known-failing tests to skip).
-SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(KNOWN_FAILING_TESTS)',)
+SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(FAILING_TESTS_PAT)',)
 
 # The node-wide regression test (and its bring-up smoke test) are far longer than
 # the 30m slow budget and are run deliberately via `make test-regression`. Skip
 # them in the test-full slow phase so that target stays bounded and green.
 REGRESSION_TEST := TestFullNetworkRegression
-SLOW_SKIP := -skip '$(KNOWN_FAILING_TESTS)|$(REGRESSION_TEST)|TestRegressionBringup'
+SLOW_SKIP := -skip '$(if $(strip $(KNOWN_FAILING_TESTS)),$(FAILING_TESTS_PAT)|,)$(REGRESSION_TEST)|TestRegressionBringup'
 
 # Set V=1 to stream `go test -v` output (useful for the long regression run).
 V ?=

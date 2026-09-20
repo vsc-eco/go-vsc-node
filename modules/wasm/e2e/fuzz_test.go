@@ -9,6 +9,7 @@ import (
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
@@ -96,6 +97,11 @@ func TestFuzzAll(t *testing.T) {
 	}
 
 	ct := test_utils.NewContractTest()
+	// RC funding: the free tier only grants 10,000 RCs and this suite makes
+	// ~700 calls against the shared hive:fuzzer account. Back the RC balance
+	// with HBD (1:1) so the suite keeps the headroom the old raised allowance
+	// used to provide.
+	ct.Deposit("hive:fuzzer", 990_000, ledgerDb.AssetHbd)
 	ct.RegisterContract(contractId, "hive:fuzzer", WASM_TEST_CODE[:])
 
 	totalPanics := []string{}
@@ -405,7 +411,7 @@ func TestFuzzAll(t *testing.T) {
 				"negative_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: -1, OpIndex: -1,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},
@@ -413,7 +419,7 @@ func TestFuzzAll(t *testing.T) {
 				"huge_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: 999999999, OpIndex: 999999999,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},
