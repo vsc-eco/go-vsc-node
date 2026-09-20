@@ -311,9 +311,17 @@ func MainnetConfig() SystemConfig {
 		// Seeded with the deployed pool contract IDs; operators can override via
 		// -sysconfig pendulumPoolWhitelist. Listed pools bypass the DAO-owner
 		// check in PendulumBolt.
+		//
+		// A pool missing from this list aborts EVERY swap through it with
+		// "contract not whitelisted": the pendulum runs on each swap and checks
+		// the calling pool contract against it. Registering a pool with the DEX
+		// router (register_token / register_pool) is a separate gate and does
+		// not imply this one, so an onboarded pool has to be added here too.
+		// Labelled by pair — the bare IDs are unreadable.
 		pendulumPoolWhitelist: []string{
-			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp",
-			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM",
+			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE
+			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD
+			"vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr", // HBD:LASSECASH
 		},
 	}
 	return conf
