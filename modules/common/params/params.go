@@ -207,6 +207,25 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 // 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
 // devnet run the fix immediately (Config.ActivationHeight 0).
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
+
+// PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
+//
+// The whitelist is consensus-affecting in a way that is easy to miss: besides
+// gating which pools may swap at all, it is summed into the pendulum geometry
+// (P = Σ HBD-side reserve over whitelisted pools, V = 2P, s = V/E). Adding a
+// pool therefore shifts the fee split for EVERY pool, so two witnesses running
+// different lists diverge on ordinary HIVE:HBD and BTC:HBD swaps, not just on
+// swaps of the new token. Below this height every node uses the pre-expansion
+// list bit-for-bit; at/after it they switch together.
+//
+// ~48h after the 2026-09-20 decision (head ≈110,088,135 + 57,600 blocks @3s),
+// matching the window used for the last ledger re-pin. RE-PIN BEFORE RELEASE if
+// the deploy slips past it: a height already in the past makes the expansion
+// immediate on upgrade, which is exactly the staggered rollout this prevents.
+// Mainnet only — testnet and devnet apply their lists immediately (height 0).
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_145_700
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────
