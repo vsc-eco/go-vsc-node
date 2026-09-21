@@ -100,7 +100,7 @@ func TestApplySwapFeesLPFloorGatedByConsensus(t *testing.T) {
 	}
 
 	apply := func(cv ConsensusVersionAt) wasm_context.PendulumSwapFeeResult {
-		a := New(&stubGeometry{out: geo}, func() []string { return wl }, cv, cfg)
+		a := New(&stubGeometry{out: geo}, func(uint64) []string { return wl }, cv, cfg)
 		res := a.ApplySwapFees("contract:pool-1", "tx", 100, args, (&recordingAccrual{}).fn)
 		if res.IsErr() {
 			t.Fatalf("apply failed: %v", res)

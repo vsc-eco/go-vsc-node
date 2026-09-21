@@ -100,9 +100,12 @@ func (r *liveContractStateKeyReader) ReadStateKey(contractID string, blockHeight
 // `OK == false` on the returned outputs surfaces as ErrSnapshotUnavailable
 // to the contract caller, matching the prior pre-warmup gate semantics.
 type liveGeometryReader struct {
-	computer          *pendulumoracle.GeometryComputer
-	feed              *pendulumoracle.FeedTracker
-	whitelist         func() []string
+	computer *pendulumoracle.GeometryComputer
+	feed     *pendulumoracle.FeedTracker
+	// whitelist is height-parameterised: P sums the HBD reserve of every
+	// whitelisted pool, so the list in force must be the one for THIS block,
+	// not whatever the operator's binary happens to ship.
+	whitelist         func(blockHeight uint64) []string
 	effectiveStakeNum int64
 	effectiveStakeDen int64
 }
@@ -126,7 +129,7 @@ func (r *liveGeometryReader) GeometryAt(blockHeight uint64) (pendulumoracle.Geom
 	}
 	var pools []string
 	if r.whitelist != nil {
-		pools = r.whitelist()
+		pools = r.whitelist(blockHeight)
 	}
 	out := r.computer.Compute(pendulumoracle.GeometryInputs{
 		BlockHeight:       blockHeight,
