@@ -350,7 +350,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 func (ct *ContractTest) SetPendulumGeometry(out pendulumoracle.GeometryOutputs, whitelist []string) {
 	ct.PendulumApplier = pendulumwasm.New(
 		stubGeometryReader{out: out},
-		func() []string { return whitelist },
+		func(uint64) []string { return whitelist },
 		nil, // no consensus-version reader → LP floor inert in contract tests
 		pendulumwasm.DefaultConfig(),
 	)

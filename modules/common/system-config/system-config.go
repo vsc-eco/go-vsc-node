@@ -32,7 +32,7 @@ type SystemConfig interface {
 	RcHiveFreeAmount() int64
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
-	PendulumPoolWhitelist() []string
+	PendulumPoolWhitelistAt(blockHeight uint64) []string
 	LoadOverrides(path string) error
 }
 
@@ -53,6 +53,17 @@ type config struct {
 	oracleParams          params.OracleParams
 	tssParams             params.TssParams
 	pendulumPoolWhitelist []string
+	// pendulumPoolWhitelistV2 is the post-activation list. Empty means the
+	// network has no staged expansion and the base list always applies.
+	pendulumPoolWhitelistV2 []string
+	// pendulumWhitelistV2Height is the Hive L1 block at which V2 takes over.
+	// Zero means "immediately" (testnet/devnet).
+	pendulumWhitelistV2Height uint64
+	// pendulumWhitelistOverridden records that an operator supplied the list
+	// via -sysconfig. An explicit override is honoured at every height: the
+	// staged rollout exists to keep default-configured nodes in step, not to
+	// second-guess an operator who set the value deliberately.
+	pendulumWhitelistOverridden bool
 }
 
 func (c *config) OnMainnet() bool {
@@ -110,15 +121,30 @@ func (c *config) TssParams() params.TssParams {
 	return c.tssParams
 }
 
-// PendulumPoolWhitelist returns the per-network list of pool contract IDs that
-// are eligible to participate in the Magi pendulum (CLP fee accrual + LP rewards),
+// PendulumPoolWhitelistAt returns the list of pool contract IDs eligible for
+// the Magi pendulum (CLP fee accrual + LP rewards) AT A GIVEN HIVE L1 HEIGHT,
 // in addition to any DAO-owned pools matched by PendulumBolt.EnforceDAOOwnedPools.
-func (c *config) PendulumPoolWhitelist() []string {
-	if len(c.pendulumPoolWhitelist) == 0 {
+//
+// Height-parameterised on purpose. The list feeds the pendulum geometry
+// (P = Σ HBD-side reserve over whitelisted pools), so it is consensus input:
+// every node must agree on which list applies to a given block, and expansions
+// therefore land at a coordinated height rather than whenever each operator
+// upgrades. Taking the height as an argument means a caller cannot accidentally
+// read an ungated list — there is no height-less accessor to reach for.
+func (c *config) PendulumPoolWhitelistAt(blockHeight uint64) []string {
+	list := c.pendulumPoolWhitelist
+	// An explicit operator override wins at every height; a staged expansion
+	// only applies once its activation height is reached.
+	if !c.pendulumWhitelistOverridden && len(c.pendulumPoolWhitelistV2) > 0 {
+		if c.pendulumWhitelistV2Height == 0 || blockHeight >= c.pendulumWhitelistV2Height {
+			list = c.pendulumPoolWhitelistV2
+		}
+	}
+	if len(list) == 0 {
 		return nil
 	}
-	out := make([]string, len(c.pendulumPoolWhitelist))
-	copy(out, c.pendulumPoolWhitelist)
+	out := make([]string, len(list))
+	copy(out, list)
 	return out
 }
 
@@ -191,6 +217,10 @@ func (c *config) LoadOverrides(path string) error {
 	}
 	if raw.PendulumPoolWhitelist != nil {
 		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
+		// Deliberate operator choice — drop any staged expansion so the value
+		// applies as written at every height, rather than being replaced by V2
+		// once the activation height passes.
+		c.pendulumWhitelistOverridden = true
 	}
 	return nil
 }
@@ -318,11 +348,22 @@ func MainnetConfig() SystemConfig {
 		// router (register_token / register_pool) is a separate gate and does
 		// not imply this one, so an onboarded pool has to be added here too.
 		// Labelled by pair — the bare IDs are unreadable.
+		//
+		// Expansions are STAGED, never edited in place: the list is summed into
+		// the pendulum geometry, so changing it changes the fee split for every
+		// pool. Editing this slice directly would apply the moment each operator
+		// upgraded, diverging the chain across the rollout window. Add to V2 and
+		// set an activation height instead.
 		pendulumPoolWhitelist: []string{
 			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE
 			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD
-			"vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr", // HBD:LASSECASH
 		},
+		pendulumPoolWhitelistV2: []string{
+			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE
+			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD
+			"vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr", // HBD:LASSECASH (adds ~14.9 HBD to P)
+		},
+		pendulumWhitelistV2Height: params.PENDULUM_WHITELIST_V2_HEIGHT,
 	}
 	return conf
 }
