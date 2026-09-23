@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"vsc-node/modules/common/params"
 )
 
 func TestPendulumPoolWhitelist_AccessorReturnsCopy(t *testing.T) {
@@ -63,74 +65,119 @@ func TestLoadOverrides_PendulumPoolWhitelist_AbsentKeyKeepsDefault(t *testing.T)
 	}
 }
 
-// ─── Staged expansion (activation height) ────────────────────────────────────
+// ─── Staged additions: swap gate vs collateral ───────────────────────────────
 //
-// The whitelist is summed into the pendulum geometry (P = Σ HBD-side reserve
-// over whitelisted pools, V = 2P, s = V/E), so it decides the fee split for
-// EVERY pool, not just the one being added. If an expansion applied the moment
-// each operator upgraded, witnesses on either side of a rolling upgrade would
-// compute different s for the same block and diverge on ordinary swaps. Hence
-// the staged list + activation height, and hence these tests.
+// "Whitelisted" hides two separate privileges:
+//
+//   swap       — may the pool call the pendulum at all (else every swap aborts)
+//   collateral — does its HBD reserve enter P, hence V = 2P and s = V/E, which
+//                set the LP/node fee split on EVERY pool
+//
+// A community pool needs the first and must not get the second: P trusts a
+// pool's self-reported r0, so an owner who can ship a code update could report
+// an inflated reserve and move fees away from LPs on the DAO pools.
+// docs/incentive-pendulum.md restricts V/P/s to hive:vsc.dao pools for exactly
+// this reason. These tests pin that the two lists cannot drift back together.
 
 func stagedConfig() *config {
 	return &config{
-		pendulumPoolWhitelist:     []string{"vsc1Pool1", "vsc1Pool2"},
-		pendulumPoolWhitelistV2:   []string{"vsc1Pool1", "vsc1Pool2", "vsc1Pool3"},
-		pendulumWhitelistV2Height: 1000,
+		pendulumPoolWhitelist: []string{"vsc1Dao1", "vsc1Dao2"},
+		pendulumPoolAdditions: []PendulumPoolAddition{
+			{ID: "vsc1Community", FromHeight: 1000, Collateral: false},
+			{ID: "vsc1DaoLater", FromHeight: 2000, Collateral: true},
+		},
 	}
 }
 
-func TestPendulumWhitelist_BeforeActivationHeight_UsesBaseList(t *testing.T) {
+func has(list []string, id string) bool {
+	for _, v := range list {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPendulumPools_AdditionInactiveBeforeItsHeight(t *testing.T) {
 	c := stagedConfig()
 	for _, h := range []uint64{0, 1, 999} {
-		got := c.PendulumPoolWhitelistAt(h)
-		if len(got) != 2 {
-			t.Fatalf("height %d: expected the pre-expansion list, got %v", h, got)
+		if has(c.PendulumPoolWhitelistAt(h), "vsc1Community") {
+			t.Fatalf("height %d: addition must not be live before FromHeight", h)
 		}
 	}
 }
 
-func TestPendulumWhitelist_AtAndAfterActivationHeight_UsesV2(t *testing.T) {
+func TestPendulumPools_SwapOnlyPoolSwapsButNeverCounts(t *testing.T) {
 	c := stagedConfig()
 	for _, h := range []uint64{1000, 1001, 1 << 40} {
-		got := c.PendulumPoolWhitelistAt(h)
-		if len(got) != 3 || got[2] != "vsc1Pool3" {
-			t.Fatalf("height %d: expected the expanded list, got %v", h, got)
+		if !has(c.PendulumPoolWhitelistAt(h), "vsc1Community") {
+			t.Fatalf("height %d: swap-only pool must be able to swap", h)
+		}
+		if has(c.PendulumCollateralPoolsAt(h), "vsc1Community") {
+			t.Fatalf("height %d: swap-only pool must NEVER enter collateral", h)
 		}
 	}
 }
 
-// The boundary is the whole point: one block either side must not disagree
-// about which list applies.
-func TestPendulumWhitelist_ActivationBoundaryIsExact(t *testing.T) {
+func TestPendulumPools_CollateralAdditionEntersBothAtItsHeight(t *testing.T) {
 	c := stagedConfig()
-	if len(c.PendulumPoolWhitelistAt(999)) != 2 {
-		t.Fatal("block 999 must still use the base list")
+	if has(c.PendulumCollateralPoolsAt(1999), "vsc1DaoLater") {
+		t.Fatal("collateral addition must not be live before FromHeight")
 	}
-	if len(c.PendulumPoolWhitelistAt(1000)) != 3 {
-		t.Fatal("block 1000 must use the expanded list")
+	if !has(c.PendulumCollateralPoolsAt(2000), "vsc1DaoLater") {
+		t.Fatal("collateral addition must be live at FromHeight")
+	}
+	if !has(c.PendulumPoolWhitelistAt(2000), "vsc1DaoLater") {
+		t.Fatal("anything that counts as collateral must also be allowed to swap")
 	}
 }
 
-func TestPendulumWhitelist_ZeroHeightActivatesImmediately(t *testing.T) {
+// The invariant that matters: you can never end up backing the fee split with
+// a pool that isn't even allowed to trade.
+func TestPendulumPools_CollateralIsAlwaysASubsetOfSwap(t *testing.T) {
 	c := stagedConfig()
-	c.pendulumWhitelistV2Height = 0
-	if len(c.PendulumPoolWhitelistAt(0)) != 3 {
-		t.Fatal("height 0 means no gate; testnet/devnet expect immediate application")
+	for _, h := range []uint64{0, 999, 1000, 1999, 2000, 1 << 40} {
+		swap := c.PendulumPoolWhitelistAt(h)
+		for _, id := range c.PendulumCollateralPoolsAt(h) {
+			if !has(swap, id) {
+				t.Fatalf("height %d: %s counts as collateral but cannot swap", h, id)
+			}
+		}
 	}
 }
 
-func TestPendulumWhitelist_NoStagedExpansion_AlwaysBaseList(t *testing.T) {
-	c := &config{pendulumPoolWhitelist: []string{"vsc1Pool1"}}
-	if got := c.PendulumPoolWhitelistAt(1 << 40); len(got) != 1 {
-		t.Fatalf("a network with no staged expansion must ignore height; got %v", got)
+func TestPendulumPools_BaseListCarriesBothPrivileges(t *testing.T) {
+	c := stagedConfig()
+	for _, id := range []string{"vsc1Dao1", "vsc1Dao2"} {
+		if !has(c.PendulumPoolWhitelistAt(0), id) || !has(c.PendulumCollateralPoolsAt(0), id) {
+			t.Fatalf("%s: base list must swap and count from genesis", id)
+		}
 	}
 }
 
-// An operator who set the list deliberately gets exactly that, at every
-// height — the staged rollout coordinates DEFAULTS, it does not override
-// explicit intent.
-func TestPendulumWhitelist_OperatorOverrideBeatsStagedExpansion(t *testing.T) {
+func TestPendulumPools_ZeroFromHeightIsImmediate(t *testing.T) {
+	c := &config{pendulumPoolAdditions: []PendulumPoolAddition{{ID: "vsc1Now", Collateral: true}}}
+	if !has(c.PendulumCollateralPoolsAt(0), "vsc1Now") {
+		t.Fatal("FromHeight 0 means immediate — testnet/devnet rely on this")
+	}
+}
+
+// A pool named in both the base list and an addition must not be summed twice
+// into P.
+func TestPendulumPools_DeduplicatesAcrossBaseAndAdditions(t *testing.T) {
+	c := &config{
+		pendulumPoolWhitelist: []string{"vsc1Dup"},
+		pendulumPoolAdditions: []PendulumPoolAddition{{ID: "vsc1Dup", Collateral: true}},
+	}
+	if got := c.PendulumCollateralPoolsAt(0); len(got) != 1 {
+		t.Fatalf("expected one entry, got %v — P would double-count", got)
+	}
+	if got := c.PendulumPoolWhitelistAt(0); len(got) != 1 {
+		t.Fatalf("expected one entry, got %v", got)
+	}
+}
+
+func TestPendulumPools_OperatorOverrideBeatsAdditions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sysconfig.json")
 	if err := os.WriteFile(path, []byte(`{"pendulumPoolWhitelist":["vsc1Only"]}`), 0o600); err != nil {
@@ -140,36 +187,54 @@ func TestPendulumWhitelist_OperatorOverrideBeatsStagedExpansion(t *testing.T) {
 	if err := c.LoadOverrides(path); err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	for _, h := range []uint64{0, 999, 1000, 1 << 40} {
-		got := c.PendulumPoolWhitelistAt(h)
-		if len(got) != 1 || got[0] != "vsc1Only" {
-			t.Fatalf("height %d: override must win, got %v", h, got)
+	for _, h := range []uint64{0, 1000, 2000, 1 << 40} {
+		swap, coll := c.PendulumPoolWhitelistAt(h), c.PendulumCollateralPoolsAt(h)
+		if len(swap) != 1 || swap[0] != "vsc1Only" {
+			t.Fatalf("height %d: override must win for swap, got %v", h, swap)
+		}
+		// An override grants both privileges — the pre-split behaviour the
+		// devnet harness (setPendulumWhitelistAndRestart) depends on.
+		if len(coll) != 1 || coll[0] != "vsc1Only" {
+			t.Fatalf("height %d: override must win for collateral, got %v", h, coll)
 		}
 	}
 }
 
-func TestPendulumWhitelist_AccessorReturnsCopyPostActivation(t *testing.T) {
+func TestPendulumPools_AccessorsReturnCopies(t *testing.T) {
 	c := stagedConfig()
-	got := c.PendulumPoolWhitelistAt(2000)
-	got[0] = "MUTATED"
-	if c.pendulumPoolWhitelistV2[0] != "vsc1Pool1" {
-		t.Fatal("accessor must copy the V2 slice too; internal slice was mutated")
+	c.PendulumPoolWhitelistAt(0)[0] = "MUTATED"
+	c.PendulumCollateralPoolsAt(0)[0] = "MUTATED"
+	if c.pendulumPoolWhitelist[0] != "vsc1Dao1" {
+		t.Fatal("accessors must copy; internal slice was mutated")
 	}
 }
 
-// Mainnet ships the real staged expansion; guard the shape so an edit that
-// drops the gate (or edits the base list in place) fails loudly here.
-func TestMainnetConfig_WhitelistExpansionIsStaged(t *testing.T) {
+// Mainnet: LASSECASH trades from the height but the collateral set stays
+// exactly the two DAO pools, so P — and therefore the fee split on HBD:HIVE
+// and BTC:HBD — does not move at activation.
+func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 	c := MainnetConfig().(*config)
-	if c.pendulumWhitelistV2Height == 0 {
-		t.Fatal("mainnet expansion must be gated on an activation height")
+	const lasse = "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr"
+	h := params.PENDULUM_WHITELIST_V2_HEIGHT
+	if h == 0 {
+		t.Fatal("mainnet addition must be gated on an activation height")
 	}
-	if len(c.pendulumPoolWhitelistV2) <= len(c.pendulumPoolWhitelist) {
-		t.Fatal("V2 must be a superset; expansions are staged, not edited in place")
+
+	if has(c.PendulumPoolWhitelistAt(h-1), lasse) {
+		t.Fatal("LASSECASH must not swap before the activation height")
 	}
-	before := c.PendulumPoolWhitelistAt(c.pendulumWhitelistV2Height - 1)
-	after := c.PendulumPoolWhitelistAt(c.pendulumWhitelistV2Height)
-	if len(before) != len(c.pendulumPoolWhitelist) || len(after) != len(c.pendulumPoolWhitelistV2) {
-		t.Fatalf("mainnet gate not wired: before=%v after=%v", before, after)
+	if !has(c.PendulumPoolWhitelistAt(h), lasse) {
+		t.Fatal("LASSECASH must swap from the activation height")
+	}
+	for _, at := range []uint64{h - 1, h, 1 << 40} {
+		if has(c.PendulumCollateralPoolsAt(at), lasse) {
+			t.Fatalf("height %d: LASSECASH must never count as collateral", at)
+		}
+		coll := c.PendulumCollateralPoolsAt(at)
+		if len(coll) != 2 ||
+			!has(coll, "vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp") ||
+			!has(coll, "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM") {
+			t.Fatalf("height %d: collateral set must be exactly the two DAO pools, got %v", at, coll)
+		}
 	}
 }
