@@ -35,8 +35,8 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
+	"vsc-node/modules/db/vsc/poaseats"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -3299,9 +3299,13 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
-			computer:          se.pendulumGeometry,
-			feed:              se.pendulumFeed,
-			whitelist:         func(h uint64) []string { return sconf.PendulumPoolWhitelistAt(h) },
+			computer: se.pendulumGeometry,
+			feed:     se.pendulumFeed,
+			// Geometry takes the COLLATERAL list, not the swap gate: P trusts
+			// each pool's self-reported reserve, so only DAO-owned pools
+			// running reviewed code belong here. A community pool may trade
+			// (next closure) without its reserve backing the fee split.
+			whitelist:         func(h uint64) []string { return sconf.PendulumCollateralPoolsAt(h) },
 			effectiveStakeNum: 2,
 			effectiveStakeDen: 3,
 		},
