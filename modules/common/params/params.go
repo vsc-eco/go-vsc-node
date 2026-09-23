@@ -207,6 +207,29 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 // 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
 // devnet run the fix immediately (Config.ActivationHeight 0).
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
+
+// PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
+//
+// Still consensus-affecting even though this particular addition is swap-only
+// (Collateral: false, so P and therefore the fee split do not move): below the
+// height every node REFUSES a LASSECASH swap, at/after it every node accepts
+// one. Witnesses on either side of the height would disagree about whether the
+// transaction succeeded at all. A future addition marked Collateral would
+// additionally shift P — hence the same coordinated-height treatment for both.
+//
+// RE-PINNED 2026-09-23: moved +1 day (+28,800 blocks) from 110,193,400 to give
+// the release more room to reach witnesses. Previously re-pinned 2026-09-22
+// from head 110,135,804 +57,600 (48 h), after the original 09-20 pin had eroded
+// to ~8 h — cf. the 0.3.0 rollout, where un-upgraded nodes dropped the
+// committee from 18 to 12.
+//
+// RE-PIN AGAIN BEFORE RELEASE if this window erodes the same way. A height
+// already in the past makes the addition immediate on upgrade, i.e. exactly
+// the staggered rollout this exists to prevent — the gate fails open, silently.
+// Mainnet only — testnet and devnet apply their lists immediately (height 0).
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_222_200
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────

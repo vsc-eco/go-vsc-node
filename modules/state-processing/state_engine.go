@@ -2965,13 +2965,17 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
-			computer:          se.pendulumGeometry,
-			feed:              se.pendulumFeed,
-			whitelist:         func() []string { return sconf.PendulumPoolWhitelist() },
+			computer: se.pendulumGeometry,
+			feed:     se.pendulumFeed,
+			// Geometry takes the COLLATERAL list, not the swap gate: P trusts
+			// each pool's self-reported reserve, so only DAO-owned pools
+			// running reviewed code belong here. A community pool may trade
+			// (next closure) without its reserve backing the fee split.
+			whitelist:         func(h uint64) []string { return sconf.PendulumCollateralPoolsAt(h) },
 			effectiveStakeNum: 2,
 			effectiveStakeDen: 3,
 		},
-		func() []string { return sconf.PendulumPoolWhitelist() },
+		func(h uint64) []string { return sconf.PendulumPoolWhitelistAt(h) },
 		se.ActiveConsensusVersion, // gates the LP minimum-floor on consensus 0.2.0
 		pendulumCfg,
 	)
