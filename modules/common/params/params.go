@@ -211,24 +211,24 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
 // for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
 //
-// The whitelist is consensus-affecting in a way that is easy to miss: besides
-// gating which pools may swap at all, it is summed into the pendulum geometry
-// (P = Σ HBD-side reserve over whitelisted pools, V = 2P, s = V/E). Adding a
-// pool therefore shifts the fee split for EVERY pool, so two witnesses running
-// different lists diverge on ordinary HIVE:HBD and BTC:HBD swaps, not just on
-// swaps of the new token. Below this height every node uses the pre-expansion
-// list bit-for-bit; at/after it they switch together.
+// Still consensus-affecting even though this particular addition is swap-only
+// (Collateral: false, so P and therefore the fee split do not move): below the
+// height every node REFUSES a LASSECASH swap, at/after it every node accepts
+// one. Witnesses on either side of the height would disagree about whether the
+// transaction succeeded at all. A future addition marked Collateral would
+// additionally shift P — hence the same coordinated-height treatment for both.
 //
-// RE-PINNED 2026-09-22: head was 110,135,804; +57,600 blocks = 48 h at 3 s,
-// floored to a round number. The original 09-20 pin had eroded to ~8 h, which
-// is not long enough for every witness to upgrade — cf. the 0.3.0 rollout,
-// where un-upgraded nodes dropped the committee from 18 to 12.
+// RE-PINNED 2026-09-23: moved +1 day (+28,800 blocks) from 110,193,400 to give
+// the release more room to reach witnesses. Previously re-pinned 2026-09-22
+// from head 110,135,804 +57,600 (48 h), after the original 09-20 pin had eroded
+// to ~8 h — cf. the 0.3.0 rollout, where un-upgraded nodes dropped the
+// committee from 18 to 12.
 //
 // RE-PIN AGAIN BEFORE RELEASE if this window erodes the same way. A height
-// already in the past makes the expansion immediate on upgrade, i.e. exactly
+// already in the past makes the addition immediate on upgrade, i.e. exactly
 // the staggered rollout this exists to prevent — the gate fails open, silently.
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
-var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_193_400
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_222_200
 
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
