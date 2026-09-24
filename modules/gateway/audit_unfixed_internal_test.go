@@ -127,18 +127,45 @@ func TestAuditFix_S1_ECDSAMalleabilityRejected(t *testing.T) {
 	_ = slices.Contains([]string{sigA}, sigA)
 }
 
-// TestAuditUnfixed_S7_ValidateMessageAcceptsAllSenders proves audit item S7:
-// gateway/p2p.go:38-41 — ValidateMessage unconditionally returns true. There
-// is no leader / committee gating, so any peer can publish any payload on the
-// /gateway/v1 topic and force every receiver into HandleMessage's signing
-// path. This is the DoS amplification precondition.
+// TestAuditFixed_S7_ValidateMessageGatesSignRequests is the INVERTED form of the
+// old TestAuditUnfixed_S7_ValidateMessageAcceptsAllSenders.
 //
-// Post-fix expectation: ValidateMessage must check that `from` is either the
-// current-slot leader (for sign_request) or a member of the active gateway
-// committee (for sign_response). Spam from outside the committee should be
-// rejected at validation time, before any signing work is queued.
-func TestAuditUnfixed_S7_ValidateMessageAcceptsAllSenders(t *testing.T) {
-	spec := p2pSpec{} // ms is nil but ValidateMessage doesn't dereference it.
+// ★ WHY THIS WAS INVERTED, AND WHY IT MATTERED FAR BEYOND THIS ONE TEST.
+// The original documented audit item S7: ValidateMessage unconditionally returned
+// true, so any peer could publish on /gateway/v1 and force every receiver into the
+// signing path (a DoS amplification precondition). It built its fixture as
+// `p2pSpec{}` with the comment "ms is nil but ValidateMessage doesn't dereference
+// it", and asserted the permissive behaviour, with a t.Fatalf telling the next
+// reader to "update this test to reflect the new gating rule" if it ever changed.
+//
+// The fix landed: p2p.go:39-47 now gates sign_request on ms.electionPeerIDs. That
+// made the fixture comment FALSE — ValidateMessage dereferences s.ms on the very
+// first case — so the subtest nil-panicked. An unrecovered panic aborts the whole
+// test binary, and because this file is `package gateway` and sorts third of
+// thirteen, EVERY test ordered after it stopped running: the ceil(2/3) gateway
+// threshold guard, the uint64 stake-sort truncation guard, the gateway-key dedup
+// that prevents a duplicate-key_auths rotation wedge, both underflow guards, and
+// the FUZZ-1 serializer-panic repro. Ten of thirteen files in the package that
+// holds bridge custody were dead in CI, and CI was green because nothing ran.
+//
+// The lesson is the shape, not the instance: a stale test asserting the OLD
+// vulnerable behaviour of the exact function it was written to track is a
+// tripwire that fires into a panic instead of a failure. Assert the fixed
+// behaviour, and keep the negative case, so this file documents the closure
+// rather than blocking it.
+func TestAuditFixed_S7_ValidateMessageGatesSignRequests(t *testing.T) {
+	// A real multisig with a KNOWN committee, so the gate has something to check.
+	// The old fixture's nil `ms` is exactly what panicked.
+	// ★ The map is keyed by peer.ID.String(), which is the base58-encoded
+	// multihash, NOT the raw string the peer.ID was constructed from. Keying it
+	// with the literal "committee-peer" silently never matches, and the test
+	// would then "pass" its REJECT cases for the wrong reason while failing the
+	// ACCEPT case. Derive the key the same way p2p.go:45 does.
+	committee := peer.ID("committee-peer")
+	ms := &MultiSig{}
+	allowed := map[string]bool{committee.String(): true}
+	ms.electionPeerIDs.Store(&allowed)
+	spec := p2pSpec{ms: ms}
 
 	ctx := context.Background()
 	pubsubMsg := &pubsub.Message{}
@@ -147,26 +174,40 @@ func TestAuditUnfixed_S7_ValidateMessageAcceptsAllSenders(t *testing.T) {
 		name string
 		from peer.ID
 		msg  p2pMessage
+		want bool
 	}{
 		{
-			name: "random peer, sign_request key_rotation",
+			name: "OUTSIDER sign_request key_rotation is REJECTED",
 			from: peer.ID("random-peer-A"),
 			msg:  p2pMessage{Type: "sign_request", Op: "key_rotation", Data: "{}"},
+			want: false,
 		},
 		{
-			name: "empty peer id, sign_response",
-			from: peer.ID(""),
-			msg:  p2pMessage{Type: "sign_response", Data: `{"tx_id":"x","sig":"y"}`},
-		},
-		{
-			name: "random peer, sign_request execute_actions",
+			name: "OUTSIDER sign_request execute_actions is REJECTED",
 			from: peer.ID("attacker-peer"),
 			msg:  p2pMessage{Type: "sign_request", Op: "execute_actions", Data: "{}"},
+			want: false,
 		},
 		{
-			name: "completely unknown type",
+			name: "COMMITTEE MEMBER sign_request is ACCEPTED",
+			from: committee,
+			msg:  p2pMessage{Type: "sign_request", Op: "key_rotation", Data: "{}"},
+			want: true,
+		},
+		{
+			// Non-sign_request types are deliberately NOT gated here (p2p.go:46
+			// returns true). Pinned so that if that ever changes it is a
+			// deliberate decision and not an accident.
+			name: "sign_response is not gated by this check",
+			from: peer.ID(""),
+			msg:  p2pMessage{Type: "sign_response", Data: `{"tx_id":"x","sig":"y"}`},
+			want: true,
+		},
+		{
+			name: "unknown type is not gated by this check",
 			from: peer.ID("anyone"),
 			msg:  p2pMessage{Type: "garbage", Op: "garbage", Data: "garbage"},
+			want: true,
 		},
 	}
 
@@ -174,16 +215,23 @@ func TestAuditUnfixed_S7_ValidateMessageAcceptsAllSenders(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got := spec.ValidateMessage(ctx, tc.from, pubsubMsg, tc.msg)
-			if !got {
-				t.Fatalf("UNEXPECTED: ValidateMessage rejected %q — bug may be fixed; "+
-					"update this test to reflect the new gating rule", tc.name)
+			if got != tc.want {
+				t.Fatalf("ValidateMessage(%q) = %v, want %v", tc.name, got, tc.want)
 			}
 		})
 	}
 
-	t.Log("S7 confirmed: ValidateMessage returns true for arbitrary sender + payload. " +
-		"Fix: reject from-peer when not in active gateway committee, " +
-		"and (for sign_request) when not the current slot leader.")
+	// The un-set committee case: before the first election is observed,
+	// electionPeerIDs is nil and p2p.go:42-44 fails CLOSED. Assert that
+	// explicitly — failing OPEN here would restore S7 exactly.
+	t.Run("nil committee fails CLOSED for sign_request", func(t *testing.T) {
+		fresh := p2pSpec{ms: &MultiSig{}}
+		if fresh.ValidateMessage(ctx, peer.ID("anyone"),
+			pubsubMsg, p2pMessage{Type: "sign_request", Op: "key_rotation", Data: "{}"}) {
+			t.Fatal("ValidateMessage accepted a sign_request with NO known committee — " +
+				"that is fail-OPEN and restores audit item S7")
+		}
+	})
 }
 
 // TestAuditUnfixed_36_NoPerBatchValueCap proves audit item #36:
