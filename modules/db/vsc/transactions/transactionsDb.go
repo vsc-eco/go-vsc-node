@@ -41,19 +41,28 @@ func (e *transactions) Init() error {
 		return fmt.Errorf("failed to create payload_recipients index: %w", err)
 	}
 
+	// GetTransaction / Ingest / SetOutput / InvalidateCompetingTransactions /
+	// FindTransactions all filter on id / status / anchr_height — previously
+	// unindexed (full collection scan per query).
+	for _, m := range []mongo.IndexModel{
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+		{Keys: bson.D{{Key: "status", Value: 1}}},
+		{Keys: bson.D{{Key: "anchr_height", Value: 1}}},
+	} {
+		if err = e.CreateIndexIfNotExist(m); err != nil {
+			return fmt.Errorf("failed to create transaction_pool index: %w", err)
+		}
+	}
+
 	return nil
 }
 
 func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	ctx := context.Background()
 
-	queryy := bson.M{
+	query := bson.M{
 		"id": offTx.Id,
 	}
-
-	findResult := e.FindOne(ctx, bson.M{
-		"id": offTx.Id,
-	})
 
 	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
@@ -68,21 +77,6 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"required_posting_auths": offTx.RequiredPostingAuths,
 		"nonce":                  offTx.Nonce,
 		"rc_limit":               offTx.RcLimit,
-		"ledger":                 offTx.Ledger,
-	}
-	if findResult.Err() != nil {
-		setOp["first_seen"] = time.Now()
-		//Prevents case of reprocessing/reindexing
-		if offTx.Status != "" {
-			setOp["status"] = offTx.Status
-		} else {
-			setOp["status"] = "UNCONFIRMED"
-		}
-	} else {
-		//If it already exists do nothing
-		if offTx.Status != "" {
-			setOp["status"] = offTx.Status
-		}
 	}
 
 	// Extract recipients buried in contract-call payloads (e.g. sats/token
@@ -108,9 +102,28 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 	}
 	setOp["payload_recipients"] = payloadRecipients
 
-	_, err := e.UpdateOne(ctx, queryy, bson.M{
-		"$set": setOp,
-	}, opts)
+	// Single upsert (previously FindOne + UpdateOne — two round trips per tx):
+	// the pipeline preserves the old semantics exactly —
+	//   insert: first_seen stamped, status = provided or "UNCONFIRMED"
+	//   update: status only advanced when explicitly provided; first_seen and
+	//   a previously-set status are kept ($ifNull / $type guard).
+	var statusExpr interface{} = offTx.Status
+	if offTx.Status == "" {
+		statusExpr = bson.M{"$cond": bson.A{
+			bson.M{"$eq": bson.A{bson.M{"$type": "$status"}, "missing"}},
+			"UNCONFIRMED",
+			"$status",
+		}}
+	}
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$set", Value: setOp}},
+		bson.D{{Key: "$set", Value: bson.M{
+			"first_seen": bson.M{"$ifNull": bson.A{"$first_seen", time.Now()}},
+			"status":     statusExpr,
+		}}},
+	}
+
+	_, err := e.UpdateOne(ctx, query, pipeline, opts)
 
 	return err
 }
@@ -126,9 +139,6 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 
 	if sOut.Output != nil {
 		push["output"] = sOut.Output
-	}
-	if sOut.Ledger != nil {
-		update["ledger"] = sOut.Ledger
 	}
 	if sOut.Status != nil {
 		update["status"] = sOut.Status
@@ -158,7 +168,7 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
-func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
+func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
 	if id != nil && ids != nil {
 		return nil, errors.New("either input a single id or a list of ids")
 	}
@@ -197,19 +207,6 @@ func (e *transactions) FindTransactions(ids []string, id *string, account *strin
 		filters = append(filters, bson.E{Key: "op_types", Value: bson.M{
 			"$in": byType,
 		}})
-	}
-	if ledgerToFrom != nil {
-		filters = append(filters, bson.E{Key: "$or", Value: bson.A{
-			bson.D{{Key: "ledger.from", Value: *ledgerToFrom}},
-			bson.D{{Key: "ledger.to", Value: *ledgerToFrom}},
-		}})
-	}
-	if len(ledgerTypes) > 0 {
-		ledgerTypeFilter := bson.A{}
-		for _, t := range ledgerTypes {
-			ledgerTypeFilter = append(ledgerTypeFilter, bson.D{{Key: "ledger.type", Value: t}})
-		}
-		filters = append(filters, bson.E{Key: "$or", Value: ledgerTypeFilter})
 	}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "anchr_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})

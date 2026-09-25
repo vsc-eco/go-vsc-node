@@ -41,7 +41,7 @@ func (f *fakeChainOpTxDb) SetOutput(_ dbTransactions.SetResultUpdate)           
 func (f *fakeChainOpTxDb) GetTransaction(id string) *dbTransactions.TransactionRecord {
 	return f.records[id]
 }
-func (f *fakeChainOpTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *dbTransactions.TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]dbTransactions.TransactionRecord, error) {
+func (f *fakeChainOpTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *dbTransactions.TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]dbTransactions.TransactionRecord, error) {
 	return nil, nil
 }
 func (f *fakeChainOpTxDb) FindUnconfirmedTransactions(height uint64) ([]dbTransactions.TransactionRecord, error) {

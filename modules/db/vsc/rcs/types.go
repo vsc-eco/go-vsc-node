@@ -12,6 +12,9 @@ type RcDb interface {
 	// log). RC gates transaction admission, so a node that under-counts admits
 	// transactions its peers reject.
 	SetRecord(account string, blockHeight uint64, amount int64) error
+	// SetRecords persists a batch of RC snapshots in a single round trip
+	// (upserts keyed on (account, block_height)) — the per-slot RC map flush.
+	SetRecords(records []RcRecord) error
 }
 
 type RcRecord struct {

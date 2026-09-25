@@ -2,17 +2,14 @@ package hive_blocks
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -20,139 +17,6 @@ import (
 type hiveBlocks struct {
 	*db.Collection
 	writeMutex sync.Mutex // mutex for synchronizing writes, else SQLite will be busy
-}
-
-// a unique UUID prefix to avoid collisions when we convert nested arrays
-// into BSON-compatible structures and need to name fields with unique keys
-const fieldPrefix = "69ba102f-c815-4ce9-8022-90e520fe8516_"
-
-// transforms nested arrays into BSON-compatible structures with unique keys
-func makeBSONCompatible(value interface{}) interface{} {
-	switch v := value.(type) {
-	case []interface{}:
-		// check if the array contains other arrays
-		isArrayOfArrays := false
-		for _, item := range v {
-			switch item.(type) {
-			case []interface{}, primitive.A:
-				isArrayOfArrays = true
-			}
-		}
-		if isArrayOfArrays {
-			// convert each inner array into a map with unique keys
-			arr := make([]interface{}, len(v))
-			for i, elem := range v {
-				switch innerArray := elem.(type) {
-				case []interface{}:
-					innerMap := make(map[string]interface{})
-					for idx, elem := range innerArray {
-						innerMap[fmt.Sprintf("%s%d", fieldPrefix, idx)] = makeBSONCompatible(elem)
-					}
-					arr[i] = innerMap
-				case primitive.A:
-					innerArrayConverted := []interface{}(innerArray)
-					innerMap := make(map[string]interface{})
-					for idx, elem := range innerArrayConverted {
-						innerMap[fmt.Sprintf("%s%d", fieldPrefix, idx)] = makeBSONCompatible(elem)
-					}
-					arr[i] = innerMap
-				default:
-					arr[i] = makeBSONCompatible(elem)
-				}
-			}
-			return arr
-		} else {
-			// process elems recursively
-			arr := make([]interface{}, len(v))
-			for i, item := range v {
-				arr[i] = makeBSONCompatible(item)
-			}
-			return arr
-		}
-	case primitive.A:
-		// convert primitive.A to []interface{} and process recursively
-		return makeBSONCompatible([]interface{}(v))
-	case map[string]interface{}:
-		m := make(map[string]interface{})
-		for k, val := range v {
-			m[k] = makeBSONCompatible(val)
-		}
-		return m
-	case primitive.M:
-		// convert primitive.M to map[string]interface{} and process recursively
-		return makeBSONCompatible(map[string]interface{}(v))
-	case primitive.D:
-		// convert primitive.D to map[string]interface{} and process recursively
-		m := make(map[string]interface{})
-		for _, elem := range v {
-			m[elem.Key] = makeBSONCompatible(elem.Value)
-		}
-		return m
-	default:
-		return v
-	}
-}
-
-// restores bson-compatible structures back to the original nested arrays
-func remakeOriginalNestedArrayStructure(value interface{}) interface{} {
-	switch v := value.(type) {
-	case []interface{}:
-		// process elements recursively
-		arr := make([]interface{}, len(v))
-		for i, item := range v {
-			arr[i] = remakeOriginalNestedArrayStructure(item)
-		}
-		return arr
-	case primitive.A:
-		// convert to []interface{} and process recursively
-		return remakeOriginalNestedArrayStructure([]interface{}(v))
-	case map[string]interface{}:
-		if isFieldKeys(v) {
-			// reconstruct array from map
-			innerArr := []interface{}{}
-			for idx := 0; ; idx++ {
-				key := fmt.Sprintf("%s%d", fieldPrefix, idx)
-				val, exists := v[key]
-				if !exists {
-					break
-				}
-				innerArr = append(innerArr, remakeOriginalNestedArrayStructure(val))
-			}
-			return innerArr
-		} else {
-			// process map elements recursively
-			m := make(map[string]interface{})
-			for k, val := range v {
-				m[k] = remakeOriginalNestedArrayStructure(val)
-			}
-			return m
-		}
-	case primitive.M:
-		// convert primitive.M to map[string]interface{} and process recursively
-		return remakeOriginalNestedArrayStructure(map[string]interface{}(v))
-	case primitive.D:
-		// convert primitive.D to map[string]interface{} and process recursively
-		m := make(map[string]interface{})
-		for _, elem := range v {
-			m[elem.Key] = remakeOriginalNestedArrayStructure(elem.Value)
-		}
-		return m
-	default:
-		return v
-	}
-}
-
-// checks if a map has keys that start with the unique field prefix
-func isFieldKeys(m map[string]interface{}) bool {
-	if len(m) == 0 {
-		return false
-	}
-	for key := range m {
-		if !strings.HasPrefix(key, fieldPrefix) {
-			return false
-		}
-	}
-	return true
 }
 
 func New(d *vsc.VscDb) (HiveBlocks, error) {
@@ -210,7 +74,9 @@ func (h *hiveBlocks) StoreBlocks(headBlock uint64, blocks ...HiveBlock) error {
 			HeadHeight:      &headBlock,
 		}}).
 		SetUpsert(true)
-	bulkWriteOptions := options.BulkWrite().SetOrdered(true)
+	// Unordered: an upsert conflict on one block (e.g. a duplicate from a
+	// retried batch) must not abort the rest of the batch or the metadata doc.
+	bulkWriteOptions := options.BulkWrite().SetOrdered(false)
 
 	// execute the bulk write op
 	_, err := h.Collection.BulkWrite(context.Background(), models, bulkWriteOptions)
@@ -241,33 +107,15 @@ func (h *hiveBlocks) FetchStoredBlocks(startBlock, endBlock uint64) ([]HiveBlock
 	var blocks []HiveBlock
 
 	for cursor.Next(ctx) {
-		var result bson.M
+		var result Document
 		if err := cursor.Decode(&result); err != nil {
 			return nil, fmt.Errorf("failed to decode block: %w", err)
 		}
-
-		// extract the stored block data
-		blockDataRaw, ok := result["block"]
-		if !ok {
+		if result.Block == nil {
 			return nil, fmt.Errorf("invalid block data")
 		}
 
-		// reconstruct the original block data
-		reconstructedData := remakeOriginalNestedArrayStructure(blockDataRaw)
-
-		// convert our reconstructed data to JSON
-		blockJSON, err := json.Marshal(reconstructedData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal reconstructed block: %w", err)
-		}
-
-		// unmarshal JSON into HiveBlock struct
-		var block HiveBlock
-		if err := json.Unmarshal(blockJSON, &block); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal block JSON: %w", err)
-		}
-
-		blocks = append(blocks, block)
+		blocks = append(blocks, *result.Block)
 	}
 	if err := cursor.Err(); err != nil {
 		return nil, fmt.Errorf("cursor error: %w", err)

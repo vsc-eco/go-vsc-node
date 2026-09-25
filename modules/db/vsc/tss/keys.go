@@ -210,7 +210,16 @@ func (e *tssKeys) Init() error {
 	if err := e.Collection.Init(); err != nil {
 		return err
 	}
-	return e.CreateIndexIfNotExist(mongo.IndexModel{
-		Keys: bson.D{{Key: "id", Value: 1}},
-	})
+	for _, m := range []mongo.IndexModel{
+		{Keys: bson.D{{Key: "id", Value: 1}}},
+		// FindDeprecatingKeys runs per key-lifecycle pass ({status, expiry_epoch}).
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "expiry_epoch", Value: 1}}},
+		// FindNewlyRetired runs every block ({status, deprecated_height}).
+		{Keys: bson.D{{Key: "status", Value: 1}, {Key: "deprecated_height", Value: 1}}},
+	} {
+		if err := e.CreateIndexIfNotExist(m); err != nil {
+			return err
+		}
+	}
+	return nil
 }
