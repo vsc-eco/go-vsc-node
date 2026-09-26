@@ -112,6 +112,40 @@ func (s p2pSpec) HandleMessage(
 		s.tssMgr.bufferLock.RLock()
 		entry, hasResult := s.tssMgr.sessionResults[sessId]
 		s.tssMgr.bufferLock.RUnlock()
+
+		// POA-8: a request for a per-accused statement (accuse.go). Sign it
+		// only if this node accuses the same party in the same session; the
+		// statement is built from the session alone, so it matches the
+		// leader's CID exactly when both accuse that party.
+		accused, _ := msg.Data["accused"].(string)
+		if accused != "" {
+			if !hasResult {
+				return nil
+			}
+			rec, ok := accuseRecordOf(entry.result)
+			if !ok {
+				return nil
+			}
+			stmt, ok := s.tssMgr.accuseStatement(rec, accused)
+			if !ok {
+				return nil
+			}
+			sigStr, ok := s.tssMgr.blsSignCommitment(stmt)
+			if !ok {
+				return nil
+			}
+			send(p2pMessage{
+				Type:    "res_sig",
+				Account: s.tssMgr.config.Get().HiveUsername,
+				Data: map[string]interface{}{
+					"sig":        sigStr,
+					"session_id": sessId,
+					"accused":    accused,
+				},
+			})
+			return nil
+		}
+
 		if hasResult {
 			baseCommitment := entry.result.Serialize()
 
@@ -193,8 +227,11 @@ func (s p2pSpec) HandleMessage(
 			return nil
 		}
 
+		accused, _ := msg.Data["accused"].(string)
+		sigKey := accuseSigKey(sessId, accused)
+
 		s.tssMgr.bufferLock.RLock()
-		sigChan := s.tssMgr.sigChannels[sessId]
+		sigChan := s.tssMgr.sigChannels[sigKey]
 		s.tssMgr.bufferLock.RUnlock()
 		if sigChan != nil {
 			// Non-blocking send: the collector may have already exited
@@ -205,7 +242,7 @@ func (s p2pSpec) HandleMessage(
 			select {
 			case sigChan <- sigMsg{
 				Account:   msg.Account,
-				SessionId: sessId,
+				SessionId: sigKey,
 				Sig:       sig,
 			}:
 			default:

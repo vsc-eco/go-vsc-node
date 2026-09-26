@@ -496,3 +496,12 @@ func PoaStarvationTopUpActive(active Version) bool {
 func PoaBondLockedWhileShareFundedActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// TssPerAccusedBlameActive reports whether a failed reshare also produces one
+// statement per accused party ("reshare_accuse"), each landing on its own 2/3
+// BLS quorum, and whether landed statements leave the accused out of the next
+// reshare of that key (POA-8). The existing blame commitment is unchanged.
+// Resolve `active` from the version active at the session height.
+func TssPerAccusedBlameActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
