@@ -705,6 +705,11 @@ func (e *electionProposer) GenerateFullElection(
 	//   3. FAIL-STOP on a read error — returning an error aborts this election
 	//      attempt and the next slot retries, rather than proceeding with a
 	//      partial seat set and deleting legitimate candidates.
+	// 0.9.0 (POA-2, POA-9): the seat decision is taken after the stake and
+	// version filters, on the candidates that survive them (see "POA seat gate,
+	// decided on the survivors" below). poaGateSeats carries the seat set there.
+	var poaGateSeats map[string]struct{}
+
 	if consensusversion.PoaSeatGateActive(prevVersion) && e.poaSeats != nil {
 		seats, seatErr := e.poaSeats.GetSeatsAtHeight(blockHeight)
 		if seatErr != nil {
@@ -757,7 +762,13 @@ func (e *electionProposer) GenerateFullElection(
 			// precisely the bar whose violation aborts HoldElection and stalls the
 			// epoch, which is the outcome this guard exists to prevent.
 			floor := e.sconf.ConsensusParams().MinMembers
-			if len(gated) < floor {
+			if consensusversion.PoaStarvationTopUpActive(prevVersion) {
+				// 0.9.0: judged here, on candidates that may still lose their stake
+				// or version below, a seat set that passed this check could come out
+				// under MinMembers and stall the epoch (POA-9). Keep the list whole
+				// and decide on the survivors instead.
+				poaGateSeats = seatSet
+			} else if len(gated) < floor {
 				log.Error("poa seat gate REFUSED: applying it would starve the committee below the floor — election proceeds UNGATED this epoch. The seat registry is short (likely a partial bootstrap); resolve it before the consensus floor rises further",
 					"block_height", blockHeight,
 					"seats", len(seats),
@@ -1048,14 +1059,120 @@ func (e *electionProposer) GenerateFullElection(
 		if num <= 0 || den <= 0 {
 			num, den = 4, 5 // default 80%
 		}
+		// POA-9 (0.9.0): with the seat decision deferred, the list can still hold
+		// unseated stakers here. Readiness is computed over the seats whenever
+		// enough of them are left to form the committee, as it was when the gate
+		// ran first, so unseated witnesses cannot hold back (or pad) a floor rise.
+		readinessList := poaReadinessList(witnessList, poaGateSeats, e.sconf.ConsensusParams().MinMembers)
 		if nf := resolveVersionFloor(floor, newEpoch, blockHeight,
 			e.se.ForcedActivationForHeight(blockHeight), e.se.VersionProposalsForHeight(blockHeight),
-			witnessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
+			readinessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
 			floor = nf
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
 			})
 		}
+	}
+
+	// POA seat gate, decided on the survivors (0.9.0: POA-2, POA-9). Runs after
+	// the stake pass and both version-floor deletes, so it judges exactly the
+	// candidates that can be seated, and before the churn cap and the bond floor
+	// guard.
+	//   - Enough seats survive (>= MinMembers): the gate applies. Every unseated
+	//     candidate is dropped, from the floor guard's snapshot too, so the guard
+	//     cannot re-seat an unseated account.
+	//   - Too few seats survive: every seat is kept and unseated candidates are
+	//     admitted only up to MinMembers, members of the previous committee first
+	//     (they already hold key shares), then by matured stake (raw stake when
+	//     the maturity gate is off), ties by account name. The churn cap cannot
+	//     defer a top-up member (the committee is exactly at MinMembers). The
+	//     floor guard's snapshot keeps the unseated here, so it can still re-seat
+	//     a trimmed INCUMBENT when the gateway or TSS floor needs more.
+	//   - "initial" elections (no staked committee yet) with too few seats stay
+	//     ungated, as before 0.9.0.
+	if poaGateSeats != nil {
+		gateFloor := e.sconf.ConsensusParams().MinMembers
+		seatedEligible := 0
+		for _, w := range witnessList {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				seatedEligible++
+			}
+		}
+		if seatedEligible >= gateFloor {
+			before := len(witnessList)
+			isUnseated := func(w witnesses.Witness) bool {
+				_, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]
+				return !seated
+			}
+			for _, w := range witnessList {
+				if isUnseated(w) {
+					delete(weightMap, w.Account)
+				}
+			}
+			witnessList = slices.DeleteFunc(witnessList, isUnseated)
+			bondPreGate = slices.DeleteFunc(bondPreGate, isUnseated)
+			if dropped := before - len(witnessList); dropped > 0 {
+				log.Info("poa seat gate excluded unseated candidates",
+					"block_height", blockHeight,
+					"seated_eligible", seatedEligible,
+					"excluded", dropped)
+			}
+		} else if pType != "staked" {
+			log.Error("poa seat gate REFUSED on an initial election: too few seats, election proceeds UNGATED this epoch",
+				"block_height", blockHeight, "seated_eligible", seatedEligible, "floor", gateFloor)
+		}
+	}
+	if poaGateSeats != nil && pType == "staked" && len(witnessList) > 0 && poaSeatedCount(witnessList, poaGateSeats) < e.sconf.ConsensusParams().MinMembers {
+		topUpFloor := e.sconf.ConsensusParams().MinMembers
+		seatedEligible := 0
+		unseated := make([]string, 0, len(witnessList))
+		rank := make(map[string]int64, len(witnessList))
+		for _, w := range witnessList {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				seatedEligible++
+				continue
+			}
+			unseated = append(unseated, w.Account)
+			if bondMatured != nil {
+				rank[w.Account] = bondMatured[w.Account]
+			} else {
+				rank[w.Account] = int64(stakedMap[w.Account])
+			}
+		}
+		// Members of the previous committee first: they already hold key shares,
+		// so keeping them adds no new signer, and it stops a well-funded newcomer
+		// from displacing them (the churn cap cannot defer anyone here, because
+		// the committee is exactly at MinMembers).
+		incumbent := make(map[string]bool)
+		if previousElection != nil {
+			for _, m := range previousElection.Members {
+				incumbent[strings.TrimPrefix(m.Account, "hive:")] = true
+			}
+		}
+		keep := selectPoaTopUp(unseated, incumbent, rank, topUpFloor-seatedEligible)
+		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				return false
+			}
+			_, admitted := keep[w.Account]
+			return !admitted
+		})
+		for _, acct := range unseated {
+			if _, admitted := keep[acct]; !admitted {
+				delete(weightMap, acct)
+			}
+		}
+		admitted := make([]string, 0, len(keep))
+		for acct := range keep {
+			admitted = append(admitted, acct)
+		}
+		slices.Sort(admitted)
+		log.Warn("poa starvation top-up admitted unseated candidates up to the floor",
+			"block_height", blockHeight,
+			"floor", topUpFloor,
+			"seated_eligible", seatedEligible,
+			"unseated_candidates", len(unseated),
+			"admitted", strings.Join(admitted, ","))
 	}
 
 	// Bond churn cap (audit F6 / THORChain NumberOfNewNodesPerChurn): the
@@ -2149,4 +2266,68 @@ func resultJoin[T any](results ...result.Result[T]) (res result.Result[[]T]) {
 // together, or it applies neither and behaves exactly as it does today.
 func (e *electionProposer) poaActive(prevVersion consensusversion.Version) bool {
 	return consensusversion.PoaFlatWeightActive(prevVersion) && e.poaSeats != nil
+}
+
+// poaReadinessList is the candidate list the version-floor readiness ratio is
+// computed over (POA-9, 0.9.0): the seats when at least minMembers of them are
+// candidates (the gate will apply), otherwise every candidate. seats == nil
+// (gate not deferred) returns the list unchanged.
+func poaReadinessList(list []witnesses.Witness, seats map[string]struct{}, minMembers int) []witnesses.Witness {
+	if seats == nil {
+		return list
+	}
+	if seated := poaSeatedOnly(list, seats); len(seated) >= minMembers {
+		return seated
+	}
+	return list
+}
+
+// poaSeatedOnly returns the candidates that hold a seat, in list order.
+func poaSeatedOnly(list []witnesses.Witness, seats map[string]struct{}) []witnesses.Witness {
+	return slices.DeleteFunc(slices.Clone(list), func(w witnesses.Witness) bool {
+		_, seated := seats[poaseats.NormalizeAccount(w.Account)]
+		return !seated
+	})
+}
+
+// poaSeatedCount counts the candidates that hold a seat.
+func poaSeatedCount(list []witnesses.Witness, seats map[string]struct{}) int {
+	n := 0
+	for _, w := range list {
+		if _, seated := seats[poaseats.NormalizeAccount(w.Account)]; seated {
+			n++
+		}
+	}
+	return n
+}
+
+// selectPoaTopUp picks the unseated candidates admitted to a starved committee:
+// the `need` best, where members of the previous committee come first, then
+// higher rank (matured stake), then account name, so every signer selects the
+// identical set. need <= 0 admits nobody.
+func selectPoaTopUp(unseated []string, incumbent map[string]bool, rank map[string]int64, need int) map[string]struct{} {
+	out := make(map[string]struct{})
+	if need <= 0 {
+		return out
+	}
+	sorted := slices.Clone(unseated)
+	slices.SortFunc(sorted, func(a, b string) int {
+		if incumbent[a] != incumbent[b] {
+			if incumbent[a] {
+				return -1
+			}
+			return 1
+		}
+		if rank[a] != rank[b] {
+			if rank[a] > rank[b] {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	for i := 0; i < len(sorted) && i < need; i++ {
+		out[sorted[i]] = struct{}{}
+	}
+	return out
 }

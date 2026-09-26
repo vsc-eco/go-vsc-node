@@ -28,9 +28,9 @@ func TestVaultRotationV2LineIsAboveEveryClaimedLine(t *testing.T) {
 // This is the ONE place to update when a new consensus line ships: bump
 // currentConsensus in version.go and this assertion in the same commit.
 func TestRunningVersionImplementsHighestBatch(t *testing.T) {
-	if RunningVersion().Cmp(V0_8_0) != 0 {
+	if RunningVersion().Cmp(V0_9_0) != 0 {
 		t.Errorf("RunningVersion() = %s, want %s (bump currentConsensus in version.go when shipping a new line)",
-			RunningVersion().Format(), V0_8_0.Format())
+			RunningVersion().Format(), V0_9_0.Format())
 	}
 }
 

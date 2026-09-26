@@ -896,12 +896,16 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 	// unstake submitted just BEFORE exiting cannot slip out just after.
 	//
 	// Inert below consensus 0.7.0 and for any account with no seat.
-	if se.IsPoaExitHalted(tx.From, tx.Self.BlockHeight) {
+	//
+	// POA-10: the verdict and its text are the TxResult, so the reads block and
+	// retry on an error (PoaExitHaltOrBlock) instead of holding on the one node
+	// that failed to read. Error-free outcomes are unchanged.
+	if halted, release, armed := se.PoaExitHaltOrBlock(tx.From, tx.Self.BlockHeight); halted {
 		// Two shapes of hold: (a) still an electable witness — no fixed release,
 		// the operator must stop being electable (disable its witness) before the
 		// clock starts; (b) winding down — a concrete release height exists.
 		var msg string
-		if release, armed := se.PoaExitHaltReleaseHeight(tx.From, tx.Self.BlockHeight); armed {
+		if armed {
 			msg = "consensus bond is locked: POA collateral exit-halt runs until block " +
 				strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
 		} else {
@@ -925,6 +929,54 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 			Success: false,
 			Ret:     "election lookup unavailable; retry unstake later",
 			RcUsed:  50,
+		}
+	}
+
+	// POA-5 (0.9.0): in the delegated era the unstake debits the NODE's bond
+	// (tx.To), not the signer's. The two checks above test tx.From, which for a
+	// delegator is the wrong account, so an unseated delegator (an operator's own
+	// alt, say) could pull collateral out from under a halted seat. Apply the same
+	// two locks to the bonded node. A self-unstake (from == to) is already covered
+	// above; below 0.9.0 nothing changes.
+	if tx.To != tx.From && DelegatedStakeActiveForElection(electionResult) &&
+		consensusversion.PoaHaltOnBondedNodeActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
+		if se.IsBondLockedRetiringMember(tx.To, tx.Self.BlockHeight) {
+			return TxResult{
+				Success: false,
+				Ret:     "consensus bond is locked: the node you delegated to holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
+				RcUsed:  50,
+			}
+		}
+		// Blocking reads: this verdict and its text are the TxResult, so a read
+		// error must not decide it on one node alone.
+		if halted, release, armed := se.PoaExitHaltOrBlock(tx.To, tx.Self.BlockHeight); halted {
+			var msg string
+			if armed {
+				msg = "consensus bond is locked: the node you delegated to is under the POA collateral exit-halt until block " +
+					strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+			} else {
+				msg = "consensus bond is locked: the node you delegated to holds a POA seat and is still an electable committee candidate; its collateral, including delegated stake, stays locked until it stops being electable and the exit-halt expires"
+			}
+			return TxResult{Success: false, Ret: msg, RcUsed: 50}
+		}
+	}
+
+	// POA-1 (0.9.0): no unbond while the bonded account holds a share of a BTC
+	// vault generation that still holds funds. A reshare keeps the key, so every
+	// past committee's share stays usable while the generation is funded; the
+	// collateral behind it stays locked until the generation has been rotated
+	// out and drained (THORChain: no unbond while a member of a funded vault).
+	if consensusversion.PoaBondLockedWhileShareFundedActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
+		bonded := tx.From
+		if DelegatedStakeActiveForElection(electionResult) {
+			bonded = tx.To
+		}
+		if se.HeldShareOfFundedVaultOrBlock(bonded, tx.Self.BlockHeight) {
+			msg := "consensus bond is locked: this node is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that still holds funds; it frees once its witness has been disabled for the exit-halt window and every such generation has been rotated out and purged"
+			if bonded != tx.From {
+				msg = "consensus bond is locked: the node you delegated to is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that still holds funds; retry once it has left and every such generation has been rotated out and purged"
+			}
+			return TxResult{Success: false, Ret: msg, RcUsed: 50}
 		}
 	}
 

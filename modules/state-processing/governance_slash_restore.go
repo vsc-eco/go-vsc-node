@@ -206,6 +206,26 @@ func (se *StateEngine) governanceVoterSetOrBlock(proposalID string) map[string]b
 	return out
 }
 
+// governanceVoterSetSinceOrBlock is governanceVoterSetOrBlock restricted to votes
+// recorded at or after minHeight: the voters of the current round of a proposal
+// that can be re-opened (POA admission, 0.9.0). A re-vote upserts the row with
+// its new height, so a voter from an earlier round counts again once it re-votes.
+func (se *StateEngine) governanceVoterSetSinceOrBlock(proposalID string, minHeight uint64) map[string]bool {
+	var votes []governance_db.ProposalVote
+	blockingRetry("GetGovernanceVotes", func() error {
+		var err error
+		votes, err = se.governanceDb.GetVotes(proposalID)
+		return err
+	})
+	out := make(map[string]bool, len(votes))
+	for _, v := range votes {
+		if v.BlockHeight >= minHeight {
+			out[v.Voter] = true
+		}
+	}
+	return out
+}
+
 // governanceElectorate builds the weighted member set from the election snapshot
 // at height. found=false when no election covers the height (handled as
 // "skip", not retried forever — see GetElectionInfoOrBlock).

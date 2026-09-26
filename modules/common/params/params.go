@@ -672,6 +672,24 @@ func (cp ConsensusParams) EffectivePoaExitHalt() uint64 {
 	return cp.PoaExitHaltBlocks
 }
 
+// PoaVoteDepartureHalts is how many exit-halt windows a seat keeps its
+// admission vote after it stops being seated (POA-3, consensus 0.9.0). Long
+// enough that an outage taking honest seats out of the committee for days does
+// not hand the 2/3 bar to the seats that stayed; short enough that a seat set
+// which lost members for good can admit again (mainnet ~30 days, testnet ~2.5
+// days).
+const PoaVoteDepartureHalts = 10
+
+// EffectivePoaVoteDeparture is the admission-vote departure window in blocks:
+// PoaVoteDepartureHalts exit-halt windows, saturating instead of wrapping.
+func (cp ConsensusParams) EffectivePoaVoteDeparture() uint64 {
+	h := cp.EffectivePoaExitHalt()
+	if h > ^uint64(0)/PoaVoteDepartureHalts {
+		return ^uint64(0)
+	}
+	return h * PoaVoteDepartureHalts
+}
+
 // EffectivePoaMaxNewMembers is the POA churn cap in force. A negative pin is
 // treated as "unset" rather than as a cap of 0 (which would mean "admit nobody,
 // ever" — a silent liveness stop), so a mis-signed config cannot wedge admission.
