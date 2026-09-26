@@ -86,6 +86,9 @@ type StateEngine struct {
 	tssRequests    tss_db.TssRequests
 	tssKeys        tss_db.TssKeys
 	tssCommitments tss_db.TssCommitments
+	// heldShareCheck overrides heldShareOfFundedVault (POA-1) in tests; nil in
+	// production.
+	heldShareCheck func(account string, height uint64) (bool, error)
 	// governanceDb persists witness-vote governance proposals + votes
 	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
 	// governance (the handlers no-op when nil).
@@ -2507,9 +2510,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// The payout is HELD (stays pending, retried next slot), never dropped,
 		// and releases automatically once the exit-halt expires. INERT below
 		// consensus 0.7.0 and for accounts with no seat.
-		if from, ok := record.Params["from"].(string); ok && from != "" &&
-			se.IsPoaExitHalted(from, endBlock) {
-			continue
+		// POA-10: blocking reads, so a read error cannot hold the payout on one
+		// node while its peers pay it.
+		if from, ok := record.Params["from"].(string); ok && from != "" {
+			if halted, _, _ := se.PoaExitHaltOrBlock(from, endBlock); halted {
+				continue
+			}
 		}
 
 		completeIds = append(completeIds, record.Id)

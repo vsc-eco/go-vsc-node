@@ -97,9 +97,17 @@ import (
 //     devnet has no election yet, so the floor gate is inert at block 1) and is 0
 //     on every shipped network. Until 0.8.0 is chain-active every v2 rule is inert
 //     and behaviour stays byte-identical, so old and new binaries interoperate.
+//   - 0.9.0 — the Consensus 8→9 bump gates the POA FIX batch
+//     (consensusversion.V0_9_0): corrections to 0.7.0 rules found on the live
+//     testnet after 0.7.0 had activated there (the exit-halt and bond lock key on
+//     the bonded node, an expired admission can re-open, a departed seat stops
+//     voting, a starved committee is topped up to the floor instead of opened).
+//     A new line rather than a change to 0.7.0, so a node replaying the testnet's
+//     0.7.0 history reproduces it byte for byte. Until 0.9.0 is chain-active
+//     every fix is inert and old and new binaries interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 8
+	currentConsensus    uint64 = 9
 	currentNonConsensus uint64 = 0
 )
 

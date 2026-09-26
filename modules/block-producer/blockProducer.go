@@ -864,7 +864,7 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	signedWeight := uint64(0)
 	var included []dids.BlsDID
 	signedDIDs := make(map[dids.BlsDID]bool)
-	for signedWeight < (weightTotal * 9 / 10) {
+	for !leaderSigsComplete(signedWeight, weightTotal, election.TotalWeight) {
 		select {
 		case <-ctx.Done():
 			vlog.Trace("Ending wait for sig (timeout)")
@@ -905,6 +905,18 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	}
 	vlog.Trace("Done waittt")
 	return signedWeight, nil
+}
+
+// leaderSigsComplete reports whether the leader can stop collecting block
+// signatures: 90% of the (duplicate-key folded) weight has signed, AND the
+// signed weight clears the strict 2/3 bar the block must pass (the check after
+// waitForSigs, and TxProposeBlock's validation). For a total weight of 3 or
+// less, 90% rounds down to 2/3 or below, so stopping there alone left a
+// 3-member committee (MinMembers on testnet/devnet, and every POA flat-weight
+// committee of three) unable to broadcast any block even with every member
+// online (L2-STALL-1). A leader-local decision, not a replayed rule.
+func leaderSigsComplete(signed, foldedTotal, electionTotal uint64) bool {
+	return signed >= foldedTotal*9/10 && signed > electionTotal*2/3
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {

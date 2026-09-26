@@ -186,8 +186,36 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 // thief's collateral leaving during the detection window. Same discipline as
 // bondLockMatches (bond_lock.go), for the same reason.
 func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
+	halted, _, _, err := se.poaExitHalt(account, height)
+	if err != nil {
+		log.Error("poa exit-halt: read failed; HOLDING the bond (fail-closed)",
+			"account", account, "height", height, "err", err)
+		return true
+	}
+	return halted
+}
+
+// PoaExitHaltOrBlock is IsPoaExitHalted for callers whose verdict is consensus
+// output (a TxResult and its refusal text): a read error blocks and retries
+// instead of holding on this node alone, which would diverge it from peers that
+// read fine. It also returns the fixed release height, when one exists, from the
+// same reads.
+func (se *StateEngine) PoaExitHaltOrBlock(account string, height uint64) (halted bool, release uint64, armed bool) {
+	blockingRetry("poaExitHalt("+account+")", func() error {
+		var err error
+		halted, release, armed, err = se.poaExitHalt(account, height)
+		return err
+	})
+	return halted, release, armed
+}
+
+// poaExitHalt is the exit-halt verdict with its read errors returned rather
+// than absorbed. release/armed carry the fixed release height when the hold
+// runs on the seat clock (armed=false while the operator is electable or
+// recently active, or before an exit is recorded).
+func (se *StateEngine) poaExitHalt(account string, height uint64) (halted bool, release uint64, armed bool, err error) {
 	if se.poaSeats == nil {
-		return false
+		return false, 0, false, nil
 	}
 	if se.sconf == nil {
 		// Fail CLOSED, and never panic. Sibling gates (IsBondLockedRetiringMember,
@@ -195,21 +223,19 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 		// sconf and the store it reads are wired together; a security gate that
 		// crashes on a consensus tx-processing path is strictly worse than one
 		// that holds.
-		return true
+		return true, 0, false, nil
 	}
 	if !consensusversion.PoaExitHaltActive(se.ActiveConsensusVersion(height)) {
-		return false
+		return false, 0, false, nil
 	}
 
 	seat, found, err := se.poaSeats.GetSeat(account)
 	if err != nil {
-		log.Error("poa exit-halt: seat read failed; HOLDING the bond (fail-closed)",
-			"account", account, "height", height, "err", err)
-		return true
+		return true, 0, false, fmt.Errorf("seat read: %w", err)
 	}
 	if !found {
 		// No seat: nothing POA has any claim over.
-		return false
+		return false, 0, false, nil
 	}
 
 	// ★ RG-1 COMPLETE CLOSE (both the first-election AND the re-election gap).
@@ -234,8 +260,8 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 	// is held. This is a pure function of on-chain state at `height`.
 	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
 
-	if se.isElectableWitness(account, height) {
-		return true
+	if electable, err := se.isElectableWitnessE(account, height); err != nil || electable {
+		return true, 0, false, err
 	}
 
 	// ★ RG-1c CLOSE (the disable-in-the-gap variant). isElectableWitness samples
@@ -253,8 +279,8 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 	// that no in-flight election can seat it, and the seat clock may govern
 	// release. `window` (>= the announcement-freshness horizon on mainnet) is far
 	// larger than any generation→ratification gap, so this leaves no timing seam.
-	if se.hadRecentWitnessActivity(account, height, window) {
-		return true
+	if active, err := se.hadRecentWitnessActivityE(account, height, window); err != nil || active {
+		return true, 0, false, err
 	}
 
 	// From here the operator has been provably non-electable for a full window —
@@ -270,25 +296,25 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 		// IS an electable witness and so was already held above.
 		release := seat.AdmittedHeight + window
 		if release < seat.AdmittedHeight {
-			return true // overflow guard
+			return true, 0, false, nil // overflow guard
 		}
-		return height < release
+		return height < release, release, true, nil
 	}
 	if seat.ExitHeight == 0 {
 		// Seated, not electable, but no exit recorded yet — the next election
 		// will record the exit and start the clock. Hold until then.
-		return true
+		return true, 0, false, nil
 	}
 
-	release := seat.ExitHeight + window
+	release = seat.ExitHeight + window
 	if release < seat.ExitHeight {
 		// Overflow — only reachable via an absurd configured halt. Hold rather
 		// than wrap to a release height in the past.
 		log.Error("poa exit-halt: release height overflowed; HOLDING",
 			"account", account, "exit_height", seat.ExitHeight)
-		return true
+		return true, 0, false, nil
 	}
-	return height < release
+	return height < release, release, true, nil
 }
 
 // isElectableWitness reports whether account is a candidate the election
@@ -301,22 +327,31 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 // electable → hold), matching the halt's fail-closed posture — a delayed
 // withdrawal is bounded, a released bond on a signer is not.
 func (se *StateEngine) isElectableWitness(account string, height uint64) bool {
-	if se.witnessDb == nil {
-		return true
-	}
-	ws, err := se.witnessDb.GetWitnessesAtBlockHeight(height, witnesses.EnabledOnly())
+	electable, err := se.isElectableWitnessE(account, height)
 	if err != nil {
 		log.Error("poa exit-halt: witness read failed; HOLDING (fail-closed)",
 			"account", account, "height", height, "err", err)
 		return true
 	}
+	return electable
+}
+
+// isElectableWitnessE is isElectableWitness with the read error returned.
+func (se *StateEngine) isElectableWitnessE(account string, height uint64) (bool, error) {
+	if se.witnessDb == nil {
+		return true, nil
+	}
+	ws, err := se.witnessDb.GetWitnessesAtBlockHeight(height, witnesses.EnabledOnly())
+	if err != nil {
+		return true, fmt.Errorf("witness read: %w", err)
+	}
 	bare := poaseats.NormalizeAccount(account)
 	for _, w := range ws {
 		if poaseats.NormalizeAccount(w.Account) == bare {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // hadRecentWitnessActivity reports whether account made ANY witness announcement
@@ -326,27 +361,37 @@ func (se *StateEngine) isElectableWitness(account string, height uint64) bool {
 // witness-silent for a full window — long enough that any such election has
 // ratified. Fail-CLOSED (nil store or read error → true → hold).
 func (se *StateEngine) hadRecentWitnessActivity(account string, height, window uint64) bool {
-	if se.witnessDb == nil {
+	active, err := se.hadRecentWitnessActivityE(account, height, window)
+	if err != nil {
+		log.Error("poa exit-halt: witness-activity read failed; HOLDING (fail-closed)",
+			"account", account, "height", height, "err", err)
 		return true
+	}
+	return active
+}
+
+// hadRecentWitnessActivityE is hadRecentWitnessActivity with the read error
+// returned.
+func (se *StateEngine) hadRecentWitnessActivityE(account string, height, window uint64) (bool, error) {
+	if se.witnessDb == nil {
+		return true, nil
 	}
 	h := height
 	w, err := se.witnessDb.GetWitnessAtHeight(poaseats.NormalizeAccount(account), &h)
 	if err != nil {
 		// A genuine "no announcement" (ErrNoDocuments) means the account has
 		// never been a witness → not electable, no in-flight election. Any other
-		// error is a transient read → fail closed.
+		// error is a transient read.
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return false
+			return false, nil
 		}
-		log.Error("poa exit-halt: witness-activity read failed; HOLDING (fail-closed)",
-			"account", account, "height", height, "err", err)
-		return true
+		return true, fmt.Errorf("witness-activity read: %w", err)
 	}
 	if w == nil {
-		return false
+		return false, nil
 	}
 	// w.Height < height (GetWitnessAtHeight filters height<bh), so no underflow.
-	return height-w.Height < window
+	return height-w.Height < window, nil
 }
 
 // PoaExitHaltReleaseHeight returns the height at which an account's exit-halt

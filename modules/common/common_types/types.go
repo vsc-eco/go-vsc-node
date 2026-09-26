@@ -95,6 +95,14 @@ type StateEngine interface {
 	// lifts, and whether one is armed at all, so a refusal can name a concrete
 	// height instead of "try again later".
 	PoaExitHaltReleaseHeight(account string, height uint64) (uint64, bool)
+	// PoaExitHaltOrBlock is IsPoaExitHalted plus the release height from the
+	// same reads, for callers whose verdict is consensus output: a read error
+	// blocks and retries instead of deciding on this node alone.
+	PoaExitHaltOrBlock(account string, height uint64) (halted bool, release uint64, armed bool)
+	// HeldShareOfFundedVaultOrBlock reports whether account holds a share of a
+	// BTC vault generation that still holds funds (POA-1, 0.9.0); read errors
+	// block and retry.
+	HeldShareOfFundedVaultOrBlock(account string, height uint64) bool
 }
 
 type BlockStatusGetter interface {

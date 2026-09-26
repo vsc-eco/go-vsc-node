@@ -25,7 +25,8 @@ import (
 //  1. THE ELECTORATE IS SEATS, NOT THE ELECTED COMMITTEE, and each seat carries
 //     exactly one vote. A seat that is temporarily out of the committee (dropped
 //     for a liveness fault) still votes, because it is still an admitted
-//     operator; and no amount of stake buys a second vote.
+//     operator; and no amount of stake buys a second vote. From 0.9.0 that
+//     grace lasts one departure window (seatHoldsAdmissionVote, POA-3).
 //
 //  2. THERE IS NO CREATE OP. Every vote for the same (candidate, ubo) converges
 //     on one proposal id derived from that pair, so the first vote opens the
@@ -40,6 +41,15 @@ import (
 // controls the vault, so a minority acting alone can never grow itself, and the
 // set can never SHRINK (there is no removal op anywhere in this build), so
 // capture-by-subtraction is closed outright.
+//
+// From 0.9.0 the ELECTORATE (not the set) does shrink: a seat that has not
+// served for a whole departure window (10 exit-halt windows, ~30 days on
+// mainnet) stops voting until it is next seated (POA-3). Without that, seats
+// that left kept a vote forever and a live set that had lost a third of its
+// seats could never admit again. The trade-off, stated plainly: if honest
+// seats are out of every ratified election for the whole window (a long outage,
+// seats sharing one host), the seats that stayed decide admissions without
+// them. The window is long so that only a sustained absence does this.
 //
 // The narrow caveat, recorded so nobody over-reads the claim later: required(W)
 // = ceil(2W/3) increases by 0 or 1 when a seat is added, so at set sizes where
@@ -192,13 +202,31 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 	if prop.Type != string(governance.ProposalAdmitSeat) {
 		return
 	}
+	// POA-7 (0.9.0): a vote on a proposal whose round is over starts the next
+	// round. The id is derived from (candidate, ubo) only, so an expiry used to
+	// bar the pair forever. A new round restarts the window at this vote, re-takes
+	// the electorate snapshot at this height, and counts only votes cast in this
+	// round (the round-scoped voter set below), so a stale vote from an earlier
+	// round can never complete it. Applied stays terminal. This covers both a
+	// proposal already marked expired (before activation) and one whose window
+	// has just run out.
+	reopen := consensusversion.PoaAdmissionReopenActive(se.ActiveConsensusVersion(blockHeight))
+	window := se.sconf.ConsensusParams().EffectivePoaAdmitVoteWindow()
+	roundOver := prop.Status == string(governance.StatusExpired) ||
+		(prop.Status == string(governance.StatusOpen) && governance.IsExpired(blockHeight, prop.CreationBlock, window, 0))
+	if reopen && roundOver {
+		prop.Status = string(governance.StatusOpen)
+		prop.CreationBlock = blockHeight
+		se.saveGovernanceProposalOrBlock(prop)
+		log.Info("vsc.admit_vote: admission proposal re-opened as a new round",
+			"proposal", proposalID, "candidate", prop.Candidate, "opened_by", voter, "height", blockHeight)
+	}
 	if prop.Status != string(governance.StatusOpen) {
-		return // terminal: applied or expired
+		return // terminal: applied (or expired below 0.9.0)
 	}
 
 	// Admission has no maturity cap (nothing external bounds the window), so the
 	// effective expiry is simply open+window.
-	window := se.sconf.ConsensusParams().EffectivePoaAdmitVoteWindow()
 	if governance.IsExpired(blockHeight, prop.CreationBlock, window, 0) {
 		prop.Status = string(governance.StatusExpired)
 		se.saveGovernanceProposalOrBlock(prop)
@@ -211,7 +239,10 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 	// each vote. Otherwise the denominator moves under a proposal while it is
 	// open: seats admitted mid-window would raise the bar for a vote already
 	// cast, and — worse — a shrinking committee would lower it. Same discipline
-	// as the reserve-payout path.
+	// as the reserve-payout path. One exception from 0.9.0: seat rows are not
+	// height-addressed, so a departed seat that is re-seated during the round
+	// counts again. The denominator can therefore grow during a round (raising
+	// the bar, never lowering it); it cannot shrink.
 	snapshot, ok := se.poaSeatElectorate(prop.CreationBlock)
 	if !ok {
 		return
@@ -228,6 +259,12 @@ func (se *StateEngine) handleAdmitVote(payload []byte, voterAccount, txID string
 	})
 
 	voters := se.governanceVoterSetOrBlock(proposalID)
+	if consensusversion.PoaAdmissionReopenActive(se.ActiveConsensusVersion(blockHeight)) {
+		// Round-scoped tally: only votes cast at or after this round's creation
+		// block. For a proposal that was never re-opened every vote qualifies
+		// (the opening vote sits at CreationBlock), so this changes nothing there.
+		voters = se.governanceVoterSetSinceOrBlock(proposalID, prop.CreationBlock)
+	}
 	if !governance.IsApproved(snapshot, prop.Beneficiary, voters) {
 		log.Debug("vsc.admit_vote: vote recorded, threshold not yet met",
 			"proposal", proposalID, "voted", governance.Tally(snapshot, prop.Beneficiary, voters),
@@ -300,11 +337,47 @@ func (se *StateEngine) poaSeatElectorate(height uint64) ([]governance.Member, bo
 	if len(seats) == 0 {
 		return nil, false
 	}
+	// POA-3 (0.9.0): a seat that has stopped serving for the whole departure
+	// window no longer votes (see seatHoldsAdmissionVote). Seats inside the
+	// window, including ones only temporarily out of the committee, keep their
+	// vote.
+	dropDeparted := consensusversion.PoaElectorateDropsDepartedActive(se.ActiveConsensusVersion(height))
+	departure := se.sconf.ConsensusParams().EffectivePoaVoteDeparture()
 	accounts := make([]string, 0, len(seats))
 	for _, s := range seats {
+		if dropDeparted && !seatHoldsAdmissionVote(s, height, departure) {
+			continue
+		}
 		accounts = append(accounts, poaseats.NormalizeAccount(s.Account))
 	}
+	if len(accounts) == 0 {
+		return nil, false
+	}
 	return governance.SeatElectorate(accounts), true
+}
+
+// seatHoldsAdmissionVote reports whether a seat votes on admissions at height
+// (POA-3, 0.9.0). The vote follows SERVICE, not collateral: a seat votes while
+// it is seated, and for one departure window (EffectivePoaVoteDeparture) after
+// it stops, counted from its recorded exit or, for a seat that has never been
+// elected, from its admission. Without the second clause an operator admitted
+// but never seated would hold a vote forever, since SetExit only ever fires for
+// a seat that has been seated. A seat regains its vote when it is next seated
+// (SetSeating clears the exit). Pure function of the seat row, so every node
+// builds the same electorate.
+func seatHoldsAdmissionVote(s poaseats.Seat, height, window uint64) bool {
+	from := s.ExitHeight
+	if from == 0 {
+		if s.LastSeatedHeight > 0 {
+			return true // seated now
+		}
+		from = s.AdmittedHeight // never elected
+	}
+	end := from + window
+	if end < from {
+		return true // overflow: only an absurd window reaches here; keep the vote
+	}
+	return height < end
 }
 
 // PoaAdmitVoteActive reports whether the admission op is dispatched at height.

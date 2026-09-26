@@ -40,7 +40,9 @@ type fakeSeats struct {
 	// failReadsFor fails the next N reads then recovers, so the fail-stop
 	// (blockingRetry) paths can be exercised without looping forever.
 	failReadsFor int
-	readAttempts int
+	// failGetSeatFor fails the next N GetSeat reads then recovers.
+	failGetSeatFor int
+	readAttempts   int
 }
 
 func newFakeSeats() *fakeSeats { return &fakeSeats{seats: map[string]poaseats.Seat{}} }
@@ -67,6 +69,10 @@ func (f *fakeSeats) GetSeatsAtHeight(height uint64) ([]poaseats.Seat, error) {
 func (f *fakeSeats) GetSeat(account string) (poaseats.Seat, bool, error) {
 	if f.failReads {
 		return poaseats.Seat{}, false, errors.New("read failure")
+	}
+	if f.failGetSeatFor > 0 {
+		f.failGetSeatFor--
+		return poaseats.Seat{}, false, errors.New("transient read failure")
 	}
 	s, ok := f.seats[poaseats.NormalizeAccount(account)]
 	return s, ok, nil

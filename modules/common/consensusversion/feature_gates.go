@@ -409,3 +409,90 @@ func TssCommitmentBundleCapActive(active Version) bool {
 func PoaExitHaltActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
+
+// V0_9_0 is the version line of the POA fix batch: corrections to 0.7.0 rules
+// found on the live testnet after 0.7.0 had already activated there.
+//
+// Why a NEW line and not a change to 0.7.0: the testnet has run 0.7.0 with the
+// original rules since epoch 1261, so rewriting 0.7.0 would make a node
+// replaying that history compute different balances than the chain it joins,
+// and a fleet mid-upgrade would split. Below 0.9.0 every 0.7.0 rule keeps its
+// original behaviour byte for byte. 0.8.0 is taken by the vault-rotation-v2
+// batch; 0.9.0 is free on every branch (grepped V0_[0-9]+_0 across all 87).
+// A network that has not reached 0.7.0 (mainnet) can raise its floor straight
+// to 0.9.0 and activate both batches together.
+var V0_9_0 = Version{Major: 0, Consensus: 9, NonConsensus: 0}
+
+// Version0_9_0Active reports whether the POA fix batch is in force given the
+// chain-active consensus version.
+func Version0_9_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_9_0)
+}
+
+// PoaHaltOnBondedNodeActive reports whether the submission-time collateral
+// exit-halt and retiring-member bond lock also test the account whose bond an
+// unstake actually debits. Since the delegated-stake batch (0.5.0) that is the
+// NODE (the unstake's `to`), not the signer: testing only the signer let a
+// delegator (for example an operator's own alt) pull collateral out from under
+// a halted seat (POA-5). The release-time holds are deliberately left alone: the
+// bond leaves hive_consensus when the unstake is accepted and a slash only
+// reaches hive_consensus, so holding a pending payout protects nothing and would
+// only freeze a delegator's already-unbonded funds. Resolve `active` from the
+// version active at the transaction's height, exactly like PoaExitHaltActive.
+func PoaHaltOnBondedNodeActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// PoaAdmissionReopenActive reports whether an EXPIRED admission proposal
+// re-opens as a fresh round on the next vote, instead of barring its
+// (candidate, owner) pair forever. The proposal id is derived from the pair
+// alone, deliberately, so votes converge on one proposal; without a way back
+// from "expired", a candidate who missed the window could only ever be admitted
+// under a different owner string, and the one-owner-one-seat check is exact on
+// that string (POA-7). Resolve `active` from the version active at the VOTE's
+// block height, like PoaAdmissionOpsActive.
+func PoaAdmissionReopenActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// PoaElectorateDropsDepartedActive reports whether a seat stops voting on
+// admissions once it has been out of every ratified election for a whole
+// departure window (params EffectivePoaVoteDeparture, ten exit-halt windows).
+// Below 0.9.0 every seat ever admitted votes forever, so after more than a
+// third of seats leave the live set can never reach 2/3 again (POA-3). A seat
+// that is only temporarily out of the committee keeps its vote for the window.
+// Resolve `active` from the version active at the height the electorate is
+// built.
+func PoaElectorateDropsDepartedActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// PoaStarvationTopUpActive reports how the seat gate is decided. Below 0.9.0
+// the gate is judged on the seats among the candidates before the stake and
+// version filters: if too few, it is skipped for that epoch and every matured
+// staker becomes a candidate at flat seat weight, limited only by the churn cap
+// (POA-2); if enough, it applies, and a seat later lost to those filters can
+// leave the committee under MinMembers, aborting the election on every retry
+// (POA-9). At 0.9.0 the decision is taken after those filters, on the
+// survivors: enough seats and the gate applies; too few and every seat is kept
+// and only as many unseated candidates as it takes to reach MinMembers are
+// admitted, members of the previous committee first, then by matured stake.
+// The version-floor readiness ratio is computed over the seats whenever they
+// can form the committee. Resolve `active` from the PRIOR ratified election's
+// version, like PoaSeatGateActive: the member set is CID input, so every
+// signer must reach the identical verdict.
+func PoaStarvationTopUpActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// PoaBondLockedWhileShareFundedActive reports whether an unstake is refused
+// while the bonded account holds a share of a BTC vault generation that still
+// holds funds (POA-1). A reshare keeps the key, so every past committee's share
+// still combines into a valid signature for as long as that generation is
+// funded; the collateral behind such a share stays locked until the generation
+// has been rotated out and drained. THORChain's rule: no unbond while a member
+// of a vault that still holds funds. Resolve `active` from the version active
+// at the unstake's height.
+func PoaBondLockedWhileShareFundedActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
