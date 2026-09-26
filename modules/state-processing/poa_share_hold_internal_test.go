@@ -155,7 +155,7 @@ func TestPoa1_TransientReadRetriesInsteadOfDeciding(t *testing.T) {
 	}
 }
 
-// Review round 3: a member of the current election unstaked before the
+// Regression: a member of the current election unstaked before the
 // election's reshare landed, so the lock (read at submission) did not see it,
 // and the bond paid out later while its new share signed. Current members are
 // now locked while any generation holds funds.
@@ -180,7 +180,7 @@ func TestPoa1_CurrentElectionMemberLockedBeforeItsReshareLands(t *testing.T) {
 	}
 }
 
-// Review round 4: an election's members are fixed at its anchor, before it
+// Regression: an election's members are fixed at its anchor, before it
 // lands, so "member of the current election" misses a node elected at the
 // anchor that unstakes before the landing. The seat exit-halt already closes
 // that window for seats (electable now, or witness activity within the exit
