@@ -597,6 +597,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		<-dispatcher.done
 
 		tssErr, culprits, errorText := dispatcher.snapshotTssError()
+		accused := dispatcher.accusedAfterTimeout()
 
 		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "culpritCount", len(culprits), "hasErr", dispatcher.err != nil, "hasResult", dispatcher.result != nil)
 
@@ -632,6 +633,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				tssErr:      tssErr,
 				Culprits:    culprits,
 				ErrorText:   errorText,
+				Accused:     accused,
+				OldEpoch:    dispatcher.epoch,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
@@ -749,6 +752,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.newEpoch,
+				Accused:     accused,
+				OldEpoch:    dispatcher.epoch,
 			})
 			return
 		}
@@ -785,6 +790,25 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		log.Error("reshare done: signalled with no result and no error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 		reject(fmt.Errorf("reshare dispatcher signalled done with no result"))
 	})
+}
+
+// accusedAfterTimeout is this node's accused set for a reshare that stalled
+// (POA-8, 0.9.0): the parties its new party still waits on. Only after the
+// timeout fired, when WaitingFor describes the stall; empty below 0.9.0 and on
+// every other path. btss error culprits are left out on purpose (a bad old
+// party 0 gets party 1 blamed by everyone, see accuse.go). Feeds the
+// per-accused statements only, never the session's own blame commitment.
+func (dispatcher *ReshareDispatcher) accusedAfterTimeout() []string {
+	if !dispatcher.timeout || dispatcher.newParty == nil {
+		return nil
+	}
+	waiting := make([]string, 0)
+	for _, p := range dispatcher.newParty.WaitingFor() {
+		waiting = append(waiting, p.Id)
+	}
+	return accusedIfActive(
+		dispatcher.tssMgr.scheduler.TssMinimumConsensusVersion(dispatcher.blockHeight),
+		dispatcher.tssMgr.config.Get().HiveUsername, waiting)
 }
 
 func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
@@ -2184,6 +2208,11 @@ type ErrorResult struct {
 	// to tssErr.Error() in Serialize when empty (degenerate path).
 	ErrorText string
 
+	// Accused and OldEpoch feed the per-accused statements of a failed
+	// reshare (POA-8, 0.9.0; see accuse.go). Never part of Serialize().
+	Accused  []string
+	OldEpoch uint64
+
 	SessionId   string
 	KeyId       string
 	BlockHeight uint64
@@ -2257,6 +2286,11 @@ type TimeoutResult struct {
 	KeyId       string   `json:"key_id"`
 	BlockHeight uint64
 	Epoch       uint64 `json:"epoch"`
+
+	// Accused and OldEpoch feed the per-accused statements of a failed
+	// reshare (POA-8, 0.9.0; see accuse.go). Never part of Serialize().
+	Accused  []string `json:"-"`
+	OldEpoch uint64   `json:"-"`
 }
 
 func (TimeoutResult) Type() DispatcherType {
