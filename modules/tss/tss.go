@@ -1825,6 +1825,29 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 			}
 
+			// POA-8 (0.9.0): leave out the party that more than 2/3 of the
+			// committee could not get messages from in an earlier failed
+			// attempt at this key since its last rotation (accuse.go). Inputs
+			// are on-chain statements plus the lists above; at most one party,
+			// and never below threshold+1 of the old committee that would run.
+			if consensusversion.TssPerAccusedBlameActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
+				if counts := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock); len(counts) > 0 {
+					alreadyOut := 0
+					for _, member := range currentElection.Members {
+						if blamedAccounts[member.Account] || blameMap.BannedNodes[member.Account] {
+							alreadyOut++
+						}
+					}
+					var accusedOut map[string]bool
+					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut)
+					for a := range accusedOut {
+						excludedNodes = append(excludedNodes, a)
+					}
+					log.Verbose("reshare accusation exclusions", "sessionId", sessionId,
+						"accused", counts, "excluded", accusedOut)
+				}
+			}
+
 			log.Verbose("reshare participant selection", "sessionId", sessionId,
 				"oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants),
 				"excluded", len(excludedNodes), "excludedNodes", excludedNodes,
@@ -1971,6 +1994,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		signedResults := make([]KeySignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
+		// POA-8: per-accused statements of this node's failed reshares
+		// (accuse.go). Collected on their own quorum, apart from the
+		// session's blame commitment.
+		accuseResults := make([]accuseCommit, 0)
 
 		// Await all dispatchers concurrently so that each dispatcher's
 		// sessionResults entry is stored as soon as IT finishes, rather than
@@ -2071,6 +2098,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.bufferLock.Lock()
 					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
 					tssMgr.bufferLock.Unlock()
+					if acc := tssMgr.accuseCommitsOf(res); len(acc) > 0 {
+						resultsMu.Lock()
+						accuseResults = append(accuseResults, acc...)
+						resultsMu.Unlock()
+					}
 
 					// Don't record systemic blames: if fewer than
 					// threshold+1 nodes remain unblamed, the protocol
@@ -2109,6 +2141,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.bufferLock.Unlock()
 
 					log.Warn("timeout result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", res.Culprits)
+					if acc := tssMgr.accuseCommitsOf(res); len(acc) > 0 {
+						log.Warn("reshare accusations", "sessionId", res.SessionId, "keyId", res.KeyId, "accused", res.Accused)
+						resultsMu.Lock()
+						accuseResults = append(accuseResults, acc...)
+						resultsMu.Unlock()
+					}
 
 					// Don't record systemic blames: see error blame
 					// comment above for the threshold rationale.
@@ -2195,8 +2233,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 			}()
 
-			if len(commitableResults) > 0 {
+			if len(commitableResults) > 0 || len(accuseResults) > 0 {
 				time.Sleep(tssMgr.sconf.TssParams().CommitDelay)
+
+				// Each pending commitment with its routing: "" for a
+				// session's own commitment, the accused party for a POA-8
+				// statement (its own quorum, its own sig channel).
+				pending := make([]accuseCommit, 0, len(commitableResults)+len(accuseResults))
+				for _, c := range commitableResults {
+					pending = append(pending, accuseCommit{commitment: c})
+				}
+				pending = append(pending, accuseResults...)
 
 				log.Info("starting multi-sig collection", "blockHeight", bh, "count", len(commitableResults))
 
@@ -2207,7 +2254,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				})
 				var commitedMu sync.Mutex
 				var wg sync.WaitGroup
-				for _, commitResult := range commitableResults {
+				for _, p := range pending {
+					commitResult := p.commitment
 					wg.Add(1)
 					go func() {
 						commitResult.BlockHeight = bh
@@ -2237,6 +2285,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							ctx,
 							signableCid,
 							commitResult.SessionId,
+							p.accused,
 							&currentElection,
 						)
 
@@ -2255,7 +2304,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						} else {
 							log.Verbose("waitForSigs OK", "sessionId", commitResult.SessionId, "keyId", commitResult.KeyId, "type", commitResult.Type)
 							commitedMu.Lock()
-							commitedResults[commitResult.SessionId] = struct {
+							commitedResults[accuseSigKey(commitResult.SessionId, p.accused)] = struct {
 								err        error
 								circuit    *dids.SerializedCircuit
 								commitment tss_helpers.BaseCommitment
@@ -2272,12 +2321,36 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				}
 				wg.Wait()
 
+				// A commitment row is keyed (key, height, type), so a second
+				// accusation for the same session in one bundle would overwrite
+				// the first. Publish one per session (smallest accused); a
+				// second withholder is named in the next session.
+				firstAccuse := make(map[string]string)
+				for key, r := range commitedResults {
+					if r.err != nil || r.commitment.Type != accuseTypeReshare {
+						continue
+					}
+					if prev, ok := firstAccuse[r.commitment.SessionId]; !ok || key < prev {
+						firstAccuse[r.commitment.SessionId] = key
+					}
+				}
+
 				var canCommit bool = false
 				sigPacket := make([]map[string]any, 0)
-				for _, signResult := range commitedResults {
+				// POA-8 statements travel in their own custom_json op(s), so they
+				// never grow the session-commitment op toward Hive's size cap.
+				accusePacket := make([]map[string]any, 0)
+				for key, signResult := range commitedResults {
+					if signResult.commitment.Type == accuseTypeReshare && firstAccuse[signResult.commitment.SessionId] != key {
+						continue
+					}
 					if signResult.err == nil {
 						canCommit = true
-						sigPacket = append(sigPacket, map[string]any{
+						packet := &sigPacket
+						if signResult.commitment.Type == accuseTypeReshare {
+							packet = &accusePacket
+						}
+						*packet = append(*packet, map[string]any{
 							"type":         signResult.commitment.Type,
 							"session_id":   signResult.commitment.SessionId,
 							"key_id":       signResult.commitment.KeyId,
@@ -2304,20 +2377,20 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					)
 				}
 
-				rawJson, err := json.Marshal(sigPacket)
-
 				if canCommit {
 					log.Info("broadcasting commitment to Hive", "blockHeight", bh, "sessions", len(commitedResults))
-					deployOp := hivego.CustomJsonOperation{
-						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
-						RequiredPostingAuths: []string{},
-						Id:                   "vsc.tss_commitment",
-						Json:                 string(rawJson),
+					ops := make([]hivego.HiveOperation, 0, 1)
+					for _, packet := range commitmentOpPackets(sigPacket, accusePacket) {
+						rawJson, _ := json.Marshal(packet)
+						ops = append(ops, hivego.CustomJsonOperation{
+							RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+							RequiredPostingAuths: []string{},
+							Id:                   "vsc.tss_commitment",
+							Json:                 string(rawJson),
+						})
 					}
 
-					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
-						deployOp,
-					})
+					hiveTx := tssMgr.hiveClient.MakeTransaction(ops)
 					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
 					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
 					if signErr != nil {
@@ -2327,7 +2400,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Error("tss_commitment: hive tx signing failed; not broadcasting", "blockHeight", bh, "err", signErr)
 					} else {
 						hiveTx.AddSig(sig)
-						_, err = tssMgr.hiveClient.Broadcast(hiveTx)
+						_, err := tssMgr.hiveClient.Broadcast(hiveTx)
 						if err != nil {
 							log.Error("Hive broadcast failed", "blockHeight", bh, "err", err)
 						} else {
@@ -2372,8 +2445,11 @@ func (tssMgr *TssManager) waitForSigs(
 	ctx context.Context,
 	cid cid.Cid,
 	sessionId string,
+	accused string,
 	election *elections.ElectionResult,
 ) (*dids.SerializedCircuit, error) {
+	// accused != "" collects a POA-8 statement (accuse.go) on its own channel.
+	sigKey := accuseSigKey(sessionId, accused)
 	weightTotal := uint64(0)
 	for _, weight := range election.Weights {
 		weightTotal += weight
@@ -2388,7 +2464,7 @@ func (tssMgr *TssManager) waitForSigs(
 	blsCircuit := dids.NewBlsCircuitGenerator(members)
 
 	tssMgr.bufferLock.Lock()
-	tssMgr.sigChannels[sessionId] = make(chan sigMsg, len(election.Members))
+	tssMgr.sigChannels[sigKey] = make(chan sigMsg, len(election.Members))
 	tssMgr.bufferLock.Unlock()
 
 	// Without this, the channel stays in the map forever after waitForSigs
@@ -2397,16 +2473,20 @@ func (tssMgr *TssManager) waitForSigs(
 	// The earlier deletes in RunActions fire BEFORE waitForSigs is called.
 	defer func() {
 		tssMgr.bufferLock.Lock()
-		delete(tssMgr.sigChannels, sessionId)
+		delete(tssMgr.sigChannels, sigKey)
 		tssMgr.bufferLock.Unlock()
 	}()
 
+	askData := map[string]interface{}{
+		"session_id": sessionId,
+	}
+	if accused != "" {
+		askData["accused"] = accused
+	}
 	tssMgr.pubsub.Send(p2pMessage{
 		Type:    "ask_sigs",
 		Account: tssMgr.config.Get().HiveUsername,
-		Data: map[string]interface{}{
-			"session_id": sessionId,
-		},
+		Data:    askData,
 	})
 
 	log.Trace("waiting for sigs", "commitedCid", cid)
@@ -2422,7 +2502,7 @@ func (tssMgr *TssManager) waitForSigs(
 
 		// common.has
 		tssMgr.bufferLock.RLock()
-		sigChan := tssMgr.sigChannels[sessionId]
+		sigChan := tssMgr.sigChannels[sigKey]
 		tssMgr.bufferLock.RUnlock()
 
 		// GV-L9: overflow-safe 2/3 quorum threshold. `signedWeight*3 < weightTotal*2`
