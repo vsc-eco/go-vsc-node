@@ -104,7 +104,7 @@ func (net *poa8Net) statementWeight(t *testing.T, leader, sessionId, accused str
 	return weight
 }
 
-// The devnet session reshare-260 (ledger 2026-09-25 02:23): magi.test3 attested
+// A devnet reshare session (TestPoaSeatAttestsAndWithholdsEverySession): magi.test3 attested
 // ready and went silent. test1/test4/test5 waited on test3 only; test2 waited on
 // all four others. Five seats of weight 10: a commitment needs 50 - 50/3 = 34.
 var poa8Waiting = map[string][]string{
@@ -223,13 +223,13 @@ func TestPoa8_ExclusionCapOneAndThresholdPlusOne(t *testing.T) {
 	full := selectAccusedExclusions(map[string]int{"a": 3, "z": 1}, []string{"a", "b", "c"}, 3, 0)
 	assert.Equal(t, map[string]bool{"z": true}, full, "an old member is never taken below the minimum; a non-old party still can be")
 
-	// Review round 4: blame (33% rule) or a ban already left a new-committee
+	// Blame (33% rule) or a ban already left a new-committee
 	// member out; POA-8 must not stack another exclusion on top.
 	stacked := selectAccusedExclusions(map[string]int{"b": 5}, old, 4, 1)
 	assert.Empty(t, stacked, "no accusation exclusion when blame or ban already excluded someone")
 }
 
-// The review PoC: 19 equal seats, 9 colluding. One colluder starves a different
+// Framing scenario: 19 equal seats, 9 colluding. One colluder starves a different
 // honest node in each of six failed sessions, and each time every other party
 // honestly names that node, so six statements land. Built uncapped, the next
 // reshare dropped all six: a 13-member key needing 9 signers, which the
