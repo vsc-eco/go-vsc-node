@@ -248,8 +248,9 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // transaction succeeded at all. A future addition marked Collateral would
 // additionally shift P — hence the same coordinated-height treatment for both.
 //
-// RE-PINNED 2026-09-23: moved +1 day (+28,800 blocks) from 110,193,400 to give
-// the release more room to reach witnesses. Previously re-pinned 2026-09-22
+// RE-PINNED 2026-09-27: head 110,280,484 +86,400 blocks (72 h at 3 s) — the
+// previous pin 110,222,200 had already passed. Before that, re-pinned
+// 2026-09-23 +1 day from 110,193,400, and 2026-09-22
 // from head 110,135,804 +57,600 (48 h), after the original 09-20 pin had eroded
 // to ~8 h — cf. the 0.3.0 rollout, where un-upgraded nodes dropped the
 // committee from 18 to 12.
@@ -258,7 +259,7 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // already in the past makes the addition immediate on upgrade, i.e. exactly
 // the staggered rollout this exists to prevent — the gate fails open, silently.
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
-var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_222_200
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_366_900
 
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
