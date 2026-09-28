@@ -3,8 +3,12 @@ package tss
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"fmt"
+	"math/big"
 	"testing"
+	"time"
 
 	"vsc-node/lib/dids"
 	"vsc-node/lib/test_utils"
@@ -221,7 +225,9 @@ func TestPoa8_ExclusionCapOneAndThresholdPlusOne(t *testing.T) {
 	assert.Equal(t, map[string]bool{"c": true}, tie, "ties break by account")
 
 	full := selectAccusedExclusions(map[string]int{"a": 3, "z": 1}, []string{"a", "b", "c"}, 3, 0)
-	assert.Equal(t, map[string]bool{"z": true}, full, "an old member is never taken below the minimum; a non-old party still can be")
+	assert.Empty(t, full, "the most-named party is an old member at the minimum: nobody is left out in its place")
+	topNew := selectAccusedExclusions(map[string]int{"a": 1, "z": 3}, []string{"a", "b", "c"}, 3, 0)
+	assert.Equal(t, map[string]bool{"z": true}, topNew, "a most-named party outside the old committee is still left out")
 
 	// Blame (33% rule) or a ban already left a new-committee
 	// member out; POA-8 must not stack another exclusion on top.
@@ -291,4 +297,186 @@ func TestPoa8_AccusationsLapseAtTheNextRotation(t *testing.T) {
 	assert.Empty(t, a.reshareAccusedCounts("k", 300, 290, 0))
 	// the blame window bounds it too
 	assert.Empty(t, a.reshareAccusedCounts("k", 300, 0, 290))
+}
+
+// leaderFed: withholder "w" sends its round-1 messages only to the leader. The
+// leader then waits on every other party; everyone else waits on w.
+func leaderFed(t *testing.T, n int) (*poa8Net, string) {
+	t.Helper()
+	names := []string{"lead"}
+	for i := 1; i <= n-2; i++ {
+		names = append(names, fmt.Sprintf("h%d", i))
+	}
+	names = append(names, "w")
+	net := newPoa8Net(t, names, 4, 3)
+	const sid = "reshare-260-0-test-key-main"
+	for _, name := range names {
+		if name == "w" {
+			continue
+		}
+		waiting := []string{"w"}
+		if name == "lead" {
+			waiting = nil
+			for _, o := range names {
+				if o != "lead" && o != "w" {
+					waiting = append(waiting, o)
+				}
+			}
+		}
+		res := TimeoutResult{tssMgr: net.nodes[name], SessionId: sid, KeyId: "test-key-main",
+			BlockHeight: 260, Epoch: 4, OldEpoch: 3,
+			Accused: accusedIfActive(consensusversion.V0_9_0, name, waiting)}
+		net.nodes[name].sessionResults[sid] = sessionResultEntry{result: res, blockHeight: 260}
+	}
+	return net, sid
+}
+
+// weightOf asks every node, through the production ask_sigs handler, to sign
+// the statement the leader built, and returns the verified signed weight.
+func (net *poa8Net) weightOf(t *testing.T, stmt tss_helpers.BaseCommitment, sessionId, accused string) uint64 {
+	t.Helper()
+	raw, err := common.EncodeDagCbor(stmt)
+	require.NoError(t, err)
+	stmtCid, err := common.HashBytes(raw, multicodec.DagCbor)
+	require.NoError(t, err)
+	didOf := make(map[string]dids.BlsDID)
+	members := make([]dids.Member, 0)
+	for _, m := range net.election.Members {
+		didOf[m.Account] = dids.BlsDID(m.Key)
+		members = append(members, dids.BlsDID(m.Key))
+	}
+	circuit, err := dids.NewBlsCircuitGenerator(members).Generate(stmtCid)
+	require.NoError(t, err)
+	w := uint64(0)
+	for _, n := range net.names {
+		var got []p2pMessage
+		send := func(m p2pMessage) error { got = append(got, m); return nil }
+		ask := p2pMessage{Type: "ask_sigs", Account: "lead", Data: map[string]interface{}{"session_id": sessionId, "accused": accused}}
+		require.NoError(t, p2pSpec{tssMgr: net.nodes[n]}.HandleMessage(context.Background(), "", ask, send))
+		for _, m := range got {
+			if m.Type == "res_sig" && m.Data["accused"] == accused {
+				if added, err := circuit.AddAndVerify(didOf[n], m.Data["sig"].(string)); err == nil && added {
+					w += 10
+				}
+			}
+		}
+	}
+	return w
+}
+
+// Regression (review of POA-8): the leader only asked about the parties it
+// waited on itself, so a withholder that fed only the (predictable) leader was
+// never named, and a leader outside the new committee asked about nobody. The
+// leader now asks about every party; signers still sign only their own.
+func TestPoa8_LeaderAsksAboutEveryParty(t *testing.T) {
+	for _, tc := range []struct {
+		n     int
+		lands bool
+	}{{5, false}, {6, true}, {7, true}, {19, true}} {
+		net, sid := leaderFed(t, tc.n)
+		total := uint64(10 * tc.n)
+		lead := net.nodes["lead"]
+		res := lead.sessionResults[sid].result
+		parties := append([]string{}, net.names...)
+
+		own := make([]string, 0)
+		if rec, ok := accuseRecordOf(res); ok {
+			own = rec.Accused
+		}
+		require.NotContains(t, own, "w", "setup: the fed leader does not accuse w itself")
+
+		asks := lead.accuseAsksOf(consensusversion.V0_9_0, res, parties)
+		require.Len(t, asks, tc.n-1, "one statement per party but the leader")
+		var wStmt *accuseCommit
+		for i := range asks {
+			if asks[i].accused == "w" {
+				wStmt = &asks[i]
+			}
+		}
+		require.NotNil(t, wStmt, "the leader must ask about w")
+		got := net.weightOf(t, wStmt.commitment, sid, "w")
+		landed := got*3 >= total*2
+		t.Logf("N=%d: w statement %d/%d, lands=%v", tc.n, got, total, landed)
+		assert.Equal(t, tc.lands, landed)
+		assert.Empty(t, lead.accuseAsksOf(consensusversion.V0_8_0, res, parties), "inert below 0.9.0")
+	}
+}
+
+func TestPoa8_LeaderOutsideTheNewCommitteeStillAsks(t *testing.T) {
+	net := newPoa8Net(t, []string{"lead", "a", "b", "c", "d"}, 4, 3)
+	const sid = "reshare-260-0-test-key-main"
+	// An old-only leader has no new party, so it accuses nobody itself.
+	res := TimeoutResult{tssMgr: net.nodes["lead"], SessionId: sid, KeyId: "test-key-main", BlockHeight: 260, Epoch: 4, OldEpoch: 3}
+	_, own := accuseRecordOf(res)
+	require.False(t, own)
+	asks := net.nodes["lead"].accuseAsksOf(consensusversion.V0_9_0, res, []string{"lead", "a", "b", "c", "d"})
+	assert.Len(t, asks, 4)
+	// Only failed reshares: a sign session asks nothing.
+	sign := TimeoutResult{tssMgr: net.nodes["lead"], SessionId: "sign-260-0-x", KeyId: "x", BlockHeight: 260, Epoch: 4}
+	assert.Empty(t, net.nodes["lead"].accuseAsksOf(consensusversion.V0_9_0, sign, []string{"a"}))
+}
+
+func TestPoa8_PublishesTheMostSignedStatementPerSession(t *testing.T) {
+	sessionOf := map[string]string{"s1|a": "s1", "s1|b": "s1", "s1|c": "s1", "s2|z": "s2"}
+	weights := map[string]uint64{"s1|a": 40, "s1|b": 50, "s1|c": 50, "s2|z": 40}
+	got := bestAccusePerSession(sessionOf, weights)
+	assert.Equal(t, map[string]string{"s1": "s1|b", "s2": "s2|z"}, got, "most signed, ties by the smaller key")
+
+	bv := base64.RawURLEncoding.EncodeToString(new(big.Int).SetBit(new(big.Int).SetBit(new(big.Int), 0, 1), 2, 1).Bytes())
+	assert.Equal(t, uint64(40), circuitWeight(bv, []uint64{10, 20, 30}))
+}
+
+// collectSigs: a session commitment stops at quorum; a statement about a
+// party keeps collecting until every member signed or the settle point, so
+// its signed weight counts every node that names the party (19 flat seats,
+// 17 accusers: 13 is quorum).
+func TestPoa8_StatementCollectsPastQuorum(t *testing.T) {
+	names := make([]string, 19)
+	for i := range names {
+		names[i] = fmt.Sprintf("s%02d", i)
+	}
+	net := newPoa8Net(t, names, 4, 3)
+	stmt := tss_helpers.BaseCommitment{Type: accuseTypeReshare, SessionId: "reshare-260-0-k", KeyId: "k", Commitment: "AQ", BlockHeight: 260, Epoch: 4}
+	raw, err := common.EncodeDagCbor(stmt)
+	require.NoError(t, err)
+	stmtCid, err := common.HashBytes(raw, multicodec.DagCbor)
+	require.NoError(t, err)
+	members := make([]dids.Member, 0, len(names))
+	for _, m := range net.election.Members {
+		members = append(members, dids.BlsDID(m.Key))
+	}
+	fill := func() chan sigMsg {
+		ch := make(chan sigMsg, len(names))
+		for _, n := range names[:17] {
+			sig, ok := net.nodes[n].blsSignCommitment(stmt)
+			require.True(t, ok)
+			ch <- sigMsg{Account: n, Sig: sig}
+		}
+		return ch
+	}
+	signed := func(c dids.PartialBlsCircuit) uint64 {
+		fin, err := c.Finalize()
+		require.NoError(t, err)
+		ser, err := fin.Serialize()
+		require.NoError(t, err)
+		return circuitWeight(ser.BitVector, net.election.Weights)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c1, _ := dids.NewBlsCircuitGenerator(members).Generate(stmtCid)
+	require.True(t, collectSigs(ctx, fill(), c1, net.election, 190, nil))
+	assert.Equal(t, uint64(130), signed(c1), "a session commitment stops at quorum (13 of 19)")
+
+	c2, _ := dids.NewBlsCircuitGenerator(members).Generate(stmtCid)
+	settle := time.After(300 * time.Millisecond)
+	require.True(t, collectSigs(ctx, fill(), c2, net.election, 190, settle))
+	assert.Equal(t, uint64(170), signed(c2), "a statement counts every accuser (17 of 19)")
+
+	// Below quorum at the settle point: give up, like a timeout.
+	short := make(chan sigMsg, 1)
+	sig, _ := net.nodes[names[0]].blsSignCommitment(stmt)
+	short <- sigMsg{Account: names[0], Sig: sig}
+	c3, _ := dids.NewBlsCircuitGenerator(members).Generate(stmtCid)
+	assert.False(t, collectSigs(ctx, short, c3, net.election, 190, time.After(100*time.Millisecond)))
 }

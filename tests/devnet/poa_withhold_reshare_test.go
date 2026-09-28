@@ -143,6 +143,9 @@ func TestPoaSeatAttestsAndWithholdsEverySession(t *testing.T) {
 		}
 	}
 	t.Logf("adversary window %d..%d (%d sessions, floor 0.%d): reshares=%d blames=%d (naming %s: %d) accusations naming %s=%d", first, last, len(cycles), poaDevnetFloor(), reshares, blames, silentAcct, withSilent, silentAcct, accusedSilent)
+	if all, err := d.GetCommitments(ctx, 1, bson.M{}); err == nil {
+		t.Logf("accusation rows checked for their own Hive tx: %d", assertAccusationsInOwnTx(t, all))
+	}
 
 	// Positive control: stop attesting (stay disconnected) -> a reshare without the seat must land.
 	rec, err := d.WaitForCommitment(ctx, 1, bson.M{"type": "reshare", "block_height": bson.M{"$gt": uint64(last)}}, 8*time.Minute)

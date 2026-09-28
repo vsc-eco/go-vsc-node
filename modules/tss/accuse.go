@@ -26,7 +26,8 @@ import (
 // as long as it liked.
 //
 // Here every node also signs one statement per party it is still waiting on
-// ("S: A did not deliver"). A statement lands on its own 2/3 quorum, so the
+// ("S: A did not deliver"), and the leader asks about every party of the
+// session (accuseAsksOf), not only the ones it waited on itself. A statement lands on its own 2/3 quorum, so the
 // honest laggard's signature still counts for the real withholder while its
 // extra names stay far below quorum (Chainflip tallies per accused the same
 // way).
@@ -55,10 +56,11 @@ const accuseTypeReshare = "reshare_accuse"
 const accuseMaxExclusions = 1
 
 // accusePerOp bounds the accusations one broadcast carries, in a single extra
-// custom_json op: Hive caps a custom_json at 8192 bytes (an entry is ~450) and
-// an account at 5 custom_json ops per block, so the leader's transaction stays
-// at two ops. Accusations beyond it are dropped; the party is named again the
-// next time a session fails.
+// custom_json op in its own transaction: Hive caps a custom_json at 8192 bytes
+// (an entry is ~450) and an account at 5 custom_json ops per block, so the
+// leader adds one op per broadcast, and a refused accusation transaction never
+// takes the session commitments with it. Accusations beyond it are dropped;
+// the party is named again the next time a session fails.
 const accusePerOp = 10
 
 // accuseSigKey routes an accusation's BLS signatures apart from the session's
@@ -108,6 +110,17 @@ type accuseRecord struct {
 // accuseRecordOf returns the accusation data of a stored session result, if it
 // is a failed reshare that carries any.
 func accuseRecordOf(result DispatcherResult) (accuseRecord, bool) {
+	rec, ok := accuseSessionOf(result)
+	if !ok || len(rec.Accused) == 0 {
+		return accuseRecord{}, false
+	}
+	return rec, true
+}
+
+// accuseSessionOf returns the session fields of a stored result if it is a
+// failed reshare, whatever this node accused (the leader asks about every
+// party, see accuseAsksOf).
+func accuseSessionOf(result DispatcherResult) (accuseRecord, bool) {
 	var rec accuseRecord
 	switch r := result.(type) {
 	case TimeoutResult:
@@ -117,23 +130,29 @@ func accuseRecordOf(result DispatcherResult) (accuseRecord, bool) {
 	default:
 		return accuseRecord{}, false
 	}
-	if len(rec.Accused) == 0 || !strings.HasPrefix(rec.SessionId, sessionPrefixReshare) {
+	if !strings.HasPrefix(rec.SessionId, sessionPrefixReshare) {
 		return accuseRecord{}, false
 	}
 	return rec, true
 }
 
-// accuseStatement builds the statement for one accused party. Every input is
-// fixed by the session (id, key, height, epochs) or on-chain (the election
-// that encodes the bit), so every node that accuses the same party in the same
-// session builds the identical commitment and CID. The bit is encoded against
-// the session's new election when the accused is in it, else against the old
-// commitment's election (an old key holder that is no longer elected); a party
-// in neither cannot be encoded and gets no statement.
+// accuseStatement is the statement a node SIGNS: only for a party it accuses
+// itself in that session.
 func (tssMgr *TssManager) accuseStatement(rec accuseRecord, accused string) (tss_helpers.BaseCommitment, bool) {
 	if !slices.Contains(rec.Accused, accused) {
 		return tss_helpers.BaseCommitment{}, false
 	}
+	return tssMgr.buildAccuseStatement(rec, accused)
+}
+
+// buildAccuseStatement builds the statement for one accused party. Every input
+// is fixed by the session (id, key, height, epochs) or on-chain (the election
+// that encodes the bit), so every node that names the same party in the same
+// session builds the identical commitment and CID. The bit is encoded against
+// the session's new election when the accused is in it, else against the old
+// commitment's election (an old key holder that is no longer elected); a party
+// in neither cannot be encoded and gets no statement.
+func (tssMgr *TssManager) buildAccuseStatement(rec accuseRecord, accused string) (tss_helpers.BaseCommitment, bool) {
 	for _, epoch := range []uint64{rec.NewEpoch, rec.OldEpoch} {
 		election := tssMgr.electionDb.GetElection(epoch)
 		if election == nil {
@@ -196,7 +215,15 @@ func (tssMgr *TssManager) reshareAccusedCounts(keyId string, bh, lastCommitHeigh
 // POA-8 never adds to another exclusion path, and never an old-committee member
 // when that would leave fewer than oldMin (oldMembers is the old committee that
 // would run: after the blame, ban and readiness filters), so an exclusion never
-// starves a session that could otherwise run. Deterministic for identical inputs.
+// starves a session that could otherwise run. When the most-named party is
+// such an old member, nobody is left out (it never falls through to a
+// less-named party). Deterministic for identical inputs.
+//
+// Limits, by design: one exclusion per reshare means two parties that attest
+// and then withhold keep every session failing (the exclusion alternates
+// between them). And any blamed or banned member of the current election
+// switches exclusions off (alreadyOut >= 1), for every key while a ban lasts,
+// so a long ban also turns withholder recovery off.
 func selectAccusedExclusions(counts map[string]int, oldMembers []string, oldMin, alreadyOut int) map[string]bool {
 	inOld := make(map[string]bool, len(oldMembers))
 	for _, m := range oldMembers {
@@ -222,7 +249,13 @@ func selectAccusedExclusions(counts map[string]int, oldMembers []string, oldMin,
 		}
 		if inOld[a] {
 			if slots <= 0 {
-				continue
+				// The most-named party cannot be left out, so this session
+				// most likely fails anyway. Leaving out a less-named party
+				// instead (usually an honest node everyone waited on behind
+				// the withholder) would only lower the new key's threshold
+				// if it succeeded. Leave nobody out; the counts decide again
+				// at the next session.
+				break
 			}
 			slots--
 		}
@@ -238,19 +271,89 @@ type accuseCommit struct {
 	accused    string
 }
 
-// accuseCommitsOf lists the statements this node signs for a failed reshare.
-func (tssMgr *TssManager) accuseCommitsOf(result DispatcherResult) []accuseCommit {
-	rec, ok := accuseRecordOf(result)
+// accuseAsksOf lists the statements the leader collects for a failed reshare:
+// one per party of the session (old and new committee, never itself), not only
+// the parties its own node was waiting on. A withholder that sends its round-1
+// messages only to the leader (predictable from the schedule) leaves the
+// leader waiting on everyone else, so the leader alone would never ask about
+// the withholder the others all name; and a leader outside the new committee
+// names nobody. Signers still sign only the parties they accuse themselves
+// (ask_sigs handler), so the statement CID and the 2/3 rule are unchanged.
+// Asking about a party nobody names costs one ask and a collection that times
+// out, in parallel with the others. Empty below 0.9.0.
+func (tssMgr *TssManager) accuseAsksOf(active consensusversion.Version, result DispatcherResult, parties []string) []accuseCommit {
+	if !consensusversion.TssPerAccusedBlameActive(active) {
+		return nil
+	}
+	rec, ok := accuseSessionOf(result)
 	if !ok {
 		return nil
 	}
-	out := make([]accuseCommit, 0, len(rec.Accused))
-	for _, a := range rec.Accused {
-		if stmt, ok := tssMgr.accuseStatement(rec, a); ok {
+	named := accusedSet(tssMgr.config.Get().HiveUsername, parties)
+	out := make([]accuseCommit, 0, len(named))
+	for _, a := range named {
+		if stmt, ok := tssMgr.buildAccuseStatement(rec, a); ok {
 			out = append(out, accuseCommit{commitment: stmt, accused: a})
 		}
 	}
 	return out
+}
+
+// leaderAccuseAsks is accuseAsksOf for the leader only: no other node
+// collects statements, so the others skip the election reads.
+func (tssMgr *TssManager) leaderAccuseAsks(isLeader bool, active consensusversion.Version, result DispatcherResult, dsc Dispatcher) []accuseCommit {
+	if !isLeader {
+		return nil
+	}
+	return tssMgr.accuseAsksOf(active, result, reshareParties(dsc))
+}
+
+// reshareParties is every account of a reshare session: old committee that
+// runs, then new committee.
+func reshareParties(dsc Dispatcher) []string {
+	rd, ok := dsc.(*ReshareDispatcher)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(rd.participants)+len(rd.newParticipants))
+	for _, p := range rd.participants {
+		out = append(out, p.Account)
+	}
+	for _, p := range rd.newParticipants {
+		out = append(out, p.Account)
+	}
+	return out
+}
+
+// bestAccusePerSession picks the one statement per session the leader
+// publishes (a row is keyed by key, height and type, so a second one in the
+// same bundle would overwrite the first): the most signed weight, ties by the
+// smaller key. weights maps a routing key to its signed weight.
+func bestAccusePerSession(sessionOf map[string]string, weights map[string]uint64) map[string]string {
+	best := make(map[string]string)
+	for key, sid := range sessionOf {
+		prev, ok := best[sid]
+		if !ok || weights[key] > weights[prev] || (weights[key] == weights[prev] && key < prev) {
+			best[sid] = key
+		}
+	}
+	return best
+}
+
+// circuitWeight is the election weight of the signers in a BLS bit vector.
+func circuitWeight(bv string, weights []uint64) uint64 {
+	raw, err := base64.RawURLEncoding.DecodeString(bv)
+	if err != nil {
+		return 0
+	}
+	bits := new(big.Int).SetBytes(raw)
+	total := uint64(0)
+	for i, w := range weights {
+		if bits.Bit(i) == 1 {
+			total += w
+		}
+	}
+	return total
 }
 
 // blsSignCommitment signs a commitment's CID with this node's consensus BLS key,
@@ -302,9 +405,9 @@ func applyAccusedExclusions(oldList, newList []Participant, counts map[string]in
 	return keepOld, keepNew, out
 }
 
-// commitmentOpPackets splits one leader broadcast into custom_json payloads:
-// the session commitments exactly as before (one op, omitted when empty), then
-// at most accusePerOp POA-8 statements in one more op.
+// commitmentOpPackets splits one leader broadcast into custom_json payloads,
+// each sent in its own transaction: the session commitments exactly as before
+// (omitted when empty), then at most accusePerOp POA-8 statements.
 func commitmentOpPackets(sessions, accusations []map[string]any) [][]map[string]any {
 	out := make([][]map[string]any, 0, 2)
 	if len(sessions) > 0 {

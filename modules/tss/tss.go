@@ -1994,10 +1994,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		signedResults := make([]KeySignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
-		// POA-8: per-accused statements of this node's failed reshares
-		// (accuse.go). Collected on their own quorum, apart from the
-		// session's blame commitment.
+		// POA-8: per-accused statements for this node's failed reshares
+		// (accuse.go), one per party of the session. Collected on their own
+		// quorum, apart from the session's blame commitment.
 		accuseResults := make([]accuseCommit, 0)
+		accuseActive := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
 
 		// Await all dispatchers concurrently so that each dispatcher's
 		// sessionResults entry is stored as soon as IT finishes, rather than
@@ -2098,7 +2099,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.bufferLock.Lock()
 					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
 					tssMgr.bufferLock.Unlock()
-					if acc := tssMgr.accuseCommitsOf(res); len(acc) > 0 {
+					if acc := tssMgr.leaderAccuseAsks(isLeader, accuseActive, res, dsc); len(acc) > 0 {
 						resultsMu.Lock()
 						accuseResults = append(accuseResults, acc...)
 						resultsMu.Unlock()
@@ -2141,8 +2142,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.bufferLock.Unlock()
 
 					log.Warn("timeout result", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.Epoch, "culprits", res.Culprits)
-					if acc := tssMgr.accuseCommitsOf(res); len(acc) > 0 {
-						log.Warn("reshare accusations", "sessionId", res.SessionId, "keyId", res.KeyId, "accused", res.Accused)
+					if acc := tssMgr.leaderAccuseAsks(isLeader, accuseActive, res, dsc); len(acc) > 0 {
+						log.Warn("reshare accusations", "sessionId", res.SessionId, "keyId", res.KeyId, "accused", res.Accused, "asking", len(acc))
 						resultsMu.Lock()
 						accuseResults = append(accuseResults, acc...)
 						resultsMu.Unlock()
@@ -2323,17 +2324,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 				// A commitment row is keyed (key, height, type), so a second
 				// accusation for the same session in one bundle would overwrite
-				// the first. Publish one per session (smallest accused); a
-				// second withholder is named in the next session.
-				firstAccuse := make(map[string]string)
+				// the first. Publish one per session: the most signed, ties by
+				// the smaller key.
+				accuseSession := make(map[string]string)
+				accuseWeight := make(map[string]uint64)
 				for key, r := range commitedResults {
-					if r.err != nil || r.commitment.Type != accuseTypeReshare {
+					if r.err != nil || r.commitment.Type != accuseTypeReshare || r.circuit == nil {
 						continue
 					}
-					if prev, ok := firstAccuse[r.commitment.SessionId]; !ok || key < prev {
-						firstAccuse[r.commitment.SessionId] = key
-					}
+					accuseSession[key] = r.commitment.SessionId
+					accuseWeight[key] = circuitWeight(r.circuit.BitVector, currentElection.Weights)
 				}
+				firstAccuse := bestAccusePerSession(accuseSession, accuseWeight)
 
 				var canCommit bool = false
 				sigPacket := make([]map[string]any, 0)
@@ -2379,26 +2381,29 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 				if canCommit {
 					log.Info("broadcasting commitment to Hive", "blockHeight", bh, "sessions", len(commitedResults))
-					ops := make([]hivego.HiveOperation, 0, 1)
+					// One transaction per packet, session commitments first: a
+					// transaction is all or nothing, so an accusation op that
+					// Hive refuses (for example the account's custom_json limit
+					// per block) can never take the session commitments with it.
 					for _, packet := range commitmentOpPackets(sigPacket, accusePacket) {
 						rawJson, _ := json.Marshal(packet)
-						ops = append(ops, hivego.CustomJsonOperation{
-							RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
-							RequiredPostingAuths: []string{},
-							Id:                   "vsc.tss_commitment",
-							Json:                 string(rawJson),
+						hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+							hivego.CustomJsonOperation{
+								RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+								RequiredPostingAuths: []string{},
+								Id:                   "vsc.tss_commitment",
+								Json:                 string(rawJson),
+							},
 						})
-					}
-
-					hiveTx := tssMgr.hiveClient.MakeTransaction(ops)
-					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
-					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
-					if signErr != nil {
-						// M-8: skip the broadcast on a signing failure rather than
-						// AddSig+Broadcast an unsigned tx — Hive rejects it and the
-						// tss_commitment silently never lands, stalling the epoch.
-						log.Error("tss_commitment: hive tx signing failed; not broadcasting", "blockHeight", bh, "err", signErr)
-					} else {
+						tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+						sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+						if signErr != nil {
+							// M-8: skip the broadcast on a signing failure rather than
+							// AddSig+Broadcast an unsigned tx — Hive rejects it and the
+							// tss_commitment silently never lands, stalling the epoch.
+							log.Error("tss_commitment: hive tx signing failed; not broadcasting", "blockHeight", bh, "err", signErr)
+							continue
+						}
 						hiveTx.AddSig(sig)
 						_, err := tssMgr.hiveClient.Broadcast(hiveTx)
 						if err != nil {
@@ -2495,58 +2500,30 @@ func (tssMgr *TssManager) waitForSigs(
 	var errRes error
 	var res *dids.SerializedCircuit
 
+	// POA-8: a statement about a party (accused != "") keeps collecting
+	// after quorum, until 4/5 of the time left, so its weight counts every
+	// node that names the party: the leader publishes the most signed one per
+	// session. Asks about parties nobody names already run to the deadline in
+	// parallel, so this adds no delay. A session commitment still stops at
+	// quorum.
+	var settle <-chan time.Time
+	if accused != "" {
+		if dl, ok := ctx.Deadline(); ok {
+			timer := time.NewTimer(time.Until(dl) * 4 / 5)
+			defer timer.Stop()
+			settle = timer.C
+		}
+	}
+
 	proc1 := make(chan struct{}, 1)
 	go func() {
-		signedWeight := uint64(0)
-		signedAccounts := make(map[string]bool)
-
 		// common.has
 		tssMgr.bufferLock.RLock()
 		sigChan := tssMgr.sigChannels[sigKey]
 		tssMgr.bufferLock.RUnlock()
 
-		// GV-L9: overflow-safe 2/3 quorum threshold. `signedWeight*3 < weightTotal*2`
-		// wraps mod 2^64 once weightTotal > MaxUint64/2 (weightTotal*2 wraps to a
-		// small value), making the condition `0 < 0` → false so the loop exits
-		// immediately with signedWeight=0 and Finalize() runs on a zero-weight
-		// circuit. The identity ceil(2N/3) == N - floor(N/3) computes the same
-		// threshold with only a subtraction and a division — no product to overflow.
-		// Byte-identical to the original on the entire non-overflow domain.
-		quorumThreshold := weightTotal - weightTotal/3
-		for signedWeight < quorumThreshold {
-			var msg sigMsg
-			select {
-			case <-ctx.Done():
-				return
-			case msg = <-sigChan:
-			}
-
-			if signedAccounts[msg.Account] {
-				continue
-			}
-
-			var member dids.Member
-			var index int = -1
-			for i, data := range election.Members {
-				if data.Account == msg.Account {
-					member = dids.BlsDID(data.Key)
-					index = i
-					break
-				}
-			}
-
-			if index == -1 {
-				continue
-			}
-
-			added, err := circuit.AddAndVerify(member, msg.Sig)
-
-			log.Trace("sig add and verify result", "added", added, "err", err)
-
-			if added {
-				signedAccounts[msg.Account] = true
-				signedWeight += election.Weights[index]
-			}
+		if !collectSigs(ctx, sigChan, circuit, election, weightTotal, settle) {
+			return
 		}
 		finalizedCiruit, err := circuit.Finalize()
 
@@ -2569,6 +2546,65 @@ func (tssMgr *TssManager) waitForSigs(
 	case <-proc1:
 		return res, errRes
 	}
+}
+
+// collectSigs adds verified BLS signatures from sigChan to circuit. It stops
+// at the 2/3 quorum, or, when settle is set, at every member or at settle
+// (whichever comes first), and reports whether the caller may finalize: false
+// when ctx ends first or settle passes below quorum.
+func collectSigs(ctx context.Context, sigChan <-chan sigMsg, circuit dids.PartialBlsCircuit, election *elections.ElectionResult, weightTotal uint64, settle <-chan time.Time) bool {
+	signedWeight := uint64(0)
+	signedAccounts := make(map[string]bool)
+
+	// GV-L9: overflow-safe 2/3 quorum threshold. `signedWeight*3 < weightTotal*2`
+	// wraps mod 2^64 once weightTotal > MaxUint64/2 (weightTotal*2 wraps to a
+	// small value), making the condition `0 < 0` → false so the loop exits
+	// immediately with signedWeight=0 and Finalize() runs on a zero-weight
+	// circuit. The identity ceil(2N/3) == N - floor(N/3) computes the same
+	// threshold with only a subtraction and a division — no product to overflow.
+	// Byte-identical to the original on the entire non-overflow domain.
+	quorumThreshold := weightTotal - weightTotal/3
+	for signedWeight < weightTotal && (settle != nil || signedWeight < quorumThreshold) {
+		var msg sigMsg
+		select {
+		case <-ctx.Done():
+			return false
+		case <-settle:
+			if signedWeight < quorumThreshold {
+				return false
+			}
+			return true
+		case msg = <-sigChan:
+		}
+
+		if signedAccounts[msg.Account] {
+			continue
+		}
+
+		var member dids.Member
+		var index int = -1
+		for i, data := range election.Members {
+			if data.Account == msg.Account {
+				member = dids.BlsDID(data.Key)
+				index = i
+				break
+			}
+		}
+
+		if index == -1 {
+			continue
+		}
+
+		added, err := circuit.AddAndVerify(member, msg.Sig)
+
+		log.Trace("sig add and verify result", "added", added, "err", err)
+
+		if added {
+			signedAccounts[msg.Account] = true
+			signedWeight += election.Weights[index]
+		}
+	}
+	return true
 }
 
 func (tssMgr *TssManager) Init() error {

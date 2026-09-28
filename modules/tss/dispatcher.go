@@ -774,6 +774,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.newEpoch,
+				OldEpoch:    dispatcher.epoch, // POA-8 statements only; not serialized
 			})
 			return
 		}
