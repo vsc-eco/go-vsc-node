@@ -328,9 +328,14 @@ func (tsc *tssCommitments) FindCommitmentsSimple(
 	for cursor.Next(context.Background()) {
 		var commitment TssCommitment
 		if err := cursor.Decode(&commitment); err != nil {
-			return nil, fmt.Errorf("failed to decode commitment: %w", err)
+			return nil, fmt.Errorf("failed to decode commitment: %w: %w", db.ErrDecode, err)
 		}
 		commitments = append(commitments, commitment)
+	}
+	// A failed fetch of a later batch ends Next() early: without this check
+	// the caller would get a truncated list and no error.
+	if err := cursor.Err(); err != nil {
+		return nil, err
 	}
 	return DedupCommitmentsBySemanticKey(commitments), nil
 }

@@ -136,8 +136,8 @@ func TestPoaSeatGateStarvation(t *testing.T) {
 			base.Weights, params.PoaSeatWeight)
 	}
 	members := bareAccounts(base.Members)
-	if len(members) < 4 {
-		t.Fatalf("PRECONDITION FAILED: need >=4 committee members to trim below MinMembers "+
+	if len(members) < 5 {
+		t.Fatalf("PRECONDITION FAILED: need >=5 committee members to trim below MinMembers "+
 			"meaningfully, got %d (%v)", len(members), members)
 	}
 	seats, err := d.pfPoaSeats(ctx, 1)
@@ -159,7 +159,13 @@ func TestPoaSeatGateStarvation(t *testing.T) {
 	// enabled, so the candidate list is still 5 while the registry names 3.
 	// len(gated)=3 >= floor=3, so the gate applies and the 2 unseated candidates
 	// must be excluded.
-	keep := members[:minMembers]
+	// Not the first three by name: every node stakes the same, so a top-up
+	// ranked by name alone would pick members[1] and members[2]. Keeping
+	// {0, 3, 4} makes phase B tell "previous committee first" apart from it.
+	keep := []string{members[0], members[3], members[4]}
+	if minMembers != 3 {
+		t.Fatalf("fixture assumes MinMembers 3, got %d", minMembers)
+	}
 	dropped := trimRegistryEverywhere(t, d, ctx, keep, cfg.Nodes)
 	t.Logf("PHASE A: trimmed registry to %d seats (%v), deleted %d rows across %d nodes",
 		len(keep), keep, dropped, cfg.Nodes)
@@ -252,6 +258,22 @@ func TestPoaSeatGateStarvation(t *testing.T) {
 		if !allFlat(elecB.Weights) {
 			t.Errorf("POA-2: top-up election epoch %d weights=%v, want flat %d", elecB.Epoch, elecB.Weights, params.PoaSeatWeight)
 		}
+		// The top-up takes members of the previous committee first (they
+		// already hold key shares). members[1] and members[2] are candidates
+		// with the same stake and earlier names, so a name-only ranking would
+		// pick them; the rule must pick members[3] and members[4].
+		prevA := make(map[string]bool, len(gotA))
+		for _, a := range gotA {
+			prevA[a] = true
+		}
+		for _, a := range gotB {
+			if a != keep1[0] && !prevA[a] {
+				t.Errorf("POA-2: top-up member %s of epoch %d was not in the previous committee %v", a, elecB.Epoch, gotA)
+			}
+		}
+		// 3. The chain keeps producing UNDER the top-up committee, not only up
+		// to it: heights are taken after the top-up election has landed.
+		waitSlotsAdvance(t, d, ctx, cfg.Nodes, elecB.BlockHeight, 4*time.Minute)
 		return
 	}
 
@@ -272,5 +294,47 @@ func TestPoaSeatGateStarvation(t *testing.T) {
 		t.Logf("★ C3 CONFIRMED on a live network: ungated election epoch %d carries "+
 			"stake-derived weights %v, not flat %d",
 			elecB.Epoch, elecB.Weights, params.PoaSeatWeight)
+	}
+}
+
+// waitSlotsAdvance waits until every node has stored an L2 block later than
+// both its current highest slot and `after` (the height the new committee's
+// election landed at), so each node proves a block produced under that
+// committee. It fails the test for any node that does not within the timeout.
+func waitSlotsAdvance(t *testing.T, d *Devnet, ctx context.Context, nodes int, after uint64, timeout time.Duration) {
+	t.Helper()
+	start := make([]int, nodes+1)
+	for n := 1; n <= nodes; n++ {
+		h, err := d.pfMaxSlotHeight(ctx, n)
+		if err != nil {
+			t.Fatalf("magi-%d block_headers read: %v", n, err)
+		}
+		start[n] = max(h, int(after))
+	}
+	deadline := time.Now().Add(timeout)
+	pending := nodes
+	advanced := make([]bool, nodes+1)
+	for pending > 0 && time.Now().Before(deadline) {
+		for n := 1; n <= nodes; n++ {
+			if advanced[n] {
+				continue
+			}
+			if h, err := d.pfMaxSlotHeight(ctx, n); err == nil && h > start[n] {
+				advanced[n] = true
+				pending--
+			}
+		}
+		if pending > 0 {
+			time.Sleep(5 * time.Second)
+		}
+	}
+	for n := 1; n <= nodes; n++ {
+		if !advanced[n] {
+			t.Errorf("magi-%d: no new L2 block within %s after the top-up election landed (still at slot %d)",
+				n, timeout, start[n])
+		}
+	}
+	if pending == 0 {
+		t.Logf("chain produced new L2 blocks on all %d nodes under the top-up committee", nodes)
 	}
 }

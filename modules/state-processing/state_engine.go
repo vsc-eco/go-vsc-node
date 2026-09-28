@@ -89,6 +89,12 @@ type StateEngine struct {
 	// heldShareCheck overrides heldShareOfFundedVault (POA-1) in tests; nil in
 	// production.
 	heldShareCheck func(account string, height uint64) (bool, error)
+	// POA-1 read caches (poa_share_hold.go). tssCommitWrites counts stored
+	// tss commitments, so the per-height party memo is dropped when a row lands.
+	poaCacheMu      sync.Mutex
+	poaElecMembers  map[uint64]*elections.ElectionResult
+	poaPartyMemo    poaPartyMemo
+	tssCommitWrites atomic.Uint64
 	// governanceDb persists witness-vote governance proposals + votes
 	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
 	// governance (the handlers no-op when nil).
@@ -1643,6 +1649,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							TxId:        tx.TransactionID,
 							BitSet:      commitment.BitSet,
 						})
+						se.tssCommitWrites.Add(1)
 						if commitment.Type == "blame" {
 							// Blame events stay on-chain for liveness analysis (and future
 							// reward-reduction wiring), but are NOT principal-slashed: a

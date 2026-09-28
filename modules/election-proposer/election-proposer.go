@@ -450,6 +450,28 @@ func resolveVersionFloor(
 	previousElection *elections.ElectionResult,
 	num, den int64,
 ) consensusversion.Version {
+	return resolveVersionFloorWithPrev(floor, newEpoch, blockHeight, forced, proposals,
+		witnessList, witnessList, weightMap, previousElection, num, den)
+}
+
+// resolveVersionFloorWithPrev is resolveVersionFloor with the outgoing-committee
+// check (H-3/C-2) reading versions from prevCandidates instead of witnessList.
+// At 0.9.0 the readiness ratio runs over the seats (POA-9) while the previous
+// committee can hold top-up members that are candidates but not seats; judging
+// them from the seats-only list counted them not ready and held a floor rise
+// back one epoch.
+func resolveVersionFloorWithPrev(
+	floor consensusversion.Version,
+	newEpoch uint64,
+	blockHeight uint64,
+	forced *consensus_state.VersionProposal,
+	proposals []consensus_state.VersionProposal,
+	witnessList []witnesses.Witness,
+	prevCandidates []witnesses.Witness,
+	weightMap map[string]uint64,
+	previousElection *elections.ElectionResult,
+	num, den int64,
+) consensusversion.Version {
 	// stakeReady: >= num/den of committee STAKE announces a version meeting target.
 	//
 	// B13: seats sharing a consensus BLS key collapse to one. Without this, the
@@ -513,8 +535,8 @@ func resolveVersionFloor(
 		if previousElection == nil || len(previousElection.Members) == 0 {
 			return true
 		}
-		candidateVer := make(map[string]consensusversion.Version, len(witnessList))
-		for _, w := range witnessList {
+		candidateVer := make(map[string]consensusversion.Version, len(prevCandidates))
+		for _, w := range prevCandidates {
 			candidateVer[w.Account] = w.ConsensusVersionTriple()
 		}
 		prevReady := 0
@@ -1064,9 +1086,11 @@ func (e *electionProposer) GenerateFullElection(
 		// enough of them are left to form the committee, as it was when the gate
 		// ran first, so unseated witnesses cannot hold back (or pad) a floor rise.
 		readinessList := poaReadinessList(witnessList, poaGateSeats, e.sconf.ConsensusParams().MinMembers)
-		if nf := resolveVersionFloor(floor, newEpoch, blockHeight,
+		// The outgoing-committee check reads the whole candidate list: top-up
+		// members of the previous committee hold shares but are not seats.
+		if nf := resolveVersionFloorWithPrev(floor, newEpoch, blockHeight,
 			e.se.ForcedActivationForHeight(blockHeight), e.se.VersionProposalsForHeight(blockHeight),
-			readinessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
+			readinessList, witnessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
 			floor = nf
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
@@ -1086,8 +1110,10 @@ func (e *electionProposer) GenerateFullElection(
 	//     (they already hold key shares), then by matured stake (raw stake when
 	//     the maturity gate is off), ties by account name. The churn cap cannot
 	//     defer a top-up member (the committee is exactly at MinMembers). The
-	//     floor guard's snapshot keeps the unseated here, so it can still re-seat
-	//     a trimmed INCUMBENT when the gateway or TSS floor needs more.
+	//     floor guard below cannot add anyone back under POA: it re-seats at
+	//     min(balance, previous weight), and a flat seat weight
+	//     (params.PoaSeatWeight = 1) is below MinStake on every network with
+	//     MinStake > 1, so the committee stays at MinMembers.
 	//   - "initial" elections (no staked committee yet) with too few seats stay
 	//     ungated, as before 0.9.0.
 	if poaGateSeats != nil {

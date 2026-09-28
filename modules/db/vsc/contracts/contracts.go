@@ -323,8 +323,10 @@ func (ch *contractState) GetLastOutput(contractId string, height uint64) (Contra
 	contractOutput := ContractOutput{
 		Metadata: ContractMetadata{},
 	}
-	err := findResult.Decode(&contractOutput)
-	return contractOutput, err
+	if err := findResult.Decode(&contractOutput); err != nil {
+		return contractOutput, fmt.Errorf("%w: %w", db.ErrDecode, err)
+	}
+	return contractOutput, nil
 }
 
 // GetLastOutputStrict is GetLastOutput but SURFACES the FindOne error rather than

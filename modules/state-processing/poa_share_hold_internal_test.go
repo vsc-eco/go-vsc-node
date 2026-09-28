@@ -3,11 +3,14 @@ package state_engine
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"vsc-node/lib/btcvault"
+	vdb "vsc-node/modules/db"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -204,5 +207,106 @@ func TestPoa1_ElectableOrRecentlyActiveWitnessLocked(t *testing.T) {
 	}
 	if held, _ := se.electableOrRecentlyActive("neverwitness", h); held {
 		t.Fatalf("never a witness: must be free")
+	}
+}
+
+// countingCommits and countingElections count the POA-1 reads.
+type countingCommits struct {
+	tss_db.TssCommitments
+	rows  []tss_db.TssCommitment
+	scans int
+}
+
+func (c *countingCommits) FindCommitmentsSimple(*string, []string, *uint64, *uint64, *uint64, int) ([]tss_db.TssCommitment, error) {
+	c.scans++
+	return c.rows, nil
+}
+
+type countingElections struct {
+	fakeElections
+	reads int
+}
+
+func (c *countingElections) GetElectionStrict(uint64) (*elections.ElectionResult, error) {
+	c.reads++
+	return &elections.ElectionResult{ElectionDataInfo: elections.ElectionDataInfo{
+		Members: []elections.ElectionMember{{Account: "hive:a"}, {Account: "hive:b"}},
+	}}, nil
+}
+
+// Regression (review of the 0.9.0 batch): every unstake re-read every
+// commitment of the generation and one election per commitment epoch, and any
+// account could trigger it with a tiny unstake. Now one scan per height and
+// stored-commitment count, and each election is read once.
+func TestPoa1_PartySetReadOncePerHeightAndElectionsOnce(t *testing.T) {
+	const epochs = 796
+	rows := make([]tss_db.TssCommitment, 0, epochs)
+	for e := uint64(1); e <= epochs; e++ {
+		rows = append(rows, tss_db.TssCommitment{Epoch: e, Commitment: bits(1)})
+	}
+	commits := &countingCommits{rows: rows}
+	elecs := &countingElections{}
+	se := &StateEngine{tssCommitments: commits, electionDb: elecs}
+	vaults := []btcvault.Vault{{Generation: 0, Status: btcvault.VaultStatusActive}}
+	rawV := []byte("registry")
+
+	for i := 0; i < 50; i++ { // 50 unstakes in one block
+		parties, err := se.fundedVaultParties("vsc1BTC", rawV, vaults, 999)
+		if err != nil || !parties["b"] || parties["a"] {
+			t.Fatalf("parties=%v err=%v", parties, err)
+		}
+	}
+	if commits.scans != 1 || elecs.reads != epochs {
+		t.Fatalf("one block: scans=%d election reads=%d, want 1 and %d", commits.scans, elecs.reads, epochs)
+	}
+	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000) // next block
+	if commits.scans != 2 || elecs.reads != epochs {
+		t.Fatalf("next block: scans=%d election reads=%d, want 2 and %d (elections cached)", commits.scans, elecs.reads, epochs)
+	}
+	se.tssCommitWrites.Add(1) // a commitment landed: rows may have changed
+	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000)
+	if commits.scans != 3 {
+		t.Fatalf("after a stored commitment: scans=%d, want a rescan", commits.scans)
+	}
+	se.fundedVaultParties("vsc1BTC", []byte("registry2"), vaults, 1000)
+	if commits.scans != 4 {
+		t.Fatalf("after a registry change: scans=%d, want a rescan", commits.scans)
+	}
+}
+
+// Regression: a stored row that does not decode is the same on every node. It
+// used to count as transient, so the unstake retried forever and block
+// processing halted on every node. It now holds the bond, once.
+func TestPoa1_DecodeErrorHoldsInsteadOfRetrying(t *testing.T) {
+	se, _, _ := poaEnv(t, 9)
+	calls := 0
+	se.heldShareCheck = func(string, uint64) (bool, error) {
+		calls++
+		return true, fmt.Errorf("commitments of x: %w", vdb.ErrDecode)
+	}
+	led := &recordingLedger{}
+	res := delegatedUnstake("hive:plain", "hive:plain", 200).ExecuteTx(se, led, nil, nil, "")
+	if res.Success || led.unstakes != 0 || calls != 1 {
+		t.Fatalf("success=%v ledger=%d calls=%d: a decode error must hold, once", res.Success, led.unstakes, calls)
+	}
+}
+
+// Same for the exit-halt (POA-10): a seat row that does not decode holds the
+// bond instead of retrying forever.
+func TestPoa10_DecodeErrorHoldsInsteadOfRetrying(t *testing.T) {
+	se, seats, _ := poaEnv(t, 9)
+	seats.getSeatErr = fmt.Errorf("poa_seats: get x: %w", vdb.ErrDecode)
+	done := make(chan bool, 1)
+	go func() {
+		halted, _, armed := se.PoaExitHaltOrBlock("hive:x", 200)
+		done <- halted && !armed
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatalf("a decode error must hold with no release height")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("still retrying a decode error after 5s")
 	}
 }

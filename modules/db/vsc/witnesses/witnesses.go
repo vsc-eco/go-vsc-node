@@ -230,13 +230,19 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		return nil, err
 	}
 
+	defer cursor.Close(ctx)
 	var witnesses []Witness
 	for cursor.Next(ctx) {
 		var result Witness
 		if err := cursor.Decode(&result); err != nil {
-			return nil, fmt.Errorf("failed to decode witness: %w", err)
+			return nil, fmt.Errorf("failed to decode witness: %w: %w", db.ErrDecode, err)
 		}
 		witnesses = append(witnesses, result)
+	}
+	// A failed fetch of a later batch ends Next() early: without this check
+	// the caller would get a truncated list and no error.
+	if err := cursor.Err(); err != nil {
+		return nil, err
 	}
 
 	//TODO: add filtering options equivalent to the old VSC network
@@ -337,7 +343,7 @@ func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, er
 	err := findResult.Decode(&witness)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
 	}
 
 	return &witness, nil

@@ -310,3 +310,37 @@ func TestPoa9_ReadinessRunsOverSeatsWhenTheyFormTheCommittee(t *testing.T) {
 		t.Fatal("gate not deferred: the list must pass through unchanged")
 	}
 }
+
+// Regression (review of the 0.9.0 batch): in the epoch where the seats become
+// enough again, the readiness ratio runs over the seats, and the previous
+// committee's top-up members (not seats) were judged from that seats-only list,
+// so they counted not ready and a floor rise waited one more epoch. The
+// outgoing-committee check now reads the whole candidate list.
+func TestPoa9_TopUpsOfThePreviousCommitteeCountAsReady(t *testing.T) {
+	floor, target := v(0, 9), v(0, 10)
+	seatsWs, wm := wlist(5, 5, target, floor) // a..e: seats, on target
+	list := append([]witnesses.Witness{}, seatsWs...)
+	for _, u := range []string{"u1", "u2"} { // last epoch's top-ups, on target
+		list = append(list, witnesses.Witness{Account: u, ProtocolVersion: target.Consensus})
+		wm[u] = 1
+	}
+	seats := map[string]struct{}{"a": {}, "b": {}, "c": {}, "d": {}, "e": {}}
+	prev := &elections.ElectionResult{ElectionDataInfo: elections.ElectionDataInfo{
+		Members: []elections.ElectionMember{{Account: "a"}, {Account: "u1"}, {Account: "u2"}},
+	}}
+	props := []consensus_state.VersionProposal{prop(0, 10, 1, 0, "a")}
+	rl := poaReadinessList(list, seats, 3)
+
+	if got := resolveVersionFloor(floor, 2, 100, nil, props, rl, wm, prev, num, den); got.Cmp(floor) != 0 {
+		t.Fatalf("setup: judged from the seats-only list the top-ups count not ready, want %s, got %s", floor.Format(), got.Format())
+	}
+	if got := resolveVersionFloorWithPrev(floor, 2, 100, nil, props, rl, list, wm, prev, num, den); got.Cmp(target) != 0 {
+		t.Fatalf("with the whole candidate list the outgoing committee is ready: want %s, got %s", target.Format(), got.Format())
+	}
+	// A top-up that is really behind still holds the rise back.
+	list[len(list)-1].ProtocolVersion = floor.Consensus
+	list[len(list)-2].ProtocolVersion = floor.Consensus
+	if got := resolveVersionFloorWithPrev(floor, 2, 100, nil, props, rl, list, wm, prev, num, den); got.Cmp(floor) != 0 {
+		t.Fatalf("two of three outgoing members below target must block, got %s", got.Format())
+	}
+}

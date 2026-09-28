@@ -961,20 +961,23 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	// POA-1 (0.9.0): no unbond while the bonded account holds a share of a BTC
-	// vault generation that still holds funds. A reshare keeps the key, so every
-	// past committee's share stays usable while the generation is funded; the
-	// collateral behind it stays locked until the generation has been rotated
-	// out and drained (THORChain: no unbond while a member of a funded vault).
+	// POA-1 (0.9.0): while any BTC vault generation is in a fund-holding status
+	// (whatever its balance), no unbond while the bonded account is electable,
+	// recently active as a witness, in the current committee, or a party of any
+	// keygen/reshare of such a generation (see HeldShareOfFundedVaultOrBlock).
+	// A reshare keeps the key, so every past committee's share stays usable;
+	// the collateral behind it stays locked until the generation is rotated out
+	// and purged (THORChain: no unbond while active or ready, or while a member
+	// of a vault that still holds funds).
 	if consensusversion.PoaBondLockedWhileShareFundedActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
 		bonded := tx.From
 		if DelegatedStakeActiveForElection(electionResult) {
 			bonded = tx.To
 		}
 		if se.HeldShareOfFundedVaultOrBlock(bonded, tx.Self.BlockHeight) {
-			msg := "consensus bond is locked: this node is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that still holds funds; it frees once its witness has been disabled for the exit-halt window and every such generation has been rotated out and purged"
+			msg := "consensus bond is locked: this node is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that is not yet purged; it frees once its witness has been disabled for the exit-halt window and every such generation has been rotated out and purged"
 			if bonded != tx.From {
-				msg = "consensus bond is locked: the node you delegated to is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that still holds funds; retry once it has left and every such generation has been rotated out and purged"
+				msg = "consensus bond is locked: the node you delegated to is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that is not yet purged; retry once it has left and every such generation has been rotated out and purged"
 			}
 			return TxResult{Success: false, Ret: msg, RcUsed: 50}
 		}

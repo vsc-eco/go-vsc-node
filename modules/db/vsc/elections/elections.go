@@ -118,12 +118,12 @@ func (e *elections) GetElectionStrict(epoch uint64) (*ElectionResult, error) {
 	electionRecord := ElectionResultRecord{}
 	err := findResult.Decode(&electionRecord)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
 	}
 
 	err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
 	}
 	return &electionResult, nil
 }
@@ -200,13 +200,13 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 		err := findResult.Decode(&electionRecord)
 
 		if err != nil {
-			return ElectionResult{}, err
+			return ElectionResult{}, fmt.Errorf("%w: %w", db.ErrDecode, err)
 		}
 
 		electionResult := ElectionResult{}
 		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
 		if err != nil {
-			return electionResult, err
+			return electionResult, fmt.Errorf("%w: %w", db.ErrDecode, err)
 		}
 
 		return electionResult, nil

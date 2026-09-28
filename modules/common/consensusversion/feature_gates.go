@@ -485,14 +485,17 @@ func PoaStarvationTopUpActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
 
-// PoaBondLockedWhileShareFundedActive reports whether an unstake is refused
-// while the bonded account holds a share of a BTC vault generation that still
-// holds funds (POA-1). A reshare keeps the key, so every past committee's share
-// still combines into a valid signature for as long as that generation is
-// funded; the collateral behind such a share stays locked until the generation
-// has been rotated out and drained. THORChain's rule: no unbond while a member
-// of a vault that still holds funds. Resolve `active` from the version active
-// at the unstake's height.
+// PoaBondLockedWhileShareFundedActive reports whether the POA-1 bond lock is in
+// force. While any BTC vault generation is in a fund-holding status (Active,
+// Retiring, Draining or Inactive, whatever its balance), an unstake is refused
+// if the bonded account (the signer, or the node of a delegated unstake) is an
+// electable witness, made a witness announcement within the exit-halt window,
+// is in the election active at that height, or is a party of any keygen or
+// reshare of such a generation. A reshare keeps the key, so every past
+// committee's share still signs while the generation can hold funds. The lock
+// ends only once those generations are rotated out and purged, which is
+// owner-driven: if the vault owner never rotates, the lock never ends. Resolve
+// `active` from the version active at the unstake's height.
 func PoaBondLockedWhileShareFundedActive(active Version) bool {
 	return Version0_9_0Active(active)
 }

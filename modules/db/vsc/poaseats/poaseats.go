@@ -90,7 +90,13 @@ func (p *poaSeats) GetSeat(account string) (Seat, bool, error) {
 	}
 
 	seat := Seat{}
-	err := p.FindOne(context.Background(), bson.M{"account": acct}).Decode(&seat)
+	res := p.FindOne(context.Background(), bson.M{"account": acct})
+	err := res.Err()
+	if err == nil {
+		if derr := res.Decode(&seat); derr != nil {
+			return Seat{}, false, fmt.Errorf("poa_seats: get %s: %w: %w", acct, db.ErrDecode, derr)
+		}
+	}
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		// Deterministic absence, not a failure: every node reading the same
 		// state gets the same answer. Distinguished from a transient read error

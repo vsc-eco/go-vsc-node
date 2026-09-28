@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"vsc-node/modules/common/consensusversion"
+	vdb "vsc-node/modules/db"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -198,12 +199,19 @@ func (se *StateEngine) IsPoaExitHalted(account string, height uint64) bool {
 // PoaExitHaltOrBlock is IsPoaExitHalted for callers whose verdict is consensus
 // output (a TxResult and its refusal text): a read error blocks and retries
 // instead of holding on this node alone, which would diverge it from peers that
-// read fine. It also returns the fixed release height, when one exists, from the
-// same reads.
+// read fine. A stored row that does not decode is the same on every node, so it
+// holds instead of retrying forever. It also returns the fixed release height,
+// when one exists, from the same reads.
 func (se *StateEngine) PoaExitHaltOrBlock(account string, height uint64) (halted bool, release uint64, armed bool) {
 	blockingRetry("poaExitHalt("+account+")", func() error {
 		var err error
 		halted, release, armed, err = se.poaExitHalt(account, height)
+		if errors.Is(err, vdb.ErrDecode) {
+			log.Error("poa exit-halt: a stored row did not decode; HOLDING the bond",
+				"account", account, "height", height, "err", err)
+			halted, release, armed = true, 0, false
+			return nil
+		}
 		return err
 	})
 	return halted, release, armed

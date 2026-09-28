@@ -42,6 +42,8 @@ type fakeSeats struct {
 	failReadsFor int
 	// failGetSeatFor fails the next N GetSeat reads then recovers.
 	failGetSeatFor int
+	// getSeatErr, when set, is returned by every GetSeat.
+	getSeatErr error
 	readAttempts   int
 }
 
@@ -67,6 +69,9 @@ func (f *fakeSeats) GetSeatsAtHeight(height uint64) ([]poaseats.Seat, error) {
 }
 
 func (f *fakeSeats) GetSeat(account string) (poaseats.Seat, bool, error) {
+	if f.getSeatErr != nil {
+		return poaseats.Seat{}, false, f.getSeatErr
+	}
 	if f.failReads {
 		return poaseats.Seat{}, false, errors.New("read failure")
 	}
