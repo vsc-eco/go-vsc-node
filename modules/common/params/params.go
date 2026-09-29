@@ -218,17 +218,23 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // transaction succeeded at all. A future addition marked Collateral would
 // additionally shift P — hence the same coordinated-height treatment for both.
 //
-// RE-PINNED 2026-09-29 (second pin that day): head 110,333,016 +57,984 blocks
-// (~2 DAYS at 3 s), Thu 01 Oct ~10:25 UTC. The 14-day window replaced here was
-// sized for a release that had no route to ship; the CircleCI build never ran
-// because the docker-hub-creds context is not granted to the pushing user. With
-// the PR going up for the team to merge now, two days is the coordination
-// window we actually need, not two weeks of the addition sitting inert on main.
+// RE-PINNED 2026-09-29 (third pin that day): head 110,337,627 +403,200 blocks
+// (14 DAYS at 3 s), Tue 13 Oct ~14:00 UTC.
 //
-// Previously: 09-29 110,734,900 (+14 d), 09-27 110,338,100 (+48 h), 09-23 +1 d
-// from 110,193,400, 09-22 from head 110,135,804 +57,600, after the original
-// 09-20 pin eroded to ~8 h — cf. the 0.3.0 rollout, where un-upgraded nodes
-// dropped the committee 18 -> 12.
+// Widens the ~2-day window merged minutes earlier. That one was cut short on
+// the assumption the release would ship straight after the merge, but the
+// blocker is still open: CircleCI publishes no image because the
+// docker-hub-creds context is not granted to the pushing user, and the GitHub
+// Actions replacement is not merged yet. A two-day height with no build behind
+// it just expires like the four before it, and an expired height fails OPEN —
+// the addition goes live the moment a node upgrades, which is precisely the
+// staggered rollout this gate exists to prevent. Two weeks is sized for the
+// release actually reaching every witness, not for the mechanical minimum.
+//
+// Previously: 09-29 110,391,000 (+2 d) and 110,734,900 (+14 d), 09-27
+// 110,338,100 (+48 h), 09-23 +1 d from 110,193,400, 09-22 from head
+// 110,135,804 +57,600, after the original 09-20 pin eroded to ~8 h — cf. the
+// 0.3.0 rollout, where un-upgraded nodes dropped the committee 18 -> 12.
 //
 // NOTE: the develop branch deliberately carries a DIFFERENT, shorter height.
 // This constant is consensus input, so the branch a binary is built from
@@ -239,7 +245,7 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // the past makes the addition immediate on upgrade, i.e. exactly the staggered
 // rollout this exists to prevent — the gate fails open, and silently.
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
-var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_391_000
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
 
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
