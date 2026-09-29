@@ -1418,6 +1418,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					algo:  action.Algo,
 
 					epoch: currentElection.Epoch,
+
+					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
 				},
 			}
 			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
@@ -1649,6 +1651,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					keystore: tssMgr.keyStore,
 
 					epoch: keyInfo.Epoch,
+
+					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minSignVer),
 				},
 				msg:                action.Args,
 				prevCommitmentType: prevCommitType,
@@ -1899,6 +1903,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					keystore:    tssMgr.keyStore,
 					blockHeight: bh,
 					isReshare:   true,
+
+					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minReshareVer),
 				},
 				newParticipants:    newParticipants,
 				newEpoch:           currentElection.Epoch,

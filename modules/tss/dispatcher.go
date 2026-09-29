@@ -1395,8 +1395,12 @@ type BaseDispatcher struct {
 	// (which embeds the local party's sorted index) from the stored text.
 	// Lazy-initialized; read/write under p2pMu.
 	tssErrors map[string]map[string]bool
-	timeout   bool
-	p2pMu     sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
+	// dropUnattributableCulprits (TSS-FRAME-1, 0.9.0): record an error whose
+	// culprit is not the author of the bad data without that culprit. Set once
+	// from the session height, so every node decides the same way.
+	dropUnattributableCulprits bool
+	timeout                    bool
+	p2pMu                      sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	done       chan struct{}
@@ -1611,6 +1615,43 @@ func (dispatcher *BaseDispatcher) startWait() {
 	}
 }
 
+// unattributableTssCauses are the tss-lib v3 errors whose named culprit is not
+// the author of the bad data (TSS-FRAME-1). Each compares a party's value with
+// one ANOTHER party supplied, or blames one party for a point summed from every
+// party's commitments, so a single lying party can make honest nodes agree on an
+// honest culprit. Matched on the cause text, which is fixed in the pinned module
+// (tss-lib/v3 v3.0.0); tss_frame1_test.go drives the real rounds to produce the
+// ssid, public-key and h1 cases.
+var unattributableTssCauses = map[string]bool{
+	// ecdsa/resharing round 2: every old party's SSID is compared with old party 0's.
+	"ssid mismatch": true,
+	// ecdsa+eddsa/resharing round 1: old party 0's key, replaceable by resending
+	// its message, is compared with the first one seen; the party whose message
+	// is being processed is named.
+	"ecdsa pub key did not match what we received previously": true,
+	"eddsa pub key did not match what we received previously": true,
+	// Same site: the key that fails to parse is old party 0's, the party named is
+	// the one being processed.
+	"unable to unmarshal the ecdsa pub key": true,
+	"unable to unmarshal the eddsa pub key": true,
+	// ecdsa keygen round 2 and resharing round 4: the later index is named, so a
+	// party that copies an honest party's public h1/h2 frames it.
+	"this h1j was already used by another party": true,
+	"this h2j was already used by another party": true,
+	// ecdsa+eddsa keygen round 3: the sum of every party's commitments fails, the
+	// party whose term was being added is named.
+	"adding PjVs[c] to Vc[c] resulted in a point not on the curve":             true,
+	"adding Vc[c].ScalarMult(z) to BigXj resulted in a point not on the curve": true,
+}
+
+// eddsa/resharing round 4 wraps its aggregate-point error (the new party named
+// only contributes its index), so it is matched by prefix.
+const unattributableTssCausePrefix = "newBigXj.Add(Vc[c].ScalarMult(z))"
+
+func isUnattributableTssCause(cause string) bool {
+	return unattributableTssCauses[cause] || strings.HasPrefix(cause, unattributableTssCausePrefix)
+}
+
 // recordTssError stores the first btss error (kept for fall-back logging)
 // and accumulates each (culprit, cause) pair into tssErrors. Stores
 // err.Cause().Error() rather than err.Error() so the recorded text omits
@@ -1619,15 +1660,27 @@ func (dispatcher *BaseDispatcher) startWait() {
 func (dispatcher *BaseDispatcher) recordTssError(err *btss.Error) {
 	dispatcher.p2pMu.Lock()
 	defer dispatcher.p2pMu.Unlock()
+	cause := ""
+	if c := err.Cause(); c != nil {
+		cause = c.Error()
+	}
+	if dispatcher.dropUnattributableCulprits && isUnattributableTssCause(cause) && len(err.Culprits()) > 0 {
+		// TSS-FRAME-1: the session still failed, but nobody is named for it.
+		// Keep a culprit-free copy so ErrorResult.Serialize's fallback to
+		// tssErr.Culprits() cannot bring the culprit back.
+		named := make([]string, 0, len(err.Culprits()))
+		for _, c := range err.Culprits() {
+			named = append(named, c.GetId())
+		}
+		log.Warn("tss error names a party that did not author the bad data; not blamed",
+			"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "cause", cause, "wouldHaveBlamed", named)
+		err = btss.NewError(err.Cause(), err.Task(), err.Round(), err.Victim())
+	}
 	if dispatcher.tssErr == nil {
 		dispatcher.tssErr = err
 	}
 	if dispatcher.tssErrors == nil {
 		dispatcher.tssErrors = make(map[string]map[string]bool)
-	}
-	cause := ""
-	if c := err.Cause(); c != nil {
-		cause = c.Error()
 	}
 	for _, c := range err.Culprits() {
 		culprit := string(c.GetId())

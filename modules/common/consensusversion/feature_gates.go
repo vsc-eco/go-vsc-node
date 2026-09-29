@@ -508,3 +508,16 @@ func PoaBondLockedWhileShareFundedActive(active Version) bool {
 func TssPerAccusedBlameActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// TssUnattributableCulpritsDroppedActive reports whether a tss-lib error that
+// names a party other than the author of the bad data is recorded without that
+// party (TSS-FRAME-1). Those checks compare a party's value against one ANOTHER
+// party supplied (old party 0's SSID, a replaceable round-1 public key, the first
+// copy of an h1/h2 value), so one lying party makes honest nodes agree on an
+// honest culprit and the blame lands, feeding the per-key blame rule and the ban
+// score. Below 0.9.0 the culprit is kept, byte for byte. Resolve `active` from
+// the version active at the session height, like TssPerAccusedBlameActive: the
+// culprit set is CID input, so every signer must decide the same way.
+func TssUnattributableCulpritsDroppedActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
