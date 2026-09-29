@@ -58,6 +58,10 @@ type Config struct {
 	// OldCodeNodes lists which nodes (1-indexed) should run the old code
 	// image built from OldCodeSourceDir.
 	OldCodeNodes []int
+	// OldCodeSysconfig passes -sysconfig to the OldCodeNodes too. Set it when
+	// OldCodeSourceDir is a same-version variant of this tree (for example a
+	// node patched to misbehave) that must run the same network parameters.
+	OldCodeSysconfig bool
 	// HafahImage is the Docker image for the hafah SQL installer.
 	HafahImage string
 	// PostgRESTImage is the Docker image for hafah-postgrest (PostgREST).

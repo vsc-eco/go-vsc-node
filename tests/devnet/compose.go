@@ -104,7 +104,7 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPa
 			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
 			i, cfg.LogLevel,
 		)
-		if cfg.SysConfigOverrides != nil && !isOld {
+		if cfg.SysConfigOverrides != nil && (!isOld || cfg.OldCodeSysconfig) {
 			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
 		}
 
