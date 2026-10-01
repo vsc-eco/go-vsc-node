@@ -105,7 +105,13 @@ services:
       PGRST_SERVER_PORT: 3000
       PGRST_ADMIN_SERVER_PORT: 3001
       PGRST_DB_URI: postgresql://hafah_user@pgbouncer:6432/haf_block_log
-      PGRST_DB_SCHEMA: hafah_endpoints,hafah_api_v1,hafah_api_v2
+      # hafah_endpoints ONLY. The hafah image used to install hafah_api_v1 and
+      # hafah_api_v2 alongside it; it no longer does, and naming a schema that
+      # does not exist is fatal rather than ignored — PostgREST fails to build
+      # its schema cache, answers /ready with 503 forever, and compose reports
+      # the container as unhealthy. That aborts EVERY devnet test at startup,
+      # with an error naming postgrest rather than the schema that is missing.
+      PGRST_DB_SCHEMA: hafah_endpoints
       PGRST_DB_ROOT_SPEC: home
       PGRST_DB_ANON_ROLE: hafah_user
       PGRST_DB_POOL: 8
