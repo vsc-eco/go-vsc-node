@@ -67,6 +67,16 @@ const (
 	// better than a key that never rotates its shares.
 	MAX_RESHARE_DEFERRALS = 3
 
+	// MAX_RESHARES_PER_ROTATE caps how many keys one rotate block reshares
+	// (reshareWindow). Every session of a batch starts at the batch block and they
+	// run concurrently, so a member's Paillier work for the whole batch lands at
+	// once. With 20 keys a member on ~0.6 of a CPU needs more than ReshareTimeout
+	// (2 min) to work through one round's messages, and every session of the batch
+	// times out on it (devnet, testnet shape, 2026-10-01). A capped batch bounds a
+	// member's work per rotate block; the remaining keys reshare at the following
+	// rotate blocks.
+	MAX_RESHARES_PER_ROTATE = 4
+
 	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
 	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
 	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
@@ -777,6 +787,33 @@ func countPreParamsNeed(reshareKeys, newKeys []tss_db.TssKey, skipReshare func(k
 	return need
 }
 
+// reshareWindow picks the keys one rotate block reshares. Up to
+// MAX_RESHARES_PER_ROTATE keys pass through unchanged, order included, so a
+// network with few keys behaves exactly as before. Beyond that the keys are sorted
+// by id and a window of MAX_RESHARES_PER_ROTATE is taken, starting at a position
+// that advances every rotate block: over consecutive rotate blocks every key gets
+// a turn, and a key that keeps failing cannot hold the others back. A pure
+// function of the key list and the block height, so every node running this code
+// selects the same keys at the same rotate block. The readiness count
+// (countPreParamsNeed) must see the same window as the batch it prepares for.
+func reshareWindow(keys []tss_db.TssKey, bh, rotateInterval uint64) []tss_db.TssKey {
+	if len(keys) <= MAX_RESHARES_PER_ROTATE {
+		return keys
+	}
+	if rotateInterval == 0 {
+		rotateInterval = 1
+	}
+	sorted := slices.Clone(keys)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Id < sorted[j].Id })
+	n := uint64(len(sorted))
+	start := (bh / rotateInterval) * MAX_RESHARES_PER_ROTATE % n
+	out := make([]tss_db.TssKey, 0, MAX_RESHARES_PER_ROTATE)
+	for i := uint64(0); i < MAX_RESHARES_PER_ROTATE; i++ {
+		out = append(out, sorted[(start+i)%n])
+	}
+	return out
+}
+
 // withholdReadinessForPreParams decides whether this node must hold back its
 // readiness attestation for a rotate block because it could not start every
 // ceremony at that block on time: it joins them as a new party (member) and has
@@ -837,6 +874,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Check if there are keys that need reshare at the next rotate interval.
 		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+			reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
 			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
 				target := bh + blocksUntilReshare
@@ -1008,6 +1046,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 			epoch := electionData.Epoch
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
+			reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
 
 			for _, key := range reshareKeys {
 				// M1.3 (Build Map §7 N1, U-1): under vault-rotation-v2 the BTC vault
