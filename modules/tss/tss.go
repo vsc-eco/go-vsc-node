@@ -378,9 +378,14 @@ type TssManager struct {
 	keystoreKey     []byte
 	keystoreKeyErr  error
 
-	//Generates a fresh set of local key params.
-	//A new set of fresh pre params will be available after depletion
+	//Pool of fresh local key params (Paillier pre-parameters), one per ECDSA
+	//keygen or new-party reshare. Kept filled ahead of each batch (TSS-BATCH-1).
 	preParams chan ecKeyGen.LocalPreParams
+	// preParamsTarget is the fill level GeneratePreParams works toward; see
+	// preParamsFillTarget.
+	preParamsTarget atomic.Int64
+	// genPreParams replaces ecKeyGen.GeneratePreParams in tests; nil in production.
+	genPreParams func(timeout time.Duration) (*ecKeyGen.LocalPreParams, error)
 
 	witnessDb  witnesses.Witnesses
 	electionDb elections.Elections
@@ -432,6 +437,9 @@ type TssManager struct {
 
 	// In-memory dedup for readiness gossip broadcasts. Key is "targetBlock".
 	readinessSent map[string]bool
+	// readinessWithheld marks rotate targets this node held its attestation
+	// back for (TSS-BATCH-1), so the warning is logged once per target.
+	readinessWithheld map[string]bool
 
 	// Off-chain gossip readiness state. Protected by gossipLock.
 	gossipLock sync.RWMutex
@@ -673,22 +681,112 @@ func (tssMgr *TssManager) awaitPreParams(ctx context.Context, sessionId string) 
 	}
 }
 
+// preParamsPoolCap bounds the pre-parameter pool (TSS-BATCH-1). One set is a few
+// KB; the cap only guards against an absurd key count.
+const preParamsPoolCap = 64
+
+// DEFAULT_PREPARAMS_POOL is the fill level kept when no ceremony batch is coming.
+const DEFAULT_PREPARAMS_POOL = 2
+
+// GeneratePreParams tops the pool up to its fill target, one set at a time.
+//
+// TSS-BATCH-1: the pool used to hold ONE set and was refilled only when empty,
+// while RunActions starts a batch's dispatchers one after another and every
+// ECDSA reshare (new party) or keygen takes one set in Start(). A batch of N such
+// sessions therefore cost a node N back-to-back generations (seconds on a fast
+// machine, minutes on a loaded one), so a slow node started its later sessions
+// minutes after the others had given up on them. Every party is required, so
+// those sessions failed for everyone, and the retry one interval later repeated
+// it. The pool is now filled ahead of the batch (raisePreParamsTarget from the
+// readiness window) and topped up after it, so starting a session no longer waits
+// on generation.
 func (tssMgr *TssManager) GeneratePreParams() {
-	locked := tssMgr.preParamsLock.TryLock()
-	if locked {
-		if len(tssMgr.preParams) == 0 {
-			timeout := tssMgr.preParamsTimeout()
-			log.Info("need to generate preparams", "timeout", timeout)
-			preParams, err := ecKeyGen.GeneratePreParams(timeout)
-			if err != nil {
-				log.Error("preparams generation failed", "err", err)
-			} else {
-				log.Info("preparams generated successfully")
-				tssMgr.preParams <- *preParams
-			}
-		}
-		tssMgr.preParamsLock.Unlock()
+	if !tssMgr.preParamsLock.TryLock() {
+		return
 	}
+	defer tssMgr.preParamsLock.Unlock()
+
+	gen := tssMgr.genPreParams
+	if gen == nil {
+		gen = func(timeout time.Duration) (*ecKeyGen.LocalPreParams, error) {
+			return ecKeyGen.GeneratePreParams(timeout)
+		}
+	}
+	for target := tssMgr.preParamsFillTarget(); len(tssMgr.preParams) < target; target = tssMgr.preParamsFillTarget() {
+		timeout := tssMgr.preParamsTimeout()
+		log.Info("need to generate preparams", "have", len(tssMgr.preParams), "target", target, "timeout", timeout)
+		preParams, err := gen(timeout)
+		if err != nil {
+			log.Error("preparams generation failed", "err", err)
+			return
+		}
+		select {
+		case tssMgr.preParams <- *preParams:
+			log.Info("preparams generated successfully", "have", len(tssMgr.preParams), "target", target)
+		default:
+			// Full: only a consumer can make room, so stop here.
+			return
+		}
+	}
+}
+
+// preParamsFillTarget is how many sets GeneratePreParams keeps ready: the largest
+// batch announced so far (raisePreParamsTarget), at least DEFAULT_PREPARAMS_POOL,
+// at most the pool's capacity.
+func (tssMgr *TssManager) preParamsFillTarget() int {
+	target := int(tssMgr.preParamsTarget.Load())
+	if target < DEFAULT_PREPARAMS_POOL {
+		target = DEFAULT_PREPARAMS_POOL
+	}
+	if c := cap(tssMgr.preParams); target > c {
+		target = c
+	}
+	return target
+}
+
+// raisePreParamsTarget makes the pool keep at least `need` sets from now on. It
+// never lowers the target: a node that needed N sets for one batch will need
+// them again at the next epoch's reshares.
+func (tssMgr *TssManager) raisePreParamsTarget(need int) {
+	for {
+		cur := tssMgr.preParamsTarget.Load()
+		if int64(need) <= cur || tssMgr.preParamsTarget.CompareAndSwap(cur, int64(need)) {
+			return
+		}
+	}
+}
+
+// countPreParamsNeed is how many pre-parameter sets this node's own dispatchers
+// will take at a rotate block: one per ECDSA reshare it joins as a new party and
+// one per ECDSA keygen (EdDSA takes none, dispatcher.go B1 note). It mirrors the
+// action list BlockTick builds at that block, minus the deferral path, which can
+// only lower the count; an undercount costs one on-demand generation, the old
+// behaviour, for that session only.
+func countPreParamsNeed(reshareKeys, newKeys []tss_db.TssKey, skipReshare func(keyId string) bool) int {
+	need := 0
+	for _, key := range reshareKeys {
+		if key.Algo == tss_db.EcdsaType && !skipReshare(key.Id) {
+			need++
+		}
+	}
+	for _, key := range newKeys {
+		if key.Algo == tss_db.EcdsaType {
+			need++
+		}
+	}
+	return need
+}
+
+// withholdReadinessForPreParams decides whether this node must hold back its
+// readiness attestation for a rotate block because it could not start every
+// ceremony at that block on time: it joins them as a new party (member) and has
+// fewer sets ready than they take. Holding back the attestation keeps the node
+// out of that batch's party lists on every node alike, exactly as if it were
+// offline, instead of putting it in every list and making each of its later
+// sessions fail for all parties. A retiring-generation signer that is not a
+// member joins only as an old party and takes no sets.
+func withholdReadinessForPreParams(isMember bool, need, have int) bool {
+	return isMember && need > 0 && have < need
 }
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
@@ -731,6 +829,9 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	// Collect upcoming target blocks that need readiness gossip.
 	// Only broadcast if there is actual work scheduled for that height.
 	gossipTargets := make(map[uint64]bool)
+	// TSS-BATCH-1: pre-parameter sets this node's dispatchers take at each
+	// upcoming rotate block when it joins as a new party (countPreParamsNeed).
+	preParamsNeed := make(map[uint64]int)
 	blocksUntilReshare := rotateInterval - (bh % rotateInterval)
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
 		// Check if there are keys that need reshare at the next rotate interval.
@@ -738,7 +839,11 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
 			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
-				gossipTargets[bh+blocksUntilReshare] = true
+				target := bh + blocksUntilReshare
+				gossipTargets[target] = true
+				preParamsNeed[target] = countPreParamsNeed(reshareKeys, newKeys, func(keyId string) bool {
+					return tssMgr.shouldSkipReshareForVaultRotation(keyId, target)
+				})
 			}
 		}
 	}
@@ -785,11 +890,41 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				inSettlePeriod := blocksUntil <= DEFAULT_SETTLE_BLOCKS
 				dedupKey := strconv.FormatUint(targetBlock, 10)
 
+				// TSS-BATCH-1: a member attests for a rotate block only once it holds a
+				// pre-parameter set for every ceremony it will start there. Until then
+				// it keeps filling the pool and retries next block; if the window
+				// closes first it sits this batch out, the same as an offline node,
+				// instead of joining every party list and starting its later sessions
+				// after the others have timed out. Only whether this node sends its own
+				// signed claim changes; the claim and the convergence are untouched.
+				withhold := false
+				if need := preParamsNeed[targetBlock]; need > 0 && isMember && !inSettlePeriod {
+					if c := cap(tssMgr.preParams); need > c {
+						need = c // beyond the pool's capacity the extra sets are generated on demand, as before
+					}
+					tssMgr.raisePreParamsTarget(need)
+					go tssMgr.GeneratePreParams()
+					withhold = withholdReadinessForPreParams(isMember, need, len(tssMgr.preParams))
+					if withhold {
+						tssMgr.gossipLock.Lock()
+						if tssMgr.readinessWithheld == nil {
+							tssMgr.readinessWithheld = make(map[string]bool)
+						}
+						first := !tssMgr.readinessSent[dedupKey] && !tssMgr.readinessWithheld[dedupKey]
+						tssMgr.readinessWithheld[dedupKey] = true
+						tssMgr.gossipLock.Unlock()
+						if first {
+							log.Warn("withholding readiness until preparams are ready",
+								"targetBlock", targetBlock, "have", len(tssMgr.preParams), "need", need)
+						}
+					}
+				}
+
 				// During the announce phase, sign and store our own attestation.
 				// During the settle phase, skip new attestations but still gossip.
 				tssMgr.gossipLock.Lock()
 				alreadySent := tssMgr.readinessSent[dedupKey]
-				if !inSettlePeriod && !alreadySent {
+				if !inSettlePeriod && !alreadySent && !withhold {
 					tssMgr.readinessSent[dedupKey] = true
 				}
 				tssMgr.gossipLock.Unlock()
@@ -809,7 +944,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 						"targetBlock", targetBlock, "floor", floor.Format())
 				}
 
-				if !effectiveBelowFloor && !inSettlePeriod && !alreadySent {
+				if !effectiveBelowFloor && !inSettlePeriod && !alreadySent && !withhold {
 					att, err := tssMgr.signReadyAttestation(targetBlock)
 					if err != nil {
 						log.Warn("failed to sign readiness attestation",
@@ -833,11 +968,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 
-		// Evict stale readinessSent entries from previous cycles.
+		// Evict stale readinessSent / readinessWithheld entries from previous cycles.
 		tssMgr.gossipLock.Lock()
 		for k := range tssMgr.readinessSent {
 			if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+5 < bh {
 				delete(tssMgr.readinessSent, k)
+			}
+		}
+		for k := range tssMgr.readinessWithheld {
+			if block, err := strconv.ParseUint(k, 10, 64); err == nil && block+5 < bh {
+				delete(tssMgr.readinessWithheld, k)
 			}
 		}
 		tssMgr.gossipLock.Unlock()
@@ -2760,7 +2900,7 @@ func New(
 	contractState contracts.ContractState,
 	da *datalayer.DataLayer,
 ) *TssManager {
-	preParams := make(chan ecKeyGen.LocalPreParams, 1)
+	preParams := make(chan ecKeyGen.LocalPreParams, preParamsPoolCap)
 
 	return &TssManager{
 		preParamsLock: sync.Mutex{},
@@ -2795,6 +2935,7 @@ func New(
 		sessionMap:         make(map[string]sessionInfo),
 		sessionResults:     make(map[string]sessionResultEntry),
 		readinessSent:      make(map[string]bool),
+		readinessWithheld:  make(map[string]bool),
 		gossipAttestations: make(map[string]map[string]ReadyAttestation),
 	}
 }
