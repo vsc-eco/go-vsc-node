@@ -540,3 +540,16 @@ func TssUnattributableCulpritsDroppedActive(active Version) bool {
 func TssSessionShapeActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
+
+// TssKeyLifecycleActive reports whether the key-lifecycle rules made after the
+// 0.3.0 build are in force: a reshare extends an expiring key's expiry (BRK-8) and
+// the deprecation clock stops while the chain is processing-suspended (BRK-5).
+// Both change a key's stored status, which contracts read (tss key status, keysign
+// refusal for a key that is not active), so a node on the 0.3.0 build and an
+// upgraded node would hold different key state; below the line an upgraded node
+// keeps the 0.3.0 rule. Same 0.7.0 line as TssSessionShapeActive, for the same
+// reason: testnet's committee already runs both rules. Resolve `active` from the
+// version active at the block being processed.
+func TssKeyLifecycleActive(active Version) bool {
+	return Version0_7_0Active(active)
+}

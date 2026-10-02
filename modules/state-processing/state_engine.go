@@ -464,8 +464,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	// non-recovery contract op), so deprecating a key it cannot renew forces an
 	// un-curable freeze (a fund-holding gen's key stops signing with no in-suspend
 	// cure); the chain is halted anyway. Deterministic (on-chain suspend flag,
-	// refreshed just above). Resumes normally when the suspend lifts.
-	if !se.chainProcessingSuspended() {
+	// refreshed just above). Resumes normally when the suspend lifts. The 0.3.0
+	// build keeps the clock running, so the freeze waits for TssKeyLifecycleActive.
+	keyLifecycleActive := consensusversion.TssKeyLifecycleActive(se.ActiveConsensusVersion(block.BlockNumber))
+	if !keyLifecycleActive || !se.chainProcessingSuspended() {
 		if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
 			currentEpoch := electionData.Epoch
 
@@ -1728,8 +1730,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								// reshare expiry. Deterministic (commitment.Epoch + Epochs are
 								// on-chain). reshare only (a v2 keygen for an already-active
 								// keyId is rejected above; a legacy no-expiry key has Epochs==0
-								// → unchanged).
-								if commitment.Type == "reshare" && keyInfo.Epochs > 0 {
+								// → unchanged). The 0.3.0 build does not extend, so this
+								// waits for TssKeyLifecycleActive.
+								if keyLifecycleActive && commitment.Type == "reshare" && keyInfo.Epochs > 0 {
 									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
 								}
 								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch)
