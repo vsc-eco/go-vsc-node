@@ -295,6 +295,28 @@ type contractState struct {
 	*db.Collection
 }
 
+// Init creates the indexes contract_state's own queries need. GetLastOutput and
+// GetLastOutputStrict ({contract_id, block_height $lte}, newest first) run for
+// every contract call and in the TSS solvency gate, every contract output is
+// upserted by id (IngestOutput) and read by id (GetOutput), and the API finds
+// outputs by input tx; without these each of those reads the whole collection.
+// Non-unique on purpose (see transactions.Init).
+func (ch *contractState) Init() error {
+	if err := ch.Collection.Init(); err != nil {
+		return err
+	}
+	for _, keys := range []bson.D{
+		{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
+		{{Key: "id", Value: 1}},
+		{{Key: "inputs", Value: 1}},
+	} {
+		if err := ch.CreateIndexIfNotExist(mongo.IndexModel{Keys: keys}); err != nil {
+			return fmt.Errorf("failed to create contract_state index %v: %w", keys, err)
+		}
+	}
+	return nil
+}
+
 func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{

@@ -41,6 +41,24 @@ func (e *transactions) Init() error {
 		return fmt.Errorf("failed to create payload_recipients index: %w", err)
 	}
 
+	// Every ingest looks a transaction up by id and upserts it by id, and the API
+	// finds transactions by id. Without this index each of those reads the whole
+	// collection (~48k docs, ~141 MB on a testnet node, growing with history).
+	// Non-unique on purpose: a unique build would refuse to start a node whose
+	// collection already holds a duplicate id.
+	idIndex := mongo.IndexModel{Keys: bson.D{{Key: "id", Value: 1}}}
+	if err = e.CreateIndexIfNotExist(idIndex); err != nil {
+		return fmt.Errorf("failed to create id index: %w", err)
+	}
+
+	// The block producer lists UNCONFIRMED transactions for every block it
+	// makes (FindUnconfirmedTransactions); without this it reads every
+	// transaction ever stored to return the few still pending.
+	statusIndex := mongo.IndexModel{Keys: bson.D{{Key: "status", Value: 1}}}
+	if err = e.CreateIndexIfNotExist(statusIndex); err != nil {
+		return fmt.Errorf("failed to create status index: %w", err)
+	}
+
 	return nil
 }
 
