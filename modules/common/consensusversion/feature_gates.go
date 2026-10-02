@@ -537,3 +537,16 @@ func TssUnattributableCulpritsDroppedActive(active Version) bool {
 func PoaBootstrapFromPriorCommitteeActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// TssReshareKeepsThresholdActive reports whether a reshare is refused when its
+// new party set would leave a key that fewer than a majority of the current
+// committee can sign (threshold+1 <= electionSize/2). The new key's threshold follows
+// the number of parties that actually take part, and parties are dropped for
+// readiness, blame, bans and POA-8 accusations, all of which an attacker can
+// push honest members into. Below 0.9.0 the only floor was the 2/3 BLS commit
+// quorum, so a landed reshare among fewer parties permanently lowered how many
+// shares it takes to sign that key. Resolve `active` from the version active at
+// the session height, like TssPerAccusedBlameActive.
+func TssReshareKeepsThresholdActive(active Version) bool {
+	return Version0_9_0Active(active)
+}

@@ -547,6 +547,28 @@ func (tssMgr *TssManager) clearReshareDeferrals(keyId string) {
 	delete(tssMgr.reshareDeferrals, keyId)
 }
 
+// reshareThresholdFloor is the lowest threshold a reshare may give the new key:
+// signing must still need more than half of the current committee
+// (threshold+1 > electionSize/2). That keeps a theft out of reach of anything
+// short of a committee majority while leaving room for members that are not
+// ready: at 18 seats a reshare among 14 still proceeds, among 13 it waits. A
+// genuinely smaller committee lowers the floor with it.
+func reshareThresholdFloor(electionSize int) int {
+	elecT, _ := tss_helpers.GetThreshold(electionSize)
+	return min(electionSize/2, elecT)
+}
+
+// minPartiesForThreshold is the smallest party count n with GetThreshold(n) >= t.
+func minPartiesForThreshold(t int) int {
+	n := t + 1
+	for {
+		if got, _ := tss_helpers.GetThreshold(n); got >= t {
+			return n
+		}
+		n++
+	}
+}
+
 // participantSetTag is a short, order-independent fingerprint of the OLD and NEW
 // participant sets chosen for a reshare.
 //
@@ -2057,6 +2079,24 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				log.Warn("insufficient old participants for reshare", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "required", origOldThreshold+1, "readyCount", len(readyAccounts))
 				tssMgr.noteReshareStarved(commitment.KeyId, "old", len(commitedMembers), origOldThreshold+1)
 				continue
+			}
+			// Item 4 (0.9.0): the new key's threshold follows the parties that
+			// take part, so a reshare among fewer parties lowers how many shares
+			// it takes to sign this key, permanently. Below a committee majority
+			// is refused. Parties drop out for
+			// readiness, blame, bans and POA-8, all of which an attacker can push
+			// honest members into. Refuse the reshare instead: the old key keeps
+			// signing and the rotation retries once enough members are back.
+			if consensusversion.TssReshareKeepsThresholdActive(minReshareVer) {
+				floor := reshareThresholdFloor(len(currentElection.Members))
+				if origNewThreshold < floor {
+					need := minPartiesForThreshold(floor)
+					log.Warn("reshare would lower the key threshold; waiting for more parties", "sessionId", sessionId,
+						"newParticipants", len(newParticipants), "newThreshold", origNewThreshold,
+						"thresholdFloor", floor, "required", need, "excludedNodes", excludedNodes)
+					tssMgr.noteReshareStarved(commitment.KeyId, "threshold", len(newParticipants), need)
+					continue
+				}
 			}
 			tssMgr.clearReshareStarved(commitment.KeyId)
 
