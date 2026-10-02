@@ -166,14 +166,24 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		newPids = append(newPids, pi)
 	}
 
-	//@todo add fail case when node is not in next party
-	//@todo add fail case when node is not in old party
 	var myNewParty *btss.PartyID
 	dispatcher.newPids = btss.SortPartyIDs(newPids)
 	for _, p := range dispatcher.newPids {
 		if p.Id == userId {
 			myNewParty = p
 		}
+	}
+
+	// A node in neither committee has no party to run (both are created only for
+	// a member below), so its session could only sit until ReshareTimeout and end
+	// as an empty-culprit timeout, which no participant's result matches. That is
+	// the routine case for a node that held back its readiness (TSS-BATCH-1) or is
+	// blamed or banned, and as the rotate leader it would ask the committee to sign
+	// that empty blame instead of the batch. Refuse to start, as keygen and
+	// signing already do for a node outside their committee.
+	if myParty == nil && myNewParty == nil {
+		log.Verbose("node in neither reshare committee", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
+		return fmt.Errorf("node not part of reshare committees")
 	}
 
 	newP2pCtx := btss.NewPeerContext(dispatcher.newPids)
