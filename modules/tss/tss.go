@@ -2401,7 +2401,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
 						deployOp,
 					})
-					tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+					if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
+						log.Error("tss_sign: hive tx signing props unavailable; not broadcasting", "err", err)
+						return
+					}
 					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
 					if signErr != nil {
 						// M-8: do NOT AddSig+Broadcast an unsigned tx — Hive
@@ -2580,7 +2583,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 								Json:                 string(rawJson),
 							},
 						})
-						tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil)
+						if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
+							log.Error("tss_commitment: hive tx signing props unavailable; not broadcasting", "blockHeight", bh, "err", err)
+							continue
+						}
 						sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
 						if signErr != nil {
 							// M-8: skip the broadcast on a signing failure rather than
