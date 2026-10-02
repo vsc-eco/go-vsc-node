@@ -521,3 +521,19 @@ func TssPerAccusedBlameActive(active Version) bool {
 func TssUnattributableCulpritsDroppedActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// PoaBootstrapFromPriorCommitteeActive reports whether the one-time seat
+// bootstrap seeds the registry from the committee that was in force BEFORE the
+// transition, instead of from the transition election itself. The transition
+// election is still built under the old rules (prior version below the POA
+// line): no seat gate, no churn cap, and on mainnet no legacy new-member cap
+// either. Seeding from it handed a permanent seat to any witness that staked and
+// enabled just before the floor rose, and dropped any incumbent that had not
+// upgraded in time, since the version-rise readiness filter leaves it out of the
+// transition election and bootstrap never runs again. Resolve `active` from the
+// version of the election being processed (the transition election), like the
+// seat-maintenance path itself, so a network that bootstrapped at 0.7.0
+// replays that bootstrap byte for byte.
+func PoaBootstrapFromPriorCommitteeActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
