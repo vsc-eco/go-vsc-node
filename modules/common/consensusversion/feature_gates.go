@@ -521,3 +521,22 @@ func TssPerAccusedBlameActive(active Version) bool {
 func TssUnattributableCulpritsDroppedActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// TssSessionShapeActive reports whether the TSS session-shape changes made after
+// the 0.3.0 build are in force: the participant-set tag on reshare session ids
+// (B9), the in-flight ceremony locks and reshare deferral (VR2-09), the
+// four-reshares-per-rotate window, the keygen-retry blame window and the
+// 50,000-row blame-window limit. Each one changes which sessions a node starts,
+// what it names them or who it puts in them, so a node on the 0.3.0 build and an
+// upgraded node form different sessions and every session they share fails;
+// below 0.8.0 the failures land as blames and get the node that has not upgraded
+// banned. Below the line an upgraded node starts, names and fills every session
+// exactly as the 0.3.0 build does.
+//
+// Why the 0.7.0 line: testnet's floor is already 0.7.0 and its committee runs all
+// of these, so they stay in force there unchanged, while mainnet (0.3.0) keeps the
+// 0.3.0 shapes until its floor rises, which drops every member below the target
+// first. Resolve `active` from the version active at the session height.
+func TssSessionShapeActive(active Version) bool {
+	return Version0_7_0Active(active)
+}

@@ -59,3 +59,22 @@ func TestVaultRotationV2ActiveOnlyAtOrAboveTheLine(t *testing.T) {
 		}
 	}
 }
+
+// The TSS session-shape rules follow the 0.7.0 line: off at mainnet's 0.3.0, on
+// from testnet's 0.7.0.
+func TestTssPost030RulesFollowThe070Line(t *testing.T) {
+	for _, tc := range []struct {
+		v    Version
+		want bool
+	}{
+		{Version{}, false},
+		{V0_3_0, false},
+		{Version{Major: 0, Consensus: 6}, false},
+		{V0_7_0, true},
+		{V0_9_0, true},
+	} {
+		if got := TssSessionShapeActive(tc.v); got != tc.want {
+			t.Errorf("TssSessionShapeActive(%v) = %v, want %v", tc.v, got, tc.want)
+		}
+	}
+}
