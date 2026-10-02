@@ -536,7 +536,8 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 		stakes[i] = m.stake
 		accounts[i] = m.account
 	}
-	assignedWeights := quantizeStakeWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE)
+	assignedWeights := gatewayKeyWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE,
+		consensusversion.GatewayEqualWeightsActive(elections.ResultVersion(electionResult)))
 
 	gatewayKeys := make([][2]interface{}, len(eligible))
 	totalWeight := 0

@@ -565,3 +565,17 @@ func TssReshareKeepsThresholdActive(active Version) bool {
 func TssBanYieldsToQuorumActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// GatewayEqualWeightsActive reports whether gateway keys whose election weights
+// are all equal each get multisig weight 1, instead of an equal share of the
+// 10000-unit budget. Under POA flat weight every seat has the same election
+// weight, and 10000 does not divide evenly: at 18 keys ten get 556 and eight
+// 555 (ties broken by account name), so whether 12 or 13 signers reach the 2/3
+// threshold depends on which ones sign, and some six-key sets can block a
+// rotation that the elections bar (12 of 18) would let through. Resolve
+// `active` from the version of the election the rotation is built for, like
+// GatewayDecentralizationActive: every cosigner must build the identical
+// account_update.
+func GatewayEqualWeightsActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
