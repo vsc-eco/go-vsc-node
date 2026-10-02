@@ -485,3 +485,28 @@ func TestBlameScore_NodeNotInCurrentElection(t *testing.T) {
 	assert.False(t, result.BannedNodes["carol"],
 		"Carol is not in current election and should not be scored/banned")
 }
+
+// BanOrder lists the banned accounts lowest score first: readmitBanned lets the
+// least-blamed back in first when too few parties are left.
+func TestBlameScore_BanOrderLowestScoreFirst(t *testing.T) {
+	accounts := []string{"alice", "bob", "carol", "dave", "eve", "frank"}
+	current := makeElectionResult(10, accounts)
+	prev := []elections.ElectionResult{
+		makeElectionResult(7, accounts),
+		makeElectionResult(4, accounts),
+		makeElectionResult(1, accounts),
+	}
+	// alice in all 4 commits (100%), bob in 3 (75%): both banned, bob first.
+	blames := map[uint64][]tss_db.TssCommitment{
+		10: {{Type: "blame", Epoch: 10, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		7:  {{Type: "blame", Epoch: 7, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		4:  {{Type: "blame", Epoch: 4, Commitment: makeBlameBitset(0, 1), KeyId: "k1"}},
+		1:  {{Type: "blame", Epoch: 1, Commitment: makeBlameBitset(0), KeyId: "k1"}},
+	}
+	result := newBlameScoreMgr(current, prev, blames).BlameScore(current)
+	assert.Equal(t, []string{"bob", "alice"}, result.BanOrder)
+	for _, a := range result.BanOrder {
+		assert.True(t, result.BannedNodes[a], "%s in BanOrder but not banned", a)
+	}
+	assert.Len(t, result.BannedNodes, len(result.BanOrder))
+}

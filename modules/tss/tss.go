@@ -569,6 +569,34 @@ func minPartiesForThreshold(t int) int {
 	}
 }
 
+// readmitBanned adds banned members back to `selected` until it holds `need`
+// parties, taking them in banOrder (lowest blame score first) and only those
+// that are eligible for this list, ready, not blamed on this key and not
+// excluded by a POA-8 accusation. It returns the new list and the accounts it
+// let back in.
+func readmitBanned(selected []Participant, need int, banOrder []string, eligible, ready, blamed, accused map[string]bool) ([]Participant, []string) {
+	if len(selected) >= need {
+		return selected, nil
+	}
+	in := make(map[string]bool, len(selected))
+	for _, p := range selected {
+		in[p.Account] = true
+	}
+	var back []string
+	for _, acct := range banOrder {
+		if len(selected) >= need {
+			break
+		}
+		if in[acct] || !eligible[acct] || !ready[acct] || blamed[acct] || accused[acct] {
+			continue
+		}
+		selected = append(selected, Participant{Account: acct})
+		in[acct] = true
+		back = append(back, acct)
+	}
+	return selected, back
+}
+
 // participantSetTag is a short, order-independent fingerprint of the OLD and NEW
 // participant sets chosen for a reshare.
 //
@@ -1202,6 +1230,9 @@ type score struct {
 
 type ScoreMap struct {
 	BannedNodes map[string]bool
+	// BanOrder lists the banned accounts lowest blame score first (ties by
+	// account), the order in which readmitBanned lets them back in.
+	BanOrder []string
 }
 
 // BlameScore computes the banned-node set from on-chain blame data, anchored on the
@@ -1440,8 +1471,11 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 		log.Verbose("ban summary, no nodes banned", "maxBans", maxBans, "gracePeriodExemptions", len(gracePeriodExemptions))
 	}
 
+	banOrder := slices.Clone(bannedList)
+	slices.Reverse(banOrder)
 	return ScoreMap{
 		BannedNodes: bannedNodes,
+		BanOrder:    banOrder,
 	}
 }
 
@@ -1800,6 +1834,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			log.Verbose("signing gossip readiness set",
 				"sessionId", sessionId, "readyCount", len(signReadyAccounts))
 
+			signHolders := make(map[string]bool, len(participants))
+			for _, p := range participants {
+				signHolders[p.Account] = true
+			}
 			filtered := make([]Participant, 0, len(participants))
 			for _, p := range participants {
 				if signBlamedAccounts[p.Account] {
@@ -1828,6 +1866,17 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// pre-filter committee) so the floor matches the key's polynomial
 			// degree. Weakening this gate re-introduces the panic.
 			origThreshold, _ := tss_helpers.GetThreshold(origSignCommitteeSize)
+			// Ban stall (0.9.0): let ready banned holders back in when bans plus
+			// non-ready holders leave fewer than threshold+1 (see the reshare
+			// path and TssBanYieldsToQuorumActive).
+			if consensusversion.TssBanYieldsToQuorumActive(minSignVer) && len(blameMap.BanOrder) > 0 {
+				var back []string
+				participants, back = readmitBanned(participants, origThreshold+1, blameMap.BanOrder, signHolders, signReadyAccounts, signBlamedAccounts, nil)
+				if len(back) > 0 {
+					log.Warn("readmitting banned holders: too few left to sign", "sessionId", sessionId,
+						"readmitted", back, "needed", origThreshold+1)
+				}
+			}
 			if len(participants) < origThreshold+1 {
 				log.Warn("insufficient participants for signing", "sessionId", sessionId, "ready", len(participants), "needed", origThreshold+1, "total", origSignCommitteeSize)
 				continue
@@ -1980,10 +2029,12 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			commitedMembers := make([]Participant, 0)
 			fullOldCommitteeSize := 0
+			oldHolders := make(map[string]bool)
 
 			for idx, member := range commitmentElection.Members {
 				if idx < bitset.BitLen() && bitset.Bit(idx) == 1 {
 					fullOldCommitteeSize++
+					oldHolders[member.Account] = true
 					if blamedAccounts[member.Account] {
 						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
@@ -2035,6 +2086,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// attempt at this key since its last rotation (accuse.go). Inputs
 			// are on-chain statements plus the lists above; at most one party,
 			// and never below threshold+1 of the old committee that would run.
+			var accusedOut map[string]bool
 			if consensusversion.TssPerAccusedBlameActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
 				if counts := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock); len(counts) > 0 {
 					alreadyOut := 0
@@ -2043,13 +2095,40 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							alreadyOut++
 						}
 					}
-					var accusedOut map[string]bool
 					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut)
 					for a := range accusedOut {
 						excludedNodes = append(excludedNodes, a)
 					}
 					log.Verbose("reshare accusation exclusions", "sessionId", sessionId,
 						"accused", counts, "excluded", accusedOut)
+				}
+			}
+
+			// Ban stall (0.9.0): bans are capped so threshold+1 members remain,
+			// but one more member not ready left too few to land the reshare,
+			// and every attempt failed until the ban aged out of the blame
+			// window. Let ready banned members back in, only as many as needed:
+			// threshold+1 old holders, and on the new side the commit quorum
+			// (non-parties do not sign the commitment) or the threshold floor,
+			// whichever is higher.
+			if consensusversion.TssBanYieldsToQuorumActive(minReshareVer) && len(blameMap.BanOrder) > 0 {
+				oldThr, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
+				electionSize := len(currentElection.Members)
+				elecThr, _ := tss_helpers.GetThreshold(electionSize)
+				needNew := elecThr + 1
+				if consensusversion.TssReshareKeepsThresholdActive(minReshareVer) {
+					needNew = max(needNew, minPartiesForThreshold(reshareThresholdFloor(electionSize)))
+				}
+				members := make(map[string]bool, electionSize)
+				for _, m := range currentElection.Members {
+					members[m.Account] = true
+				}
+				var backOld, backNew []string
+				commitedMembers, backOld = readmitBanned(commitedMembers, oldThr+1, blameMap.BanOrder, oldHolders, readyAccounts, blamedAccounts, accusedOut)
+				newParticipants, backNew = readmitBanned(newParticipants, needNew, blameMap.BanOrder, members, readyAccounts, blamedAccounts, accusedOut)
+				if len(backOld)+len(backNew) > 0 {
+					log.Warn("readmitting banned members: too few parties left to complete the reshare", "sessionId", sessionId,
+						"old", backOld, "new", backNew, "needOld", oldThr+1, "needNew", needNew)
 				}
 			}
 

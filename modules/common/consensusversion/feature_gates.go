@@ -550,3 +550,18 @@ func PoaBootstrapFromPriorCommitteeActive(active Version) bool {
 func TssReshareKeepsThresholdActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// TssBanYieldsToQuorumActive reports whether a banned member that is ready is
+// let back into a reshare or signing session when the members left after bans,
+// per-key blame and readiness are too few for the session to complete (signing:
+// threshold+1 holders; reshare: threshold+1 old holders and enough new parties
+// to land the commitment). The ban cap only guaranteed threshold+1 members after
+// BANS; one more member not ready (offline, upgrading, short of pre-params)
+// stalled every reshare until the ban aged out of the blame window, days later,
+// even after the banned node was fixed (testnet, epochs 1297-1325). Banned
+// members come back lowest blame score first, only as many as needed, and never
+// one blamed on this key. Resolve `active` from the version active at the
+// session height.
+func TssBanYieldsToQuorumActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
