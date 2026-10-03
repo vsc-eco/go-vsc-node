@@ -56,6 +56,16 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 	return nil
 }
 
+// UpdateBalanceRecords mirrors UpdateBalanceRecord for the batched path.
+func (m *MockBalanceDb) UpdateBalanceRecords(records []ledgerDb.BalanceRecord) error {
+	for _, record := range records {
+		if err := m.UpdateBalanceRecord(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *MockBalanceDb) GetAll(blockHeight uint64) ([]ledgerDb.BalanceRecord, error) {
 	if m.GetAllErr != nil {
 		return nil, m.GetAllErr
@@ -200,6 +210,24 @@ func (m *MockLedgerDb) GetLedgerRange(account string, start uint64, end uint64, 
 // GraphQL use only, not implemented in mocks
 func (m *MockLedgerDb) GetLedgersTsRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
 	return make([]ledgerDb.LedgerRecord, 0), nil
+}
+
+// GetLedgersByTxId returns the ledger records whose id is prefixed with the tx
+// id (matching the production anchored-regex semantics, including the bare
+// MakeTxId(txId, 0) record for opIdx 0 — no suffix separator is required).
+func (m *MockLedgerDb) GetLedgersByTxId(txId string) ([]ledgerDb.LedgerRecord, error) {
+	results := make([]ledgerDb.LedgerRecord, 0)
+	for _, records := range m.LedgerRecords {
+		for _, record := range records {
+			if strings.HasPrefix(record.Id, txId) {
+				results = append(results, record)
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].BlockHeight < results[j].BlockHeight
+	})
+	return results, nil
 }
 
 // GraphQL use only, not implemented in mocks
