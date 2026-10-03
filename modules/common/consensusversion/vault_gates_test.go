@@ -60,7 +60,7 @@ func TestVaultRotationV2ActiveOnlyAtOrAboveTheLine(t *testing.T) {
 	}
 }
 
-// The TSS session-shape and key-lifecycle rules share the 0.7.0 line: off at
+// The TSS session-shape, key-lifecycle and BTC keysign-halt rules share the 0.7.0 line: off at
 // mainnet's 0.3.0, on from testnet's 0.7.0.
 func TestTssPost030RulesFollowThe070Line(t *testing.T) {
 	for _, tc := range []struct {
@@ -78,6 +78,9 @@ func TestTssPost030RulesFollowThe070Line(t *testing.T) {
 		}
 		if got := TssKeyLifecycleActive(tc.v); got != tc.want {
 			t.Errorf("TssKeyLifecycleActive(%v) = %v, want %v", tc.v, got, tc.want)
+		}
+		if got := BtcKeysignHaltActive(tc.v); got != tc.want {
+			t.Errorf("BtcKeysignHaltActive(%v) = %v, want %v", tc.v, got, tc.want)
 		}
 	}
 }

@@ -714,7 +714,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				// this same op. The BTC solvency gate (modules/tss/solvency_gate.go)
 				// reads it before issuing a SignAction. Authority = the gateway/
 				// governance multisig (same gate as safety_slash_reverse / reserve_*).
-				if Id == "vsc.tss_halt" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+				if Id == "vsc.tss_halt" && RequiredAuths[0] == se.sconf.GatewayWallet() &&
+					se.btcKeysignHaltActive(blockInfo.BlockHeight) {
 					var h struct {
 						Active bool   `json:"active"`
 						KeyId  string `json:"keyId"` // reserved; currently BTC-global

@@ -1330,3 +1330,33 @@ func TestKeyDeprecationUnderSuspendFollowsTheVersion(t *testing.T) {
 		assert.Equal(t, tc.want, te.TssKeys.Keys["key1"].Status, "version 0.%d, chain suspended", tc.protocolVersion)
 	}
 }
+
+// vsc.tss_halt from the gateway wallet sets the BTC keysign halt only from the
+// 0.7.0 line; below it the op is ignored, as on the 0.3.0 build, which has no halt.
+func TestBtcKeysignHaltOpFollowsTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion uint64
+		want            bool
+	}{
+		{3, false},
+		{7, true},
+	} {
+		cs := test_utils.NewMockConsensusState()
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "witness1", Key: "bls-key-1"}},
+				ProtocolVersion: tc.protocolVersion,
+			},
+		}
+		te.Creator.CustomJson(stateEngine.MockJson{
+			RequiredAuths: []string{te.SE.SystemConfig().GatewayWallet()},
+			Id:            "vsc.tss_halt",
+			Json:          `{"active":true}`,
+		})
+		te.processAndWait()
+
+		assert.Equal(t, tc.want, cs.Snapshot().BtcKeysignHalted, "version 0.%d", tc.protocolVersion)
+	}
+}

@@ -545,6 +545,18 @@ func TssSessionShapeActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
 
+// BtcKeysignHaltActive reports whether the BTC keysign halts are in force: the
+// governance vsc.tss_halt op and the mirror of the BTC mapping contract's "th"
+// theft flag, either of which makes a node skip issuing BTC vault keysigns. The
+// 0.3.0 build has neither, so a halt set on an upgraded node would stop it signing
+// while 0.3.0 members still sign; below the line an upgraded node ignores the op
+// and does not read the flag. Same 0.7.0 line as TssSessionShapeActive: testnet's
+// committee already runs both. Resolve `active` from the version active at the
+// block being processed.
+func BtcKeysignHaltActive(active Version) bool {
+	return Version0_7_0Active(active)
+}
+
 // TssKeyLifecycleActive reports whether the key-lifecycle rules made after the
 // 0.3.0 build are in force: a reshare extends an expiring key's expiry (BRK-8) and
 // the deprecation clock stops while the chain is processing-suspended (BRK-5).
