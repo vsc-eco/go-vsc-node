@@ -531,7 +531,11 @@ func TssUnattributableCulpritsDroppedActive(active Version) bool {
 // upgraded node form different sessions and every session they share fails;
 // below 0.8.0 the failures land as blames and get the node that has not upgraded
 // banned. Below the line an upgraded node starts, names and fills every session
-// exactly as the 0.3.0 build does.
+// exactly as the 0.3.0 build does. The same line also holds the changes that alter
+// when a node starts a session or whether it is counted ready for one: the batch
+// pre-parameter pool and pooled reshare sets (TSS-BATCH-1, B1), the keygen
+// readiness abort (VR2-08) and the election height readiness attestations are
+// checked against (L2-2).
 //
 // Why the 0.7.0 line: testnet's floor is already 0.7.0 and its committee runs all
 // of these, so they stay in force there unchanged, while mainnet (0.3.0) keeps the

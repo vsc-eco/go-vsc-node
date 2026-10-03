@@ -436,6 +436,10 @@ type TssManager struct {
 	// preParamsTarget is the fill level GeneratePreParams works toward; see
 	// preParamsFillTarget.
 	preParamsTarget atomic.Int64
+	// preParamsBatch is whether the batch pool is in force (batchPreParamsActive at
+	// the last block seen). Below the 0.7.0 line the pool keeps one set, as the
+	// 0.3.0 build does.
+	preParamsBatch atomic.Bool
 	// genPreParams replaces ecKeyGen.GeneratePreParams in tests; nil in production.
 	genPreParams func(timeout time.Duration) (*ecKeyGen.LocalPreParams, error)
 
@@ -782,18 +786,58 @@ func (tssMgr *TssManager) GeneratePreParams() {
 	}
 }
 
-// preParamsFillTarget is how many sets GeneratePreParams keeps ready: the largest
-// batch announced so far (raisePreParamsTarget), at least DEFAULT_PREPARAMS_POOL,
-// at most the pool's capacity.
+// preParamsFillTarget is how many sets GeneratePreParams keeps ready; see
+// preParamsFillLevel.
 func (tssMgr *TssManager) preParamsFillTarget() int {
-	target := int(tssMgr.preParamsTarget.Load())
+	return preParamsFillLevel(tssMgr.preParamsBatch.Load(), tssMgr.preParamsTarget.Load(), cap(tssMgr.preParams))
+}
+
+// preParamsFillLevel is the pool's fill level. With the batch pool in force it is
+// the largest batch announced so far (raisePreParamsTarget), at least
+// DEFAULT_PREPARAMS_POOL, at most the pool's capacity. Below the 0.7.0 line it is
+// one set, refilled when taken, as on the 0.3.0 build.
+func preParamsFillLevel(batch bool, announced int64, capacity int) int {
+	if !batch {
+		return 1
+	}
+	target := int(announced)
 	if target < DEFAULT_PREPARAMS_POOL {
 		target = DEFAULT_PREPARAMS_POOL
 	}
-	if c := cap(tssMgr.preParams); target > c {
-		target = c
+	if target > capacity {
+		target = capacity
 	}
 	return target
+}
+
+// batchPreParamsActive reports whether the TSS-BATCH-1 pool is in force at bh:
+// sets kept ready for every ceremony of the coming batch, and a member short of
+// them holding back its readiness claim. reshareTakesPooledPreParams goes with it.
+// Both wait for the session-shape line (TssSessionShapeActive): with them a member
+// starts its reshares without generating in round 2, the 0.3.0 build still
+// generates there, and in a committee that mixes the two the 0.3.0 member is the
+// one party the others wait on, so it is blamed and banned (devnet B1-FIX: five
+// reshares at one rotate block, the 0.3.0 member blamed on one and left out of
+// every later session). Below the line every node keeps the 0.3.0 pool.
+func (tssMgr *TssManager) batchPreParamsActive(bh uint64) bool {
+	return tssMgr.sessionShapeActive(bh)
+}
+
+// reshareTakesPooledPreParams reports whether a node joining a reshare's new
+// committee takes its Paillier set from the pool (B1) rather than letting tss-lib
+// generate it in round 2, as the 0.3.0 build does. Same line as
+// batchPreParamsActive.
+func (tssMgr *TssManager) reshareTakesPooledPreParams(bh uint64) bool {
+	return tssMgr.batchPreParamsActive(bh)
+}
+
+// keygenReadinessGateActive reports whether a keygen waits for threshold+1
+// participants to be connected before it starts and aborts otherwise (VR2-08).
+// The 0.3.0 build starts every keygen; a node that aborts while a 0.3.0 member
+// starts fails the session for everyone and is the party it blames. Same line as
+// the session shapes.
+func (tssMgr *TssManager) keygenReadinessGateActive(bh uint64) bool {
+	return tssMgr.sessionShapeActive(bh)
 }
 
 // raisePreParamsTarget makes the pool keep at least `need` sets from now on. It
@@ -864,12 +908,13 @@ func reshareWindow(keys []tss_db.TssKey, bh, rotateInterval uint64) []tss_db.Tss
 // offline, instead of putting it in every list and making each of its later
 // sessions fail for all parties. A retiring-generation signer that is not a
 // member joins only as an old party and takes no sets.
-func withholdReadinessForPreParams(isMember bool, need, have int) bool {
-	return isMember && need > 0 && have < need
+func withholdReadinessForPreParams(batch, isMember bool, need, have int) bool {
+	return batch && isMember && need > 0 && have < need
 }
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	tssMgr.lastBlockHeight.Store(bh)
+	tssMgr.preParamsBatch.Store(tssMgr.batchPreParamsActive(bh))
 	tssMgr.cleanupGossipState(bh)
 
 	if headHeight == nil {
@@ -979,14 +1024,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// instead of joining every party list and starting its later sessions
 				// after the others have timed out. Only whether this node sends its own
 				// signed claim changes; the claim and the convergence are untouched.
+				//
+				// Below the 0.7.0 line (batchPreParamsActive) neither: the pool keeps
+				// one set and every member attests, as on the 0.3.0 build.
 				withhold := false
-				if need := preParamsNeed[targetBlock]; need > 0 && isMember && !inSettlePeriod {
+				batch := tssMgr.batchPreParamsActive(targetBlock)
+				if need := preParamsNeed[targetBlock]; batch && need > 0 && isMember && !inSettlePeriod {
 					if c := cap(tssMgr.preParams); need > c {
 						need = c // beyond the pool's capacity the extra sets are generated on demand, as before
 					}
 					tssMgr.raisePreParamsTarget(need)
 					go tssMgr.GeneratePreParams()
-					withhold = withholdReadinessForPreParams(isMember, need, len(tssMgr.preParams))
+					withhold = withholdReadinessForPreParams(batch, isMember, need, len(tssMgr.preParams))
 					if withhold {
 						tssMgr.gossipLock.Lock()
 						if tssMgr.readinessWithheld == nil {

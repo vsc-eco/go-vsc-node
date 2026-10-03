@@ -101,3 +101,14 @@ func TestSessionShape_LegacyKeygenBlamed(t *testing.T) {
 		}
 	}
 }
+
+// Readiness attestations are checked against the election at targetBlock below
+// the 0.7.0 line, as on the 0.3.0 build, and at currentBh from it (L2-2).
+func TestSessionShape_ReadyGossipElectionHeight(t *testing.T) {
+	if got := readyGossipElectionHeight(false, 95, 100); got != 100 {
+		t.Errorf("0.3.0 shapes: height = %d, want the target block 100", got)
+	}
+	if got := readyGossipElectionHeight(true, 95, 100); got != 95 {
+		t.Errorf("new shapes: height = %d, want the current block 95", got)
+	}
+}
