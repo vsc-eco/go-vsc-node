@@ -92,9 +92,10 @@ func (ps *phaseStats) record(d time.Duration) {
 
 // phaseSummary is one phase's aggregated stats at emission time.
 type phaseSummary struct {
-	key string
-	n   uint64
-	min time.Duration
+	key   string
+	n     uint64
+	total time.Duration
+	min   time.Duration
 	max time.Duration
 	avg time.Duration
 	p50 time.Duration
@@ -161,7 +162,7 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 func buildSummary(key string, ps *phaseStats) phaseSummary {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	s := phaseSummary{key: key, n: ps.count, min: ps.min, max: ps.max}
+	s := phaseSummary{key: key, n: ps.count, total: ps.total, min: ps.min, max: ps.max}
 	if ps.count > 0 {
 		s.avg = ps.total / time.Duration(ps.count)
 	}
@@ -207,8 +208,12 @@ func (pr *Profiler) MaybeEmit(bh uint64, live bool) {
 	if live {
 		mode = "live"
 	}
+	var windowTotal time.Duration
+	for _, s := range summaries {
+		windowTotal += s.total
+	}
 	seprofLog.Debug("indexing profile summary",
-		"mode", mode, "windowBlocks", interval, "phases", len(summaries))
+		"mode", mode, "windowBlocks", interval, "phases", len(summaries), "total", windowTotal.String())
 	for _, s := range summaries {
 		if s.n == 0 {
 			continue
@@ -217,6 +222,7 @@ func (pr *Profiler) MaybeEmit(bh uint64, live bool) {
 			"mode", mode,
 			"phase", s.key,
 			"n", s.n,
+			"total", s.total.String(),
 			"avg", s.avg.String(),
 			"p50", s.p50.String(),
 			"p95", s.p95.String(),
