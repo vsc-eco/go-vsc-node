@@ -47,6 +47,7 @@ type testEnv struct {
 	TssKeys        *test_utils.MockTssKeysDb
 	TssCommitments *test_utils.MockTssCommitmentsDb
 	TssRequests    *test_utils.MockTssRequestsDb
+	PoaSeats       *test_utils.MockPoaSeatsDb
 }
 
 func newTestEnv() *testEnv {
@@ -105,6 +106,7 @@ func newTestEnvWithConsensus(cs consensus_state.ConsensusState, sconf systemconf
 	tssRequests := &test_utils.MockTssRequestsDb{
 		Requests: make(map[string]tss_db.TssRequest),
 	}
+	poaSeats := test_utils.NewMockPoaSeatsDb()
 
 	se := stateEngine.New(
 		sconf, nil,
@@ -112,8 +114,9 @@ func newTestEnvWithConsensus(cs consensus_state.ConsensusState, sconf systemconf
 		txDb, ledgerDbImpl, balanceDb, nil,
 		interestClaims, vscBlocksDb, actionsDb, mockRcDb, nonceDb,
 		tssKeys, tssCommitments, tssRequests,
-		nil, // governanceDb
-		nil, // pendulumSettlementsDb
+		nil,      // governanceDb
+		poaSeats, // poaSeatsDb
+		nil,      // pendulumSettlementsDb
 		cs,  // consensusStateDb
 		nil, // wasm
 		nil, // identityConfig
@@ -145,6 +148,7 @@ func newTestEnvWithConsensus(cs consensus_state.ConsensusState, sconf systemconf
 		TssKeys:        tssKeys,
 		TssCommitments: tssCommitments,
 		TssRequests:    tssRequests,
+		PoaSeats:       poaSeats,
 	}
 }
 

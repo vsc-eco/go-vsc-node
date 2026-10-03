@@ -6,13 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/big"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
 	"vsc-node/lib/utils"
@@ -20,6 +21,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
+	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/db/vsc/witnesses"
@@ -28,6 +30,7 @@ import (
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	stateEngine "vsc-node/modules/state-processing"
+	"vsc-node/modules/vaultrotation"
 
 	ecKeyGen "github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
 	btss "github.com/bnb-chain/tss-lib/v3/tss"
@@ -291,6 +294,12 @@ type TssManager struct {
 	scheduler  GetScheduler
 	hiveClient hive.HiveTransactionCreator
 
+	// contractState + da let the BTC keysign solvency gate (solvency_gate.go)
+	// read the mapping contract's Supply and (future) UTXO registry, to compare
+	// the contract-claimed supply against the vault's real L1 balance.
+	contractState contracts.ContractState
+	da            *datalayer.DataLayer
+
 	//Active list of actions occurring
 	queuedActions []QueuedAction
 	lock          sync.Mutex
@@ -323,6 +332,16 @@ type TssManager struct {
 	// Per-height (not per-key): readiness is a node property.
 	// Populated by ready_gossip messages received via pubsub.
 	gossipAttestations map[string]map[string]ReadyAttestation
+
+	// retiringSetCache memoizes retiringGenSignerSet per target height so the
+	// UNTRUSTED ready_gossip receive path (one call per message from any peer) does
+	// the underlying contract-state datalayer read at most once per height, not per
+	// message (V-A council A3 — DoS-amplification hardening). Its own mutex (never
+	// held across the datalayer read); a bounded, node-local perf cache — it caches
+	// a deterministic value, so it does not affect consensus. Empty/unused while
+	// VaultRotationV2Enabled is false (the cached accessor short-circuits first).
+	retiringSetCacheMu sync.Mutex
+	retiringSetCache   map[string]vaultrotation.RetiringSignerSet
 }
 
 // ClearQueuedActions clears any pending actions. Used by tests to prevent
@@ -446,7 +465,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 
-		if isMember {
+		// V-A: a fund-holding retiring/draining-gen committee member must ALSO emit
+		// readiness — even when churned OUT of the current election — so the
+		// migration sweep of that gen can still reach threshold (else C-A/V-A
+		// freeze: >1/3 of the old committee churns out → migration can never sign).
+		// Deterministic on-chain set; empty/inert unless VaultRotationV2Enabled AND a
+		// retiring/draining BTC gen exists. Widens the convergent gossip set, does
+		// NOT replace it (not GV-H8).
+		retiringEligible := tssMgr.retiringGenSignerSet(bh).Has(selfAccount)
+
+		if isMember || retiringEligible {
 			for targetBlock := range gossipTargets {
 				blocksUntil := targetBlock - bh
 				inSettlePeriod := blocksUntil <= DEFAULT_SETTLE_BLOCKS
@@ -465,12 +493,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// active consensus floor for the target — it could not participate anyway.
 				floor := tssMgr.scheduler.TssMinimumConsensusVersion(targetBlock)
 				belowFloor := !consensusversion.RunningVersion().MeetsConsensusMin(floor)
-				if belowFloor && !inSettlePeriod && !alreadySent {
+				// V-A / V5-6: a retiring-gen signer is EXEMPT from the current floor —
+				// the migration signs the OLD key with the OLD committee's protocol, so
+				// a current-network floor bump must not silence it (that would re-freeze
+				// the migration). It still emits its running version; each sign type's
+				// party filter applies the appropriate floor.
+				effectiveBelowFloor := belowFloor && !retiringEligible
+				if effectiveBelowFloor && !inSettlePeriod && !alreadySent {
 					log.Verbose("skipping readiness attestation; running version below active floor",
 						"targetBlock", targetBlock, "floor", floor.Format())
 				}
 
-				if !belowFloor && !inSettlePeriod && !alreadySent {
+				if !effectiveBelowFloor && !inSettlePeriod && !alreadySent {
 					att, err := tssMgr.signReadyAttestation(targetBlock)
 					if err != nil {
 						log.Warn("failed to sign readiness attestation",
@@ -522,6 +556,16 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
 
 			for _, key := range reshareKeys {
+				// M1.3 (Build Map §7 N1, U-1): under vault-rotation-v2 the BTC vault
+				// key rotates by fresh keygen, not reshare — skip ONLY that keyId
+				// here. PER-KEYID, never a loop-level gate: all other chains share
+				// this reshare loop and must keep resharing. Deterministic (pure
+				// function of bh + the config BTC-contract prefix), so every node
+				// skips the identical keyId at the identical height → no divergent
+				// session/party-list. Inert until VaultRotationV2Enabled flips.
+				if tssMgr.shouldSkipReshareForVaultRotation(key.Id, bh) {
+					continue
+				}
 				generatedActions = append(generatedActions, QueuedAction{
 					Type:  ReshareAction,
 					KeyId: key.Id,
@@ -604,6 +648,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		if retiredKeys, err := tssMgr.tssKeys.FindNewlyRetired(bh); err == nil {
 			for _, key := range retiredKeys {
 				dsKey := makeKey("key", key.Id, int(key.Epoch))
+				// M1.4 (Build Map §5a): share-zeroization is DELIBERATELY NOT wired to
+				// this legacy TIME-gated delete. FindNewlyRetired fires on the grace
+				// timer with ZERO fund check, so a stalled-migration key can still be
+				// FUNDED here — secure-erasing it would turn a recoverable freeze into
+				// PERMANENT loss (pruned-methodology key-lifecycle L1). zeroizeKeystoreEntry
+				// (keystore_crypto.go) is written + tested as the primitive that S5's
+				// FUND-GATED retire path calls after proving zero L1 balance; until then
+				// this stays the pre-existing plain delete.
 				if delErr := tssMgr.keyStore.Delete(context.Background(), dsKey); delErr != nil {
 					log.Error("keystore delete failed", "keyId", key.Id, "epoch", key.Epoch, "err", delErr)
 				} else {
@@ -626,12 +678,20 @@ type ScoreMap struct {
 	BannedNodes map[string]bool
 }
 
-func (tss *TssManager) BlameScore() ScoreMap {
+// BlameScore computes the banned-node set from on-chain blame data, anchored on the
+// election for the PROCESSED height bh (passed in as initialElection). It previously read
+// GetElectionByHeight(MaxInt64-1) — "the latest election, right now" — which two nodes
+// racing a just-landed election (the async block-consumer race, consumer.go:45-57) could
+// resolve differently, yielding divergent BannedNodes, divergent party lists, and an
+// SSID-mismatch consensus fork (Constraint 2/3). RunActions passes the SAME currentElection
+// it already resolved via GetElectionByHeight(bh) (tss.go), so the ban set is deterministic
+// and byte-consistent with the party lists it filters. No behavior change when the latest
+// election IS the one at bh (the common, non-race case).
+func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) ScoreMap {
 	weightMap := make(map[string]int)
 	nodeFirstEpoch := make(map[string]uint64) // Track first epoch each node appeared
 
-	initialElection, err := tss.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
-	if err != nil || initialElection.Members == nil {
+	if initialElection.Members == nil {
 		return ScoreMap{BannedNodes: make(map[string]bool)}
 	}
 
@@ -747,7 +807,15 @@ func (tss *TssManager) BlameScore() ScoreMap {
 	}
 
 	slices.SortFunc(sortedArray, func(a, b score) int {
-		return b.Score - a.Score
+		// L2-1 (FULL-PRUNED): total order. Score-only is non-total over the map-range
+		// build of sortedArray, so when the ban cap truncates at a Score TIE two nodes
+		// could ban DIFFERENT accounts -> divergent BannedNodes -> divergent party list
+		// -> SSID/CID fork. Break ties on Account (deterministic, unique) so the truncated
+		// set is byte-identical on every node.
+		if a.Score != b.Score {
+			return b.Score - a.Score
+		}
+		return strings.Compare(a.Account, b.Account)
 	})
 
 	bannedNodes := make(map[string]bool)
@@ -889,7 +957,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		return
 	}
 
-	blameMap := tssMgr.BlameScore()
+	blameMap := tssMgr.BlameScore(currentElection)
 
 	log.Info(
 		"running actions",
@@ -911,25 +979,60 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			participants := make([]Participant, 0)
 
 			sessionId = "keygen-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
-			lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "blame")
 
-			var isBlame bool
-			bitset := big.NewInt(0)
-			if err == nil {
-				if int64(lastBlame.BlockHeight) > int64(bh)-int64(BLAME_EXPIRE) {
-					bitBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
-					bitset.SetBytes(bitBytes)
-					isBlame = true
+			// Blame exclusion for a keygen RETRY: decode each blame in the BLAME_EXPIRE
+			// window against the blame's OWN epoch election — setToCommitment encodes bit
+			// positions via GetElection(epoch).Members, so a blame must be decoded against
+			// GetElection(blame.Epoch), NOT currentElection. Decoding against currentElection
+			// (the prior behavior) is "Known Bug on Main #1": wrong members are excluded once
+			// the election membership drifts between the blame's epoch and now. This mirrors
+			// the already-shipped reshare/sign fix (CHANGE 4/4b): >33%
+			// (TSS_BLAME_THRESHOLD_PERCENT) of the window's blame commitments must name an
+			// account to exclude it, so a single manufactured blame can't drop a healthy node.
+			// A fresh keyId has no blames in the window → blamedAccounts empty → inert.
+			keyIdStr := action.KeyId
+			var blameExpireBlock uint64
+			if bh > BLAME_EXPIRE {
+				blameExpireBlock = bh - BLAME_EXPIRE
+			}
+			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, 100,
+			)
+			if blameErr != nil {
+				log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
+			}
+			blameCount := make(map[string]int) // account → number of blames naming this account
+			blameOpportunities := 0            // total blame commitments in window (denominator)
+			for _, blame := range allBlames {
+				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+				if blameElection == nil || blameElection.Members == nil {
+					log.Warn("keygen blame election missing, skipping blame entry",
+						"blameEpoch", blame.Epoch, "sessionId", sessionId)
+					continue
+				}
+				blameOpportunities++
+				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+				bBits := new(big.Int).SetBytes(blameBytes)
+				for bidx, member := range blameElection.Members {
+					if bBits.Bit(bidx) == 1 {
+						blameCount[member.Account]++
+					}
+				}
+			}
+			blamedAccounts := make(map[string]bool)
+			if blameOpportunities > 0 {
+				for account, count := range blameCount {
+					if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+						blamedAccounts[account] = true
+					}
 				}
 			}
 
 			excludedAccounts := make([]string, 0)
-			for idx, member := range currentElection.Members {
-				if isBlame {
-					if bitset.Bit(idx) == 1 {
-						excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
-						continue
-					}
+			for _, member := range currentElection.Members {
+				if blamedAccounts[member.Account] {
+					excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
+					continue
 				}
 				//if node is banned
 				if blameMap.BannedNodes[member.Account] {
@@ -959,10 +1062,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				participantAccounts,
 				"excluded",
 				excludedAccounts,
-				"hasBlame",
-				isBlame,
-				"lastBlameHeight",
-				lastBlame.BlockHeight,
+				"blamedCount",
+				len(blamedAccounts),
+				"blameCommitments",
+				blameOpportunities,
 			)
 
 			if len(participants) < 2 {
@@ -1000,6 +1103,19 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			tssMgr.bufferLock.Unlock()
 
 		} else if action.Type == SignAction {
+			// Build Map §5b + §6 NN#1 — BTC keysign pre-issuance gate.
+			// A pure LOCAL, deterministic issuance gate (skip-or-issue) covering
+			// (a) S3 output scoping: a retiring/draining vault generation's key
+			// may sign ONLY a migration sweep whose outputs pay the committed
+			// successor P2WSH (else theft oracle); and (b) the M1.1a solvency
+			// halt FLAG (vsc.tss_halt) with the V-8 evacuation exemption.
+			// Placed before any sessionId/commitment/dispatcher work, so it can
+			// never affect party lists or commitment CIDs (repo CLAUDE.md TSS
+			// Constraints 1-3). btcSignRefused logs the specific reason.
+			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) {
+				continue
+			}
+
 			sessionId = "sign-" + strconv.Itoa(int(bh)) + "-" + strconv.Itoa(idx) + "-" + action.KeyId
 
 			commitment, err := tssMgr.tssCommitments.GetCommitmentByHeight(action.KeyId, bh, "reshare", "keygen")
@@ -1102,12 +1218,23 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// included, keeping the signing party set version-homogeneous (live, not the stale
 			// election snapshot). The floor is the deterministic election-active version at bh.
 			minSignVer := tssMgr.scheduler.TssMinimumConsensusVersion(bh)
+			// V-A / V5-6: for a migration sign of a fund-holding retiring/draining
+			// gen, its committee is EXEMPT from the CURRENT version floor — the OLD
+			// key's protocol is fixed at its keygen epoch, so a current-network floor
+			// bump must not silence the old committee. Scoped to retiring-gen signs
+			// (action.KeyId in the retiring set) so an active-key sign still enforces
+			// the current floor. Deterministic on-chain set; inert unless v2 + a
+			// retiring gen exists.
+			signRetiringSet := tssMgr.retiringGenSignerSet(bh)
+			isRetiringSign := signRetiringSet.KeyIds[action.KeyId]
 			signHeightKey := strconv.FormatUint(bh, 10)
 			tssMgr.gossipLock.RLock()
 			signAttMap := tssMgr.gossipAttestations[signHeightKey]
 			signReadyAccounts := make(map[string]bool, len(signAttMap))
 			for account, att := range signAttMap {
 				if att.Version().MeetsConsensusMin(minSignVer) {
+					signReadyAccounts[account] = true
+				} else if isRetiringSign && signRetiringSet.Has(account) {
 					signReadyAccounts[account] = true
 				}
 			}
@@ -2043,6 +2170,21 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// M1.3 (U-1): under vault-rotation-v2 the BTC vault key rotates by keygen, not
+	// reshare — refuse a manual reshare enqueue for it (this RPC/manual path is not
+	// covered by the per-keyId skip in the FindEpochKeys loop, and an enqueued
+	// reshare here would create a session no other node schedules → divergent).
+	// Manual entry has no block height, so gate on the last block height seen.
+	// Fail CLOSED before the first BlockTick (lastBlockHeight==0): if v2 is even
+	// CONFIGURED (activation height set) we can't be sure we're pre-activation, so
+	// refuse a BTC-vault reshare rather than risk enqueuing a session no other node
+	// schedules (pruned-methodology F3: the height-0 read otherwise fails OPEN). If
+	// v2 is unconfigured (height 0) it can never activate → allow.
+	if tssMgr.isBtcVaultKey(keyId) &&
+		(tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(tssMgr.lastBlockHeight.Load()) ||
+			(tssMgr.lastBlockHeight.Load() == 0 && tssMgr.sconf.ConsensusParams().VaultRotationV2ActivationHeight != 0)) {
+		return 0, fmt.Errorf("reshare disabled for BTC vault key %q under vault-rotation-v2; it rotates by keygen", keyId)
+	}
 	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{
 		Type:  ReshareAction,
@@ -2120,6 +2262,8 @@ func New(
 	sconf systemconfig.SystemConfig,
 	keystore *flatfs.Datastore,
 	hiveClient hive.HiveTransactionCreator,
+	contractState contracts.ContractState,
+	da *datalayer.DataLayer,
 ) *TssManager {
 	preParams := make(chan ecKeyGen.LocalPreParams, 1)
 
@@ -2135,6 +2279,9 @@ func New(
 		preParams:  preParams,
 		p2p:        p2p,
 		hiveClient: hiveClient,
+
+		contractState: contractState,
+		da:            da,
 
 		tssKeys:        tssKeys,
 		metrics:        GetMetrics(),

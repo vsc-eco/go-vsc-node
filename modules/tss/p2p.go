@@ -242,17 +242,46 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		return
 	}
 
-	// Look up the election to verify attestation signatures.
-	election, err := s.tssMgr.electionDb.GetElectionByHeight(targetBlock)
+	// Look up the election to verify attestation signatures. L2-2 (FULL-PRUNED
+	// 2026-07-09): read at currentBh, NOT the future targetBlock. GetElectionByHeight
+	// uses a `< height` (latest-adopted) lookup, so in the COMMON case reading at the
+	// future targetBlock and at currentBh resolve to the SAME latest election (a no-op);
+	// they diverge only when the state engine has adopted an election in
+	// (currentBh, targetBlock] that this node's TSS-tracker currentBh hasn't reached —
+	// there the future-height read pulls the newer, tip-volatile election while
+	// currentBh pulls the more-SETTLED one. Pinning to the settled reference is the
+	// conservative choice: it can be momentarily STALER (a just-adopted member's
+	// attestation waits a block or two to be accepted) but that is self-healing via
+	// per-block re-gossip, never a freeze — and on the normal V-A path retirement
+	// precedes the sweep target by ~100 blocks, so retiring attesters are in-set with
+	// wide margin. This only pre-filters which signed attestations to STORE; the reshare
+	// authoritatively recomputes its party list against the actual state at targetBlock
+	// when it fires, so the pre-filter height never changes the signed result. (It
+	// relocates the read to a settled reference — it does not by itself eliminate the
+	// per-node tip variance, which the settle window + re-gossip already absorb.)
+	election, err := s.tssMgr.electionDb.GetElectionByHeight(currentBh)
 	if err != nil || election.Members == nil {
 		return
 	}
 
+	// V-A: fund-holding retiring/draining-gen committee members are ALSO valid
+	// readiness attesters for a migration sweep, even when churned out of the
+	// current election. Deterministic on-chain set (gated on v2; empty → inert), so
+	// every node accepts the same widened attester set and verifies each against the
+	// election that carries its BLS key. CACHED per height (council A3): this runs
+	// once per untrusted gossip message, so the underlying contract-state read must
+	// not be per-message. L2-2: read at currentBh (see above) so the pre-filter keys
+	// off the more-settled state rather than a future, tip-volatile height.
+	retiringSet := s.tssMgr.retiringGenSignerSetCached(currentBh)
+
 	// Build a set of valid election members for cheap pre-filtering
 	// before the expensive BLS signature verification.
-	electionMembers := make(map[string]bool, len(election.Members))
+	electionMembers := make(map[string]bool, len(election.Members)+len(retiringSet.SignerElection))
 	for _, m := range election.Members {
 		electionMembers[m.Account] = true
+	}
+	for acct := range retiringSet.SignerElection {
+		electionMembers[acct] = true
 	}
 
 	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
@@ -270,7 +299,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	// Cap bundle size at the election member count to prevent a malicious peer
 	// from sending an oversized bundle that wastes CPU on BLS verification.
-	maxAttestations := len(election.Members)
+	maxAttestations := len(election.Members) + len(retiringSet.SignerElection)
 	if len(attList) > maxAttestations {
 		log.Warn("oversized gossip bundle, truncating",
 			"received", len(attList), "max", maxAttestations,
@@ -326,7 +355,16 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 			Sig:                 sig,
 		}
 
-		if !s.tssMgr.verifyAttestation(att, election) {
+		// Verify against the current election; if the attester is a churned-out
+		// retiring-gen committee member (V-A), verify against that gen's commitment
+		// epoch election, which carries its BLS key.
+		verified := s.tssMgr.verifyAttestation(att, election)
+		if !verified {
+			if relec, isRetiring := retiringSet.SignerElection[account]; isRetiring {
+				verified = s.tssMgr.verifyAttestation(att, relec)
+			}
+		}
+		if !verified {
 			log.Warn("rejecting attestation with invalid BLS signature",
 				"account", account, "targetBlock", targetBlock)
 			continue

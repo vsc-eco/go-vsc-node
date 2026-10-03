@@ -15,6 +15,28 @@ type ChainConsensusState struct {
 	// ProcessingSuspended blocks normal vsc custom_json processing until cleared by recovery_require_version.
 	ProcessingSuspended bool `bson:"processing_suspended"`
 
+	// BtcKeysignHalted freezes BTC TSS keysign issuance when set by the
+	// governance multisig via vsc.tss_halt (Build Map §5b emergency solvency
+	// containment). Like ProcessingSuspended it is a chain-global deterministic
+	// flag every node converges on by processing the same Hive op; the BTC
+	// solvency gate (modules/tss/solvency_gate.go) reads it before issuing a
+	// SignAction.
+	BtcKeysignHalted bool `bson:"btc_keysign_halted"`
+	// BtcKeysignHaltHeight records the block height the halt was last set (0 when
+	// cleared) — provenance/observability only.
+	BtcKeysignHaltHeight uint64 `bson:"btc_keysign_halt_height"`
+
+	// BtcTheftHalted mirrors the BTC mapping contract's deterministic theft-halt flag
+	// ("th", set by the permissionless SPV-proven reportUnauthorizedSpend op — M1.1b
+	// auto-trip). Refreshed each block from the contract's committed output, so like
+	// BtcKeysignHalted every node converges on the identical value; the BTC solvency gate
+	// (modules/tss/solvency_gate.go) freezes keysign while EITHER flag is set. This is the
+	// deterministic auto-trip complement to the governance vsc.tss_halt flag above.
+	BtcTheftHalted bool `bson:"btc_theft_halted"`
+	// BtcTheftHaltHeight records the block height the theft halt was last (un)set —
+	// provenance/observability only.
+	BtcTheftHaltHeight uint64 `bson:"btc_theft_halt_height"`
+
 	// ScheduledActivation is the pending epoch-scheduled version switch (set by
 	// vsc.propose_consensus_version, or Forced by recovery_require_version). It is
 	// resolved into the election at its activation epoch once the stake-readiness guard passes.

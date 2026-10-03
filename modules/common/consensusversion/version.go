@@ -45,9 +45,17 @@ import (
 //     which backs (a) by giving witnesses time to gather a slash_restore quorum before
 //     the residual matures. Until 0.3.0 is chain-active the ops are ignored and the
 //     pending window stays 3 days, so old and new binaries interoperate until activation.
+//   - 0.7.0 — the Consensus 3→7 bump gates the POA ADMISSION batch, all activated
+//     together when the election floor reaches 0.7.0 (consensusversion.V0_7_0): the
+//     seat-registry gate on candidacy, vsc.admit_vote, flat seat-weight, the churn
+//     cap, and the collateral exit-halt. The jump 3→7 (not 3→4) is deliberate: 0.4/0.5
+//     are develop's delegated-stake batch and 0.6 is feat/vault-protection's, so 0.7.0
+//     is the first line free across all three branches (see feature_gates.go V0_7_0).
+//     Until 0.7.0 is chain-active every POA rule is inert and behaviour stays
+//     byte-identical, so old and new binaries interoperate until activation.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 3
+	currentConsensus    uint64 = 7
 	currentNonConsensus uint64 = 0
 )
 

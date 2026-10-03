@@ -77,6 +77,28 @@ func (tssKeys *tssKeys) SetKey(key TssKey) error {
 	return dbErr
 }
 
+// SetSignatureVerified marks the key's BRK-2 check-signature as
+// consensus-verified. A dedicated single-field $set (see the interface note):
+// SetKey does not include signature_verified in its $set, so it neither
+// persists nor clobbers this flag — the two updaters are independent. Idempotent
+// (the flag is monotonic true).
+func (tssKeys *tssKeys) SetSignatureVerified(id string) error {
+	res := tssKeys.FindOneAndUpdate(context.Background(), bson.M{
+		"id": id,
+	}, bson.M{
+		"$set": bson.M{
+			"signature_verified": true,
+		},
+	})
+	dbErr := res.Err()
+	if dbErr != nil {
+		log.Warn("SetSignatureVerified failed", "keyId", id, "err", dbErr)
+	} else {
+		log.Info("BRK-2 check-signature verified for key", "keyId", id)
+	}
+	return dbErr
+}
+
 // FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached (and ExpiryEpoch > 0).
 func (tssKeys *tssKeys) FindDeprecatingKeys(epoch uint64) ([]TssKey, error) {
 	findCursor, err := tssKeys.Find(context.Background(), bson.M{

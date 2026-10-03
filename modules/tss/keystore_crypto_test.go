@@ -154,3 +154,29 @@ func TestKeystoreWrappers_OnDiskCiphertextAndLegacyMigration(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, legacy, got, "pre-existing plaintext share must still load")
 }
+
+// TestZeroizeKeystoreEntry pins the M1.4 DORMANT defence-in-depth erase: the
+// stored value is overwritten with same-length zeros (logical erase, no
+// plaintext survives), a missing key is a no-op, and it does NOT delete —
+// deletion stays the caller's separate step so the two concerns stay
+// independently correct.
+func TestZeroizeKeystoreEntry(t *testing.T) {
+	ctx := context.Background()
+	ds := datastore.NewMapDatastore()
+	k := datastore.NewKey("/key/btc-vault/7")
+	secret := []byte("ECDSA-Xi||Paillier-N-P-Q secret share material")
+
+	require.NoError(t, ds.Put(ctx, k, secret))
+	require.NoError(t, zeroizeKeystoreEntry(ctx, ds, k))
+
+	got, err := ds.Get(ctx, k)
+	require.NoError(t, err, "zeroize overwrites but must not delete")
+	assert.Len(t, got, len(secret), "overwrite must preserve length")
+	for i, b := range got {
+		require.Zerof(t, b, "byte %d not zeroed", i)
+	}
+	assert.NotContains(t, string(got), "secret", "no plaintext survives the overwrite")
+
+	// Missing key: no error (nothing to overwrite; the caller's Delete is a no-op).
+	assert.NoError(t, zeroizeKeystoreEntry(ctx, ds, datastore.NewKey("/key/none/0")))
+}
