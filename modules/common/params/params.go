@@ -237,6 +237,37 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 // 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
 // devnet run the fix immediately (Config.ActivationHeight 0).
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
+
+// PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
+//
+// Still consensus-affecting even though this particular addition is swap-only
+// (Collateral: false, so P and therefore the fee split do not move): below the
+// height every node REFUSES a LASSECASH swap, at/after it every node accepts
+// one. Witnesses on either side of the height would disagree about whether the
+// transaction succeeded at all. A future addition marked Collateral would
+// additionally shift P — hence the same coordinated-height treatment for both.
+//
+// RE-PINNED 2026-09-29: head 110,331,725 +144,000 blocks (5 DAYS at 3 s).
+// The 48–72 h windows used so far all expired before the release could ship —
+// no rollout has come out of CI yet — so this one is sized to survive a few
+// days of that rather than needing a nudge every other day.
+//
+// Previously: 09-27 110,366,900 (+72 h), 09-23 +1 day from 110,193,400, 09-22
+// from head 110,135,804 +57,600, after the original 09-20 pin eroded to ~8 h —
+// cf. the 0.3.0 rollout, where un-upgraded nodes dropped the committee 18 -> 12.
+//
+// NOTE: the main branch deliberately carries a DIFFERENT, longer height (14
+// days). This constant is consensus input, so the branch a binary is built
+// from decides when the addition activates — binaries from the two branches
+// must never be mixed on one network.
+//
+// RE-PIN AGAIN BEFORE RELEASE if this window erodes too. A height already in
+// the past makes the addition immediate on upgrade, i.e. exactly the staggered
+// rollout this exists to prevent — the gate fails open, and silently.
+// Mainnet only — testnet and devnet apply their lists immediately (height 0).
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_475_700
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────
