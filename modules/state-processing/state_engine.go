@@ -1105,7 +1105,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
-					se.profiler.Record(PhaseProduceBlock, time.Since(produceBlockStart))
+					se.profiler.Record(PhaseTxParseProduceBlock, time.Since(produceBlockStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
@@ -1113,6 +1113,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 				//# Start parsing system transactions
 				if cj.Id == "vsc.create_contract" {
+					createContractStart := time.Now()
 					for idx, auth := range txSelf.RequiredAuths {
 						txSelf.RequiredAuths[idx] = "hive:" + auth
 					}
@@ -1133,6 +1134,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"hbd",
 						)
 						if !hasFee {
+							se.profiler.Record(PhaseTxParseCreateContract, time.Since(createContractStart))
 							se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 							continue
 						}
@@ -1168,9 +1170,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					} else {
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParseCreateContract, time.Since(createContractStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.update_contract" {
+					updateContractStart := time.Now()
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
 						for idx, auth := range txSelf.RequiredAuths {
 							txSelf.RequiredAuths[idx] = "hive:" + auth
@@ -1216,9 +1220,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					se.profiler.Record(PhaseTxParseUpdateContract, time.Since(updateContractStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.cancel_contract_update" {
+					cancelContractUpdateStart := time.Now()
 					// Cancel a contract update still inside its timelock window.
 					// Gated like the timelock itself: a no-op before rollout (no
 					// pending updates exist), and historical replay sees no such
@@ -1238,9 +1244,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						json.Unmarshal(cj.Json, &parsedTx)
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParseCancelContractUpdate, time.Since(cancelContractUpdateStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.election_result" {
+					electionResultStart := time.Now()
 					parsedTx := &TxElectionResult{
 						Self: txSelf,
 					}
@@ -1251,24 +1259,31 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// nil receiver.
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseElectionResult, time.Since(electionResultStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.propose_consensus_version" {
+					proposeConsensusVersionStart := time.Now()
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseProposeConsensusVersion, time.Since(proposeConsensusVersionStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_suspend" {
+					recoverySuspendStart := time.Now()
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseRecoverySuspend, time.Since(recoverySuspendStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_require_version" {
+					recoveryRequireVersionStart := time.Now()
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseRecoveryRequireVersion, time.Since(recoveryRequireVersionStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
