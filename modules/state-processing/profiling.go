@@ -10,26 +10,35 @@ import (
 
 // Indexing lifecycle phase keys for the profiler. Each key accumulates
 // duration samples for one phase of block processing; the periodic summary
-// log ("indexing profile", one line per phase) reports count, window-wide
-// min/max/avg, and percentiles over the retained rolling window.
+// log ("indexing profile", one line per phase) reports count, per-phase
+// accumulated total, window-wide min/max/avg, and percentiles over the
+// retained rolling window. The header line ("indexing profile summary")
+// reports the wall-clock time elapsed since the previous dump.
 const (
-	PhaseProcessBlock          = "processBlock"
-	PhaseKeyLifecycle          = "keyLifecycle"
-	PhaseVirtualOps            = "virtualOps"
-	PhaseTxParse               = "txParse"
-	PhaseTxParseAccountUpdate  = "txParse.accountUpdate"
-	PhaseTxParseTssSign        = "txParse.tss_sign"
-	PhaseTxParseTssCommitment  = "txParse.tss_commitment"
-	PhaseProduceBlock          = "produceBlock"
-	PhaseExecuteBatch          = "executeBatch"
-	PhaseUpdateBalances        = "updateBalances"
-	PhaseUpdateBalancesAccount = "updateBalances.account"
-	PhaseUpdateRcMap           = "updateRcMap"
-	PhaseUpdateRcMapAccount    = "updateRcMap.account"
-	PhaseSaveBlockHeight       = "saveBlockHeight"
-	PhaseInit                  = "init"
-	PhaseFlush                 = "flush"
-	PhaseDbStall               = "dbStall"
+	PhaseProcessBlock                   = "processBlock"
+	PhaseKeyLifecycle                   = "keyLifecycle"
+	PhaseVirtualOps                     = "virtualOps"
+	PhaseTxParse                        = "txParse"
+	PhaseTxParseAccountUpdate           = "txParse.accountUpdate"
+	PhaseTxParseTssSign                 = "txParse.tss_sign"
+	PhaseTxParseTssCommitment           = "txParse.tss_commitment"
+	PhaseTxParseProduceBlock            = "txParse.produce_block"
+	PhaseTxParseCreateContract          = "txParse.create_contract"
+	PhaseTxParseUpdateContract          = "txParse.update_contract"
+	PhaseTxParseCancelContractUpdate    = "txParse.cancel_contract_update"
+	PhaseTxParseElectionResult          = "txParse.election_result"
+	PhaseTxParseProposeConsensusVersion = "txParse.propose_consensus_version"
+	PhaseTxParseRecoverySuspend         = "txParse.recovery_suspend"
+	PhaseTxParseRecoveryRequireVersion  = "txParse.recovery_require_version"
+	PhaseExecuteBatch                   = "executeBatch"
+	PhaseUpdateBalances                 = "updateBalances"
+	PhaseUpdateBalancesAccount          = "updateBalances.account"
+	PhaseUpdateRcMap                    = "updateRcMap"
+	PhaseUpdateRcMapAccount             = "updateRcMap.account"
+	PhaseSaveBlockHeight                = "saveBlockHeight"
+	PhaseInit                           = "init"
+	PhaseFlush                          = "flush"
+	PhaseDbStall                        = "dbStall"
 )
 
 // PhaseExecuteBatchOp returns the per-op-type phase key for batch execution,
@@ -96,11 +105,11 @@ type phaseSummary struct {
 	n     uint64
 	total time.Duration
 	min   time.Duration
-	max time.Duration
-	avg time.Duration
-	p50 time.Duration
-	p95 time.Duration
-	p99 time.Duration
+	max   time.Duration
+	avg   time.Duration
+	p50   time.Duration
+	p95   time.Duration
+	p99   time.Duration
 }
 
 // Profiler is the always-on indexing performance profiler. It is cheap (one
@@ -108,13 +117,14 @@ type phaseSummary struct {
 // periodic summary log — operators read performance from the "indexing
 // profile" log lines emitted by MaybeEmit.
 type Profiler struct {
-	mu       sync.Mutex
-	phases   map[string]*phaseStats
-	lastEmit uint64
+	mu          sync.Mutex
+	phases      map[string]*phaseStats
+	lastEmit    uint64
+	windowStart time.Time // start of the current emission window
 }
 
 func newProfiler() *Profiler {
-	return &Profiler{phases: make(map[string]*phaseStats)}
+	return &Profiler{phases: make(map[string]*phaseStats), windowStart: time.Now()}
 }
 
 // stats returns (creating if needed) the phaseStats for key.
@@ -180,8 +190,11 @@ func buildSummary(key string, ps *phaseStats) phaseSummary {
 // all phase stats. live selects the cadence: profilingSummaryLiveBlocks
 // while live-synced, profilingSummaryCatchupBlocks during catch-up — both
 // are emitted at Debug level (mirrors the tssLogSync / lastMagiLogHeight
-// throttle). Call from ProcessBlock on every block; nil-safe and safe to
-// call concurrently.
+// throttle). The header line's "total" is the wall-clock time elapsed since
+// the previous dump (or since profiler creation for the first window);
+// per-phase "total" values are accumulated sample time, so they overlap and
+// must not be summed. Call from ProcessBlock on every block; nil-safe and
+// safe to call concurrently.
 func (pr *Profiler) MaybeEmit(bh uint64, live bool) {
 	if pr == nil {
 		return
@@ -196,6 +209,9 @@ func (pr *Profiler) MaybeEmit(bh uint64, live bool) {
 		return
 	}
 	pr.lastEmit = bh
+	now := time.Now()
+	windowElapsed := now.Sub(pr.windowStart)
+	pr.windowStart = now
 	summaries := make([]phaseSummary, 0, len(pr.phases))
 	for key, ps := range pr.phases {
 		summaries = append(summaries, buildSummary(key, ps))
@@ -208,12 +224,8 @@ func (pr *Profiler) MaybeEmit(bh uint64, live bool) {
 	if live {
 		mode = "live"
 	}
-	var windowTotal time.Duration
-	for _, s := range summaries {
-		windowTotal += s.total
-	}
 	seprofLog.Debug("indexing profile summary",
-		"mode", mode, "windowBlocks", interval, "phases", len(summaries), "total", windowTotal.String())
+		"mode", mode, "windowBlocks", interval, "phases", len(summaries), "total", windowElapsed.String())
 	for _, s := range summaries {
 		if s.n == 0 {
 			continue

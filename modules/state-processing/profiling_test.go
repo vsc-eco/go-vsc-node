@@ -1,7 +1,11 @@
 package state_engine
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,10 +66,10 @@ func TestProfilerRingRollover(t *testing.T) {
 
 	sum := buildSummary(key, ps)
 	require.Equal(t, 13*time.Second+136*time.Millisecond, sum.total) // 4096*1ms + 904*10ms
-	require.Equal(t, time.Millisecond, sum.min)                     // window-wide
-	require.Equal(t, 10*time.Millisecond, sum.max) // window-wide
-	require.Equal(t, time.Millisecond, sum.p50)    // retained ring median is 1ms (3192 of 4096)
-	require.Equal(t, 10*time.Millisecond, sum.p95) // retained ring 95th pct is 10ms
+	require.Equal(t, time.Millisecond, sum.min)                      // window-wide
+	require.Equal(t, 10*time.Millisecond, sum.max)                   // window-wide
+	require.Equal(t, time.Millisecond, sum.p50)                      // retained ring median is 1ms (3192 of 4096)
+	require.Equal(t, 10*time.Millisecond, sum.p95)                   // retained ring 95th pct is 10ms
 	require.Equal(t, 10*time.Millisecond, sum.p99)
 	// avg spans the whole window: (4096*1 + 904*10)ms / 5000 = 2.6272ms
 	require.Equal(t, 2*time.Millisecond+627*time.Microsecond+200*time.Nanosecond, sum.avg)
@@ -113,14 +117,47 @@ func TestProfilerEmitCadence(t *testing.T) {
 	require.Equal(t, uint64(100000), pr.lastEmit, "must emit at the catchup threshold")
 }
 
+// TestProfilerSummaryReportsWindowWallTime verifies the summary header's
+// "total" is the wall-clock time elapsed since the previous dump — not the
+// sum of per-phase totals, which overlap because nested phases (e.g.
+// txParse inside processBlock) are counted in both.
+func TestProfilerSummaryReportsWindowWallTime(t *testing.T) {
+	pr := newProfiler()
+	pr.Record(PhaseProcessBlock, time.Millisecond)
+
+	var buf bytes.Buffer
+	oldLogger := seprofLog.Logger
+	seprofLog.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	defer func() { seprofLog.Logger = oldLogger }()
+
+	time.Sleep(5 * time.Millisecond)
+	pr.MaybeEmit(1000, true)
+	seprofLog.Logger = oldLogger
+
+	var summary string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "indexing profile summary") {
+			summary = line
+		}
+	}
+	require.NotEmpty(t, summary, "summary header line must be logged")
+
+	m := regexp.MustCompile(`total=([^ ]+)`).FindStringSubmatch(summary)
+	require.Len(t, m, 2, "summary header must include a total attribute")
+	elapsed, err := time.ParseDuration(m[1])
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, elapsed, 5*time.Millisecond, "total must span the window between dumps")
+	require.Less(t, elapsed, time.Minute, "total is a wall-clock window, nowhere near summed phase durations")
+}
+
 // TestProfilerStartClosure verifies Start returns a stop closure that records
 // a positive elapsed duration into the phase.
 func TestProfilerStartClosure(t *testing.T) {
 	pr := newProfiler()
-	stop := pr.Start(PhaseProduceBlock)
+	stop := pr.Start(PhaseTxParseProduceBlock)
 	time.Sleep(5 * time.Millisecond)
 	stop()
-	sum := buildSummary(PhaseProduceBlock, pr.stats(PhaseProduceBlock))
+	sum := buildSummary(PhaseTxParseProduceBlock, pr.stats(PhaseTxParseProduceBlock))
 	require.Equal(t, uint64(1), sum.n)
 	require.Equal(t, sum.avg, sum.total)
 	require.GreaterOrEqual(t, sum.avg, 5*time.Millisecond)
@@ -165,4 +202,18 @@ func TestBlockingRetryStallHook(t *testing.T) {
 func TestPhaseExecuteBatchOpKey(t *testing.T) {
 	require.Equal(t, "executeBatch.call", PhaseExecuteBatchOp("call"))
 	require.Equal(t, "executeBatch.vsc.transfer", PhaseExecuteBatchOp("vsc.transfer"))
+}
+
+// TestPhaseTxParseSystemOpKeys pins the txParse sub-phase key shape for the
+// system-transaction dispatch in ProcessBlock: each key is the vsc.* op id
+// with the prefix stripped, nested under txParse.
+func TestPhaseTxParseSystemOpKeys(t *testing.T) {
+	require.Equal(t, "txParse.produce_block", PhaseTxParseProduceBlock)
+	require.Equal(t, "txParse.create_contract", PhaseTxParseCreateContract)
+	require.Equal(t, "txParse.update_contract", PhaseTxParseUpdateContract)
+	require.Equal(t, "txParse.cancel_contract_update", PhaseTxParseCancelContractUpdate)
+	require.Equal(t, "txParse.election_result", PhaseTxParseElectionResult)
+	require.Equal(t, "txParse.propose_consensus_version", PhaseTxParseProposeConsensusVersion)
+	require.Equal(t, "txParse.recovery_suspend", PhaseTxParseRecoverySuspend)
+	require.Equal(t, "txParse.recovery_require_version", PhaseTxParseRecoveryRequireVersion)
 }
