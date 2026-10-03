@@ -265,7 +265,12 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		// Only a node joining the NEW committee needs them. The read is bounded
 		// (VR2-18): an empty or failing pool must clean-fail and retry next
 		// interval, never block while tssMgr.lock is held.
-		if myNewParty != nil {
+		//
+		// Not below the 0.7.0 line (reshareTakesPooledPreParams): the 0.3.0 build
+		// generates in round 2, and a mixed committee where only the 0.3.0 member
+		// is slow leaves it as the one party everyone else waits on, so it is the
+		// one blamed and banned. Below the line every node generates in round 2.
+		if myNewParty != nil && dispatcher.tssMgr.reshareTakesPooledPreParams(dispatcher.blockHeight) {
 			// Async, for the same 2x reason as the keygen path above.
 			go dispatcher.tssMgr.GeneratePreParams()
 			preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
@@ -1921,7 +1926,11 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 	// recompute the threshold from a filtered subset, which reshare's own code warns
 	// "produces wrong coefficients and corrupts the key". Delay or abort, never
 	// resize.
-	{
+	//
+	// Not below the 0.7.0 line (keygenReadinessGateActive): the 0.3.0 build starts
+	// every keygen and reaches its peers by dialling them, so a node that aborts
+	// here while a 0.3.0 member starts is the one the failed session blames.
+	if dispatcher.tssMgr.keygenReadinessGateActive(dispatcher.blockHeight) {
 		reachable := make(map[string]bool, len(dispatcher.participants))
 		for _, p := range dispatcher.participants {
 			reachable[p.Account] = true

@@ -216,6 +216,48 @@ func warnIfBlameWindowSaturated(rows int, ceremony, sessionId string) {
 	}
 }
 
+// legacyBlameWindowRows is the blame-window row limit of the 0.3.0 build.
+const legacyBlameWindowRows = 100
+
+// sessionShapeActive reports whether the post-0.3.0 TSS session shapes are in
+// force at bh (consensusversion.TssSessionShapeActive). Without a scheduler there
+// is no active version to read, so the 0.3.0 shapes apply.
+func (tssMgr *TssManager) sessionShapeActive(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.TssSessionShapeActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
+}
+
+// blameWindowRows is the row limit of the per-key blame-window reads: the 0.3.0
+// build's 100 until the session shapes are in force, BLAME_WINDOW_MAX_ROWS after.
+// The limit decides which blames are counted, so it is part of the party list.
+func blameWindowRows(shapeActive bool) int {
+	if shapeActive {
+		return BLAME_WINDOW_MAX_ROWS
+	}
+	return legacyBlameWindowRows
+}
+
+// legacyKeygenBlamed is the 0.3.0 build's keygen-retry exclusion, used until the
+// session shapes are in force: every member the key's most recent blame inside
+// BLAME_EXPIRE names, decoded against the current election.
+func (tssMgr *TssManager) legacyKeygenBlamed(keyId string, bh uint64, currentElection elections.ElectionResult) map[string]bool {
+	blamed := make(map[string]bool)
+	lastBlame, err := tssMgr.tssCommitments.GetCommitmentByHeight(keyId, bh, "blame")
+	if err != nil || int64(lastBlame.BlockHeight) <= int64(bh)-int64(BLAME_EXPIRE) {
+		return blamed
+	}
+	bitBytes, _ := base64.RawURLEncoding.DecodeString(lastBlame.Commitment)
+	bits := new(big.Int).SetBytes(bitBytes)
+	for idx, member := range currentElection.Members {
+		if bits.Bit(idx) == 1 {
+			blamed[member.Account] = true
+		}
+	}
+	return blamed
+}
+
 func (tssMgr *TssManager) signReadyAttestation(targetBlock uint64) (*ReadyAttestation, error) {
 	account := tssMgr.config.Get().HiveUsername
 	ver := consensusversion.RunningVersion()
@@ -394,6 +436,10 @@ type TssManager struct {
 	// preParamsTarget is the fill level GeneratePreParams works toward; see
 	// preParamsFillTarget.
 	preParamsTarget atomic.Int64
+	// preParamsBatch is whether the batch pool is in force (batchPreParamsActive at
+	// the last block seen). Below the 0.7.0 line the pool keeps one set, as the
+	// 0.3.0 build does.
+	preParamsBatch atomic.Bool
 	// genPreParams replaces ecKeyGen.GeneratePreParams in tests; nil in production.
 	genPreParams func(timeout time.Duration) (*ecKeyGen.LocalPreParams, error)
 
@@ -740,18 +786,58 @@ func (tssMgr *TssManager) GeneratePreParams() {
 	}
 }
 
-// preParamsFillTarget is how many sets GeneratePreParams keeps ready: the largest
-// batch announced so far (raisePreParamsTarget), at least DEFAULT_PREPARAMS_POOL,
-// at most the pool's capacity.
+// preParamsFillTarget is how many sets GeneratePreParams keeps ready; see
+// preParamsFillLevel.
 func (tssMgr *TssManager) preParamsFillTarget() int {
-	target := int(tssMgr.preParamsTarget.Load())
+	return preParamsFillLevel(tssMgr.preParamsBatch.Load(), tssMgr.preParamsTarget.Load(), cap(tssMgr.preParams))
+}
+
+// preParamsFillLevel is the pool's fill level. With the batch pool in force it is
+// the largest batch announced so far (raisePreParamsTarget), at least
+// DEFAULT_PREPARAMS_POOL, at most the pool's capacity. Below the 0.7.0 line it is
+// one set, refilled when taken, as on the 0.3.0 build.
+func preParamsFillLevel(batch bool, announced int64, capacity int) int {
+	if !batch {
+		return 1
+	}
+	target := int(announced)
 	if target < DEFAULT_PREPARAMS_POOL {
 		target = DEFAULT_PREPARAMS_POOL
 	}
-	if c := cap(tssMgr.preParams); target > c {
-		target = c
+	if target > capacity {
+		target = capacity
 	}
 	return target
+}
+
+// batchPreParamsActive reports whether the TSS-BATCH-1 pool is in force at bh:
+// sets kept ready for every ceremony of the coming batch, and a member short of
+// them holding back its readiness claim. reshareTakesPooledPreParams goes with it.
+// Both wait for the session-shape line (TssSessionShapeActive): with them a member
+// starts its reshares without generating in round 2, the 0.3.0 build still
+// generates there, and in a committee that mixes the two the 0.3.0 member is the
+// one party the others wait on, so it is blamed and banned (devnet B1-FIX: five
+// reshares at one rotate block, the 0.3.0 member blamed on one and left out of
+// every later session). Below the line every node keeps the 0.3.0 pool.
+func (tssMgr *TssManager) batchPreParamsActive(bh uint64) bool {
+	return tssMgr.sessionShapeActive(bh)
+}
+
+// reshareTakesPooledPreParams reports whether a node joining a reshare's new
+// committee takes its Paillier set from the pool (B1) rather than letting tss-lib
+// generate it in round 2, as the 0.3.0 build does. Same line as
+// batchPreParamsActive.
+func (tssMgr *TssManager) reshareTakesPooledPreParams(bh uint64) bool {
+	return tssMgr.batchPreParamsActive(bh)
+}
+
+// keygenReadinessGateActive reports whether a keygen waits for threshold+1
+// participants to be connected before it starts and aborts otherwise (VR2-08).
+// The 0.3.0 build starts every keygen; a node that aborts while a 0.3.0 member
+// starts fails the session for everyone and is the party it blames. Same line as
+// the session shapes.
+func (tssMgr *TssManager) keygenReadinessGateActive(bh uint64) bool {
+	return tssMgr.sessionShapeActive(bh)
 }
 
 // raisePreParamsTarget makes the pool keep at least `need` sets from now on. It
@@ -822,12 +908,13 @@ func reshareWindow(keys []tss_db.TssKey, bh, rotateInterval uint64) []tss_db.Tss
 // offline, instead of putting it in every list and making each of its later
 // sessions fail for all parties. A retiring-generation signer that is not a
 // member joins only as an old party and takes no sets.
-func withholdReadinessForPreParams(isMember bool, need, have int) bool {
-	return isMember && need > 0 && have < need
+func withholdReadinessForPreParams(batch, isMember bool, need, have int) bool {
+	return batch && isMember && need > 0 && have < need
 }
 
 func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	tssMgr.lastBlockHeight.Store(bh)
+	tssMgr.preParamsBatch.Store(tssMgr.batchPreParamsActive(bh))
 	tssMgr.cleanupGossipState(bh)
 
 	if headHeight == nil {
@@ -874,7 +961,9 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// Check if there are keys that need reshare at the next rotate interval.
 		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
-			reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
+			if tssMgr.sessionShapeActive(bh + blocksUntilReshare) {
+				reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
+			}
 			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
 				target := bh + blocksUntilReshare
@@ -935,14 +1024,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// instead of joining every party list and starting its later sessions
 				// after the others have timed out. Only whether this node sends its own
 				// signed claim changes; the claim and the convergence are untouched.
+				//
+				// Below the 0.7.0 line (batchPreParamsActive) neither: the pool keeps
+				// one set and every member attests, as on the 0.3.0 build.
 				withhold := false
-				if need := preParamsNeed[targetBlock]; need > 0 && isMember && !inSettlePeriod {
+				batch := tssMgr.batchPreParamsActive(targetBlock)
+				if need := preParamsNeed[targetBlock]; batch && need > 0 && isMember && !inSettlePeriod {
 					if c := cap(tssMgr.preParams); need > c {
 						need = c // beyond the pool's capacity the extra sets are generated on demand, as before
 					}
 					tssMgr.raisePreParamsTarget(need)
 					go tssMgr.GeneratePreParams()
-					withhold = withholdReadinessForPreParams(isMember, need, len(tssMgr.preParams))
+					withhold = withholdReadinessForPreParams(batch, isMember, need, len(tssMgr.preParams))
 					if withhold {
 						tssMgr.gossipLock.Lock()
 						if tssMgr.readinessWithheld == nil {
@@ -1031,7 +1124,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 		// scheduled for a key whose multi-block reshare was still running its
 		// rounds, the two ceremonies competed for the same parties, and both timed
 		// out — repeatedly, because a Pending generation is reshared every epoch.
-		inFlightCeremony, inFlightSign := tssMgr.inFlightSessions()
+		// Both the locks and the deferral change which actions this block runs, and
+		// so every later action's session id, so they wait for the session shapes
+		// (TssSessionShapeActive); a nil map locks and defers nothing.
+		shapeActive := tssMgr.sessionShapeActive(bh)
+		var inFlightCeremony, inFlightSign map[string]bool
+		if shapeActive {
+			inFlightCeremony, inFlightSign = tssMgr.inFlightSessions()
+		}
 		for keyId := range inFlightCeremony {
 			keyLocks[keyId] = true
 		}
@@ -1046,7 +1146,9 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 
 			epoch := electionData.Epoch
 			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
-			reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
+			if shapeActive {
+				reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
+			}
 
 			for _, key := range reshareKeys {
 				// M1.3 (Build Map §7 N1, U-1): under vault-rotation-v2 the BTC vault
@@ -1462,6 +1564,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore(currentElection)
+	shapeActive := tssMgr.sessionShapeActive(bh)
 
 	log.Info(
 		"running actions",
@@ -1494,43 +1597,50 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// (TSS_BLAME_THRESHOLD_PERCENT) of the window's blame commitments must name an
 			// account to exclude it, so a single manufactured blame can't drop a healthy node.
 			// A fresh keyId has no blames in the window → blamedAccounts empty → inert.
-			keyIdStr := action.KeyId
-			var blameExpireBlock uint64
-			if bh > BLAME_EXPIRE {
-				blameExpireBlock = bh - BLAME_EXPIRE
-			}
-			allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
-				&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, BLAME_WINDOW_MAX_ROWS,
-			)
-			if blameErr != nil {
-				log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
-			}
-			warnIfBlameWindowSaturated(len(allBlames), "keygen", sessionId)
-			blameCount := make(map[string]int) // account → number of blames naming this account
-			blameOpportunities := 0            // total blame commitments in window (denominator)
-			for _, blame := range allBlames {
-				blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
-				if blameElection == nil || blameElection.Members == nil {
-					log.Warn("keygen blame election missing, skipping blame entry",
-						"blameEpoch", blame.Epoch, "sessionId", sessionId)
-					continue
+			// Until the session shapes are in force the 0.3.0 rule applies instead
+			// (legacyKeygenBlamed), so a node on that build builds the same list.
+			var blamedAccounts map[string]bool
+			blameOpportunities := 0 // blame commitments in the window (denominator)
+			if shapeActive {
+				keyIdStr := action.KeyId
+				var blameExpireBlock uint64
+				if bh > BLAME_EXPIRE {
+					blameExpireBlock = bh - BLAME_EXPIRE
 				}
-				blameOpportunities++
-				blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
-				bBits := new(big.Int).SetBytes(blameBytes)
-				for bidx, member := range blameElection.Members {
-					if bBits.Bit(bidx) == 1 {
-						blameCount[member.Account]++
+				allBlames, blameErr := tssMgr.tssCommitments.FindCommitmentsSimple(
+					&keyIdStr, []string{"blame"}, nil, &blameExpireBlock, &bh, BLAME_WINDOW_MAX_ROWS,
+				)
+				if blameErr != nil {
+					log.Warn("failed to fetch keygen blame commitments", "sessionId", sessionId, "err", blameErr)
+				}
+				warnIfBlameWindowSaturated(len(allBlames), "keygen", sessionId)
+				blameCount := make(map[string]int) // account → number of blames naming this account
+				for _, blame := range allBlames {
+					blameElection := tssMgr.electionDb.GetElection(blame.Epoch)
+					if blameElection == nil || blameElection.Members == nil {
+						log.Warn("keygen blame election missing, skipping blame entry",
+							"blameEpoch", blame.Epoch, "sessionId", sessionId)
+						continue
+					}
+					blameOpportunities++
+					blameBytes, _ := base64.RawURLEncoding.DecodeString(blame.Commitment)
+					bBits := new(big.Int).SetBytes(blameBytes)
+					for bidx, member := range blameElection.Members {
+						if bBits.Bit(bidx) == 1 {
+							blameCount[member.Account]++
+						}
 					}
 				}
-			}
-			blamedAccounts := make(map[string]bool)
-			if blameOpportunities > 0 {
-				for account, count := range blameCount {
-					if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
-						blamedAccounts[account] = true
+				blamedAccounts = make(map[string]bool)
+				if blameOpportunities > 0 {
+					for account, count := range blameCount {
+						if count*100 > blameOpportunities*TSS_BLAME_THRESHOLD_PERCENT {
+							blamedAccounts[account] = true
+						}
 					}
 				}
+			} else {
+				blamedAccounts = tssMgr.legacyKeygenBlamed(action.KeyId, bh, currentElection)
 			}
 
 			excludedAccounts := make([]string, 0)
@@ -1696,7 +1806,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&signBlameExpireBlock,
 				&bh,
-				BLAME_WINDOW_MAX_ROWS,
+				blameWindowRows(shapeActive),
 			)
 			warnIfBlameWindowSaturated(len(signBlames), "sign", sessionId)
 			if signBlameErr != nil {
@@ -1872,7 +1982,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				nil,
 				&blameExpireBlock,
 				&bh,
-				BLAME_WINDOW_MAX_ROWS,
+				blameWindowRows(shapeActive),
 			)
 			warnIfBlameWindowSaturated(len(allBlames), "reshare", sessionId)
 			if blameErr != nil {
@@ -2062,8 +2172,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 			// B9: bind the chosen participant sets into the session id, so a node
 			// whose gossip view differs forms a DIFFERENT session and cleanly misses
-			// rather than joining one whose VSS degree it disagrees with.
-			sessionId += "-" + participantSetTag(commitedMembers, newParticipants)
+			// rather than joining one whose VSS degree it disagrees with. A node on the
+			// 0.3.0 build sends no tag, so the tag waits for the session shapes.
+			if shapeActive {
+				sessionId += "-" + participantSetTag(commitedMembers, newParticipants)
+			}
 
 			log.Verbose("reshare pre-flight checks passed", "sessionId", sessionId, "oldParticipants", len(commitedMembers), "newParticipants", len(newParticipants), "readyCount", len(readyAccounts))
 

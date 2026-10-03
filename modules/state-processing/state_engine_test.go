@@ -1301,3 +1301,62 @@ func TestUpdateBalances_TwabCorrectAfterClaimThenDeposit(t *testing.T) {
 	computedTwab := (afterDeposit.HBD_AVG + afterDeposit.HBD_SAVINGS*A) / B
 	assert.Equal(t, expectedTwab, computedTwab, "TWAB should reflect time-weighted average")
 }
+
+// BRK-5 waits for TssKeyLifecycleActive: below 0.7.0 a processing-suspended chain
+// still deprecates an expired key, as the 0.3.0 build does; from 0.7.0 the clock
+// freezes while suspended.
+func TestKeyDeprecationUnderSuspendFollowsTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion uint64
+		want            string
+	}{
+		{3, tss_db.TssKeyDeprecated},
+		{7, tss_db.TssKeyActive},
+	} {
+		cs := test_utils.NewMockConsensusState()
+		cs.S.ProcessingSuspended = true
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "witness1", Key: "bls-key-1"}},
+				ProtocolVersion: tc.protocolVersion,
+			},
+		}
+		te.TssKeys.Keys["key1"] = tss_db.TssKey{Id: "key1", Status: tss_db.TssKeyActive, ExpiryEpoch: 5, Epoch: 3}
+
+		te.processAndWait()
+
+		assert.Equal(t, tc.want, te.TssKeys.Keys["key1"].Status, "version 0.%d, chain suspended", tc.protocolVersion)
+	}
+}
+
+// vsc.tss_halt from the gateway wallet sets the BTC keysign halt only from the
+// 0.7.0 line; below it the op is ignored, as on the 0.3.0 build, which has no halt.
+func TestBtcKeysignHaltOpFollowsTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion uint64
+		want            bool
+	}{
+		{3, false},
+		{7, true},
+	} {
+		cs := test_utils.NewMockConsensusState()
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "witness1", Key: "bls-key-1"}},
+				ProtocolVersion: tc.protocolVersion,
+			},
+		}
+		te.Creator.CustomJson(stateEngine.MockJson{
+			RequiredAuths: []string{te.SE.SystemConfig().GatewayWallet()},
+			Id:            "vsc.tss_halt",
+			Json:          `{"active":true}`,
+		})
+		te.processAndWait()
+
+		assert.Equal(t, tc.want, cs.Snapshot().BtcKeysignHalted, "version 0.%d", tc.protocolVersion)
+	}
+}
