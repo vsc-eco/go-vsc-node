@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 	"vsc-node/lib/utils"
 	"vsc-node/lib/vsclog"
@@ -43,6 +44,11 @@ import (
 )
 
 var log = vsclog.Module("p2p")
+
+// bootnodeDialTimeout caps each bootstrap-peer connect. Dialing a peer whose
+// address is unknown triggers a full Kademlia lookup that can otherwise run
+// several minutes per peer; the connectRegisteredPeers cron retries every 5m.
+var bootnodeDialTimeout = 60 * time.Second
 
 type P2PServer struct {
 	witnessDb    WitnessGetter
@@ -315,16 +321,47 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 	}()
 
 	uniquePeers := make(map[string]struct{})
+	uniquePeersMu := sync.Mutex{}
 
 	if !p2ps.systemConfig.OnMocknet() {
+		// Dialing a bootnode whose address is unknown triggers a full
+		// Kademlia lookup (RoutedHost.Connect → FindPeer → query.run), which
+		// can run for minutes against a dead peer and is only bounded by the
+		// ctx passed in. Dialing all mainnet bootnodes sequentially under
+		// context.Background() therefore wedged Start() — the aggregate Start
+		// loop could not reach its shutdown race, so a SIGINT during early
+		// startup left the node running until the 30s backstop. Dial from a
+		// goroutine bounded by bgCtx (canceled on Stop) so Start stays
+		// non-blocking; the connectRegisteredPeers cron still re-attempts
+		// unreachable bootnodes every 5 minutes.
 		for _, peerStr := range p2ps.GetBootnodes() {
-			peerId, _ := peer.AddrInfoFromString(peerStr)
-			err := p2ps.host.Connect(context.Background(), *peerId)
-			if err == nil {
-				uniquePeers[peerId.ID.String()] = struct{}{}
-				p2ps.host.Peerstore().AddAddrs(peerId.ID, peerId.Addrs, peerstore.ConnectedAddrTTL)
-
+			peerId, err := peer.AddrInfoFromString(peerStr)
+			if err != nil {
+				log.Warn("bootstrap peer addr parse failed", "peer", peerStr, "err", err)
+				continue
 			}
+
+			go func(peerId peer.ID, addrInfo peer.AddrInfo) {
+				connectCtx, connectCancel := context.WithTimeout(bgCtx, bootnodeDialTimeout)
+				defer connectCancel()
+
+				if err := p2ps.host.Connect(connectCtx, addrInfo); err != nil {
+					if bgCtx.Err() != nil {
+						return
+					}
+					if connectCtx.Err() != nil {
+						log.Warn("bootstrap peer dial timed out", "peer", peerId)
+						return
+					}
+					log.Warn("failed to connect bootstrap peer", "peer", peerId, "err", err)
+					return
+				}
+
+				uniquePeersMu.Lock()
+				uniquePeers[peerId.String()] = struct{}{}
+				uniquePeersMu.Unlock()
+				p2ps.host.Peerstore().AddAddrs(peerId, addrInfo.Addrs, peerstore.ConnectedAddrTTL)
+			}(peerId.ID, *peerId)
 		}
 	}
 
@@ -345,7 +382,11 @@ func (p2ps *P2PServer) Start() *promise.Promise[any] {
 				log.Verbose("all peers", "ids", p2ps.host.Network().Peers())
 			}
 
-			if peerLen >= len(uniquePeers)-1 {
+			uniquePeersMu.Lock()
+			wantPeers := len(uniquePeers)
+			uniquePeersMu.Unlock()
+
+			if peerLen >= wantPeers-1 {
 				p2ps.startStatus.TriggerStart()
 			}
 
