@@ -19,6 +19,7 @@ func TestProfilerPercentiles(t *testing.T) {
 	sum := buildSummary(key, pr.stats(key))
 
 	require.Equal(t, uint64(100), sum.n)
+	require.Equal(t, 5050*time.Microsecond, sum.total) // 1..100
 	require.Equal(t, time.Microsecond, sum.min)
 	require.Equal(t, 100*time.Microsecond, sum.max)
 	require.Equal(t, 50*time.Microsecond+500*time.Nanosecond, sum.avg) // (1..100)/100 = 50.5µs
@@ -31,6 +32,7 @@ func TestProfilerPercentiles(t *testing.T) {
 	pr.Record(key, 42*time.Millisecond)
 	sum = buildSummary(key, pr.stats(key))
 	require.Equal(t, uint64(1), sum.n)
+	require.Equal(t, 42*time.Millisecond, sum.total)
 	require.Equal(t, 42*time.Millisecond, sum.min)
 	require.Equal(t, 42*time.Millisecond, sum.max)
 	require.Equal(t, 42*time.Millisecond, sum.avg)
@@ -59,7 +61,8 @@ func TestProfilerRingRollover(t *testing.T) {
 	require.Len(t, ps.samples, profilingWindowSamples)
 
 	sum := buildSummary(key, ps)
-	require.Equal(t, time.Millisecond, sum.min)    // window-wide
+	require.Equal(t, 13*time.Second+136*time.Millisecond, sum.total) // 4096*1ms + 904*10ms
+	require.Equal(t, time.Millisecond, sum.min)                     // window-wide
 	require.Equal(t, 10*time.Millisecond, sum.max) // window-wide
 	require.Equal(t, time.Millisecond, sum.p50)    // retained ring median is 1ms (3192 of 4096)
 	require.Equal(t, 10*time.Millisecond, sum.p95) // retained ring 95th pct is 10ms
@@ -119,6 +122,7 @@ func TestProfilerStartClosure(t *testing.T) {
 	stop()
 	sum := buildSummary(PhaseProduceBlock, pr.stats(PhaseProduceBlock))
 	require.Equal(t, uint64(1), sum.n)
+	require.Equal(t, sum.avg, sum.total)
 	require.GreaterOrEqual(t, sum.avg, 5*time.Millisecond)
 }
 
