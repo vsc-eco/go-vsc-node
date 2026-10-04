@@ -28,8 +28,8 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
+	"vsc-node/modules/db/vsc/poaseats"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -39,6 +39,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/haf"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
@@ -162,7 +163,27 @@ func main() {
 	}
 
 	stBlock := sysConfig.StartHeight()
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
+	// Block source: a non-empty HafDbURI in dbConfig switches block ingestion
+	// to the local HAF database (hive.irreversible_*_view) and mongo keeps
+	// only the graphql timestamp shims + cursor metadata. Otherwise the
+	// classic Hive API streamer stores a filtered copy of every block.
+	var blockSource hive_blocks.HiveBlocks = hiveBlocks
+	var streamerPlugin aggregate.Plugin
+	var hafSource *haf.Source
+	dbConf.Init()
+	if hafURI := dbConf.GetHafDbURI(); hafURI != "" {
+		hafSource, err = haf.New(hafURI, hiveBlocks, filters, vFilters, stBlock)
+		if err != nil {
+			log.Error("failed to init HAF block source", "err", err)
+			os.Exit(1)
+		}
+		blockSource = hafSource
+		streamerPlugin = hafSource
+		log.Info("block source", "source", "haf")
+	} else {
+		streamerPlugin = streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
+		log.Info("block source", "source", "hive_api")
+	}
 
 	identityConfig := common.NewIdentityConfig(args.dataDir)
 	// Load the identity config from disk BEFORE reading it. NewIdentityConfig
@@ -221,7 +242,7 @@ func main() {
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
-		hiveBlocks,
+		blockSource,
 		interestClaims,
 		vscBlocks,
 		actionsDb,
@@ -261,7 +282,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem, se)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
@@ -279,7 +300,7 @@ func main() {
 		hiveRpcClient,
 	)
 
-	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
+	sr := streamer.NewStreamReader(blockSource, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
 	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
@@ -313,7 +334,7 @@ func main() {
 		Transactions:   txDb,
 		Nonces:         nonceDb,
 		Rc:             rcDb,
-		HiveBlocks:     hiveBlocks,
+		HiveBlocks:     blockSource,
 		StateEngine:    se,
 		Da:             da,
 		Contracts:      contractDb,
