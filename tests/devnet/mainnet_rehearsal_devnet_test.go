@@ -200,6 +200,11 @@ func TestMainnetRehearsal(t *testing.T) {
 	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
+	// Mainnet's readiness window (DEFAULT_READINESS_OFFSET = 30). The devnet default
+	// of 5 leaves 2 blocks before the 3-block settle period, so a node running a
+	// second behind attests inside a faster node's settle window and that node is
+	// blamed for a party list it was right about.
+	cfg.SysConfigOverrides.TssParams.ReadinessOffset = 30
 	// Mainnet: no height pin, the vault rotation rules come on with the 0.8.0 line.
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = 0
 	cfg.OldCodeSourceDir = oldSrc
