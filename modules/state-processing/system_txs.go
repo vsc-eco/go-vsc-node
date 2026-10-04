@@ -591,7 +591,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 			//Store
 			se.electionDb.StoreElection(elecResult)
-			se.onElectionStored()
+			se.onElectionStored(elecResult)
 		}
 	} else {
 		//Validate normally
@@ -832,8 +832,10 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			}
 			// The election may have become active (or changed) at this height —
 			// drop the key-lifecycle deprecation gate, the schedule memo and the
-			// height election cache so the next block resolves the fresh state.
-			se.onElectionStored()
+			// height election cache, and refresh the latest-election mirror the
+			// schedule memo's hit check compares against, so the next block
+			// resolves the fresh state.
+			se.onElectionStored(elecResult)
 
 			// POA seat maintenance runs off the RATIFIED election, at the one
 			// point every node executes exactly once per epoch from identical

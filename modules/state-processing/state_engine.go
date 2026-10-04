@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime/debug"
 	"slices"
@@ -243,13 +244,44 @@ type StateEngine struct {
 	electionCacheHeight uint64
 	electionCacheResult elections.ElectionResult
 	electionCacheHit    bool
-	// scheduleCache memoizes the witness schedule per round-start for the
-	// produce_block path (getScheduleForSlot). The schedule is constant within
-	// a round until an election is stored; onElectionStored drops it so
-	// mid-round elections recompute for later slots. Only touched from
-	// ProcessBlock (serial), so unsynchronized.
-	scheduleRoundStart uint64
-	scheduleCached     []WitnessSlot
+	// scheduleCache memoizes the witness schedule for the produce_block path
+	// (getScheduleForSlot), keyed by the (round, election) pair the schedule
+	// is a pure function of: the seed derives from the round start and the
+	// membership from the election active at the slot (GetElectionByHeight's
+	// latest block_height strictly below the slot height). Keying by round
+	// alone was unsound: a mid-round election changes the schedule for slots
+	// above its block_height, and a produce_block op for a slot at or below
+	// that height validated AFTER the election op (e.g. both landing in the
+	// same 10-block slot, election first) re-seeded the dropped memo with the
+	// OLD schedule under the same round key — every later slot of the round
+	// then hit the stale schedule while producers (uncached GetSchedule)
+	// used the new committee, so blocks were skipped until the round ended.
+	// scheduleElectionEpoch/Bh record the election the memo was computed from;
+	// memoElectionIsCurrent refuses the hit once that election is no longer
+	// the latest stored one (the election later slots resolve then differs).
+	// Only touched from ProcessBlock (serial), so unsynchronized.
+	scheduleRoundStart    uint64
+	scheduleCached        []WitnessSlot
+	scheduleElectionEpoch uint64
+	scheduleElectionBh    uint64
+	// latestElection* mirrors the most recently STORED election, which
+	// memoElectionIsCurrent compares the memo's election against. Stored
+	// block_heights strictly increase with replay order (a stored bh is the
+	// block height of the storing op), so if the memo's election is still the
+	// latest stored one, no election can exist with a bh in [the memo's slot,
+	// the current slot) — every later slot of the round resolves the same
+	// election the memo was built from. Seeded lazily from the DB on first
+	// use (GetElectionByHeight(MaxInt64-1), the existing "latest overall"
+	// read) so a restart mid-round never compares against a mirror older
+	// than the DB, and maintained by onElectionStored thereafter — ProcessBlock
+	// is the only election-storing path. On a failed StoreElection the mirror
+	// may describe a phantom latest (the election is not in the DB); that only
+	// degrades memo hits into recomputes (the pre-memo cost, still correct)
+	// until the next successful store. Only touched from ProcessBlock
+	// (serial), so unsynchronized.
+	latestElectionSeeded bool
+	latestElectionEpoch  uint64
+	latestElectionBh     uint64
 
 	// profiler times each indexing phase so operators can see where block
 	// processing spends its time via the periodic "indexing profile" log
@@ -412,31 +444,61 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId s
 // GetSchedule returns the randomized witness schedule for the round containing
 // slotHeight. Async callers (block ticks, gql) read the DB directly.
 func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
-	return se.computeSchedule(slotHeight)
-}
-
-// getScheduleForSlot is the ProcessBlock-side memoized variant of GetSchedule:
-// the schedule for a round is constant until an election is stored, so the
-// produce_block hot path (once per slot) reuses the last computed round instead
-// of re-reading the election + hive block. onElectionStored drops the memo so a
-// mid-round election recomputes for later slots. Must only be called from
-// ProcessBlock — the cache fields are unsynchronized.
-func (se *StateEngine) getScheduleForSlot(slotHeight uint64) []WitnessSlot {
-	roundStart := vscBlocks.CalculateRoundInfo(slotHeight).StartHeight
-	if se.scheduleRoundStart == roundStart && se.scheduleCached != nil {
-		return se.scheduleCached
-	}
-	schedule := se.computeSchedule(slotHeight)
-	se.scheduleRoundStart = roundStart
-	se.scheduleCached = schedule
+	schedule, _ := se.computeSchedule(slotHeight)
 	return schedule
 }
 
-func (se *StateEngine) computeSchedule(slotHeight uint64) []WitnessSlot {
+// getScheduleForSlot is the ProcessBlock-side memoized variant of GetSchedule:
+// the schedule is a pure function of (round, election), so the produce_block
+// hot path (once per slot) reuses the last computed round instead of re-reading
+// the election + hive block — but only while the memo's election is still the
+// latest stored one (memoElectionIsCurrent), which is exactly the condition
+// under which every later slot of the round resolves the same election.
+// onElectionStored drops the memo AND refreshes the latest-election mirror, so
+// a mid-round election recomputes for later slots — including the re-seed case
+// where a produce_block op for a slot at or below the election's block height,
+// validated after the election, would otherwise re-cache the old committee's
+// schedule under the same round key. Must only be called from ProcessBlock —
+// the cache fields are unsynchronized.
+func (se *StateEngine) getScheduleForSlot(slotHeight uint64) []WitnessSlot {
+	roundStart := vscBlocks.CalculateRoundInfo(slotHeight).StartHeight
+	if se.scheduleRoundStart == roundStart && se.scheduleCached != nil && se.memoElectionIsCurrent() {
+		return se.scheduleCached
+	}
+	schedule, election := se.computeSchedule(slotHeight)
+	se.scheduleRoundStart = roundStart
+	se.scheduleCached = schedule
+	se.scheduleElectionEpoch = election.Epoch
+	se.scheduleElectionBh = election.BlockHeight
+	return schedule
+}
+
+// memoElectionIsCurrent reports whether the election the schedule memo was
+// computed from is still the latest stored election — the condition under which
+// the memo can serve later slots of the same round. Seeds the latest-election
+// mirror once per process from the DB so a restart mid-round never compares
+// against a mirror older than the DB; on a read error it stays unseeded and
+// reports false, which only costs a recompute (never a wrong hit). Election
+// identity is the (epoch, block_height) pair — epoch alone could alias
+// same-epoch duplicate stores from pre-ElectionDupeFix replay.
+func (se *StateEngine) memoElectionIsCurrent() bool {
+	if !se.latestElectionSeeded {
+		if latest, err := se.electionDb.GetElectionByHeight(math.MaxInt64 - 1); err == nil {
+			se.latestElectionEpoch = latest.Epoch
+			se.latestElectionBh = latest.BlockHeight
+			se.latestElectionSeeded = true
+		}
+	}
+	return se.latestElectionSeeded &&
+		se.scheduleElectionEpoch == se.latestElectionEpoch &&
+		se.scheduleElectionBh == se.latestElectionBh
+}
+
+func (se *StateEngine) computeSchedule(slotHeight uint64) ([]WitnessSlot, elections.ElectionResult) {
 	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
 
 	if err != nil {
-		return nil
+		return nil, elections.ElectionResult{}
 	}
 
 	witnessList := make([]Witness, 0)
@@ -473,7 +535,7 @@ func (se *StateEngine) computeSchedule(slotHeight uint64) []WitnessSlot {
 	copy(seed32[:], seed)
 	witnessSchedule := GenerateSchedule(slotHeight, witnessList, seed32)
 
-	return witnessSchedule
+	return witnessSchedule, lastElection
 }
 
 // Implementation note:

@@ -226,14 +226,21 @@ func (se *StateEngine) electionAtHeight(height uint64) (elections.ElectionResult
 
 // onElectionStored records that a new election was persisted: the key-lifecycle
 // deprecation pass re-runs, the produce-block schedule memo is dropped (a
-// mid-round election changes the schedule for later slots), and the height
-// election cache is cleared. Called from the vsc.election_result handler.
+// mid-round election changes the schedule for later slots), the height
+// election cache is cleared, and the latest-election mirror (which the schedule
+// memo's hit check compares its election against) is refreshed so it never
+// lags the DB. Called from the vsc.election_result handler.
 // Harmless when nothing was actually written (an extra deprecation pass is an
-// empty scan).
-func (se *StateEngine) onElectionStored() {
+// empty scan); if the store itself failed, the mirror may describe a phantom
+// latest, which only degrades schedule-memo hits into recomputes (still
+// correct) until the next successful store.
+func (se *StateEngine) onElectionStored(elecResult elections.ElectionResult) {
 	se.keyLifecycleEpochDirty = true
 	se.scheduleRoundStart = 0
 	se.scheduleCached = nil
+	se.latestElectionEpoch = elecResult.Epoch
+	se.latestElectionBh = elecResult.BlockHeight
+	se.latestElectionSeeded = true
 	se.electionCacheMu.Lock()
 	se.electionCacheHit = false
 	se.electionCacheMu.Unlock()
