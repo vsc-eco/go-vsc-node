@@ -603,7 +603,10 @@ func (w *Wasm) Execute(
 	for attempts := 0; attempts < 8; attempts++ {
 		bc, err = getOrLoadBytecode(code)
 		if err != nil {
-			errStr := fmt.Errorf("failed to load wasm bytecode: %w", err).Error()
+			// Same text as the 0.3.0 build, whose RegisterWasmBuffer fails with the
+			// identical loader error: the text lands in the contract output and so in
+			// the block, and a different string on upgraded nodes splits a mixed fleet.
+			errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
 			return wasm_types.WasmResultStruct{
 				Error:     &errStr,
 				ErrorCode: contracts.WASM_INIT_ERROR,
@@ -615,19 +618,18 @@ func (w *Wasm) Execute(
 		}
 	}
 	if ast == nil {
-		errStr := "failed to acquire wasm bytecode cache entry"
-		return wasm_types.WasmResultStruct{
-			Error:     &errStr,
-			ErrorCode: contracts.WASM_INIT_ERROR,
-			Gas:       vm.GetStatistics().GetTotalCost(),
-		}
+		// The cache entry kept being evicted: register from the raw bytes, as the
+		// 0.3.0 build always did, rather than fail a call its peers execute.
+		err = vm.RegisterWasmBuffer("contract", code)
+	} else {
+		err = vm.RegisterAST("contract", ast)
+		bc.release()
 	}
 
-	err = vm.RegisterAST("contract", ast)
-	bc.release()
-
 	if err != nil {
-		errStr := fmt.Errorf("failed to register wasm module: %w", err).Error()
+		// Same text and gas as the 0.3.0 build's RegisterWasmBuffer (instantiation
+		// errors such as "cost limit exceeded" are identical on both paths).
+		errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
 		return wasm_types.WasmResultStruct{
 			Error:     &errStr,
 			ErrorCode: contracts.WASM_INIT_ERROR,
