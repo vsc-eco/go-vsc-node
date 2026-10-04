@@ -126,7 +126,7 @@ func (se *StateEngine) applyPoaSeatMaintenance(elecResult elections.ElectionResu
 				"epoch", elecResult.Epoch, "height", blockHeight)
 			return
 		}
-		se.bootstrapPoaSeats(elecResult, blockHeight, members)
+		se.bootstrapPoaSeats(elecResult, prevElection, blockHeight, members)
 		return
 	}
 
@@ -442,7 +442,43 @@ func (se *StateEngine) PoaExitHaltReleaseHeight(account string, height uint64) (
 // seats do not collide with each other, and the one-seat-per-UBO rule therefore
 // binds only the seats that were actually voted in. Vetting the incumbents is an
 // off-chain action that must happen before the set is treated as vetted.
-func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, blockHeight uint64, members map[string]struct{}) {
+func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, prevElection *elections.ElectionResult, blockHeight uint64, members map[string]struct{}) {
+	// ★ AT 0.9.0, SEED FROM THE COMMITTEE BEFORE THE TRANSITION, NOT FROM IT.
+	//
+	// The transition election was built with the PRIOR version below the POA
+	// line, so none of the POA admission rules applied to it: no seat gate, no
+	// churn cap, and on mainnet not even the legacy new-member cap. Any enabled
+	// witness with a matured MinStake bond that announced the new version made
+	// it in, and seeding from that set made each of them a permanent seat (seats
+	// are append-only; there is no un-seed). The version-rise readiness filter
+	// cuts the other way: an incumbent that had not yet upgraded is left out of
+	// the transition election, and since bootstrap fires once it never got a
+	// seat at all. The previous committee is the set actually securing the
+	// chain when the batch activates, so it is the one to found POA on.
+	//
+	// Members of the transition election that were not in that committee get no
+	// seat; they sit this one epoch and then need an admission vote like any
+	// other newcomer. Incumbents absent from the transition election are seated
+	// and immediately recorded as exited at this height: they held keys until
+	// now, so their collateral clock starts here, and the next election that
+	// includes them re-seats them through the normal path.
+	seeded := members
+	if consensusversion.PoaBootstrapFromPriorCommitteeActive(elections.ResultVersion(elecResult)) &&
+		prevElection != nil && len(prevElection.Members) > 0 {
+		seeded = make(map[string]struct{}, len(prevElection.Members))
+		for _, m := range prevElection.Members {
+			if acct := poaseats.NormalizeAccount(m.Account); acct != "" {
+				seeded[acct] = struct{}{}
+			}
+		}
+	}
+	se.seedPoaSeats(elecResult, blockHeight, seeded, members)
+}
+
+// seedPoaSeats writes the bootstrap seats for `seeded`. An account in `seeded`
+// but not in `current` (the transition election's members) is recorded as
+// seated and exited at blockHeight.
+func (se *StateEngine) seedPoaSeats(elecResult elections.ElectionResult, blockHeight uint64, members map[string]struct{}, current map[string]struct{}) {
 	if len(members) == 0 {
 		// Nothing to seed from. Leaving the registry empty is the SAFE outcome:
 		// the seat gate is inert while it is empty, so candidacy stays as it was
@@ -503,12 +539,16 @@ func (se *StateEngine) bootstrapPoaSeats(elecResult elections.ElectionResult, bl
 		// only fires at the transition, nothing ever re-runs it.
 		var err error
 		blockingRetry(fmt.Sprintf("poaSeats.AdmitSeat(bootstrap,%s,%d)", acct, blockHeight), func() error {
-			err = se.poaSeats.AdmitSeat(poaseats.Seat{
+			seat := poaseats.Seat{
 				Account:          acct,
 				AdmittedHeight:   blockHeight,
 				Bootstrap:        true,
 				LastSeatedHeight: blockHeight,
-			})
+			}
+			if _, inCurrent := current[acct]; !inCurrent {
+				seat.ExitHeight = blockHeight
+			}
+			err = se.poaSeats.AdmitSeat(seat)
 			// A duplicate-key error is DETERMINISTIC (every node sees it) and
 			// must not be retried forever; only infra errors are transient.
 			if err != nil && isDuplicateSeatErr(err) {

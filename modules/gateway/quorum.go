@@ -53,6 +53,21 @@ func weightMeetsThreshold(collected uint64, threshold int) bool {
 	return threshold > 0 && collected >= uint64(threshold)
 }
 
+// gatewayKeyWeights is quantizeStakeWeights, except that when equalWhenFlat is
+// set and every stake is equal, each key gets weight 1. Splitting the scale
+// evenly leaves a remainder that lands on some keys by account name, so the
+// number of signers that reach 2/3 depended on which keys signed.
+func gatewayKeyWeights(stakes []uint64, accounts []string, scale uint64, equalWhenFlat bool) []int {
+	if equalWhenFlat && len(stakes) > 0 && !slices.ContainsFunc(stakes, func(s uint64) bool { return s != stakes[0] }) {
+		weights := make([]int, len(stakes))
+		for i := range weights {
+			weights[i] = 1
+		}
+		return weights
+	}
+	return quantizeStakeWeights(stakes, accounts, scale)
+}
+
 // quantizeStakeWeights apportions `scale` integer weight units across the nodes
 // in proportion to their on-chain stake, returning one Go int weight per node
 // (aligned with the input order). The result is what each gateway key gets in

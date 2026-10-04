@@ -477,7 +477,7 @@ USER app
 WORKDIR /home/app/app
 RUN curl -sSf https://raw.githubusercontent.com/WasmEdge/WasmEdge/master/utils/install.sh | bash -s -- -v 0.13.4
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download || true
 COPY --chown=app:app . .
 RUN . /home/app/.wasmedge/env && \
     go run github.com/99designs/gqlgen generate && \

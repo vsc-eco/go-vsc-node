@@ -737,3 +737,76 @@ func TestBootstrapDoesNotReFireAfterTheTransition(t *testing.T) {
 			len(seats.seats))
 	}
 }
+
+// Item 1 (founding cohort). At 0.9.0 the transition election is NOT what
+// bootstrap seeds from: it was built under the old rules (no seat gate, no
+// churn cap), so a witness that staked and enabled just before the floor rose
+// got into it. Only the committee that was in force before the transition is
+// seeded; the newcomer gets nothing and needs an admission vote.
+func TestBootstrapAt090SeedsPriorCommitteeNotTransitionNewcomers(t *testing.T) {
+	se, seats, _ := poaEnv(t, 3)
+	prev := ratifiedAtVersion(3, 9, "alice", "bob", "carol")
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 10, "alice", "bob", "carol", "mallory"), &prev, 100)
+
+	if _, ok, _ := seats.GetSeat("mallory"); ok {
+		t.Fatal("mallory joined only in the transition election and got a permanent bootstrap seat")
+	}
+	for _, acct := range []string{"alice", "bob", "carol"} {
+		seat, ok, _ := seats.GetSeat(acct)
+		if !ok || !seat.Bootstrap || !seat.Seated() {
+			t.Fatalf("%s: seat=%+v ok=%v, want a seated bootstrap seat", acct, seat, ok)
+		}
+	}
+	if len(seats.seats) != 3 {
+		t.Fatalf("seeded %d seats, want 3", len(seats.seats))
+	}
+}
+
+// Item 9 (laggard incumbents). An incumbent that had not upgraded is left out
+// of the transition election by the readiness filter. At 0.9.0 it still gets a
+// seat, recorded as exited at the transition so its collateral clock starts
+// there, and the next election that includes it seats it again without a vote.
+func TestBootstrapAt090SeatsIncumbentLeftOutOfTransition(t *testing.T) {
+	se, seats, _ := poaEnv(t, 3)
+	prev := ratifiedAtVersion(3, 9, "alice", "bob", "carol", "dave")
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 10, "alice", "bob", "carol"), &prev, 100)
+
+	dave, ok, _ := seats.GetSeat("dave")
+	if !ok || !dave.Bootstrap {
+		t.Fatalf("dave was in the prior committee but got no bootstrap seat: %+v ok=%v", dave, ok)
+	}
+	if dave.Seated() || dave.ExitHeight != 100 || dave.LastSeatedHeight != 100 {
+		t.Fatalf("dave = %+v, want seated then exited at 100", dave)
+	}
+
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 11, "alice", "bob", "carol", "dave"), &prev, 200)
+	dave, _, _ = seats.GetSeat("dave")
+	if !dave.Seated() || dave.LastSeatedHeight != 200 {
+		t.Fatalf("dave = %+v after re-election, want seated at 200", dave)
+	}
+}
+
+// A network that bootstrapped below 0.9.0 (testnet, at 0.7.0) must replay the
+// old behaviour: seed from the transition election itself.
+func TestBootstrapBelow090StillSeedsTransitionElection(t *testing.T) {
+	se, seats, _ := poaEnv(t, 3)
+	prev := ratifiedAtVersion(3, 9, "alice", "bob", "carol", "dave")
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(7, 10, "alice", "bob", "carol", "mallory"), &prev, 100)
+
+	if _, ok, _ := seats.GetSeat("mallory"); !ok {
+		t.Fatal("below 0.9.0 the transition election's members must be seeded, byte for byte")
+	}
+	if _, ok, _ := seats.GetSeat("dave"); ok {
+		t.Fatal("below 0.9.0 the prior committee must not be consulted")
+	}
+}
+
+// The MinMembers floor applies to the set actually seeded.
+func TestBootstrapAt090RefusesShortPriorCommittee(t *testing.T) {
+	se, seats, _ := poaEnv(t, 3)
+	prev := ratifiedAtVersion(3, 9, "alice", "bob")
+	se.applyPoaSeatMaintenance(ratifiedAtVersion(9, 10, "alice", "bob", "carol", "dave"), &prev, 100)
+	if len(seats.seats) != 0 {
+		t.Fatalf("seeded %d seats from a prior committee below MinMembers", len(seats.seats))
+	}
+}

@@ -569,3 +569,61 @@ func BtcKeysignHaltActive(active Version) bool {
 func TssKeyLifecycleActive(active Version) bool {
 	return Version0_7_0Active(active)
 }
+
+// PoaBootstrapFromPriorCommitteeActive reports whether the one-time seat
+// bootstrap seeds the registry from the committee that was in force BEFORE the
+// transition, instead of from the transition election itself. The transition
+// election is still built under the old rules (prior version below the POA
+// line): no seat gate, no churn cap, and on mainnet no legacy new-member cap
+// either. Seeding from it handed a permanent seat to any witness that staked and
+// enabled just before the floor rose, and dropped any incumbent that had not
+// upgraded in time, since the version-rise readiness filter leaves it out of the
+// transition election and bootstrap never runs again. Resolve `active` from the
+// version of the election being processed (the transition election), like the
+// seat-maintenance path itself, so a network that bootstrapped at 0.7.0
+// replays that bootstrap byte for byte.
+func PoaBootstrapFromPriorCommitteeActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// TssReshareKeepsThresholdActive reports whether a reshare is refused when its
+// new party set would leave a key that fewer than a majority of the current
+// committee can sign (threshold+1 <= electionSize/2). The new key's threshold follows
+// the number of parties that actually take part, and parties are dropped for
+// readiness, blame, bans and POA-8 accusations, all of which an attacker can
+// push honest members into. Below 0.9.0 the only floor was the 2/3 BLS commit
+// quorum, so a landed reshare among fewer parties permanently lowered how many
+// shares it takes to sign that key. Resolve `active` from the version active at
+// the session height, like TssPerAccusedBlameActive.
+func TssReshareKeepsThresholdActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// TssBanYieldsToQuorumActive reports whether a banned member that is ready is
+// let back into a reshare or signing session when the members left after bans,
+// per-key blame and readiness are too few for the session to complete (signing:
+// threshold+1 holders; reshare: threshold+1 old holders and enough new parties
+// to land the commitment). The ban cap only guaranteed threshold+1 members after
+// BANS; one more member not ready (offline, upgrading, short of pre-params)
+// stalled every reshare until the ban aged out of the blame window, days later,
+// even after the banned node was fixed (testnet, epochs 1297-1325). Banned
+// members come back lowest blame score first, only as many as needed, and never
+// one blamed on this key. Resolve `active` from the version active at the
+// session height.
+func TssBanYieldsToQuorumActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
+// GatewayEqualWeightsActive reports whether gateway keys whose election weights
+// are all equal each get multisig weight 1, instead of an equal share of the
+// 10000-unit budget. Under POA flat weight every seat has the same election
+// weight, and 10000 does not divide evenly: at 18 keys ten get 556 and eight
+// 555 (ties broken by account name), so whether 12 or 13 signers reach the 2/3
+// threshold depends on which ones sign, and some six-key sets can block a
+// rotation that the elections bar (12 of 18) would let through. Resolve
+// `active` from the version of the election the rotation is built for, like
+// GatewayDecentralizationActive: every cosigner must build the identical
+// account_update.
+func GatewayEqualWeightsActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
