@@ -227,14 +227,6 @@ type StateEngine struct {
 	lastMagiLogHeight uint64
 
 	// --- reindex hot-path read caching ---
-	// keyLifecycleEpochDirty is set whenever an election is stored (see
-	// onElectionStored) and consumed by ProcessBlock's key-lifecycle pass, so
-	// the per-block GetElectionByHeight + FindDeprecatingKeys are only issued
-	// after an election actually changed (previously every block paid one
-	// election read + one full tss_keys scan). ProcessBlock is serial, so the
-	// flag and epoch fields are unsynchronized.
-	keyLifecycleEpochDirty bool
-	lastDeprecationEpoch   uint64
 	// electionCache memoizes GetElectionByHeight for the exact query height.
 	// Mutex'd because gql/tss tickers reach ActiveConsensusVersion off the
 	// ProcessBlock goroutine. Correctness: elections only become active at
@@ -585,43 +577,26 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	keyLifecycleActive := consensusversion.TssKeyLifecycleActive(se.ActiveConsensusVersion(block.BlockNumber))
 	if !keyLifecycleActive || !se.chainProcessingSuspended() {
 		keyLifecycleStart := time.Now()
-		// Deprecation only needs re-evaluation after an election is stored
-		// (the expiry clock is the epoch), so the read + FindDeprecatingKeys
-		// scan are gated on onElectionStored. The pass is only marked complete
-		// (flag cleared, epoch advanced) after the scan SUCCEEDS: on a
-		// transient election read error, and on a transient FindDeprecatingKeys
-		// error, the flag stays set and the pass retries next block, matching
-		// the prior read-every-block resilience. Without this, a single failed
-		// scan would skip deprecation of every key expiring in that epoch.
-		if se.keyLifecycleEpochDirty {
-			if electionData, elecErr := se.electionAtHeight(block.BlockNumber); elecErr == nil {
-				currentEpoch := electionData.Epoch
-				if currentEpoch != se.lastDeprecationEpoch {
-					// Phase 1: deprecate active keys that have reached their expiry epoch.
-					if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-						se.keyLifecycleEpochDirty = false
-						se.lastDeprecationEpoch = currentEpoch
-						for _, k := range deprecating {
-							k.Status = tss_db.TssKeyDeprecated
-							if tss_db.KeyRetirementEnabled {
-								k.DeprecatedHeight = int64(block.BlockNumber)
-							}
-							se.tssKeys.SetKey(k)
-							tssLog.Info(
-								"key deprecated",
-								"keyId",
-								k.Id,
-								"expiryEpoch",
-								k.ExpiryEpoch,
-								"blockHeight",
-								block.BlockNumber,
-							)
-						}
+		if electionData, elecErr := se.electionAtHeight(block.BlockNumber); elecErr == nil {
+			currentEpoch := electionData.Epoch
+
+			// Phase 1: deprecate active keys that have reached their expiry epoch.
+			if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+				for _, k := range deprecating {
+					k.Status = tss_db.TssKeyDeprecated
+					if tss_db.KeyRetirementEnabled {
+						k.DeprecatedHeight = int64(block.BlockNumber)
 					}
-				} else {
-					// Epoch already processed (e.g. a second election stored in
-					// the same epoch): nothing to scan, the pass is complete.
-					se.keyLifecycleEpochDirty = false
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
 				}
 			}
 		}
@@ -2373,17 +2348,6 @@ func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
 
 func (se *StateEngine) ExecuteBatch() {
 
-	// Reindex hot path: ExecuteBatch fires on every remaining block of a slot
-	// once slotStatus.Done (and again at slot rollover) — the vast majority of
-	// those calls carry an empty batch and do nothing. Bail before the
-	// GetBlockByHeight read; every write in this function lives inside the
-	// TxBatch loop.
-	if len(se.TxBatch) == 0 {
-		return
-	}
-	// Timed after the empty-batch bail so the phase only samples real batch
-	// work — the empty calls (the reindex hot path) would otherwise flood the
-	// ring with near-zero samples and crush the percentiles.
 	stopExecuteBatch := se.profiler.Start(PhaseExecuteBatch)
 	defer stopExecuteBatch()
 
@@ -3501,10 +3465,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		pendulumFeed:          pendulumoracle.NewFeedTracker(sconf.OnMainnet()),
 		pendulumSettlementsDb: pendulumSettlementsDb,
 		balanceDb:             balanceDb,
-		// First block after (re)start must run the deprecation pass — keys
-		// may have come due while this node was offline.
-		keyLifecycleEpochDirty: true,
-		profiler:               newProfiler(),
+		profiler:              newProfiler(),
 	}
 	if identityConfig != nil {
 		se.selfHiveUsername = identityConfig.Get().HiveUsername
