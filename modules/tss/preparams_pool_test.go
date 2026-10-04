@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"vsc-node/modules/common/consensusversion"
 	tss_db "vsc-node/modules/db/vsc/tss"
 
 	ecKeyGen "github.com/bnb-chain/tss-lib/v3/ecdsa/keygen"
@@ -32,6 +33,7 @@ func TestPreParamsPool_WarmPoolStartsABatchWithoutGenerating(t *testing.T) {
 		preParams:    make(chan ecKeyGen.LocalPreParams, preParamsPoolCap),
 		genPreParams: slowGen(delay, &calls),
 	}
+	mgr.preParamsBatch.Store(true)
 	mgr.raisePreParamsTarget(batch)
 	mgr.GeneratePreParams()
 	if got := len(mgr.preParams); got != batch {
@@ -59,6 +61,7 @@ func TestPreParamsPool_FillStopsAtTargetAndCap(t *testing.T) {
 		preParams:    make(chan ecKeyGen.LocalPreParams, 3),
 		genPreParams: slowGen(0, &calls),
 	}
+	mgr.preParamsBatch.Store(true)
 	mgr.GeneratePreParams()
 	if got := len(mgr.preParams); got != DEFAULT_PREPARAMS_POOL {
 		t.Fatalf("default fill = %d, want %d", got, DEFAULT_PREPARAMS_POOL)
@@ -77,6 +80,7 @@ func TestPreParamsPool_FillStopsAtTargetAndCap(t *testing.T) {
 // at the next epoch's reshares.
 func TestPreParamsPool_TargetNeverLowers(t *testing.T) {
 	mgr := &TssManager{preParams: make(chan ecKeyGen.LocalPreParams, preParamsPoolCap)}
+	mgr.preParamsBatch.Store(true)
 	mgr.raisePreParamsTarget(5)
 	mgr.raisePreParamsTarget(3)
 	if got := mgr.preParamsFillTarget(); got != 5 {
@@ -92,6 +96,7 @@ func TestPreParamsPool_GenerationFailureStopsCleanly(t *testing.T) {
 			return nil, errors.New("safe prime timeout")
 		},
 	}
+	mgr.preParamsBatch.Store(true)
 	mgr.raisePreParamsTarget(4)
 	done := make(chan struct{})
 	go func() { mgr.GeneratePreParams(); close(done) }()
@@ -143,8 +148,66 @@ func TestWithholdReadinessForPreParams(t *testing.T) {
 		{"retiring signer, not a member", false, 5, 0, false},
 	}
 	for _, c := range cases {
-		if got := withholdReadinessForPreParams(c.member, c.need, c.have); got != c.wantWithholding {
+		if got := withholdReadinessForPreParams(true, c.member, c.need, c.have); got != c.wantWithholding {
 			t.Errorf("%s: withhold = %v, want %v", c.name, got, c.wantWithholding)
 		}
+		// Below the 0.7.0 line no member ever holds its readiness back.
+		if withholdReadinessForPreParams(false, c.member, c.need, c.have) {
+			t.Errorf("%s, below the line: withhold = true, want false", c.name)
+		}
+	}
+}
+
+// Below the 0.7.0 line the pool keeps the 0.3.0 build's single set, whatever
+// batch was announced; at the line it keeps the announced batch.
+func TestPreParamsPool_BelowTheLineKeepsOneSet(t *testing.T) {
+	var calls atomic.Int32
+	mgr := &TssManager{
+		preParams:    make(chan ecKeyGen.LocalPreParams, preParamsPoolCap),
+		genPreParams: slowGen(0, &calls),
+	}
+	mgr.raisePreParamsTarget(6)
+	mgr.GeneratePreParams()
+	if got := len(mgr.preParams); got != 1 {
+		t.Fatalf("below the line: pool = %d, want 1", got)
+	}
+	mgr.preParamsBatch.Store(true)
+	mgr.GeneratePreParams()
+	if got := len(mgr.preParams); got != 6 {
+		t.Fatalf("at the line: pool = %d, want the announced 6", got)
+	}
+	if got := preParamsFillLevel(false, 40, preParamsPoolCap); got != 1 {
+		t.Fatalf("fill level below the line = %d, want 1", got)
+	}
+}
+
+// The batch pool, B1's pooled reshare sets and VR2-08's keygen gate follow the
+// chain-active version: off at mainnet's 0.3.0, on from 0.7.0, off without a
+// scheduler.
+func TestPreParamsPool_GatesFollowTheActiveVersion(t *testing.T) {
+	for _, tc := range []struct {
+		ver  consensusversion.Version
+		want bool
+	}{
+		{consensusversion.Version{}, false},
+		{consensusversion.V0_3_0, false},
+		{consensusversion.Version{Major: 0, Consensus: 6}, false},
+		{consensusversion.V0_7_0, true},
+		{consensusversion.V0_9_0, true},
+	} {
+		mgr := &TssManager{scheduler: &fakeSolvencyScheduler{minVer: tc.ver}}
+		if got := mgr.batchPreParamsActive(100); got != tc.want {
+			t.Errorf("active %v: batchPreParamsActive = %v, want %v", tc.ver, got, tc.want)
+		}
+		if got := mgr.reshareTakesPooledPreParams(100); got != tc.want {
+			t.Errorf("active %v: reshareTakesPooledPreParams = %v, want %v", tc.ver, got, tc.want)
+		}
+		if got := mgr.keygenReadinessGateActive(100); got != tc.want {
+			t.Errorf("active %v: keygenReadinessGateActive = %v, want %v", tc.ver, got, tc.want)
+		}
+	}
+	mgr := &TssManager{}
+	if mgr.batchPreParamsActive(100) || mgr.reshareTakesPooledPreParams(100) || mgr.keygenReadinessGateActive(100) {
+		t.Error("no scheduler: want the 0.3.0 behaviour")
 	}
 }

@@ -296,7 +296,13 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 	// when it fires, so the pre-filter height never changes the signed result. (It
 	// relocates the read to a settled reference — it does not by itself eliminate the
 	// per-node tip variance, which the settle window + re-gossip already absorb.)
-	election, err := s.tssMgr.electionDb.GetElectionByHeight(currentBh)
+	//
+	// Below the 0.7.0 line the read stays at targetBlock, as on the 0.3.0 build: when
+	// an election lands inside the readiness window, a node reading at currentBh
+	// rejects a new member's attestation that a 0.3.0 node accepts, and the two can
+	// then put different members in the same session.
+	election, err := s.tssMgr.electionDb.GetElectionByHeight(
+		readyGossipElectionHeight(s.tssMgr.sessionShapeActive(currentBh), currentBh, targetBlock))
 	if err != nil || election.Members == nil {
 		return
 	}
@@ -859,4 +865,14 @@ func (tss *TssManager) pingPeerAlive(ctx context.Context, peerId peer.ID) error 
 	tMsg := TMsg{Type: "ready"}
 	tRes := TRes{}
 	return tss.client.CallContext(pingCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+}
+
+// readyGossipElectionHeight is the height whose election verifies incoming
+// readiness attestations: currentBh with the session shapes in force (L2-2),
+// targetBlock below the 0.7.0 line, as on the 0.3.0 build.
+func readyGossipElectionHeight(shapeActive bool, currentBh, targetBlock uint64) uint64 {
+	if shapeActive {
+		return currentBh
+	}
+	return targetBlock
 }

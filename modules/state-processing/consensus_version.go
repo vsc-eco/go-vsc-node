@@ -73,7 +73,7 @@ func (se *StateEngine) BtcTheftHalted() bool {
 // never forks). Writes consensus_state only on a CHANGE (no per-block write). The gate then
 // reads the mirrored bool with zero I/O — as robust as the governance flag.
 func (se *StateEngine) refreshBtcTheftHalt(height uint64) {
-	if se.consensusState == nil {
+	if se.consensusState == nil || !se.btcKeysignHaltActive(height) {
 		return
 	}
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
@@ -115,6 +115,17 @@ func (se *StateEngine) refreshBtcTheftHalt(height uint64) {
 		return
 	}
 	se.refreshChainConsensusCache()
+}
+
+// btcKeysignHaltActive reports whether the BTC keysign halts (vsc.tss_halt and the
+// "th" theft-flag mirror) are in force at height: from the 0.7.0 line
+// (consensusversion.BtcKeysignHaltActive). Below it neither is applied, as on the
+// 0.3.0 build. Without an election store there is no active version, so neither.
+func (se *StateEngine) btcKeysignHaltActive(height uint64) bool {
+	if se.electionDb == nil {
+		return false
+	}
+	return consensusversion.BtcKeysignHaltActive(se.ActiveConsensusVersion(height))
 }
 
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
