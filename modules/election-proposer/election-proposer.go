@@ -1271,6 +1271,12 @@ func (e *electionProposer) GenerateFullElection(
 	// rate-limits SEATS entering the committee, which is only a coherent notion
 	// while the seat filter is actually being applied.
 	poaChurn := consensusversion.PoaChurnCapActive(prevVersion) && poaSeatGateApplied
+	// The transition election has no seats to gate on: bootstrap seats the
+	// committee before it once it is ratified, so its newcomers get no seat and
+	// leave at the next election. Cap how many can enter it, as in any POA election.
+	if !consensusversion.PoaChurnCapActive(prevVersion) && consensusversion.PoaTransitionChurnCapActive(floor) {
+		poaChurn = true
+	}
 	if poaChurn && effMaxNew == 0 {
 		effMaxNew = e.sconf.ConsensusParams().EffectivePoaMaxNewMembers()
 	}
