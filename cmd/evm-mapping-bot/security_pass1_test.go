@@ -36,8 +36,8 @@ func TestSecurityAttack1_ParsePendingSpend_MissingFields(t *testing.T) {
 }
 
 func TestSecurityAttack1_ParsePendingSpend_ExtraFields(t *testing.T) {
-	// More than 7 fields — should not panic, should parse the first 7
-	input := "from|to|eth|1000|aabbcc|12345|tokenAddr|extraField|moreExtra"
+	// Unknown JSON fields are ignored, the known ones still parse.
+	input := `{"from":"from","to":"to","asset":"eth","amount":1000,"unsigned_tx_hex":"aabbcc","block_height":12345,"token_address":"tokenAddr","extra":"x","more":1}`
 	ps := parsePendingSpend(42, input)
 	if ps == nil {
 		t.Fatal("parsePendingSpend with extra fields returned nil")
@@ -45,8 +45,6 @@ func TestSecurityAttack1_ParsePendingSpend_ExtraFields(t *testing.T) {
 	if ps.TokenAddress != "tokenAddr" {
 		t.Errorf("expected tokenAddr=%q, got %q", "tokenAddr", ps.TokenAddress)
 	}
-	// Extra fields should be ignored — no crash
-	t.Log("CLEAN: Extra fields are silently ignored")
 }
 
 func TestSecurityAttack1_ParsePendingSpend_EmptyString(t *testing.T) {
@@ -69,28 +67,17 @@ func TestSecurityAttack1_ParsePendingSpend_EmptyFieldValues(t *testing.T) {
 }
 
 func TestSecurityAttack1_ParsePendingSpend_AmountOverflow(t *testing.T) {
-	// Amount field is parsed as int64. Try a number way beyond int64 range.
-	input := "from|to|eth|99999999999999999999999999|aabbcc|12345"
-	ps := parsePendingSpend(0, input)
-	if ps == nil {
-		t.Fatal("parsePendingSpend returned nil")
-	}
-	// strconv.ParseInt with overflow returns max int64 and an error, but error is ignored
-	// Actually, strconv.ParseInt returns 0 on range error with the error set
-	// Let's check what the actual value is
-	if ps.Amount == 0 {
-		t.Log("FINDING (MEDIUM): Amount overflow '99999999999999999999999999' silently parsed as 0. "+
-			"Error from strconv.ParseInt is discarded. A withdrawal with amount=0 could be created.")
-	} else if ps.Amount == math.MaxInt64 {
-		t.Log("INFO: Amount overflow parsed as MaxInt64")
-	} else {
-		t.Errorf("Unexpected amount value: %d", ps.Amount)
+	// An amount beyond int64 fails to decode and the entry is refused. The pipe
+	// parser this replaced read it as 0 and carried on.
+	input := `{"from":"from","to":"to","asset":"eth","amount":99999999999999999999999999,"unsigned_tx_hex":"aabbcc","block_height":12345}`
+	if ps := parsePendingSpend(0, input); ps != nil {
+		t.Fatalf("an int64-overflowing amount was accepted: %+v", ps)
 	}
 }
 
 func TestSecurityAttack1_ParsePendingSpend_InvalidToAddress(t *testing.T) {
-	// Invalid "to" address — no validation in parsePendingSpend
-	input := "from|NOTANADDRESS!!!|eth|1000|aabbcc|12345"
+	// The parser does not validate the destination; downstream code must.
+	input := `{"from":"from","to":"NOTANADDRESS!!!","asset":"eth","amount":1000,"unsigned_tx_hex":"aabbcc","block_height":12345}`
 	ps := parsePendingSpend(0, input)
 	if ps == nil {
 		t.Fatal("parsePendingSpend returned nil")
@@ -98,9 +85,6 @@ func TestSecurityAttack1_ParsePendingSpend_InvalidToAddress(t *testing.T) {
 	if ps.To != "NOTANADDRESS!!!" {
 		t.Errorf("expected To=%q, got %q", "NOTANADDRESS!!!", ps.To)
 	}
-	// FINDING: No address validation at parse time
-	t.Log("FINDING (INFO): parsePendingSpend performs no validation on To address. "+
-		"Invalid addresses pass through to downstream code.")
 }
 
 func TestSecurityAttack1_ParsePendingSpend_NegativeAmount(t *testing.T) {
@@ -430,7 +414,7 @@ func TestSecurityAttack4_HexToUint64_EmptyString(t *testing.T) {
 }
 
 func TestSecurityAttack4_ParsePendingSpend_MaxUint64Nonce(t *testing.T) {
-	input := "from|to|eth|1000|aabbcc|18446744073709551615" // MaxUint64
+	input := `{"from":"from","to":"to","asset":"eth","amount":1000,"unsigned_tx_hex":"aabbcc","block_height":18446744073709551615}`
 	ps := parsePendingSpend(math.MaxUint64, input)
 	if ps == nil {
 		t.Fatal("parsePendingSpend returned nil")
@@ -441,8 +425,6 @@ func TestSecurityAttack4_ParsePendingSpend_MaxUint64Nonce(t *testing.T) {
 	if ps.BlockHeight != math.MaxUint64 {
 		t.Errorf("expected BlockHeight=MaxUint64, got %d", ps.BlockHeight)
 	}
-	t.Logf("CLEAN: MaxUint64 nonce handled without overflow, nonce=%d, blockHeight=%d",
-		ps.Nonce, ps.BlockHeight)
 }
 
 func TestSecurityAttack4_HexToUint64_Various(t *testing.T) {
@@ -682,33 +664,18 @@ func TestSecurityAttack11_HexToUint64_NoOverflowProtection(t *testing.T) {
 }
 
 func TestSecurityAttack11_ParseInt64_AmountOverflow(t *testing.T) {
-	// PendingSpend.Amount is int64, parsed with strconv.ParseInt
-	// On overflow, ParseInt returns err (which is ignored) and 0
-	overflow := "9999999999999999999999"
-	input := "from|to|eth|" + overflow + "|aabbcc|12345"
-	ps := parsePendingSpend(0, input)
-	if ps == nil {
-		t.Fatal("returned nil")
-	}
-	if ps.Amount == 0 {
-		t.Logf("FINDING (MEDIUM): Amount overflow (%s) silently produces Amount=0. "+
-			"A withdrawal with amount=0 would be created and broadcast. "+
-			"The error from strconv.ParseInt is discarded (line 788: ps.Amount, _ = strconv.ParseInt(...))",
-			overflow)
+	// Overflowing amount: refused, never read as 0.
+	input := `{"from":"from","to":"to","asset":"eth","amount":9999999999999999999999,"unsigned_tx_hex":"aabbcc","block_height":12345}`
+	if ps := parsePendingSpend(0, input); ps != nil {
+		t.Fatalf("an overflowing amount was accepted: %+v", ps)
 	}
 }
 
 func TestSecurityAttack11_BlockHeight_ParseUint64_Overflow(t *testing.T) {
-	// PendingSpend.BlockHeight is uint64, parsed with strconv.ParseUint
-	overflow := "99999999999999999999999"
-	input := "from|to|eth|1000|aabbcc|" + overflow
-	ps := parsePendingSpend(0, input)
-	if ps == nil {
-		t.Fatal("returned nil")
-	}
-	if ps.BlockHeight == 0 {
-		t.Logf("FINDING (LOW): BlockHeight overflow (%s) silently produces BlockHeight=0. "+
-			"Error from strconv.ParseUint is discarded (line 790).", overflow)
+	// Overflowing block height: refused, never read as 0.
+	input := `{"from":"from","to":"to","asset":"eth","amount":1000,"unsigned_tx_hex":"aabbcc","block_height":99999999999999999999999}`
+	if ps := parsePendingSpend(0, input); ps != nil {
+		t.Fatalf("an overflowing block height was accepted: %+v", ps)
 	}
 }
 

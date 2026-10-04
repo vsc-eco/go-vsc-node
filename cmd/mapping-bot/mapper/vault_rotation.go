@@ -90,11 +90,11 @@ func noteSweepsInFlight(inFlight []string, height uint64) []string {
 // to the vault ops rather than raised globally on purpose: a high rc_limit reserves
 // HBD against RC on the caller, which surfaces as a spurious insufficient-balance on
 // ops that DO move HBD. The vault ops move none.
-const vaultOpRcLimit uint = 8_000_000
+const vaultOpRcLimit uint64 = 8_000_000
 
 // rcLimitFor returns the RC limit to attach to an action, raising it for the vault
 // ops while leaving every existing action on the operator's configured value.
-func (b *Bot) rcLimitFor(action string) uint {
+func (b *Bot) rcLimitFor(action string) uint64 {
 	configured := b.BotConfig.RcLimit()
 	switch action {
 	case "migrateVault", "retireVault", "writeOffDust", "redriveSpend":

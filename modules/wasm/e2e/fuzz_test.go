@@ -32,7 +32,7 @@ func callWithRecover(ct test_utils.ContractTest, contractId string, action strin
 	return result, nil
 }
 
-func callWithRecoverRc(ct test_utils.ContractTest, contractId string, action string, payload string, txSelf stateEngine.TxSelf, rcLimit uint) (result test_utils.ContractTestCallResult, panicVal interface{}) {
+func callWithRecoverRc(ct test_utils.ContractTest, contractId string, action string, payload string, txSelf stateEngine.TxSelf, rcLimit uint64) (result test_utils.ContractTestCallResult, panicVal interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicVal = r
@@ -457,12 +457,12 @@ func TestFuzzAll(t *testing.T) {
 	t.Run("RcLimitEdgeCases", func(t *testing.T) {
 		rcLimits := []struct {
 			name  string
-			limit uint
+			limit uint64
 		}{
 			{"zero", 0},
 			{"one", 1},
 			{"max_uint32", 4294967295},
-			{"max_uint", ^uint(0)},
+			{"max_uint", ^uint64(0)},
 		}
 
 		for _, rc := range rcLimits {
