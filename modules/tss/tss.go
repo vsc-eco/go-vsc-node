@@ -1706,7 +1706,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					keyId: action.KeyId,
 					algo:  action.Algo,
 
-					epoch: currentElection.Epoch,
+					epoch:       currentElection.Epoch,
+					blockHeight: bh,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
 				},
