@@ -120,6 +120,31 @@ func TestPoaFoundingCohortAdmitsLateWitnesses(t *testing.T) {
 	memT1, _ := d.GetElectionMembers(ctx, 1, floorEpoch+1)
 	t.Logf("transition committee epoch %d: %v", floorEpoch, bare(memT))
 	t.Logf("first POA-gated committee epoch %d: %v", floorEpoch+1, bare(memT1))
+	if len(memT) == 0 || len(memT1) == 0 {
+		t.Fatalf("PRECONDITION FAILED: no members read for epoch %d or %d", floorEpoch, floorEpoch+1)
+	}
+	// At 0.9.0 the churn cap also applies to the transition election, so at most
+	// PoaMaxNewMembersPerElection (1) late witness enters it, and none holds a seat
+	// to stay in the next one.
+	if poaDevnetFloor() >= 9 {
+		lateIn := func(mem []string) []string {
+			var out []string
+			for _, n := range late {
+				if contains(bare(mem), acct(n)) {
+					out = append(out, acct(n))
+				}
+			}
+			return out
+		}
+		if got := lateIn(memT); len(got) > 1 {
+			t.Errorf("TRANSITION CAP: %d late witnesses entered the transition committee of epoch %d (cap 1): %v", len(got), floorEpoch, got)
+		} else {
+			t.Logf("transition committee holds %d late witness(es): %v", len(got), got)
+		}
+		if got := lateIn(memT1); len(got) > 0 {
+			t.Errorf("late witnesses without a seat are still in the epoch-%d committee: %v", floorEpoch+1, got)
+		}
+	}
 
 	seats := pfMustSeats(t, d, ctx, 1)
 	fp := pfSeatFingerprint(seats)

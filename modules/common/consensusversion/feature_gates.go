@@ -597,6 +597,19 @@ func PoaBootstrapProvesKeysActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
 
+// PoaTransitionChurnCapActive reports whether the POA churn cap also applies to
+// the transition election: the one whose prior version is below the POA line
+// while the floor it adopts is at or above it. No seat exists yet when it is
+// built, so the seat gate cannot filter it, and bootstrap seats only the
+// committee before it. Without a cap, any number of witnesses that staked and
+// announced just before the floor rose sit in it for one epoch, stake-weighted,
+// and hold shares from that epoch's reshares. Resolve `active` from the floor the
+// transition election adopts, the version bootstrap reads. A network already past
+// its transition (testnet, at 0.7.0) never builds one again.
+func PoaTransitionChurnCapActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
+
 // TssReshareKeepsThresholdActive reports whether a reshare is refused when its
 // new party set would leave a key that fewer than a majority of the current
 // committee can sign (threshold+1 <= electionSize/2). The new key's threshold follows
