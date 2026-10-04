@@ -531,9 +531,12 @@ func makeDIDs(
 	for _, w := range electionMemberWeights {
 		threshold += w
 	}
-	// floor(threshold · 2/3) in integer arithmetic; uint64 stays well below
-	// overflow for any plausible election-weight sum.
-	threshold = (threshold * 2) / 3
+	// ceil(2/3) of the election weight (W - floor(W/3)), the bar every other
+	// quorum uses (dids.QuorumMet, BlsQuorumMet). floor(2/3) let one seat fewer
+	// sign a did:vsc transaction (an oracle relay) under equal POA seat weights:
+	// 11 of 17 instead of 12. Honest relays are unaffected: the oracle collects
+	// more than floor(2/3), which is always at least ceil(2/3).
+	threshold = threshold - threshold/3
 
 	for i, authKID := range requiredAuths {
 		isVscDID := strings.HasPrefix(authKID, dids.VscDIDPrefix)
