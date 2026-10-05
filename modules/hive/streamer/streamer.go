@@ -66,6 +66,13 @@ var (
 	//
 	// @Vaultec says 500ms is ideal
 	DbPollInterval = time.Millisecond * 100
+	// how long StreamReader.Stop waits for the in-flight block to finish
+	// processing in the state engine before giving up. Normally a block
+	// processes well inside a second; the bound only matters when the
+	// current block hangs (e.g. a stuck wasm call). magid's signal
+	// handler leans on this drain, and its second-signal / 30s
+	// force-exit backstops cover the pathological case.
+	StopDrainTimeout = time.Second * 10
 )
 
 // ===== StreamReader =====
@@ -80,11 +87,17 @@ type StreamReader struct {
 	lastProcessed uint64
 	lastSaved     *uint64
 	headHeight    uint64
-	stopped       chan struct{}
-	hiveBlocks    hiveblocks.HiveBlocks
-	stopOnlyOnce  sync.Once
-	wg            sync.WaitGroup
-	startBlock    uint64
+	// stopped is closed by pollDb on exit — after the in-flight block has
+	// fully processed and the final cursor checkpoint is written. Stop()
+	// waits on it so a shutdown never cuts the current block mid-apply.
+	stopped      chan struct{}
+	hiveBlocks   hiveblocks.HiveBlocks
+	stopOnlyOnce sync.Once
+	wg           sync.WaitGroup
+	startBlock   uint64
+	// pollStarted records whether Start() launched the poll loop. Stop()
+	// only waits on the drain if it did, else nothing would ever close it.
+	pollStarted atomic.Bool
 }
 
 // inits a StreamReader with the provided hiveBlocks interface and process function
@@ -110,6 +123,7 @@ func NewStreamReader(
 		hiveBlocks:     hiveBlocks,
 		ctx:            ctx,
 		cancel:         cancel,
+		stopped:        make(chan struct{}),
 		startBlock:     startBlock,
 	}
 }
@@ -140,6 +154,11 @@ func (s *StreamReader) Init() error {
 
 // begins the polling loop for the StreamReader
 func (s *StreamReader) Start() *promise.Promise[any] {
+	// Flag the poll loop as launched synchronously (the promise executor
+	// itself may run later on a pool goroutine) so Stop() knows the drain
+	// channel will eventually be closed. If Start is never called, Stop
+	// skips the drain wait instead of burning StopDrainTimeout.
+	s.pollStarted.Store(true)
 	return promise.New(func(resolve func(any), reject func(error)) {
 		defer inteceptError(reject)
 		s.pollDb(reject)
@@ -161,15 +180,27 @@ func inteceptError(reject func(error)) {
 
 // polls the database at intervals, processing new blocks as they arrive
 func (s *StreamReader) pollDb(fail func(error)) {
+	// stopped closes when this function returns — which, on the graceful
+	// path, is only after the block feed's cancel drained the listener
+	// goroutine, i.e. after the in-flight block fully finished processing.
+	// Stop() waits on it.
+	defer close(s.stopped)
 	ticker := time.NewTicker(1 * time.Second)
 	quit := make(chan struct{})
+	// lastSavedMtx guards lastSaved: the ticker goroutine below persists it
+	// every second while the block listener updates it after each processed
+	// block. Both goroutines are created here, so a local mutex suffices.
+	var lastSavedMtx sync.Mutex
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				// do stuff
-				if s.lastSaved != nil {
-					if err := s.hiveBlocks.StoreLastProcessedBlock(*s.lastSaved); err != nil {
+				lastSavedMtx.Lock()
+				saved := s.lastSaved
+				lastSavedMtx.Unlock()
+				if saved != nil {
+					if err := s.hiveBlocks.StoreLastProcessedBlock(*saved); err != nil {
 
 					}
 				}
@@ -187,6 +218,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		s.process(block, headHeight)
 		// update last processed block
 
+		lastSavedMtx.Lock()
 		if s.getBlockHeight == nil {
 			s.lastSaved = &block.BlockNumber
 		} else {
@@ -194,14 +226,18 @@ func (s *StreamReader) pollDb(fail func(error)) {
 			bh := s.getBlockHeight(block.BlockNumber, s.lastProcessed)
 			s.lastSaved = &bh
 		}
+		lastSavedMtx.Unlock()
 
 		s.lastProcessed = block.BlockNumber
 
 		newBlocksProcessed++
 
 		if newBlocksProcessed > 100 {
-			if s.lastSaved != nil {
-				if err := s.hiveBlocks.StoreLastProcessedBlock(*s.lastSaved); err != nil {
+			lastSavedMtx.Lock()
+			saved := s.lastSaved
+			lastSavedMtx.Unlock()
+			if saved != nil {
+				if err := s.hiveBlocks.StoreLastProcessedBlock(*saved); err != nil {
 					return fmt.Errorf("error updating last processed block: %v", err)
 				}
 				newBlocksProcessed = 0
@@ -225,14 +261,52 @@ func (s *StreamReader) pollDb(fail func(error)) {
 		}
 		fail(err)
 	case <-s.ctx.Done():
+		// Quiesce the feed. ListenToBlockUpdates' cancel drains: it returns
+		// only once the listener goroutine has exited, i.e. once the
+		// in-flight block's processing (the state engine's ProcessBlock,
+		// including all of its DB writes and the cursor bookkeeping above)
+		// has fully completed. No new block can start after this point.
 		cancel()
-		return
+	}
+
+	// Final checkpoint: persist the drained height so a restart resumes
+	// exactly where the state engine stopped instead of replaying the last
+	// blocks. Best-effort — the periodic ticker above usually already
+	// stored this value; a failure here only costs a bounded replay.
+	lastSavedMtx.Lock()
+	saved := s.lastSaved
+	lastSavedMtx.Unlock()
+	if saved != nil {
+		if err := s.hiveBlocks.StoreLastProcessedBlock(*saved); err != nil {
+			vlog.Warn("failed to persist final last-processed block", "height", *saved, "err", err)
+		}
 	}
 }
 
 // stops the StreamReader
+//
+// Drain semantics: Stop cancels the block feed (no new block can start)
+// and then waits — bounded by StopDrainTimeout — for pollDb to exit. pollDb
+// only exits after ListenToBlockUpdates' cancel drained the listener
+// goroutine, i.e. after the in-flight block finished processing in the
+// state engine (all DB writes included). On timeout a warning is logged and
+// teardown proceeds; magid's second-signal and force-exit backstops remain
+// the escape hatch for a genuinely stuck block. Idempotent via stopOnlyOnce
+// so both magid's signal handler and the aggregate teardown can call it.
 func (s *StreamReader) Stop() error {
-	s.cancel()
+	s.stopOnlyOnce.Do(func() {
+		s.cancel()
+		if !s.pollStarted.Load() {
+			// Start never ran: nothing will close the drain channel.
+			return
+		}
+		select {
+		case <-s.stopped:
+			vlog.Debug("stream reader drained — current block finished processing")
+		case <-time.After(StopDrainTimeout):
+			vlog.Warn("timed out waiting for the current block to finish processing; proceeding with shutdown")
+		}
+	})
 	return nil
 }
 
@@ -271,6 +345,12 @@ type Streamer struct {
 	headHeight     uint64
 	hasFetchedHead bool
 	processWg      sync.WaitGroup
+	// streamExited/trackerExited close when the stream/track goroutines
+	// have fully returned; Stop waits on them so teardown never races the
+	// loop's shared-state reads.
+	streamExited  chan struct{}
+	trackerExited chan struct{}
+	started       bool
 }
 
 // ===== streamer =====
@@ -295,6 +375,8 @@ func NewStreamer(
 		hasFetchedHead: false,
 		processWg:      sync.WaitGroup{},
 		stopOnlyOnce:   sync.Once{},
+		streamExited:   make(chan struct{}),
+		trackerExited:  make(chan struct{}),
 	}
 }
 
@@ -328,6 +410,9 @@ func (s *Streamer) Init() error {
 }
 
 func (s *Streamer) Start() *promise.Promise[any] {
+	s.mtx.Lock()
+	s.started = true
+	s.mtx.Unlock()
 	stream := promise.New(func(resolve func(any), reject func(error)) {
 		s.streamBlocks()
 		reject(fmt.Errorf("streamer: block stream: exited prematurely"))
@@ -364,6 +449,9 @@ func updateHead(bc BlockClient) (uint64, error) {
 // updates the head height of the streamer at intervals, and since this endpiont is sensitive
 // to rate limiting, we apply backoff intervals
 func (s *Streamer) trackHeadHeight() {
+	if s.trackerExited != nil {
+		defer close(s.trackerExited)
+	}
 	ticker := time.NewTicker(HeadBlockCheckPollIntervalBeforeFirstUpdate)
 	defer ticker.Stop()
 	var updateLock sync.Mutex
@@ -418,30 +506,44 @@ func (s *Streamer) trackHeadHeight() {
 }
 
 func (s *Streamer) streamBlocks() {
+	// nil-safe: in-package tests may build a bare Streamer literal and run
+	// the loop directly without the exit signals.
+	if s.streamExited != nil {
+		defer close(s.streamExited)
+	}
 	// last := time.Now()
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		default:
-			if s.IsPaused() || !s.hasFetchedHead {
+			// snapshot the shared cursor/head under the lock — trackHeadHeight
+			// mutates headHeight/hasFetchedHead and the cursor advance below
+			// mutates startBlock on other goroutines
+			s.mtx.Lock()
+			headHeight := s.headHeight
+			startBlock := *s.startBlock
+			hasFetchedHead := s.hasFetchedHead
+			s.mtx.Unlock()
+
+			if s.IsPaused() || !hasFetchedHead {
 				time.Sleep(time.Millisecond * 100)
 
 				continue
 			}
 
-			if max(s.headHeight, *s.startBlock)-min(s.headHeight, *s.startBlock) <= AcceptableBlockLag {
+			if max(headHeight, startBlock)-min(headHeight, startBlock) <= AcceptableBlockLag {
 				time.Sleep(time.Millisecond * 100)
 
 				continue
 			}
 
-			if *s.startBlock >= s.headHeight {
+			if startBlock >= headHeight {
 				time.Sleep(time.Second)
 				continue
 			}
 
-			blocks, err := s.fetchBlockBatch(*s.startBlock, min(BlockBatchSize, s.headHeight-*s.startBlock))
+			blocks, err := s.fetchBlockBatch(startBlock, min(BlockBatchSize, headHeight-startBlock))
 			if err != nil {
 				vlog.Warn("error fetching block batch", "err", err)
 				time.Sleep(MinTimeBetweenBlockBatchFetches + 3*time.Second)
@@ -480,7 +582,7 @@ func (s *Streamer) streamBlocks() {
 			// pipelining for correctness of fund-bearing block
 			// ingest (a follow-up could reintroduce pipelining with
 			// an explicit rewind-on-failure high-water mark).
-			batchStart := *s.startBlock
+			batchStart := startBlock
 			s.processWg.Add(1)
 			storeErr := func() error {
 				defer s.processWg.Done()
@@ -683,6 +785,26 @@ func (s *Streamer) Stop() error {
 		case <-time.After(5 * time.Second):
 			vlog.Warn("timeout waiting for processing routines to stop")
 		}
+
+		// Wait (bounded) for the stream and head-tracker loops to fully
+		// exit so nothing reads the streamer's shared state after Stop
+		// returns — teardown and tests rely on that ordering.
+		if func() bool {
+			s.mtx.Lock()
+			defer s.mtx.Unlock()
+			return s.started
+		}() {
+			select {
+			case <-s.streamExited:
+			case <-time.After(5 * time.Second):
+				vlog.Warn("timeout waiting for the block stream loop to stop")
+			}
+			select {
+			case <-s.trackerExited:
+			case <-time.After(5 * time.Second):
+				vlog.Warn("timeout waiting for the head tracker loop to stop")
+			}
+		}
 	})
 	return nil
 }
@@ -704,5 +826,7 @@ func (s *Streamer) HeadHeight() uint64 {
 }
 
 func (s *Streamer) StartBlock() uint64 {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
 	return *s.startBlock
 }

@@ -229,11 +229,35 @@ func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 	return result.Block.BlockNumber, nil
 }
 
+// ListenToBlockUpdates feeds stored Hive blocks above startBlock to the
+// listener in ascending order, re-polling for new blocks.
+//
+// Shutdown contract: the returned CancelFunc signals the feed to stop AND
+// blocks until the listener goroutine has fully exited. Because listener
+// calls (e.g. StateEngine.ProcessBlock) run synchronously inside the
+// goroutine, a completed cancel guarantees the in-flight block finished
+// processing — including its DB writes — and that no new listener call can
+// ever start. This is the drain point magid's SIGINT/SIGTERM handler relies
+// on to never cut a block mid-processing.
 func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64, listener func(block HiveBlock, headBlock *uint64) error) (context.CancelFunc, <-chan error) {
 	startBlock--
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
+	done := make(chan struct{})
+	// fail reports a fatal error only while the other side is still reading
+	// errChan; once the reader is gone (ctx canceled), the goroutine exits
+	// silently instead of blocking forever on an unread channel.
+	fail := func(err error) {
+		select {
+		case errChan <- err:
+		case <-ctx.Done():
+		}
+	}
 	go func() {
+		// close(done) is registered FIRST so it runs LAST (defers are LIFO):
+		// nobody waiting on done ever observes the exit before the
+		// panic-recovery below has had its chance to fail.
+		defer close(done)
 		// Panic recovery in the block-listener goroutine. A panic in the
 		// listener (e.g. ProcessBlock) is treated as fatal-but-graceful:
 		// the panic and its stack trace are sent to errChan so the
@@ -245,7 +269,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 		// engine), not here.
 		defer func() {
 			if r := recover(); r != nil {
-				errChan <- fmt.Errorf("panic in block listener at block %d: %v\n%s", startBlock, r, debug.Stack())
+				fail(fmt.Errorf("panic in block listener at block %d: %v\n%s", startBlock, r, debug.Stack()))
 			}
 		}()
 		for {
@@ -259,7 +283,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 
 				err := metadataFind.Decode(&metadata)
 				if err != nil {
-					errChan <- err
+					fail(err)
 					return
 				}
 
@@ -281,34 +305,48 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 					"block.block_number": bson.M{"$gt": startBlock},
 				}, options.Find().SetSort(bson.D{{Key: "block.block_number", Value: 1}}))
 				if err != nil {
-					errChan <- err
+					fail(err)
 					return
 				}
 
 				for cur.Next(ctx) {
+					// cursor.Next does not consult ctx while the current
+					// batch still has documents, so a canceled feed would
+					// otherwise keep issuing listener calls from the
+					// already-fetched batch. Once canceled, no new
+					// listener call may start (mirrors haf's stopped()
+					// guard): cancel is a normal shutdown, not a failure.
+					if ctx.Err() != nil {
+						return
+					}
 					doc := Document{}
 					err = cur.Decode(&doc)
 					if err != nil {
-						errChan <- err
+						fail(err)
 						return
 					}
 					startBlock = doc.Block.BlockNumber
 					err = listener(*doc.Block, metadata.HeadHeight)
 					if err != nil {
-						errChan <- err
+						fail(err)
 						return
 					}
 				}
 				err = cur.Err()
 				if err != nil {
-					errChan <- err
+					fail(err)
 					return
 				}
 			}
 			time.Sleep(1 * time.Second)
 		}
 	}()
-	return cancel, errChan
+	// cancel-drain: after canceling the feed, wait for the goroutine (and
+	// therefore any in-flight listener call) to have returned.
+	return func() {
+		cancel()
+		<-done
+	}, errChan
 }
 
 func (h *hiveBlocks) GetBlock(blockNum uint64) (HiveBlock, error) {

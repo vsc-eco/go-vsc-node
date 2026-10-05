@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"vsc-node/modules/aggregate"
@@ -147,10 +149,10 @@ func TestFetchStoreBlocks(t *testing.T) {
 		nil,
 	)
 
-	totalBlksReceived := 0
+	var totalBlksReceived atomic.Int64
 
 	process := func(block hive_blocks.HiveBlock, headHeigt *uint64) {
-		totalBlksReceived++
+		totalBlksReceived.Add(1)
 	}
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, process, nil, startBlock)
@@ -163,7 +165,7 @@ func TestFetchStoreBlocks(t *testing.T) {
 	test_utils.RunPlugin(t, agg)
 
 	assert.Eventually(t, func() bool {
-		return totalBlksReceived > 0
+		return totalBlksReceived.Load() > 0
 	}, 3*time.Second, 10*time.Millisecond)
 }
 
@@ -192,10 +194,13 @@ func TestIntensePolling(t *testing.T) {
 	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
+	var seenMtx sync.Mutex
 	seenBlocks := make(map[uint64]int)
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
+		seenMtx.Lock()
 		seenBlocks[block.BlockNumber]++
+		seenMtx.Unlock()
 	}, nil)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -209,6 +214,8 @@ func TestIntensePolling(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// ensure in entire map, no dupes!
+	seenMtx.Lock()
+	defer seenMtx.Unlock()
 	for _, v := range seenBlocks {
 		assert.Equal(t, 1, v)
 	}
@@ -225,11 +232,11 @@ func TestStreamFilter(t *testing.T) {
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 
-	txsReceived := 0
+	var txsReceived atomic.Int64
 
 	process := func(block hive_blocks.HiveBlock, headHeigt *uint64) {
 		if len(block.Timestamp) > 0 {
-			txsReceived += len(block.Transactions)
+			txsReceived.Add(int64(len(block.Transactions)))
 		}
 	}
 
@@ -245,7 +252,7 @@ func TestStreamFilter(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	assert.Equal(t, 0, txsReceived)
+	assert.Equal(t, int64(0), txsReceived.Load())
 }
 
 func TestPersistingBlocksStored(t *testing.T) {
@@ -268,7 +275,7 @@ func TestPersistingBlocksStored(t *testing.T) {
 	gotToBlock, err := mockHiveBlocks.GetHighestBlock()
 	assert.NoError(t, err)
 
-	assert.Greater(t, gotToBlock, 0)
+	assert.Greater(t, gotToBlock, uint64(0))
 
 	s = streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, nil, nil, nil)
 
@@ -297,10 +304,10 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	test_utils.RunPlugin(t, agg)
 
-	lastProcessedBlk := uint64(0)
+	var lastProcessedBlk atomic.Uint64
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
-		lastProcessedBlk = block.BlockNumber
+		lastProcessedBlk.Store(block.BlockNumber)
 	}, nil)
 	assert.NoError(t, sr.Init())
 	go func() {
@@ -310,7 +317,7 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	assert.Greater(t, lastProcessedBlk, streamer.DefaultBlockStart)
+	assert.Greater(t, lastProcessedBlk.Load(), streamer.DefaultBlockStart)
 
 	s.Pause()
 	assert.NoError(t, sr.Stop())
@@ -319,25 +326,25 @@ func TestPersistingBlocksProcessed(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Greater(t, newLastProcessedBlk, streamer.DefaultBlockStart)
-	assert.Equal(t, lastProcessedBlk, newLastProcessedBlk)
+	assert.Equal(t, lastProcessedBlk.Load(), newLastProcessedBlk)
 
 	assert.NoError(t, sr.Stop())
 
-	resumedLastProcessedBlk := uint64(0)
+	var resumedLastProcessedBlk atomic.Uint64
 
 	s.Resume()
 
 	// redefine stream reader and see if it picks up where it left off
 	sr = streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
-		resumedLastProcessedBlk = block.BlockNumber
+		resumedLastProcessedBlk.Store(block.BlockNumber)
 	}, nil)
 
 	test_utils.RunPlugin(t, sr)
 
 	time.Sleep(2 * time.Second)
 
-	assert.Greater(t, resumedLastProcessedBlk, streamer.DefaultBlockStart)
-	assert.Greater(t, resumedLastProcessedBlk, newLastProcessedBlk)
+	assert.Greater(t, resumedLastProcessedBlk.Load(), streamer.DefaultBlockStart)
+	assert.Greater(t, resumedLastProcessedBlk.Load(), newLastProcessedBlk)
 }
 
 func TestBlockProcessing(t *testing.T) {
@@ -349,17 +356,17 @@ func TestBlockProcessing(t *testing.T) {
 	// seed
 	seedBlockData(t, mockHiveBlocks, 10)
 
-	totalSeenBlocks := 0
+	var totalSeenBlocks atomic.Int64
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {
-		totalSeenBlocks++
+		totalSeenBlocks.Add(1)
 	}, nil, 0)
 
 	test_utils.RunPlugin(t, sr)
 
 	time.Sleep(3 * time.Second)
 
-	assert.Equal(t, 10, totalSeenBlocks)
+	assert.Equal(t, int64(10), totalSeenBlocks.Load())
 }
 
 // func TestStreamReaderPauseResumeStop(t *testing.T) {
@@ -418,48 +425,49 @@ func TestStreamPauseResumeStop(t *testing.T) {
 
 	test_utils.RunPlugin(t, mockHiveBlocks)
 
-	totalBlocks := 0
+	var totalBlocks atomic.Int64
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
 		// count total blocks in filter because this is also
 		// called just once like the process function so we can
 		// use it to guage if the streamer is still processing
-		totalBlocks++
+		totalBlocks.Add(1)
 		return true
 	}
 
 	s := streamer.NewStreamer(&MockBlockClient{}, mockHiveBlocks, []streamer.FilterFunc{filter}, nil, nil)
 	assert.NoError(t, s.Init())
 	go func() {
-		_, err := s.Start().Await(context.Background())
-		assert.NoError(t, err)
+		// The streamer rejects its Start promise when stopped — the
+		// expected exit, not an error.
+		_, _ = s.Start().Await(context.Background())
 	}()
 
 	time.Sleep(3 * time.Second)
 
-	totalBlocksBeforePause := totalBlocks
+	totalBlocksBeforePause := totalBlocks.Load()
 
 	s.Pause()
 
 	time.Sleep(1 * time.Second)
 
-	assert.Equal(t, totalBlocksBeforePause, totalBlocks)
+	assert.Equal(t, totalBlocksBeforePause, totalBlocks.Load())
 
 	// resume
 	s.Resume()
 
 	time.Sleep(1 * time.Second)
 
-	assert.Greater(t, totalBlocks, totalBlocksBeforePause)
+	assert.Greater(t, totalBlocks.Load(), totalBlocksBeforePause)
 
-	totalBlocksBeforeStop := totalBlocks
+	totalBlocksBeforeStop := totalBlocks.Load()
 
 	// stop
 	assert.NoError(t, s.Stop())
 
 	time.Sleep(1 * time.Second)
 
-	assert.Equal(t, totalBlocksBeforeStop, totalBlocks)
+	assert.Equal(t, totalBlocksBeforeStop, totalBlocks.Load())
 }
 
 func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
@@ -474,7 +482,7 @@ func TestRestartingProcessingAfterHavingStoppedWithSomeLeft(t *testing.T) {
 	processedUpTo, err := mockHiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
-	assert.Equal(t, processedUpTo, 0)
+	assert.Equal(t, processedUpTo, uint64(0))
 
 	sr := streamer.NewStreamReader(mockHiveBlocks, func(block hive_blocks.HiveBlock, headHeigt *uint64) {}, nil, 0)
 
@@ -502,16 +510,16 @@ func TestFilterOrdering(t *testing.T) {
 	// hive blocks
 	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
-	filter1SeenBlocks := 0
-	filter2SeenBlocks := 0
+	var filter1SeenBlocks atomic.Int64
+	var filter2SeenBlocks atomic.Int64
 
 	filter1 := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
-		filter1SeenBlocks++
+		filter1SeenBlocks.Add(1)
 		return true
 	}
 
 	filter2 := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
-		filter2SeenBlocks++
+		filter2SeenBlocks.Add(1)
 		return false
 	}
 
@@ -526,9 +534,9 @@ func TestFilterOrdering(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	assert.Greater(t, filter1SeenBlocks, filter2SeenBlocks)
-	assert.Equal(t, 0, filter2SeenBlocks)
-	assert.Greater(t, filter1SeenBlocks, 0)
+	assert.Greater(t, filter1SeenBlocks.Load(), filter2SeenBlocks.Load())
+	assert.Equal(t, int64(0), filter2SeenBlocks.Load())
+	assert.Greater(t, filter1SeenBlocks.Load(), int64(0))
 }
 
 func TestBlockLag(t *testing.T) {
@@ -536,13 +544,26 @@ func TestBlockLag(t *testing.T) {
 	// hive blocks
 	mockHiveBlocks := &test_utils.MockHiveBlockDb{}
 
+	// these are shared package globals — restore them when this test ends
+	// so later tests see the init()-established values. The wait lets the
+	// streamer goroutines (stopped by the RunPlugin cleanups above, which
+	// run before this one) observe their stop and exit before the values
+	// they read are restored.
+	prevAcceptableBlockLag := streamer.AcceptableBlockLag
+	prevDefaultBlockStart := streamer.DefaultBlockStart
+	t.Cleanup(func() {
+		time.Sleep(500 * time.Millisecond)
+		streamer.AcceptableBlockLag = prevAcceptableBlockLag
+		streamer.DefaultBlockStart = prevDefaultBlockStart
+	})
+
 	streamer.AcceptableBlockLag = 5
 	streamer.DefaultBlockStart = dummyBlockHead - 3
 
-	totalBlocks := 0
+	var totalBlocks atomic.Int64
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
-		totalBlocks++
+		totalBlocks.Add(1)
 		// allow anything through
 		return true
 	}
@@ -560,7 +581,7 @@ func TestBlockLag(t *testing.T) {
 
 	// we shoudn't see any blocks because we're
 	// only 3 blocks behind which is within the lag
-	assert.Equal(t, 0, totalBlocks)
+	assert.Equal(t, int64(0), totalBlocks.Load())
 	assert.NoError(t, s.Stop())
 
 	// now we should see blocks
@@ -573,7 +594,7 @@ func TestBlockLag(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	assert.Greater(t, totalBlocks, 0)
+	assert.Greater(t, totalBlocks.Load(), int64(0))
 }
 
 func TestClearingStoredBlocks(t *testing.T) {
@@ -585,10 +606,10 @@ func TestClearingStoredBlocks(t *testing.T) {
 	// seed
 	seedBlockData(t, mockHiveBlocks, 10)
 
-	totalBlocks := 0
+	var totalBlocks atomic.Int64
 
 	filter := func(op hivego.Operation, blockParams *streamer.BlockParams) bool {
-		totalBlocks++
+		totalBlocks.Add(1)
 		// allow anything through
 		return true
 	}
@@ -599,7 +620,7 @@ func TestClearingStoredBlocks(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
-	assert.Greater(t, totalBlocks, 0)
+	assert.Greater(t, totalBlocks.Load(), int64(0))
 
 	assert.NotEqual(t, s.StartBlock(), streamer.DefaultBlockStart)
 
@@ -634,14 +655,14 @@ func TestClearingLastProcessedBlock(t *testing.T) {
 	lastProcessedBlock, err := mockHiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
-	assert.Greater(t, lastProcessedBlock, 0)
+	assert.Greater(t, lastProcessedBlock, uint64(0))
 
 	assert.NoError(t, mockHiveBlocks.StoreLastProcessedBlock(33))
 
 	lastProcessedBlockAfterClear, err := mockHiveBlocks.GetLastProcessedBlock()
 	assert.NoError(t, err)
 
-	assert.Equal(t, 33, lastProcessedBlockAfterClear)
+	assert.Equal(t, uint64(33), lastProcessedBlockAfterClear)
 }
 
 func TestHeadBlock(t *testing.T) {
@@ -689,7 +710,7 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 
 	// ensure all blocks are in order
 	for i, block := range storedBlocks {
-		assert.Equal(t, i+1, block.BlockNumber)
+		assert.Equal(t, uint64(i+1), block.BlockNumber)
 	}
 
 	// expected metadata
@@ -703,7 +724,7 @@ func TestDbStoredBlockIntegrity(t *testing.T) {
 		expectedMerkleRoot := fmt.Sprintf("some-merkle-root-%d", i+1)
 		expectedTransactionID := fmt.Sprintf("some-tx-id-%d", i+1)
 
-		assert.Equal(t, i+1, block.BlockNumber)
+		assert.Equal(t, uint64(i+1), block.BlockNumber)
 		assert.Equal(t, expectedBlockID, block.BlockID)
 		assert.Equal(t, expectedTimestamp, block.Timestamp)
 		assert.Equal(t, expectedMerkleRoot, block.MerkleRoot)

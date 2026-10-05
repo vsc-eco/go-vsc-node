@@ -244,6 +244,14 @@ func (s *Source) GetMetadata() (hive_blocks.Document, error) {
 // graphql timestamp joins never race block processing. Fetch failures retry
 // the same range (a range is never skipped); a listener error is fatal and
 // surfaces on the error channel.
+//
+// Shutdown contract: the returned CancelFunc signals the feed to stop AND
+// blocks until the loop goroutine has fully exited. Because listener calls
+// (e.g. StateEngine.ProcessBlock) run synchronously inside the loop, a
+// completed cancel guarantees the in-flight block finished processing —
+// including its DB writes — and that no new listener call can ever start.
+// This is the drain point magid's SIGINT/SIGTERM handler relies on to never
+// cut a block mid-processing.
 func (s *Source) ListenToBlockUpdates(
 	ctx context.Context,
 	startBlock uint64,
@@ -251,6 +259,7 @@ func (s *Source) ListenToBlockUpdates(
 ) (context.CancelFunc, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	errChan := make(chan error)
+	done := make(chan struct{})
 	next := startBlock
 
 	fail := func(err error) {
@@ -278,6 +287,10 @@ func (s *Source) ListenToBlockUpdates(
 	}
 
 	go func() {
+		// close(done) is registered FIRST so it runs LAST (defers are LIFO):
+		// nobody waiting on done ever observes the exit before the
+		// panic-recovery below has had its chance to fail.
+		defer close(done)
 		// A panic in the loop or listener is fatal-but-graceful: surface it
 		// on errChan (mirroring the mongo listener) instead of killing the
 		// process silently.
@@ -349,5 +362,12 @@ func (s *Source) ListenToBlockUpdates(
 			next += uint64(delivered)
 		}
 	}()
-	return cancel, errChan
+	// cancel-drain: after canceling the feed, wait for the goroutine (and
+	// therefore any in-flight listener call) to have returned. Another
+	// canceler (Source.Stop via s.ctx) also unblocks the wait for free,
+	// since the loop exits either way.
+	return func() {
+		cancel()
+		<-done
+	}, errChan
 }

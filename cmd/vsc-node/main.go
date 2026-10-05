@@ -426,16 +426,18 @@ func main() {
 		// aggregate ctx; Run's race-wait returns, Run stops every
 		// plugin in reverse order and returns nil → main exits 0, so
 		// supervisors see a clean stop, not a crash. A second signal
-		// and a 30s timer are backstops against a hung teardown (a
-		// clean one is bounded at ~10s: gql's 5s Shutdown cap plus the
-		// streamer's 5s processing wait, sequential in reverse order).
+		// and a 30s timer are backstops against a hung shutdown (the
+		// drain below is bounded at 10s; a clean teardown — gql's 5s
+		// Shutdown cap plus the streamer's bounded store/stream/tracker
+		// waits — normally completes in well under a second since every
+		// loop observes the stop context immediately).
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 		defer signal.Stop(sigs)
 
 		go func() {
 			sig := <-sigs
-			log.Info("shutdown signal received; stopping node", "signal", sig.String())
+			log.Info("shutdown signal received; waiting for the current block to finish processing", "signal", sig.String())
 
 			// Second signal forces an immediate exit.
 			go func() {
@@ -449,6 +451,16 @@ func main() {
 				log.Error("graceful shutdown timed out after 30s; forcing exit")
 				os.Exit(1)
 			})
+
+			// Quiesce the block pipeline BEFORE any plugin teardown:
+			// sr.Stop() cancels the block feed and then waits (bounded by
+			// streamer.StopDrainTimeout) for the state engine to finish the
+			// in-flight block — the listener's ProcessBlock runs to
+			// completion, DB writes included — so plugins are never torn
+			// down under a mid-block state write and the last-processed
+			// cursor is checkpointed for a minimal-replay restart.
+			sr.Stop()
+			log.Info("block processing quiesced; proceeding with shutdown", "processedHeight", se.LastProcessedHeight())
 
 			a.RequestShutdown()
 		}()
