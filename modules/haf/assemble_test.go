@@ -171,26 +171,30 @@ func TestAssembleBlocksEmptyHeightsStillYieldBlocks(t *testing.T) {
 	assert.Len(t, blocks[0].Transactions, 0)
 }
 
-func TestStoreBlocksShimsRelevantOnly(t *testing.T) {
+func TestStoreBlocksShimsEveryHeight(t *testing.T) {
 	store := &test_utils.MockHiveBlockDb{}
 	src := newSource(&stubFetcher{}, store, nil, nil, 0)
 
 	err := src.StoreBlocks(100,
-		hive_blocks.HiveBlock{BlockNumber: 1, Timestamp: "2026-01-01T00:00:00"}, // empty: not stored
+		hive_blocks.HiveBlock{BlockNumber: 1, Timestamp: "2026-01-01T00:00:00"}, // empty height: still stored
 		hive_blocks.HiveBlock{BlockNumber: 2, Timestamp: "2026-01-01T00:00:03", Transactions: []hive_blocks.Tx{{Index: 0}}},
 	)
 	assert.NoError(t, err)
-	assert.Len(t, store.Blocks, 1, "blocks without relevant transactions are not stored")
-	assert.Equal(t, uint64(2), store.Blocks[0].BlockNumber)
-	assert.Equal(t, "2026-01-01T00:00:03", store.Blocks[0].Timestamp)
+	assert.Len(t, store.Blocks, 2, "every height gets a shim, including blocks without relevant transactions")
+	assert.Equal(t, uint64(1), store.Blocks[0].BlockNumber)
+	assert.Equal(t, "2026-01-01T00:00:00", store.Blocks[0].Timestamp)
+	assert.Equal(t, uint64(2), store.Blocks[1].BlockNumber)
+	assert.Equal(t, "2026-01-01T00:00:03", store.Blocks[1].Timestamp)
 	// shim-only: no txs, ids or ops persisted
-	assert.Len(t, store.Blocks[0].Transactions, 0)
-	assert.Empty(t, store.Blocks[0].BlockID)
-	assert.Empty(t, store.Blocks[0].VirtualOps)
+	for _, b := range store.Blocks {
+		assert.Len(t, b.Transactions, 0)
+		assert.Empty(t, b.BlockID)
+		assert.Empty(t, b.VirtualOps)
+	}
 
-	// a batch with no relevant blocks keeps the head height fresh without writes
-	assert.NoError(t, src.StoreBlocks(101, hive_blocks.HiveBlock{BlockNumber: 3, Timestamp: "t"}))
-	assert.Len(t, store.Blocks, 1)
+	// an empty batch keeps the head height fresh without writes
+	assert.NoError(t, src.StoreBlocks(101))
+	assert.Len(t, store.Blocks, 2)
 	if assert.NotNil(t, store.Metadata.HeadHeight) {
 		assert.Equal(t, uint64(101), *store.Metadata.HeadHeight)
 	}
@@ -263,8 +267,8 @@ func TestListenDeliversEveryHeight(t *testing.T) {
 	}
 
 	assert.Equal(t, []uint64{1, 2, 3}, got, "every height is delivered, empty ones too")
-	assert.Len(t, store.Blocks, 1, "only the relevant height is shimmed")
-	assert.Equal(t, uint64(2), store.Blocks[0].BlockNumber)
+	assert.Len(t, store.Blocks, 3, "every delivered height is shimmed, relevant or not")
+	assert.Equal(t, []uint64{1, 2, 3}, []uint64{store.Blocks[0].BlockNumber, store.Blocks[1].BlockNumber, store.Blocks[2].BlockNumber})
 }
 
 func int32Ptr(v int32) *int32 {

@@ -33,11 +33,12 @@ var readAttempts = 3
 // Source implements hive_blocks.HiveBlocks backed by a HAF database.
 //
 // Reads come from HAF's hive.irreversible_*_view; mongo keeps only what HAF
-// does not have: the {block_number, timestamp} shims graphql timestamp joins
-// need — and only for blocks carrying relevant transactions — plus the
-// metadata doc (processing cursor, reindex id). Blocks without relevant
-// transactions are never stored; they are still fetched and delivered to
-// listeners so every height ticks block processing.
+// does not have: the {block_number, timestamp} shim for every height — the
+// graphql/consensus timestamp joins key on referenced heights (TSS session
+// blocks, gateway anchors) that need not carry any tracked operation — plus
+// the metadata doc (processing cursor, reindex id). Heights with no relevant
+// transactions are stored shim-only and still delivered to listeners so every
+// height ticks block processing.
 type Source struct {
 	client   blockFetcher
 	store    hive_blocks.HiveBlocks
@@ -118,23 +119,23 @@ func (s *Source) Stop() error {
 
 // ===== HAF-backed reads =====
 
-// StoreBlocks persists only the {block_number, timestamp} shim graphql
-// timestamp joins need, and only for blocks carrying relevant transactions —
-// everything else about these blocks lives in HAF. Blocks without relevant
-// transactions are not stored at all.
+// StoreBlocks persists the {block_number, timestamp} shim every height needs
+// for graphql/consensus timestamp joins — everything else about these blocks
+// lives in HAF. Empty heights MUST be stored too: joins key on arbitrary
+// referenced heights (a TSS commitment's session block_height, a gateway
+// tx's anchor height) that need not carry any tracked operation, and
+// hive_blocks.GetAggTimestampPipeline's $lookup+$unwind silently drops rows
+// whose shim is absent.
 func (s *Source) StoreBlocks(headBlock uint64, blocks ...hive_blocks.HiveBlock) error {
 	shims := make([]hive_blocks.HiveBlock, 0, len(blocks))
 	for _, b := range blocks {
-		if len(b.Transactions) == 0 {
-			continue
-		}
 		shims = append(shims, hive_blocks.HiveBlock{
 			BlockNumber: b.BlockNumber,
 			Timestamp:   b.Timestamp,
 		})
 	}
 	if len(shims) == 0 {
-		// nothing to store; keep the head height fresh anyway
+		// no blocks in the batch; keep the head height fresh anyway
 		return s.store.SetMetadata(hive_blocks.Document{
 			Type:       hive_blocks.DocumentTypeMetadata,
 			HeadHeight: &headBlock,
