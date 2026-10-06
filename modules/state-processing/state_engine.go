@@ -2139,6 +2139,38 @@ func executeTxSafely(
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
 }
 
+// tickSlotRange returns the slots whose block production a pendulum tick scores.
+//
+// The block for slot S covers L1 blocks S-SlotLength+1 .. S and is produced after
+// L1 block S, landing a block or two later. Counting the slot that ends AT the
+// tick therefore scores a block that cannot exist yet when the election proposer
+// composes the settlement at that height, but does exist when the other nodes
+// re-derive it a few blocks later: the record charges its leader a missed block,
+// every node refuses it, and the election is re-proposed 50 blocks later
+// (ELECT-50, every testnet epoch; on mainnet the first attempt fails to gather
+// signatures). It also scored the boundary slot in two consecutive ticks.
+//
+// closedOnly (from 0.9.0) counts only slots that closed at least one slot before
+// the tick, so every node reads the same blocks whenever it runs, and each slot
+// lands in exactly one tick: this tick takes (tick-window-SlotLength, tick-SlotLength].
+// Below 0.9.0 the old window is kept byte for byte, so replayed settlements
+// re-derive unchanged.
+func tickSlotRange(fromBlock, tickHeight, slotLen uint64, closedOnly bool) (first, last uint64) {
+	first = fromBlock - (fromBlock % slotLen)
+	if first < fromBlock {
+		first += slotLen
+	}
+	last = tickHeight - (tickHeight % slotLen)
+	if closedOnly {
+		if tickHeight < slotLen {
+			return 1, 0 // empty
+		}
+		end := tickHeight - slotLen
+		last = end - (end % slotLen)
+	}
+	return first, last
+}
+
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
 // aggregator scores. Pure read on on-chain caches; deterministic across
 // nodes given identical chain state. Returns a zero-Committee TickInputs
@@ -2176,11 +2208,8 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.vscBlocks != nil {
 		slotLen := common.CONSENSUS_SPECS.SlotLength
 		if slotLen >= 1 {
-			firstSlot := fromBlock - (fromBlock % slotLen)
-			if firstSlot < fromBlock {
-				firstSlot += slotLen
-			}
-			lastSlot := tickHeight - (tickHeight % slotLen)
+			closedOnly := consensusversion.SettlementClosedSlotsActive(se.ActiveConsensusVersion(tickHeight))
+			firstSlot, lastSlot := tickSlotRange(fromBlock, tickHeight, slotLen, closedOnly)
 			if lastSlot >= firstSlot {
 				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
 				if err != nil {

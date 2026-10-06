@@ -651,3 +651,13 @@ func TssBanYieldsToQuorumActive(active Version) bool {
 func GatewayEqualWeightsActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// SettlementClosedSlotsActive reports whether pendulum reward reductions score only
+// the L2 slots that had closed before each tick (state-processing tickSlotRange).
+// Below it, the slot that ends at the tick was scored too, and its block does not
+// exist yet when the settlement is composed at that height (ELECT-50). Resolve
+// `active` at the tick height: the proposer, every signer and every re-deriving
+// node read the same election there.
+func SettlementClosedSlotsActive(active Version) bool {
+	return Version0_9_0Active(active)
+}
