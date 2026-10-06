@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -32,8 +33,10 @@ func (b *Bot) HandleMap(
 		return false
 	}
 
-	if lastContractHeight < blockHeight {
-		b.L.Info("delaying processing, block not yet present in contract", "blockHeight", blockHeight, "contractHeight", lastContractHeight)
+	if lastContractHeight < b.contractHeightNeededFor(blockHeight) {
+		b.L.Info("delaying processing, block not yet deep enough in the contract",
+			"blockHeight", blockHeight, "contractHeight", lastContractHeight,
+			"confirmationsRequired", b.Chain.ConfirmationsRequired)
 		return false
 	}
 
@@ -52,10 +55,24 @@ func (b *Bot) HandleMap(
 		}
 		jsonMessages[i] = json.RawMessage(jsonBytes)
 	}
+	// BOT-MAP-SKIP-1 (testnet 2026-10-06): a map that failed before landing (RC
+	// pre-flight, network, node) used to be logged and the block skipped for good,
+	// so that deposit was never credited. Keep the block and retry it next cycle.
+	// A map the contract REFUSED on chain (ErrTxFailed) is final for this proof and
+	// already recorded for /retry, so it does not hold the block. Re-sending a map
+	// that did land is refused by the contract (the deposit is already observed).
+	retryBlock := false
 	for _, tx := range jsonMessages {
 		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err != nil {
 			b.L.Error("map call failed", "err", err)
+			if !errors.Is(err, ErrTxFailed) {
+				retryBlock = true
+			}
 		}
+	}
+	if retryBlock {
+		b.L.Warn("a map did not land for a transient reason; block kept for retry", "blockHeight", blockHeight)
+		return false
 	}
 
 	advanced, err := b.stateDB().AdvanceBlockHeightIfCurrent(ctx, blockHeight, blockHeight+1)
@@ -170,4 +187,19 @@ func txIDFromRawTxHex(rawTxHex string) string {
 		return ""
 	}
 	return tx.TxID()
+}
+
+// contractHeightNeededFor is the contract header height at which a deposit or
+// spend mined in block h is deep enough for the contract to act on it.
+//
+// BOT-MAP-DEPTH-1 (testnet 2026-10-06): the bot mapped a block as soon as the
+// contract held it (depth 0), the v2 contract refused the deposit as "not
+// confirmed deeply enough yet", and the bot moved on to the next block anyway,
+// so the deposit was never credited. Waiting for the depth makes the one attempt
+// the bot makes per block land. Same rule for confirmSpend (BOT-CONF-1).
+func (b *Bot) contractHeightNeededFor(h uint64) uint64 {
+	if b.Chain == nil || b.Chain.ConfirmationsRequired <= 1 {
+		return h
+	}
+	return h + b.Chain.ConfirmationsRequired - 1
 }

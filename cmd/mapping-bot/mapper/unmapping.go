@@ -120,6 +120,13 @@ func (b *Bot) HandleConfirmations() {
 		pruneFloorOk = false
 	}
 
+	// The contract's pending spends: a sent tx missing from it has settled.
+	pending, err := b.gql().FetchTxSpends(ctx)
+	pendingOk := err == nil
+	if err != nil {
+		b.L.Debug("failed to fetch pending spends for confirmSpend", "error", err)
+	}
+
 	for _, dbTx := range sentTxs {
 		txId := dbTx.TxID
 
@@ -132,12 +139,28 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
-		// Wait until the contract has processed the confirmation block,
-		// the same way HandleMap waits before mapping.
-		if contractHeightOk && contractHeight < details.BlockHeight {
-			b.L.Info("delaying confirmSpend, block not yet in contract",
+		// Wait until the confirmation block is as deep in the contract as the
+		// contract requires, the same way HandleMap waits before mapping. A call
+		// made earlier is refused and still costs RC (BOT-CONF-1).
+		if contractHeightOk && contractHeight < b.contractHeightNeededFor(details.BlockHeight) {
+			b.L.Info("delaying confirmSpend, block not yet deep enough in the contract",
 				"txId", txId, "blockHeight", details.BlockHeight, "contractHeight", contractHeight)
 			continue
+		}
+
+		// A spend the contract no longer lists as pending has settled (by this
+		// bot's earlier call whose status poll timed out, or by another
+		// submitter). Calling confirmSpend again only fails and costs RC: on
+		// testnet 2026-10-06 the bot re-sent it every two minutes after the sweep
+		// had settled. Record it confirmed and move on.
+		if pendingOk {
+			if _, still := pending[txId]; !still {
+				b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
+				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+				}
+				continue
+			}
 		}
 
 		if pruneFloorOk && details.BlockHeight < pruneFloor {

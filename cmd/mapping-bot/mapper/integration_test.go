@@ -367,6 +367,8 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	gql.lastHeight = "1000"
 	// The mock caller returns "mock-tx-id"; tell the mock GQL it's confirmed.
 	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+	// The contract still lists the spend as pending (it has not settled yet).
+	gql.txSpends = map[string]*contractinterface.SigningData{"txConfirm1": {}}
 
 	// Add a sent tx to the state store
 	sigHash := make([]byte, 32)
@@ -687,6 +689,7 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
 
 	// Add two sent transactions
+	gql.txSpends = map[string]*contractinterface.SigningData{"txA": {}, "txB": {}}
 	for _, txID := range []string{"txA", "txB"} {
 		sigHash := make([]byte, 32)
 		sigHash[0] = txID[2] // use last char as distinguisher

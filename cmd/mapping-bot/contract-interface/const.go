@@ -31,6 +31,9 @@ const BackupPublicKeyStateKey = "backupkey"
 // rotation driver treats both as "nothing to do".
 const VaultRegistryKey = "v"
 
+// VaultActiveGenKey holds the generation receiving new deposits (4-byte BE).
+const VaultActiveGenKey = "va"
+
 // MigrationSweepPrefix keys the per-sweep migration record ("ms-<txid>"). Its
 // presence means a migration sweep is in flight and not yet settled.
 const MigrationSweepPrefix = "ms" + DirPathDelimiter
