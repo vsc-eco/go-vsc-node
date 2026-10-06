@@ -182,6 +182,29 @@ func assertTxProcessed(t *testing.T, d *Devnet, ctx context.Context, node int, t
 	}
 }
 
+// assertTxRefused is assertTxProcessed for a tx the protocol must reject.
+func assertTxRefused(t *testing.T, d *Devnet, ctx context.Context, node int, txId string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		status, err := d.FindTransactionStatus(ctx, node, txId)
+		if err == nil {
+			switch status {
+			case "FAILED":
+				return
+			case "PROCESSED", "CONFIRMED":
+				t.Errorf("tx %s was ACCEPTED on magi-%d, expected it refused", txId, node)
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("tx %s never reached terminal status on magi-%d (last=%q, err=%v)", txId, node, status, err)
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
 func balanceField(b *BalanceRecord, asset string) int64 {
 	switch asset {
 	case "hbd":
