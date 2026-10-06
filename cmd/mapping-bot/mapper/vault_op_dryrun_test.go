@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSizeVaultOpByDryRun(t *testing.T) {
@@ -86,5 +87,26 @@ func TestVaultOpDryRun_NotForOtherActions(t *testing.T) {
 	}
 	if gql.simCalls != 0 {
 		t.Fatalf("simulate called %d times for a non-vault action", gql.simCalls)
+	}
+}
+
+// BOT-LATCH-1: the not-owner latch expires, so an operator appointed after the
+// bot started is picked up without a restart.
+func TestNotOwnerLatchExpires(t *testing.T) {
+	const c = "vsc1LatchTest"
+	vaultOpMu.Lock()
+	delete(notOwner, c)
+	vaultOpMu.Unlock()
+	if !markNotOwner(c) || !isNotOwnerLatched(c) {
+		t.Fatal("first refusal must latch and report")
+	}
+	if markNotOwner(c) {
+		t.Fatal("a second refusal inside the window must not re-report")
+	}
+	vaultOpMu.Lock()
+	notOwner[c] = time.Now().Add(-notOwnerRecheck - time.Second)
+	vaultOpMu.Unlock()
+	if isNotOwnerLatched(c) {
+		t.Fatal("the latch must expire after notOwnerRecheck")
 	}
 }

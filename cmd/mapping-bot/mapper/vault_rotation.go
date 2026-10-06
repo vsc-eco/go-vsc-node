@@ -114,7 +114,7 @@ var (
 	// notOwner latches per contract: the vault ops are owner-only, so if this bot's
 	// identity is not the owner, NO retry will ever succeed. Keep issuing them and we
 	// just burn RC on guaranteed rejections.
-	notOwner = map[string]bool{}
+	notOwner = map[string]time.Time{}
 )
 
 // markNotOwner latches the not-owner condition and reports whether this is the first
@@ -122,17 +122,25 @@ var (
 func markNotOwner(contractId string) bool {
 	vaultOpMu.Lock()
 	defer vaultOpMu.Unlock()
-	if notOwner[contractId] {
+	if at, ok := notOwner[contractId]; ok && time.Since(at) < notOwnerRecheck {
 		return false
 	}
-	notOwner[contractId] = true
+	notOwner[contractId] = time.Now()
 	return true
 }
+
+// notOwnerRecheck is how long the not-owner latch holds before the driver tries
+// again. BOT-LATCH-1 (testnet 2026-10-06): the latch used to last for the life of
+// the process, so a bot appointed operator after it started never drove a vault
+// op until someone restarted it. The refusal now comes from a dry run that costs
+// no RC, so re-checking is free.
+const notOwnerRecheck = 10 * time.Minute
 
 func isNotOwnerLatched(contractId string) bool {
 	vaultOpMu.Lock()
 	defer vaultOpMu.Unlock()
-	return notOwner[contractId]
+	at, ok := notOwner[contractId]
+	return ok && time.Since(at) < notOwnerRecheck
 }
 
 // mayIssueVaultOp rate-limits vault ops per contract.
