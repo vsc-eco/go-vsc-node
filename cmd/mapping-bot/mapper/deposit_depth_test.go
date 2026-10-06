@@ -188,3 +188,27 @@ func TestHandleMap_OnChainRefusalDoesNotHoldTheBlock(t *testing.T) {
 	all, _ := failed.GetAll(context.Background())
 	assert.Len(t, all, 1, "the refused map is kept for /retry")
 }
+
+// The node refuses any L2 tx above MAX_TX_SIZE, and a map carries the whole
+// deposit tx: a deposit inside a large Bitcoin tx can never be mapped. That refusal
+// must not hold the block (every later deposit would stall behind it); it is
+// recorded for the operator and the cursor moves on.
+func TestHandleMap_TooLargeForThePoolDoesNotHoldTheBlock(t *testing.T) {
+	bot, gql, caller, state, addr, _ := newTestBotWithMocks()
+	failed := newMockFailedTxStore()
+	bot.FailedTxDB = failed
+	depositAddr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr.instructions[depositAddr] = "deposit_to=hive:testuser"
+	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
+	require.NoError(t, state.SetBlockHeight(context.Background(), 100))
+	gql.lastHeight = "200"
+	caller.err = errors.New("submit transaction: transaction size too big 21890 > 16384")
+
+	assert.True(t, bot.HandleMap(blockBytes, 100))
+	h, _ := state.GetBlockHeight(context.Background())
+	assert.Equal(t, uint64(101), h, "an oversized map must not hold the block")
+	all, _ := failed.GetAll(context.Background())
+	require.Len(t, all, 1, "the uncreditable deposit is recorded for the operator")
+	assert.True(t, strings.HasPrefix(all[0].TxId, "map-too-large-"), all[0].TxId)
+	assert.Equal(t, "map", all[0].Action)
+}

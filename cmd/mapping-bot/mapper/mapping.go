@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
@@ -61,11 +62,24 @@ func (b *Bot) HandleMap(
 	// A map the contract REFUSED on chain (ErrTxFailed) is final for this proof and
 	// already recorded for /retry, so it does not hold the block. Re-sending a map
 	// that did land is refused by the contract (the deposit is already observed).
+	//
+	// One pre-landing refusal is final too: the node takes no L2 tx above its size
+	// limit (transaction-pool MAX_TX_SIZE, 16,384 bytes), and a map carries the whole
+	// deposit tx, so a deposit inside a large Bitcoin tx (an exchange's batched
+	// withdrawal) can never be mapped. Holding its block would stall every later
+	// deposit behind it; it is recorded for the operator instead.
 	retryBlock := false
-	for _, tx := range jsonMessages {
+	for i, tx := range jsonMessages {
 		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err != nil {
 			b.L.Error("map call failed", "err", err)
-			if !errors.Is(err, ErrTxFailed) {
+			switch {
+			case errors.Is(err, ErrTxFailed):
+			case isTooBigForPool(err):
+				btcTxId := txIDFromRawTxHex(foundTxs[i].TxData.RawTxHex)
+				b.L.Error("deposit tx is too large for a map call and cannot be credited; recorded for the operator",
+					"btcTxId", btcTxId, "blockHeight", blockHeight, "error", err)
+				b.recordFailedTx(ctx, "map-too-large-"+btcTxId, "map", tx)
+			default:
 				retryBlock = true
 			}
 		}
@@ -187,6 +201,12 @@ func txIDFromRawTxHex(rawTxHex string) string {
 		return ""
 	}
 	return tx.TxID()
+}
+
+// isTooBigForPool reports the node's refusal of an L2 tx above its size limit
+// (transaction-pool.go: "transaction size too big N > MAX_TX_SIZE").
+func isTooBigForPool(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "transaction size too big")
 }
 
 // contractHeightNeededFor is the contract header height at which a deposit or
