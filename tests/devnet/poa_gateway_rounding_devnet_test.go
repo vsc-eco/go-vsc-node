@@ -178,6 +178,11 @@ func TestPoaGatewayRoundingDecidesWhichTwoThirdsCanSign(t *testing.T) {
 			t.Fatalf("PRECONDITION FAILED: no rotation with %d flat keys (last: %s)", cfg.Nodes, summary)
 		}
 	}
+	// From 0.9.0 the rotated authority must be flat (GatewayEqualWeightsActive):
+	// a heavy 1112 key there means the fix is not in force.
+	if poaDevnetFloor() >= 9 && !flat {
+		t.Errorf("at consensus 0.%d the rotated gateway authority must give every key weight 1 at threshold 6: %s", poaDevnetFloor(), summary)
+	}
 	h := nodeOf(heavy)
 	if h == 0 {
 		t.Fatalf("PRECONDITION FAILED: cannot map heavy key owner %q to a node", heavy)
