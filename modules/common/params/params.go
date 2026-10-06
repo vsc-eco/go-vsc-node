@@ -146,8 +146,8 @@ var LedgerShortfallAccount = "system:ledger_shortfall"
 // The window is the whole safety mechanism: the fleet must be on this code
 // BEFORE the height, because a node that passes it on the old binary keeps
 // the negative (GetBalance is snapshot-anchored) and must be reindexed.
-// Note the clock starts when CircleCI's publish_main finishes building
-// vscnetwork/go-vsc-node:main AFTER the merge — not at the merge itself.
+// Note the clock starts when the docker-publish workflow finishes publishing
+// ghcr.io/vsc-eco/go-vsc-node:main AFTER the merge — not at the merge itself.
 // Verify adoption with `localNodeInfo { git_commit }` during the window;
 // that is ~48 cycles of the fleet's hourly watchtower poll, and it is clear
 // of the next interest claim (~109,788,523).
