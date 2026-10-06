@@ -105,13 +105,13 @@ func TestHandleMap_WaitsForTheContractDepth(t *testing.T) {
 	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
 	require.NoError(t, state.SetBlockHeight(context.Background(), 100))
 
-	gql.lastHeight = "100" // the contract holds block 100, depth 1
+	gql.lastHeight = "101" // contract tip 101, block 100: depth 1 (the contract's tip - height)
 	assert.False(t, bot.HandleMap(blockBytes, 100))
-	assert.Empty(t, caller.getCalls(), "a map at depth 1 is refused by the contract and never retried")
+	assert.Empty(t, caller.getCalls(), "a map at depth 1 is refused by the contract")
 	h, _ := state.GetBlockHeight(context.Background())
 	assert.Equal(t, uint64(100), h, "the block must not be skipped")
 
-	gql.lastHeight = "101" // depth 2
+	gql.lastHeight = "102" // depth 2
 	assert.True(t, bot.HandleMap(blockBytes, 100))
 	calls := caller.getCalls()
 	require.NotEmpty(t, calls)
@@ -128,7 +128,7 @@ func TestHandleConfirmations_WaitsForDepthAndSkipsSettled(t *testing.T) {
 	sentTxConfirmedAt(t, state, chainClient, "txDeep", 500)
 	sentTxConfirmedAt(t, state, chainClient, "txSettled", 500)
 
-	gql.lastHeight = "500" // depth 1
+	gql.lastHeight = "501" // depth 1: refused on testnet 2026-10-06 ("sits 1 below a tip ..., and 2 is required")
 	bot.HandleConfirmations()
 	for _, c := range caller.getCalls() {
 		t.Errorf("confirmSpend sent at depth 1: %+v", c)
@@ -137,7 +137,7 @@ func TestHandleConfirmations_WaitsForDepthAndSkipsSettled(t *testing.T) {
 	assert.Equal(t, database.TxStateSent, state.txs["txDeep"].State)
 	state.mu.Unlock()
 
-	gql.lastHeight = "501" // depth 2
+	gql.lastHeight = "502" // depth 2
 	bot.HandleConfirmations()
 	calls := caller.getCalls()
 	require.Len(t, calls, 1, "only the still-pending spend is confirmed")

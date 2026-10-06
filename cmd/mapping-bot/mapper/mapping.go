@@ -197,9 +197,14 @@ func txIDFromRawTxHex(rawTxHex string) string {
 // confirmed deeply enough yet", and the bot moved on to the next block anyway,
 // so the deposit was never credited. Waiting for the depth makes the one attempt
 // the bot makes per block land. Same rule for confirmSpend (BOT-CONF-1).
+//
+// The contract measures depth as tip - minedHeight (requireConfirmationDepth), so
+// it acts once tip >= minedHeight + MinConfirmations. Waiting one block less was
+// refused on testnet ("block 5156755 sits 1 below a tip of 5156756, and 2 is
+// required") and cost a failed call per spend.
 func (b *Bot) contractHeightNeededFor(h uint64) uint64 {
-	if b.Chain == nil || b.Chain.ConfirmationsRequired <= 1 {
+	if b.Chain == nil {
 		return h
 	}
-	return h + b.Chain.ConfirmationsRequired - 1
+	return h + b.Chain.ConfirmationsRequired
 }
