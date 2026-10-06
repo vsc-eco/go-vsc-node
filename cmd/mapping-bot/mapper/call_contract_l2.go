@@ -46,6 +46,15 @@ func (b *Bot) callContractL2(
 	// configured default, which every other action keeps unchanged (see rcLimitFor).
 	rcLimit := b.rcLimitFor(action)
 
+	// Vault ops are sized by a dry run first (BOT-RC-1, BOT-ERR-1).
+	if isVaultOp(action) {
+		sized, err := b.sizeVaultOpByDryRun(ctx, did.String(), action, string(contractInput), rcLimit)
+		if err != nil {
+			return "", err
+		}
+		rcLimit = sized
+	}
+
 	// VR2-04: refuse before submitting rather than stalling mid-cycle.
 	//
 	// A rotation costs roughly 28,000 RC across map, topUpFeeReserve, migrateVault
@@ -124,4 +133,64 @@ func (b *Bot) callContractL2(
 		"did", did.String(),
 	)
 	return txID, nil
+}
+
+const (
+	// simulateRcCap is the most simulateContractCalls accepts per call.
+	simulateRcCap uint64 = 100_000
+	// dryRunRcFloor keeps a sized limit from being cut too fine for a call whose
+	// cost moves a little between the dry run and the block it lands in.
+	dryRunRcFloor uint64 = 20_000
+)
+
+// isVaultOp reports the rotation ops that get vaultOpRcLimit (see rcLimitFor).
+func isVaultOp(action string) bool {
+	switch action {
+	case "migrateVault", "retireVault", "writeOffDust", "redriveSpend":
+		return true
+	}
+	return false
+}
+
+// sizeVaultOpByDryRun dry-runs a vault op as the bot's own DID and returns the
+// rc_limit to declare.
+//
+// BOT-RC-1 (testnet 2026-10-06): every vault op declared the 8,000,000 ceiling and
+// the pre-flight refused unless the DID held that much RC, so a real operator DID
+// (mainnet's holds ~466,000) could never issue one. A one-input migrateVault uses
+// ~3,500. Declaring twice the dry run's use (at least dryRunRcFloor) keeps the
+// pre-flight honest at a realistic number.
+//
+// BOT-ERR-1: the rotation driver chooses its next step from the contract's refusal
+// text (nothing to migrate, uneconomic residual -> writeOffDust, not the owner),
+// but an on-chain FAILED status carries no text, so those branches never fired and
+// each refused op cost RC. A dry-run refusal is returned with the contract's
+// reason and nothing is submitted.
+//
+// Falls back to the ceiling when the dry run cannot answer (unavailable, or the
+// op needs more than the simulate cap): the node still enforces its own limits.
+func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload string, ceiling uint64) (uint64, error) {
+	sim, err := b.gql().SimulateContractCall(ctx, caller, b.BotConfig.ContractId(), action, payload, simulateRcCap)
+	if err != nil {
+		b.L.Warn("vault op dry run unavailable; declaring the rc ceiling", "action", action, "error", err)
+		return ceiling, nil
+	}
+	if !sim.Success {
+		if sim.Err == "gas_limit_hit" {
+			b.L.Warn("vault op needs more than the dry-run cap; declaring the rc ceiling", "action", action)
+			return ceiling, nil
+		}
+		return 0, fmt.Errorf("%s refused in dry run (%s): %s", action, sim.Err, sim.ErrMsg)
+	}
+	sized := uint64(0)
+	if sim.RcUsed > 0 {
+		sized = uint64(sim.RcUsed) * 2
+	}
+	if sized < dryRunRcFloor {
+		sized = dryRunRcFloor
+	}
+	if sized > ceiling {
+		sized = ceiling
+	}
+	return sized, nil
 }

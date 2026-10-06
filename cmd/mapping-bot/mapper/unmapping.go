@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -109,6 +110,16 @@ func (b *Bot) HandleConfirmations() {
 		}
 	}
 
+	// A spend mined below the contract's prune floor can never be proven: its header
+	// is gone, so confirmSpend fails on every cycle and burns RC until the 7-day
+	// cleanup drops the tx. Skip it with one warning. An unreadable floor is treated
+	// as "not set" (the contract still refuses an unprovable proof itself).
+	pruneFloor, pruneFloorOk, err := b.gql().FetchPruneFloor(ctx)
+	if err != nil {
+		b.L.Debug("failed to fetch contract prune floor for confirmSpend", "error", err)
+		pruneFloorOk = false
+	}
+
 	for _, dbTx := range sentTxs {
 		txId := dbTx.TxID
 
@@ -126,6 +137,14 @@ func (b *Bot) HandleConfirmations() {
 		if contractHeightOk && contractHeight < details.BlockHeight {
 			b.L.Info("delaying confirmSpend, block not yet in contract",
 				"txId", txId, "blockHeight", details.BlockHeight, "contractHeight", contractHeight)
+			continue
+		}
+
+		if pruneFloorOk && details.BlockHeight < pruneFloor {
+			if warnUnprovableOnce(txId) {
+				b.L.Warn("spend was mined below the contract's prune floor; it cannot be proven, so confirmSpend is skipped",
+					"txId", txId, "blockHeight", details.BlockHeight, "pruneFloor", pruneFloor)
+			}
 			continue
 		}
 
@@ -300,4 +319,21 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 		RawTx: hex.EncodeToString(buf.Bytes()),
 		TxId:  tx.TxID(),
 	}, nil
+}
+
+var (
+	unprovableMu     sync.Mutex
+	unprovableWarned = map[string]bool{}
+)
+
+// warnUnprovableOnce reports whether this is the first time txId was skipped as
+// unprovable, so the operator gets one warning per tx rather than one per cycle.
+func warnUnprovableOnce(txId string) bool {
+	unprovableMu.Lock()
+	defer unprovableMu.Unlock()
+	if unprovableWarned[txId] {
+		return false
+	}
+	unprovableWarned[txId] = true
+	return true
 }

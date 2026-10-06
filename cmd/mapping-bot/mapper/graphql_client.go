@@ -11,10 +11,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
+	"vsc-node/lib/btcvault"
 
 	graphql "github.com/hasura/go-graphql-client"
 )
@@ -308,12 +308,36 @@ func (b *Bot) FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (Ob
 	return set, nil
 }
 
+// signatureKeyIds lists the TSS key ids whose sign requests can carry a vault
+// spend: the legacy "main" key (generation 0, and every non-vault mapping
+// contract) plus the key of every generation the registry still holds short of
+// PURGED. An unmap is signed by the ACTIVE generation and a migration sweep by
+// the RETIRING one, so after the first rotation most spends are signed by a
+// "mainv<N>" key, which a "main"-only query never sees.
+func signatureKeyIds(contractId string, vaults []btcvault.Vault) []string {
+	ids := []string{contractId + "-" + btcvault.VaultKeyName(0)}
+	seen := map[string]bool{ids[0]: true}
+	for _, v := range vaults {
+		if v.Status == btcvault.VaultStatusPurged {
+			continue
+		}
+		id := contractId + "-" + btcvault.VaultKeyName(v.Generation)
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func (b *Bot) FetchSignatures(
 	ctx context.Context, msgHex []string,
 ) (map[string]database.SignatureUpdate, error) {
-	vars := map[string]interface{}{
-		"keyId":  strings.Join([]string{b.BotConfig.ContractId(), "main"}, "-"),
-		"msgHex": msgHex,
+	// A registry we cannot read fails the cycle rather than silently falling back
+	// to "main" only: the next cycle retries, a wrong key set would stall spends.
+	vaults, err := b.FetchVaultRegistry(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read the vault registry for signature key ids: %w", err)
 	}
 
 	type tssRow struct {
@@ -321,35 +345,41 @@ func (b *Bot) FetchSignatures(
 		Sig    string `graphql:"sig"`
 		Status string `graphql:"status"`
 	}
-	var rows []tssRow
-
-	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
-		var q struct {
-			Tss []tssRow `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
-		}
-		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetTssRequests")); err != nil {
-			return err
-		}
-		rows = q.Tss
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed graphql query: %w", err)
-	}
 
 	out := make(map[string]database.SignatureUpdate)
-	for _, tss := range rows {
-		if tss.Status != "complete" {
-			continue
+	for _, keyId := range signatureKeyIds(b.BotConfig.ContractId(), vaults) {
+		vars := map[string]interface{}{
+			"keyId":  keyId,
+			"msgHex": msgHex,
 		}
-		buf, err := hex.DecodeString(tss.Sig)
+		var rows []tssRow
+		err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
+			var q struct {
+				Tss []tssRow `graphql:"getTssRequests(keyId: $keyId, msgHex: $msgHex)"`
+			}
+			if err := client.Query(ctx, &q, vars, graphql.OperationName("GetTssRequests")); err != nil {
+				return err
+			}
+			rows = q.Tss
+			return nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf(
-				"failed to decode signature [signature:%s]: %w",
-				tss.Sig, err,
-			)
+			return nil, fmt.Errorf("failed graphql query for %s: %w", keyId, err)
 		}
-		out[tss.Msg] = database.SignatureUpdate{Bytes: buf, IsBackup: false}
+
+		for _, tss := range rows {
+			if tss.Status != "complete" {
+				continue
+			}
+			buf, err := hex.DecodeString(tss.Sig)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"failed to decode signature [signature:%s]: %w",
+					tss.Sig, err,
+				)
+			}
+			out[tss.Msg] = database.SignatureUpdate{Bytes: buf, IsBackup: false}
+		}
 	}
 
 	return out, nil
@@ -563,6 +593,57 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("error decoding last height hex: %w", err)
 	}
 	return string(decoded), nil
+}
+
+// SimulateContractCall dry-runs one contract call through simulateContractCalls.
+func (b *Bot) SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"query": `query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success err err_msg rc_used } }`,
+		"variables": map[string]any{"i": map[string]any{
+			"tx_id":          fmt.Sprintf("bot-dryrun-%d", time.Now().UnixNano()),
+			"required_auths": []string{caller},
+			"calls": []map[string]any{{
+				"contract_id": contractId, "action": action, "payload": payload, "rc_limit": rcLimit,
+			}},
+		}},
+	})
+	if err != nil {
+		return SimulatedCall{}, fmt.Errorf("marshal request: %w", err)
+	}
+	var result struct {
+		Data struct {
+			Sim []struct {
+				Success bool    `json:"success"`
+				Err     *string `json:"err"`
+				ErrMsg  *string `json:"err_msg"`
+				RcUsed  int64   `json:"rc_used"`
+			} `json:"simulateContractCalls"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return SimulatedCall{}, fmt.Errorf("simulate %s: %w", action, err)
+	}
+	if len(result.Errors) > 0 {
+		return SimulatedCall{}, fmt.Errorf("simulate %s: graphql error: %s", action, result.Errors[0].Message)
+	}
+	if len(result.Data.Sim) != 1 {
+		return SimulatedCall{}, fmt.Errorf("simulate %s: expected 1 result, got %d", action, len(result.Data.Sim))
+	}
+	r := result.Data.Sim[0]
+	out := SimulatedCall{Success: r.Success, RcUsed: r.RcUsed}
+	if r.Err != nil {
+		out.Err = *r.Err
+	}
+	if r.ErrMsg != nil {
+		out.ErrMsg = *r.ErrMsg
+	}
+	return out, nil
 }
 
 // FetchAccountRC returns an account's currently available resource credits.

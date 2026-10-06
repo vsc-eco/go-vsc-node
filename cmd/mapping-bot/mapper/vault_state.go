@@ -59,6 +59,24 @@ func (b *Bot) fetchStateHex(ctx context.Context, keys []string) (map[string][]by
 	return out, nil
 }
 
+// FetchPruneFloor reads the contract's prune floor ("pf", a decimal string): the
+// lowest BTC height whose header it still holds. Not set = nothing pruned yet.
+func (b *Bot) FetchPruneFloor(ctx context.Context) (uint64, bool, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.PruneFloorKey})
+	if err != nil {
+		return 0, false, err
+	}
+	raw, ok := st[contractinterface.PruneFloorKey]
+	if !ok || len(raw) == 0 {
+		return 0, false, nil
+	}
+	v, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid prune floor %q: %w", raw, err)
+	}
+	return v, true, nil
+}
+
 // FetchVaultRegistry reads the vault-generation registry ("v"). An absent or
 // empty registry is NOT an error: a non-vault mapping contract (dash/ltc/...) and
 // a pre-rotation BTC deploy both legitimately have none, and the rotation driver

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
@@ -23,6 +24,10 @@ type mockGraphQL struct {
 	txSpends   map[string]*contractinterface.SigningData
 	signatures map[string]database.SignatureUpdate
 	lastHeight string
+	pruneFloor string // "" = not set
+	sim        *SimulatedCall // nil = simulateContractCalls unavailable
+	simErr     error
+	simCalls   int
 	primaryKey []byte
 	backupKey  []byte
 	observedTx map[string]bool   // key: "txid:vout" (display/reversed hex)
@@ -73,6 +78,15 @@ func (m *mockGraphQL) FetchSignatures(ctx context.Context, msgHex []string) (map
 func (m *mockGraphQL) FetchLastHeight(ctx context.Context) (string, error) {
 	m.recordCall("FetchLastHeight")
 	return m.lastHeight, nil
+}
+
+func (m *mockGraphQL) FetchPruneFloor(ctx context.Context) (uint64, bool, error) {
+	m.recordCall("FetchPruneFloor")
+	if m.pruneFloor == "" {
+		return 0, false, nil
+	}
+	v, err := strconv.ParseUint(m.pruneFloor, 10, 64)
+	return v, err == nil, err
 }
 
 func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, error) {
@@ -127,6 +141,20 @@ func (m *mockGraphQL) FetchAccountRC(ctx context.Context, account string) (int64
 	}
 	rc, ok := m.accountRC[account]
 	return rc, ok, nil
+}
+
+func (m *mockGraphQL) SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error) {
+	m.mu.Lock()
+	m.simCalls++
+	m.mu.Unlock()
+	m.recordCall("SimulateContractCall", action)
+	if m.simErr != nil {
+		return SimulatedCall{}, m.simErr
+	}
+	if m.sim == nil {
+		return SimulatedCall{}, fmt.Errorf("simulateContractCalls unavailable")
+	}
+	return *m.sim, nil
 }
 
 func (m *mockGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error) {
