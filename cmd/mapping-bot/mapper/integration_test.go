@@ -413,7 +413,8 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleConfirmations_NotYetConfirmed(t *testing.T) {
-	bot, _, caller, state, _, chainClient := newTestBotWithMocks()
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
 
 	sigHash := make([]byte, 32)
 	sigHash[0] = 0xCC

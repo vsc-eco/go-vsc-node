@@ -93,38 +93,37 @@ func (b *Bot) HandleConfirmations() {
 		return
 	}
 
-	// Fetch the contract's last processed block height once, so we can check
-	// whether each confirmation block has been ingested before calling confirmSpend.
-	var contractHeight uint64
-	var contractHeightOk bool
+	// These three reads gate every confirmSpend below: depth, already settled,
+	// provable at all. A gate that could not be read has not passed. On testnet
+	// 2026-10-06 a node restart made all three fail at once, the pass went ahead
+	// and three spends mined below the prune floor were each refused on chain at
+	// RC cost, leaving the bot short of what migrateVault needs. Skip the pass;
+	// the next cycle reads again.
 	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
 	if err != nil {
-		b.L.Debug("failed to fetch contract height for confirmSpend", "error", err)
-	} else {
-		h, parseErr := strconv.ParseUint(lastContractHeightStr, 10, 64)
-		if parseErr != nil {
-			b.L.Debug("invalid contract height response", "value", lastContractHeightStr)
-		} else {
-			contractHeight = h
-			contractHeightOk = true
-		}
+		b.L.Warn("skipping confirmSpend pass: contract height unreadable", "error", err)
+		return
+	}
+	contractHeight, err := strconv.ParseUint(lastContractHeightStr, 10, 64)
+	if err != nil {
+		b.L.Warn("skipping confirmSpend pass: invalid contract height", "value", lastContractHeightStr)
+		return
 	}
 
 	// A spend mined below the contract's prune floor can never be proven: its header
 	// is gone, so confirmSpend fails on every cycle and burns RC until the 7-day
-	// cleanup drops the tx. Skip it with one warning. An unreadable floor is treated
-	// as "not set" (the contract still refuses an unprovable proof itself).
-	pruneFloor, pruneFloorOk, err := b.gql().FetchPruneFloor(ctx)
+	// cleanup drops the tx. Skip it with one warning.
+	pruneFloor, pruneFloorSet, err := b.gql().FetchPruneFloor(ctx)
 	if err != nil {
-		b.L.Debug("failed to fetch contract prune floor for confirmSpend", "error", err)
-		pruneFloorOk = false
+		b.L.Warn("skipping confirmSpend pass: contract prune floor unreadable", "error", err)
+		return
 	}
 
 	// The contract's pending spends: a sent tx missing from it has settled.
 	pending, err := b.gql().FetchTxSpends(ctx)
-	pendingOk := err == nil
 	if err != nil {
-		b.L.Debug("failed to fetch pending spends for confirmSpend", "error", err)
+		b.L.Warn("skipping confirmSpend pass: pending spends unreadable", "error", err)
+		return
 	}
 
 	for _, dbTx := range sentTxs {
@@ -142,7 +141,7 @@ func (b *Bot) HandleConfirmations() {
 		// Wait until the confirmation block is as deep in the contract as the
 		// contract requires, the same way HandleMap waits before mapping. A call
 		// made earlier is refused and still costs RC (BOT-CONF-1).
-		if contractHeightOk && contractHeight < b.contractHeightNeededFor(details.BlockHeight) {
+		if contractHeight < b.contractHeightNeededFor(details.BlockHeight) {
 			b.L.Info("delaying confirmSpend, block not yet deep enough in the contract",
 				"txId", txId, "blockHeight", details.BlockHeight, "contractHeight", contractHeight)
 			continue
@@ -153,17 +152,15 @@ func (b *Bot) HandleConfirmations() {
 		// submitter). Calling confirmSpend again only fails and costs RC: on
 		// testnet 2026-10-06 the bot re-sent it every two minutes after the sweep
 		// had settled. Record it confirmed and move on.
-		if pendingOk {
-			if _, still := pending[txId]; !still {
-				b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
-				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
-					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
-				}
-				continue
+		if _, still := pending[txId]; !still {
+			b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
+			if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+				b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
 			}
+			continue
 		}
 
-		if pruneFloorOk && details.BlockHeight < pruneFloor {
+		if pruneFloorSet && details.BlockHeight < pruneFloor {
 			if warnUnprovableOnce(txId) {
 				b.L.Warn("spend was mined below the contract's prune floor; it cannot be proven, so confirmSpend is skipped",
 					"txId", txId, "blockHeight", details.BlockHeight, "pruneFloor", pruneFloor)

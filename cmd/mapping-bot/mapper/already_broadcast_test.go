@@ -156,3 +156,40 @@ func TestHandleConfirmations_ProvesSpendAtThePruneFloor(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Equal(t, "confirmSpend", calls[0].Action)
 }
+
+// BOT-CONF-2 (testnet 2026-10-06): our node restarted during a pass, all three gate
+// reads failed, the pass went ahead without them and sent confirmSpend for spends
+// mined below the prune floor; each was refused on chain at RC cost and the bot was
+// then short of the RC migrateVault needs. One unreadable gate skips the pass.
+func TestHandleConfirmations_UnreadableGateSkipsThePass(t *testing.T) {
+	for _, method := range []string{"FetchLastHeight", "FetchPruneFloor", "FetchTxSpends"} {
+		t.Run(method, func(t *testing.T) {
+			bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+			gql.lastHeight = "1000"
+			gql.pruneFloor = "600"
+			gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+			gql.txSpends = map[string]*contractinterface.SigningData{"txPruned": {}, "txProvable": {}}
+			sentTxConfirmedAt(t, state, chainClient, "txPruned", 500)
+			sentTxConfirmedAt(t, state, chainClient, "txProvable", 700)
+			gql.readErr = map[string]error{method: errors.New("dial tcp 127.0.0.1:8091: connect: connection refused")}
+
+			bot.HandleConfirmations()
+			assert.Empty(t, caller.getCalls(), "no confirmSpend while %s is unreadable", method)
+			state.mu.Lock()
+			assert.Equal(t, database.TxStateSent, state.txs["txPruned"].State)
+			assert.Equal(t, database.TxStateSent, state.txs["txProvable"].State, "nothing is marked settled from an unread list")
+			state.mu.Unlock()
+
+			// The node answers again: the provable spend is confirmed, the pruned one is not.
+			gql.readErr = nil
+			bot.HandleConfirmations()
+			calls := caller.getCalls()
+			require.Len(t, calls, 1)
+			assert.Equal(t, "confirmSpend", calls[0].Action)
+			state.mu.Lock()
+			assert.Equal(t, database.TxStateConfirmed, state.txs["txProvable"].State)
+			assert.Equal(t, database.TxStateSent, state.txs["txPruned"].State)
+			state.mu.Unlock()
+		})
+	}
+}
