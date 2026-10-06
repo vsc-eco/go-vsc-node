@@ -70,7 +70,7 @@ func TestVaultStage6PauseTheft(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 	primary := kd.PublicKey
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("register: %s", s)
 	}

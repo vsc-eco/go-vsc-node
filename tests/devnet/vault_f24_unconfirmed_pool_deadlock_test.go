@@ -488,6 +488,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	releaseStage := fmt.Sprintf("stage1(retireVault status=%s, gen0Status=%d, unstake status=%s, pending=%d)", retire1, statAfterRetire, releasedStatus, releasedPending)
 
+	purgedStatus := -1
 	if releasedPending == 0 {
 		enough := true
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < 10*time.Minute {
@@ -515,6 +516,11 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			}
 			retire2 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 			statAfterPurge := vaultStatusOf(t, d, ctx, cid, 0)
+			for i := 0; i < 12 && statAfterPurge != 5; i++ { // magi-2 may lag magi-1's confirm
+				time.Sleep(5 * time.Second)
+				statAfterPurge = vaultStatusOf(t, d, ctx, cid, 0)
+			}
+			purgedStatus = statAfterPurge
 			head3, _ := getHeadBlock(d.HiveRPCEndpoint())
 			_ = head3
 			var releasedStatus2 string
@@ -523,10 +529,20 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 				retire2, statAfterPurge, relayBatch, releasedStatus2, releasedPending)
 		}
 	}
-	c.rec("F24-BOND-RELEASED", "with the generation drained and out of the bond-locked statuses the same consensus_unstake is accepted",
-		releasedPending > 0,
-		fmt.Sprintf("member=%s pending consensus_unstake=%d (want >0); %s | the lock is status-keyed (Retiring, Draining and Inactive are all locked, only Purged releases), see modules/vaultrotation/eligibility.go",
-			member, releasedPending, releaseStage))
+	// From 0.7.0 the POA collateral exit-halt also holds a seated, electable
+	// member's bond, so the vault lock's release cannot be seen through an unstake
+	// there (same as F5-RELEASE, BOND-03): judge the purge, record the unstake.
+	if v := vfActiveConsensus(d, ctx); v >= 7 {
+		c.rec("F24-BOND-RELEASED", "the drained generation reaches PURGED (vault lock released; unstake N/A under the POA exit-halt)",
+			purgedStatus == 5,
+			fmt.Sprintf("consensus 0.%d: member=%s gen-0 status=%s after the purge window (want Purged); unstake pending=%d is held by the exit-halt, not judged here; %s",
+				v, member, statusStr(purgedStatus), releasedPending, releaseStage))
+	} else {
+		c.rec("F24-BOND-RELEASED", "with the generation drained and out of the bond-locked statuses the same consensus_unstake is accepted",
+			releasedPending > 0,
+			fmt.Sprintf("member=%s pending consensus_unstake=%d (want >0); %s | the lock is status-keyed (Retiring, Draining and Inactive are all locked, only Purged releases), see modules/vaultrotation/eligibility.go",
+				member, releasedPending, releaseStage))
+	}
 
 	// ---- F24-PRUNED (INFO) ----
 	c.rec("F24-PRUNED", "why the escape above does not exist on the live testnet", true,

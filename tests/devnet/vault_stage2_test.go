@@ -86,7 +86,7 @@ func TestVaultStage2Funding(t *testing.T) {
 	primary := kd.PublicKey
 	t.Logf("gen-0 primary keygen pubkey=%s", primary)
 	reg := fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary, backupPubKeyG)
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg); !isOK(s) {
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid, reg); !isOK(s) {
 		t.Fatalf("registerPublicKey status=%s", s)
 	}
 	// Under v2-off, genesis AUTO-ACTIVATES inside registerPublicKey (both keys +
@@ -206,8 +206,19 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 	mapPayload := fmt.Sprintf(
 		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"instructions":["%s"]}`,
 		h, rawTx, proofHex, instruction)
-	if s := vstatus(t, d, ctx, 1, cid, "map", mapPayload); !isOK(s) {
-		t.Fatalf("map status=%s (proof/format issue)", s)
+	balBefore := balanceSats(t, d, ctx, cid, recipient)
+	mapStatus, mapTx := vstatusTx(t, d, ctx, 1, cid, "map", mapPayload)
+	if !isOK(mapStatus) {
+		t.Fatalf("map status=%s (proof/format issue)", mapStatus)
+	}
+	t.Logf("map result for %s: %s", recipient, vfCallResult(d, ctx, 1, mapTx))
+	// The map is confirmed through magi-1, but every balance check reads magi-2,
+	// which can be a block behind (a 0.9 run read 0 for a deposit the contract had
+	// credited, 2026-10-05). Give magi-2 up to a minute to show the change. A map
+	// that legitimately credits nothing (e.g. a sub-floor deposit after a rotation)
+	// only costs that minute; the caller's own check still decides the verdict.
+	for i := 0; i < 12 && balanceSats(t, d, ctx, cid, recipient) == balBefore; i++ {
+		time.Sleep(5 * time.Second)
 	}
 	return addr
 }

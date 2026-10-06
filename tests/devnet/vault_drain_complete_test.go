@@ -91,7 +91,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 	primary0 := kd0.PublicKey
 	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
 	vfWaitPreparams(t, d, ctx, 12*time.Minute)
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
 	}

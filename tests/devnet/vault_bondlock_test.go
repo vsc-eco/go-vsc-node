@@ -113,7 +113,7 @@ func TestVaultBondLock(t *testing.T) {
 	primary0 := kd0.PublicKey
 	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
 	vfWaitPreparams(t, d, ctx, 12*time.Minute)
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
 	}
@@ -201,9 +201,20 @@ func TestVaultBondLock(t *testing.T) {
 		}
 	}
 	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
-	rec("BOND-03", "consensus_unstake ACCEPTED once the generation is PURGED (bond released)",
-		stPurged == 5 && releasedStatus == "CONFIRMED" && releasedPending > 0,
-		fmt.Sprintf("retireVault(after grace)=%s gen-0 status=%s (want Purged), unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", retire2, statusStr(stPurged), releasedStatus, releasedPending))
+	// From 0.7.0 the POA collateral exit-halt (PoaExitHaltActive) also holds a
+	// seated, electable member's bond until PoaExitHaltBlocks after it leaves the
+	// elected set, so the vault lock's own release cannot be seen through an
+	// unstake there (same as F5-RELEASE). The purge itself is still checked;
+	// the exit-halt release is TestPoaExitHaltReleases.
+	if v := vfActiveConsensus(d, ctx); v >= 7 {
+		rec("BOND-03", "the generation reaches PURGED (vault lock released; unstake N/A under the POA exit-halt)",
+			stPurged == 5,
+			fmt.Sprintf("consensus 0.%d: retireVault(after grace)=%s gen-0 status=%s (want Purged); unstake status=%s pending=%d is held by the exit-halt, not judged here", v, retire2, statusStr(stPurged), releasedStatus, releasedPending))
+	} else {
+		rec("BOND-03", "consensus_unstake ACCEPTED once the generation is PURGED (bond released)",
+			stPurged == 5 && releasedStatus == "CONFIRMED" && releasedPending > 0,
+			fmt.Sprintf("retireVault(after grace)=%s gen-0 status=%s (want Purged), unstake status=%s (want CONFIRMED) pending consensus_unstake=%d (want >0)", retire2, statusStr(stPurged), releasedStatus, releasedPending))
+	}
 
 	t.Logf("BONDLOCK SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
 }

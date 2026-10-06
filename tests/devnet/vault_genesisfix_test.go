@@ -3,6 +3,7 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 	// register + activate, RETRYING until the (now-admitted) genesis check-sig lands.
 	reg := fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary, backupPubKeyG)
 	ok := false
-	for i := 0; i < 14; i++ {
+	for i := 0; i < int(math.Ceil(14*vfTimeoutScale())); i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg)) {
 			ok = true
 			break

@@ -187,8 +187,15 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 		t.Fatalf("mining the purge grace window: %v", err)
 	}
 	f17RelayHeaders(t, d, ctx, cid, h)
-	vstatus(t, d, ctx, 1, cid, "retireVault", "")
+	_, retireTx := vstatusTx(t, d, ctx, 1, cid, "retireVault", "")
+	t.Logf("retireVault (purge) result: %s", vfCallResult(d, ctx, 1, retireTx))
+	// The call is confirmed on magi-1; magi-2 (the reading node) may not have
+	// applied it yet. Poll before judging.
 	purgedStatus := vaultStatusOf(t, d, ctx, cid, 0)
+	for i := 0; i < 12 && purgedStatus != 5; i++ {
+		time.Sleep(5 * time.Second)
+		purgedStatus = vaultStatusOf(t, d, ctx, cid, 0)
+	}
 	c.rec("F17-PURGED", "gen-0 reached Purged in the committed vault registry", purgedStatus == 5,
 		fmt.Sprintf("gen-0 status=%s (node 2), btc height=%d", statusStr(purgedStatus), h))
 	if purgedStatus != 5 {
