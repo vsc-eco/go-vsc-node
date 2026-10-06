@@ -134,15 +134,51 @@ func (b *Bot) FetchGenUtxoCounts(ctx context.Context) (map[uint32]int, error) {
 	counts := make(map[uint32]int)
 	for _, k := range keys {
 		raw, ok := objs[k]
-		if !ok || len(raw) < 4 {
+		if !ok {
 			continue
 		}
-		// The generation is the trailing uint32 (big-endian) of the UTXO record.
-		gen := uint32(raw[len(raw)-4])<<24 | uint32(raw[len(raw)-3])<<16 |
-			uint32(raw[len(raw)-2])<<8 | uint32(raw[len(raw)-1])
+		gen, err := utxoRecordGeneration(raw)
+		if err != nil {
+			// Fail closed, like the contract: a record we cannot read must not
+			// make a generation look drained.
+			return nil, fmt.Errorf("utxo %s: %w", k, err)
+		}
 		counts[gen]++
 	}
 	return counts, nil
+}
+
+// utxoRecordGeneration mirrors the contract's UnmarshalUtxo: txid(32) vout(4)
+// amount(8) pkLen pk tagLen tag, then either nothing (a record written before
+// generations existed: generation 0) or exactly 4 bytes of generation.
+//
+// BOT-LEGACY-1 (testnet 2026-10-06): the bot read the generation from the last 4
+// bytes of every record. A pre-generation record ends in its script and a zero
+// tag length, so its 13 legacy coins on the shared testnet vault were counted
+// under generation 0xb95d6900 and gen 0 looked drained while it still held them.
+// On mainnet every coin predates generations, so the bot would never have built
+// a single migration tranche there.
+func utxoRecordGeneration(raw []byte) (uint32, error) {
+	const head = 32 + 4 + 8
+	if len(raw) < head+2 {
+		return 0, fmt.Errorf("utxo record too short (%d bytes)", len(raw))
+	}
+	off := head
+	pkLen := int(raw[off])
+	off += 1 + pkLen
+	if off >= len(raw) {
+		return 0, fmt.Errorf("utxo record truncated (pkscript)")
+	}
+	tagLen := int(raw[off])
+	off += 1 + tagLen
+	switch rem := len(raw) - off; rem {
+	case 0:
+		return 0, nil
+	case 4:
+		return binary.BigEndian.Uint32(raw[off:]), nil
+	default:
+		return 0, fmt.Errorf("utxo record has a malformed generation tail (%d bytes)", rem)
+	}
 }
 
 // InFlightSweepTxIds returns the pending-spend txids that are migration sweeps
