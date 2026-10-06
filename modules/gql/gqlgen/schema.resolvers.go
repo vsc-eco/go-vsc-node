@@ -500,10 +500,15 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
 
 	if err == mongo.ErrNoDocuments {
+		// RC-GQL-1: an account that holds HBD but has never spent RC has no RC
+		// record, and nothing is frozen. The RC system enforces balance - frozen
+		// (rc-system.go GetAvailableRCs) with no record needed, so report the HBD
+		// here too; returning only the free amount told a funded account (a
+		// freshly funded mapping-bot DID) it had 0 RC.
 		return &rcDb.RcRecord{
 			Account:     account,
-			Amount:      amount,
-			MaxRcs:      maxRcs,
+			Amount:      amount + balRecord.HBD,
+			MaxRcs:      maxRcs + balRecord.HBD,
 			BlockHeight: blockHeight,
 		}, nil
 	}
