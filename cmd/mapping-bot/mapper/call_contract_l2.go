@@ -157,9 +157,10 @@ func isVaultOp(action string) bool {
 //
 // BOT-RC-1 (testnet 2026-10-06): every vault op declared the 8,000,000 ceiling and
 // the pre-flight refused unless the DID held that much RC, so a real operator DID
-// (mainnet's holds ~466,000) could never issue one. A one-input migrateVault uses
-// ~3,500. Declaring twice the dry run's use (at least dryRunRcFloor) keeps the
-// pre-flight honest at a realistic number.
+// (mainnet's holds ~466,000) could never issue one. A one-input legacy migrateVault
+// dry-runs at ~10,700 and a two-input one at ~13,100 (testnet 2026-10-06). Declaring
+// twice the dry run's use (at least dryRunRcFloor) keeps the pre-flight honest at a
+// realistic number.
 //
 // BOT-ERR-1: the rotation driver chooses its next step from the contract's refusal
 // text (nothing to migrate, uneconomic residual -> writeOffDust, not the owner),
@@ -167,8 +168,11 @@ func isVaultOp(action string) bool {
 // each refused op cost RC. A dry-run refusal is returned with the contract's
 // reason and nothing is submitted.
 //
-// Falls back to the ceiling when the dry run cannot answer (unavailable, or the
-// op needs more than the simulate cap): the node still enforces its own limits.
+// Falls back to the ceiling when the dry run is unavailable: the node still enforces
+// its own limits and the next cycle dry-runs again. An op that needs more than the
+// simulate cap (a tranche of up to MaxMigrationInputs = 100 inputs can) declares
+// what the DID holds instead: the ceiling would fail the pre-flight on every cycle
+// and the same tranche is re-selected each time, so the rotation would never move.
 func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload string, ceiling uint64) (uint64, error) {
 	sim, err := b.gql().SimulateContractCall(ctx, caller, b.BotConfig.ContractId(), action, payload, simulateRcCap)
 	if err != nil {
@@ -177,8 +181,7 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 	}
 	if !sim.Success {
 		if sim.Err == "gas_limit_hit" {
-			b.L.Warn("vault op needs more than the dry-run cap; declaring the rc ceiling", "action", action)
-			return ceiling, nil
+			return b.sizeAboveDryRunCap(ctx, caller, action, ceiling)
 		}
 		return 0, fmt.Errorf("%s refused in dry run (%s): %s", action, sim.Err, sim.ErrMsg)
 	}
@@ -196,4 +199,23 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 		sized = ceiling
 	}
 	return sized, nil
+}
+
+// sizeAboveDryRunCap sizes a vault op the dry run could not measure because it
+// needs more than simulateRcCap: it declares what the DID holds (at most the
+// ceiling). The node charges only what the op uses.
+func (b *Bot) sizeAboveDryRunCap(ctx context.Context, caller, action string, ceiling uint64) (uint64, error) {
+	available, known, err := b.gql().FetchAccountRC(ctx, caller)
+	if err != nil || !known {
+		b.L.Warn("vault op needs more than the dry-run cap and RC is unreadable; declaring the rc ceiling", "action", action)
+		return ceiling, nil
+	}
+	if available <= int64(simulateRcCap) {
+		return 0, fmt.Errorf("%s needs more than %d RC (the dry-run cap) and the bot holds %d: fund the bot account", action, simulateRcCap, available)
+	}
+	if uint64(available) > ceiling {
+		return ceiling, nil
+	}
+	b.L.Warn("vault op needs more than the dry-run cap; declaring the RC the bot holds", "action", action, "rc", available)
+	return uint64(available), nil
 }

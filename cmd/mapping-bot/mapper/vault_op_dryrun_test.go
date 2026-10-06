@@ -12,7 +12,7 @@ func TestSizeVaultOpByDryRun(t *testing.T) {
 		used int64
 		want uint64
 	}{
-		{3490, dryRunRcFloor},       // a one-input tranche, measured on testnet 2026-10-06
+		{3490, dryRunRcFloor},       // anything under half the floor gets the floor
 		{60000, 120000},             // twice the measured use
 		{9_000_000, vaultOpRcLimit}, // never above the ceiling
 		{0, dryRunRcFloor},          // a zero report still gets the floor
@@ -27,9 +27,10 @@ func TestSizeVaultOpByDryRun(t *testing.T) {
 }
 
 // BOT-RC-1: mainnet's operator DID holds ~466,000 RC. With the dry run a migrateVault
-// that uses ~3,500 must go out; before, the 8,000,000 ceiling refused it forever.
+// that uses ~10,700 (a one-input legacy tranche, testnet 2026-10-06) must go out;
+// before, the 8,000,000 ceiling refused it forever.
 func TestVaultOpDryRun_RealisticBalanceIsEnough(t *testing.T) {
-	gql := &mockGraphQL{sim: &SimulatedCall{Success: true, RcUsed: 3490}}
+	gql := &mockGraphQL{sim: &SimulatedCall{Success: true, RcUsed: 10678}}
 	bot, did := buildBotForL2Test(t, gql)
 	gql.accountRC = map[string]int64{did.String(): 465785}
 
@@ -67,14 +68,37 @@ func TestVaultOpDryRun_RefusalCarriesTheReasonAndIsNotSubmitted(t *testing.T) {
 	}
 }
 
-// An op heavier than the dry-run cap falls back to the ceiling, so the pre-flight
-// still speaks for it.
-func TestVaultOpDryRun_GasCapFallsBackToTheCeiling(t *testing.T) {
+// An op heavier than the dry-run cap (a large tranche) declares what the DID holds,
+// so a realistic operator can still send it; declaring the 8,000,000 ceiling would
+// fail the pre-flight on every cycle and the rotation would never move.
+func TestVaultOpDryRun_GasCapDeclaresWhatTheBotHolds(t *testing.T) {
 	gql := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "gas_limit_hit"}}
 	bot, did := buildBotForL2Test(t, gql)
-	got, err := bot.sizeVaultOpByDryRun(context.Background(), did.String(), "migrateVault", "{}", vaultOpRcLimit)
+	gql.accountRC = map[string]int64{did.String(): 465785}
+	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "migrateVault"); err != nil {
+		t.Fatalf("a heavy op was refused with 465,785 RC available: %v", err)
+	}
+	if len(gql.submitted) != 1 {
+		t.Fatalf("expected one submission, got %d", len(gql.submitted))
+	}
+
+	// Below the cap the op cannot be paid at all: a clear error, nothing submitted.
+	gql2 := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "gas_limit_hit"}}
+	bot2, did2 := buildBotForL2Test(t, gql2)
+	gql2.accountRC = map[string]int64{did2.String(): 60000}
+	if _, err := bot2.callContractL2(context.Background(), []byte(`{}`), "migrateVault"); err == nil || !strings.Contains(err.Error(), "fund the bot") {
+		t.Fatalf("want a fund-the-bot error, got %v", err)
+	}
+	if len(gql2.submitted) != 0 {
+		t.Fatalf("submitted %d with too little RC", len(gql2.submitted))
+	}
+
+	// RC unreadable: the ceiling, as before (the node enforces its own limit).
+	gql3 := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "gas_limit_hit"}}
+	bot3, did3 := buildBotForL2Test(t, gql3)
+	got, err := bot3.sizeVaultOpByDryRun(context.Background(), did3.String(), "migrateVault", "{}", vaultOpRcLimit)
 	if err != nil || got != vaultOpRcLimit {
-		t.Fatalf("got %d, %v", got, err)
+		t.Fatalf("unreadable RC: got %d, %v", got, err)
 	}
 }
 
