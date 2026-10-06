@@ -1,11 +1,15 @@
 package devnet
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
-	"strconv"
 	"path/filepath"
+	"strconv"
+	"time"
 
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 )
 
@@ -133,10 +137,10 @@ func DefaultConfig() *Config {
 	off := devnetPortOffset()
 	return &Config{
 		Nodes:           5,
-		GQLBasePort:     18080+off,
-		P2PBasePort:     11720+off, // offset from mainnet/testnet nodes on 10720+
-		MongoPort:       18057+off,
-		HivePort:        18091+off,
+		GQLBasePort:     18080 + off,
+		P2PBasePort:     11720 + off, // offset from mainnet/testnet nodes on 10720+
+		MongoPort:       18057 + off,
+		HivePort:        18091 + off,
 		WitnessPrefix:   "magi.test",
 		StakeAmount:     "2000.000",
 		LogLevel:        "error,tss=trace",
@@ -149,11 +153,11 @@ func DefaultConfig() *Config {
 		PostgRESTImage:  "registry.gitlab.syncad.com/hive/haf_api_node/postgrest",
 		PgBouncerImage:  "registry.gitlab.syncad.com/hive/haf_api_node/pgbouncer",
 		DroneImage:      "registry.gitlab.syncad.com/hive/drone",
-		DronePort:       19000+off,
+		DronePort:       19000 + off,
 		BitcoindImage:   "bitcoin/bitcoin:29.3",
-		BitcoindRPCPort: 18543+off,
+		BitcoindRPCPort: 18543 + off,
 		DashdImage:      "dashpay/dashd:23.1.2",
-		DashdRPCPort:    19898+off,
+		DashdRPCPort:    19898 + off,
 	}
 }
 
@@ -191,4 +195,71 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("source directory %q doesn't contain go.mod: %w", c.SourceDir, err)
 	}
 	return nil
+}
+
+// applyFloorPinFromEnv pins the network's consensus version floor from the
+// environment, for running a whole suite at a version line without editing each
+// test: DEVNET_FLOOR_CONSENSUS=9 pins 0.9.0 from epoch 1 (DEVNET_FLOOR_MAJOR
+// defaults to 0). It overrides a floor the test set itself, so it must only be
+// used for suites whose tests are meant to hold at that line. Unset: no change.
+func applyFloorPinFromEnv(cfg *Config) {
+	v := os.Getenv("DEVNET_FLOOR_CONSENSUS")
+	if v == "" {
+		return
+	}
+	consensus, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return
+	}
+	major := uint64(0)
+	if m := os.Getenv("DEVNET_FLOOR_MAJOR"); m != "" {
+		if parsed, err := strconv.ParseUint(m, 10, 64); err == nil {
+			major = parsed
+		}
+	}
+	if cfg.SysConfigOverrides == nil {
+		cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{}
+	}
+	if cfg.SysConfigOverrides.ConsensusParams == nil {
+		cfg.SysConfigOverrides.ConsensusParams = &params.ConsensusParams{}
+	}
+	// FloorEpoch must be non-zero: 0 means "no floor".
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorMajor = major
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = consensus
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
+}
+
+// waitForFloorPin holds Start until the network's election carries the version
+// pinned by DEVNET_FLOOR_CONSENSUS. The pin applies from epoch 1, so without
+// this wait a short test runs most of its subject in epoch 0 at version 0.0.
+// No-op when the variable is unset.
+func (d *Devnet) waitForFloorPin(ctx context.Context) error {
+	v := os.Getenv("DEVNET_FLOOR_CONSENSUS")
+	if v == "" {
+		return nil
+	}
+	want, err := strconv.ParseUint(v, 10, 64)
+	if err != nil {
+		return nil
+	}
+	log.Printf("[devnet] waiting for the election to carry consensus version 0.%d (DEVNET_FLOOR_CONSENSUS)", want)
+	for {
+		var out struct {
+			ElectionByBlockHeight struct {
+				Epoch           uint64 `json:"epoch"`
+				ProtocolVersion uint64 `json:"protocol_version"`
+			} `json:"electionByBlockHeight"`
+		}
+		err := d.gqlQuery(ctx, 1, `{ electionByBlockHeight { epoch protocol_version } }`, nil, &out)
+		if err == nil && out.ElectionByBlockHeight.ProtocolVersion >= want {
+			log.Printf("[devnet] consensus version 0.%d active from epoch %d",
+				out.ElectionByBlockHeight.ProtocolVersion, out.ElectionByBlockHeight.Epoch)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for consensus version 0.%d: %w", want, ctx.Err())
+		case <-time.After(10 * time.Second):
+		}
+	}
 }

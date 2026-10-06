@@ -3,7 +3,9 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -431,6 +433,12 @@ func (d *Devnet) dumpContracts(ctx context.Context, t interface{ Logf(string, ..
 
 // WaitForTssKey polls until a tss_key matching the filter appears.
 func (d *Devnet) WaitForTssKey(ctx context.Context, node int, filter bson.M, timeout time.Duration) (*TssKeyDoc, error) {
+	// DEVNET_TIMEOUT_SCALE (above 1) stretches the wait like the vault tests'
+	// own budgets: from a 0.7 floor a member holds its readiness until its
+	// pre-params exist, so a keygen can take longer on a loaded host.
+	if f, err := strconv.ParseFloat(os.Getenv("DEVNET_TIMEOUT_SCALE"), 64); err == nil && f > 1 {
+		timeout = time.Duration(float64(timeout) * f)
+	}
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {

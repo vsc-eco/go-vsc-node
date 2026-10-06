@@ -194,7 +194,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 	primary0 := kd0.PublicKey
 	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
 	vfWaitPreparams(t, d, ctx, 12*time.Minute)
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
 	}
@@ -277,7 +277,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 // Default false, so every test that genuinely asserts the drain (Stage4 above all, where
 // VL-GP-06 IS the subject) is untouched. Set it only around a loop the test itself calls
 // best-effort, and restore it immediately -- no devnet test calls t.Parallel, so the
-// package-level flag is safe, matching vfSetupSoftFail's precedent.
+// package-level flag is safe.
 var vfSettleBestEffort = false
 
 // settleReport routes a drain-helper failure through vfSettleBestEffort.
@@ -396,6 +396,13 @@ func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiri
 		Tx []string `json:"tx"`
 	}
 	json.Unmarshal([]byte(blockJSON), &blk)
+	// The proof below pairs the sweep (tx 1) with the coinbase (tx 0). A block that
+	// cannot be read (bitcoind call failed, or the test context already expired) used
+	// to index an empty list and panic, losing the whole test's case report.
+	if len(blk.Tx) < 2 {
+		settleReport(t, "CASE VL-GP-06 FAIL: sweep block %d unreadable (%d txs, context: %v)", h, len(blk.Tx), ctx.Err())
+		return "BLOCK_UNREADABLE"
+	}
 	rawTx, _ := d.bitcoinCli(ctx, "getrawtransaction", bcTxid)
 	proof := reverseHexBytes(blk.Tx[0])
 	cs := vstatus(t, d, ctx, 1, cid, "confirmSpend", fmt.Sprintf(

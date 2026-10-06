@@ -37,6 +37,7 @@ func New(cfg *Config) (*Devnet, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	applyFloorPinFromEnv(cfg)
 
 	d := &Devnet{cfg: cfg}
 
@@ -312,6 +313,10 @@ func (d *Devnet) Start(ctx context.Context) error {
 			return fmt.Errorf("dashd health check: %w", err)
 		}
 		log.Printf("[devnet] dashd is healthy")
+	}
+
+	if err := d.waitForFloorPin(ctx); err != nil {
+		return err
 	}
 
 	d.started = true

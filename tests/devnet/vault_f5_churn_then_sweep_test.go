@@ -232,10 +232,20 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 		t.Logf("stage B (gen-0 %s): unstake status=%s pending consensus_unstake=%d", statusStr(statusB), unstakeStatusB, pending)
 		releasedAt = statusStr(statusB)
 	}
-	c.rec("F5-RELEASE", "the SAME consensus_unstake is ACCEPTED once the member's generation is finished (bond released)",
-		pending > 0,
-		fmt.Sprintf("member=%s amount=1.000 pending: at %s=%d, at %s=%d (want >0); the identical op was refused while gen-0 was retiring and funded",
-			member, statusStr(statusA), pendingA, releasedAt, pending))
+	// From the 0.7.0 line POA's collateral exit-halt (B1) also refuses the unstake of
+	// any seated member that is still electable, independently of the vault, so the
+	// release of the vault bond lock cannot be seen here: the member is still seated.
+	// The exit-halt's own release (disable the witness, wait PoaExitHaltBlocks) is
+	// TestPoaExitHaltReleases. Not a pass, not a fail: recorded as not applicable.
+	if v := vfActiveConsensus(d, ctx); v >= 7 {
+		t.Logf("CASE F5-RELEASE N/A at consensus 0.%d: POA collateral exit-halt still holds the seated, electable member's bond (pending=%d at %s); the vault lock's release is only observable below 0.7.0, exit-halt release is TestPoaExitHaltReleases",
+			v, pending, releasedAt)
+	} else {
+		c.rec("F5-RELEASE", "the SAME consensus_unstake is ACCEPTED once the member's generation is finished (bond released)",
+			pending > 0,
+			fmt.Sprintf("member=%s amount=1.000 pending: at %s=%d, at %s=%d (want >0); the identical op was refused while gen-0 was retiring and funded",
+				member, statusStr(statusA), pendingA, releasedAt, pending))
+	}
 
 	// ---- 4. F5-IDENT: every node, including the one that was down, agrees ----
 	if h2, err := d.getLastProcessedBlock(ctx, 2); err == nil {

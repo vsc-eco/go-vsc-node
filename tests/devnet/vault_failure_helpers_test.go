@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"sort"
@@ -297,10 +298,6 @@ func vfPreconditionV2Active(t *testing.T, d *Devnet, ctx context.Context, node i
 	t.Logf("PRECONDITION OK: magi-%d processed=%d > hpin=%d, vault registry has %d generation(s)", node, bh, hpin, len(vs))
 }
 
-// vfSetupSoftFail makes vfSetup return nil (with t.Errorf) instead of t.Fatalf when the
-// funding never lands, so a test whose SUBJECT is a stalled fleet can still measure it.
-var vfSetupSoftFail = false
-
 // vfSetup deploys the v2 contract onto a fresh devnet, seeds BTC headers, wires the
 // oracle, mints + registers gen-0 (v2 OFF at that point when hpin > genesis height,
 // which avoids the genesis path) and funds gen-0 via a real SPV deposit.
@@ -315,46 +312,20 @@ type vfEnv struct {
 
 func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uint64, fundSats int64, desc string) *vfEnv {
 	t.Helper()
-	// ★ EVERY early exit honours vfSetupSoftFail, not just the funding one.
-	//
-	// F7 (mixed fleet) sets the flag because a setup stall IS its measurement: it wants to
-	// scan block_headers for fork-vs-halt and dump per-node halt logs rather than die
-	// without evidence. Only the FUNDING failure used to respect the flag, so when the
-	// campaign's F7 run stalled earlier - at gen-0 keygen, "timeout waiting for tss_key" -
-	// it hit a bare t.Fatalf and produced no F7-SETUP-STALL, no fleet scan, no halt logs and
-	// no summary. The one test whose whole purpose is diagnosing a mixed fleet failed with
-	// nothing to diagnose.
-	//
-	// setupFail returns true when the caller has opted into soft-fail, so each site can
-	// `return nil` and let the caller do its measurement.
-	setupFail := func(format string, args ...any) bool {
-		if vfSetupSoftFail {
-			t.Errorf(format+" (soft-fail: caller records the fleet state)", args...)
-			return true
-		}
-		t.Fatalf(format, args...)
-		return false
-	}
 	seedH, err := d.MineBlocks(ctx, 101)
 	if err != nil {
-		if setupFail("mine: %v", err) {
-			return nil
-		}
+		t.Fatalf("mine: %v", err)
 	}
 	hdr1, _ := btcBlockHeaderHex(ctx, d, seedH)
 	cid, err := d.DeployContract(ctx, ContractDeployOpts{
 		WasmPath: wasm, Name: "btc-mapping-contract", Description: desc, DeployerNode: 1, GQLNode: 2,
 	})
 	if err != nil {
-		if setupFail("deploy: %v", err) {
-			return nil
-		}
+		t.Fatalf("deploy: %v", err)
 	}
 	t.Logf("CONTRACT=%s hpin=%d", cid, hpin)
 	if s := vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdr1, seedH)); !isOK(s) {
-		if setupFail("seedBlocks: %s", s) {
-			return nil
-		}
+		t.Fatalf("seedBlocks: %s", s)
 	}
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
@@ -364,16 +335,12 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd0, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 8*time.Minute)
 	if err != nil {
-		if setupFail("gen0 keygen: %v", err) {
-			return nil
-		}
+		t.Fatalf("gen0 keygen: %v", err)
 	}
 	primary0 := kd0.PublicKey
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
-		if setupFail("gen0 register: %s", s) {
-			return nil
-		}
+		t.Fatalf("gen0 register: %s", s)
 	}
 	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
 	if fundSats > 0 {
@@ -386,12 +353,6 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 			credited = balanceCredited(t, d, ctx, cid, owner)
 		}
 		if !credited {
-			if vfSetupSoftFail {
-				// F7 (mixed fleet): a setup stall IS the measurement; let the caller scan
-				// block_headers for fork-vs-halt instead of dying without evidence.
-				t.Errorf("gen-0 funding failed: %s balance still 0 on magi-2 two minutes after the map (soft-fail: caller records the fleet state)", owner)
-				return nil
-			}
 			t.Fatalf("gen-0 funding failed: %s balance still 0 on magi-2 two minutes after the CONFIRMED map", owner)
 		}
 		t.Logf("gen-0 funded: %s = %d sats", owner, balanceSats(t, d, ctx, cid, owner))
@@ -445,6 +406,10 @@ func vfRegisterAndActivate(t *testing.T, d *Devnet, ctx context.Context, cid, pr
 		t.Logf("registerPublicKey status=%s", s)
 		return false
 	}
+	// The attempt count is a time budget in disguise (15 s apart), so it scales with
+	// DEVNET_TIMEOUT_SCALE like every other wait; unscaled, a check-sig that lands under
+	// two-devnet CPU load just after the last try fails the rotation (F9, 2026-10-05).
+	attempts = int(math.Ceil(float64(attempts) * vfTimeoutScale()))
 	for i := 0; i < attempts; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			return true
@@ -519,7 +484,7 @@ func vfRotate(t *testing.T, d *Devnet, ctx context.Context, cid string, nextGen 
 	// check-signature sign sessions time out until that finishes (VR2-09, F5/F19 run 1:
 	// issuing=12, signed=0, timeout_result 2-14). Wait for the pool before asking for
 	// the check-sig so the rest of the test measures the product, not CPU starvation.
-	vfWaitPreparams(t, d, ctx, 12*time.Minute)
+	vfWaitPreparams(t, d, ctx, time.Duration(float64(12*time.Minute)*vfTimeoutScale()))
 	// 20 attempts (about 10 minutes with the call round-trips).
 	if !vfRegisterAndActivate(t, d, ctx, cid, p, 20) {
 		return p, false
@@ -1009,6 +974,54 @@ func vfDevnetBudgetCap() time.Duration {
 	return 75 * time.Minute
 }
 
+// vfRegisterGenesis registers the first generation's keys. Under vault v2 the
+// genesis also activates through the BRK-2 attestation, so the call is refused
+// until the key's check-signature lands ("a genesis activation under an active
+// v2 chain is gated too", btc-mapping-contract vault_lifecycle.go). The suite's
+// 0.9 pass (DEVNET_FLOOR_CONSENSUS >= 8) puts v2 in force from the start, so it
+// retries there, as vault_genesisfix_test.go does; otherwise one call, unchanged.
+func vfRegisterGenesis(t *testing.T, d *Devnet, ctx context.Context, node int, cid, payload string) string {
+	t.Helper()
+	attempts := 1
+	if v, err := strconv.Atoi(os.Getenv("DEVNET_FLOOR_CONSENSUS")); err == nil && v >= 8 {
+		attempts = int(math.Ceil(20 * vfTimeoutScale()))
+	}
+	s := ""
+	for i := 0; i < attempts; i++ {
+		s = vstatus(t, d, ctx, node, cid, "registerPublicKey", payload)
+		if isOK(s) || i == attempts-1 {
+			return s
+		}
+		t.Logf("genesis registerPublicKey not yet (awaiting the BRK-2 check-sig under v2), status=%s, retry %d", s, i)
+		time.Sleep(15 * time.Second)
+	}
+	return s
+}
+
+// vfActiveConsensus returns the consensus field of the latest election's version
+// as magi-2 sees it (0 when it cannot be read).
+func vfActiveConsensus(d *Devnet, ctx context.Context) uint64 {
+	var out struct {
+		ElectionByBlockHeight struct {
+			ProtocolVersion uint64 `json:"protocol_version"`
+		} `json:"electionByBlockHeight"`
+	}
+	if err := d.gqlQuery(ctx, 2, `{ electionByBlockHeight { protocol_version } }`, nil, &out); err != nil {
+		return 0
+	}
+	return out.ElectionByBlockHeight.ProtocolVersion
+}
+
+// vfTimeoutScale is DEVNET_TIMEOUT_SCALE (default 1; values below 1 are ignored).
+func vfTimeoutScale() float64 {
+	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 1 {
+			return f
+		}
+	}
+	return 1
+}
+
 func vfTestBudget(base time.Duration) time.Duration {
 	scale := 1.0
 	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
@@ -1030,4 +1043,64 @@ func vfTestBudget(base time.Duration) time.Duration {
 		d = cap
 	}
 	return d
+}
+
+// vfSlotRow is one block_headers row: the VSC slot and the block CID the node
+// committed at that slot. A row exists only for a block that gathered BLS quorum,
+// which is why this collection, and not hive_blocks, is the fork/halt instrument.
+type vfSlotRow struct {
+	SlotHeight int    `bson:"slot_height"`
+	Block      string `bson:"block"`
+}
+
+// vfScanBlockHeaders reads block_headers from every node's database in one pass
+// and returns the per-node maximum slot height, how many cross-node comparisons it
+// made, the FIRST divergence found ("" when every shared slot agrees) and a
+// description of any read problem ("" when every node was readable).
+//
+// The comparison is the same one requireConverged makes (same collection, same
+// slot keying, same `block` field), lifted out so it can be run repeatedly without
+// aborting the test.
+func vfScanBlockHeaders(d *Devnet, ctx context.Context, nodes int) (map[int]int, int, string, string) {
+	maxSlots := map[int]int{}
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return maxSlots, 0, "", fmt.Sprintf("mongo connect: %v", err)
+	}
+	defer client.Disconnect(ctx)
+
+	ref := map[int]string{}
+	refNode := map[int]int{}
+	compared := 0
+	readErr := ""
+	for n := 1; n <= nodes; n++ {
+		cur, err := client.Database(d.nodeDbName(n)).Collection("block_headers").Find(ctx, bson.M{})
+		if err != nil {
+			readErr += fmt.Sprintf(" magi-%d find: %v;", n, err)
+			continue
+		}
+		var rows []vfSlotRow
+		if err := cur.All(ctx, &rows); err != nil {
+			readErr += fmt.Sprintf(" magi-%d decode: %v;", n, err)
+			continue
+		}
+		maxSlots[n] = -1
+		for _, r := range rows {
+			if r.SlotHeight > maxSlots[n] {
+				maxSlots[n] = r.SlotHeight
+			}
+			prev, seen := ref[r.SlotHeight]
+			if !seen {
+				ref[r.SlotHeight] = r.Block
+				refNode[r.SlotHeight] = n
+				continue
+			}
+			compared++
+			if prev != r.Block {
+				return maxSlots, compared, fmt.Sprintf("slot %d: magi-%d block=%s, magi-%d block=%s",
+					r.SlotHeight, n, r.Block, refNode[r.SlotHeight], prev), strings.TrimSpace(readErr)
+			}
+		}
+	}
+	return maxSlots, compared, "", strings.TrimSpace(readErr)
 }

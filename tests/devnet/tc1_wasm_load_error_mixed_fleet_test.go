@@ -35,12 +35,12 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 	cfg.OldCodeSourceDir = oldDir
 	cfg.OldCodeNodes = []int{4, 5}
 	cfg.OldCodeSysconfig = true
-	cfg.SkipFunding = false // the deploys pay the contract fee from magi.test1
+	cfg.SkipFunding = false        // the deploys pay the contract fee from magi.test1
 	cfg.LogLevel = "error,bp=info" // keep the block producer's signature-count warnings
 	d, ctx := startDevnetNoKey(t, cfg, 60*time.Minute)
 
 	time.Sleep(90 * time.Second)
-	before, _, div0, rerr0 := vfF7ScanBlockHeaders(d, ctx, cfg.Nodes)
+	before, _, div0, rerr0 := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("L2 max slot per node before: %v (divergence=%q readErr=%q)", before, div0, rerr0)
 	if div0 != "" {
 		t.Fatalf("PRECONDITION FAILED: nodes already diverged: %s", div0)
@@ -79,7 +79,7 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 		calls[name] = tx
 		t.Logf("%s contract %s, call tx %s", name, cid, tx)
 	}
-	callSlots, _, _, _ := vfF7ScanBlockHeaders(d, ctx, cfg.Nodes)
+	callSlots, _, _, _ := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("L2 max slot per node right after the calls: %v", callSlots)
 	time.Sleep(90 * time.Second)
 
@@ -130,7 +130,7 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 	}
 
 	time.Sleep(120 * time.Second)
-	after, compared, div, rerr := vfF7ScanBlockHeaders(d, ctx, cfg.Nodes)
+	after, compared, div, rerr := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("RESULT L2 max slot per node after: %v (compared %d slots, divergence=%q readErr=%q)", after, compared, div, rerr)
 	if div != "" {
 		t.Errorf("L2 block divergence after the calls: %s", div)

@@ -84,6 +84,13 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 	// gateway multisig re-derivable, so the vsc.tss_halt op is actually accepted.
 	cfg.MagiEnv = map[string]string{"DEVNET_DETERMINISTIC_BLS": "1"}
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
+	// The vsc.tss_halt op and the theft-halt mirror only apply from the 0.7.0 line
+	// (consensusversion.BtcKeysignHaltActive, 3becf71e); a devnet starts at 0.0, where
+	// the op is ignored by design. Pin 0.7.0 from epoch 1 (as testnet runs) so the halt
+	// under test is live. FloorEpoch must be non-zero: 0 means "no floor".
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorMajor = 0
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 7
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}

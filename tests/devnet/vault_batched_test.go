@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -110,7 +112,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	// below VACUOUS (a second register is "rejected" only because the first never landed).
 	reg1 := fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, pub, pub)
 	s1 := ""
-	for i := 0; i < 14; i++ {
+	for i := 0; i < int(math.Ceil(14*vfTimeoutScale())); i++ {
 		s1 = vstatus(t, d, ctx, 1, cid, "registerPublicKey", reg1)
 		if isOK(s1) {
 			break
@@ -229,13 +231,20 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 // terminal or ~90s). Empty string means the tx never surfaced.
 func vstatus(t *testing.T, d *Devnet, ctx context.Context, node int, cid, action, payload string) string {
 	t.Helper()
+	s, _ := vstatusTx(t, d, ctx, node, cid, action, payload)
+	return s
+}
+
+// vstatusTx is vstatus that also returns the transaction id ("" when the submit failed).
+func vstatusTx(t *testing.T, d *Devnet, ctx context.Context, node int, cid, action, payload string) (string, string) {
+	t.Helper()
 	// High rc_limit: map/SPV + secp256k1 + per-generation address derivation is
 	// gas-heavy and blows the 500k default ("cost limit exceeded"). These vault
 	// ops draw no HBD, so a high limit is safe (no balance reservation).
 	txid, err := d.CallContractWithIntents(ctx, node, cid, action, payload, nil, 8_000_000)
 	if err != nil {
 		t.Logf("CALL %s -> submit err: %v", action, err)
-		return "SUBMIT_ERR"
+		return "SUBMIT_ERR", ""
 	}
 	deadline := time.Now().Add(90 * time.Second)
 	last := ""
@@ -248,18 +257,43 @@ func vstatus(t *testing.T, d *Devnet, ctx context.Context, node int, cid, action
 				// keep polling briefly past INCLUDED/UNCONFIRMED to reach a terminal state
 				if us == "CONFIRMED" || us == "FAILED" || us == "REVERTED" {
 					t.Logf("CALL %s -> %s (tx=%s)", action, s, txid[:12])
-					return us
+					vfAwaitNode2(t, d, ctx, node, txid, us)
+					return us, txid
 				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return last
+			return last, txid
 		case <-time.After(3 * time.Second):
 		}
 	}
 	t.Logf("CALL %s -> last=%s (tx=%s, no terminal)", action, last, txid[:12])
-	return strings.ToUpper(last)
+	return strings.ToUpper(last), txid
+}
+
+// vfAwaitNode2 waits (up to 30 s) until magi-2, the node most reads go to, shows the
+// same terminal status for txid that the calling node did. Without it a read issued
+// right after a call confirmed on magi-1 can see magi-2's state from before the call
+// (Stage4, Stage7 and F17 at a 0.9 floor). Returns at once when the call was made on
+// magi-2 or magi-2 cannot be reached (a test that stopped it on purpose).
+func vfAwaitNode2(t *testing.T, d *Devnet, ctx context.Context, node int, txid, want string) {
+	t.Helper()
+	if node == 2 {
+		return
+	}
+	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); {
+		s, err := d.FindTransactionStatus(ctx, 2, txid)
+		if err != nil || strings.ToUpper(s) == want {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+	t.Logf("  magi-2 had not applied tx %s (%s on magi-%d) after 30s", txid[:12], want, node)
 }
 
 // isOK reports whether a contract call actually SUCCEEDED.
@@ -291,4 +325,40 @@ func flipLastHex(s string) string {
 		nl = '0'
 	}
 	return s[:len(s)-1] + string(nl)
+}
+
+// vfCallResult returns the contract's own result for a call ({ok, err, errMsg, ret}
+// from its contract output). A CONFIRMED call can still have done nothing (a map
+// that credits 0), and only the result says why.
+func vfCallResult(d *Devnet, ctx context.Context, node int, txid string) string {
+	var o struct {
+		FindContractOutput []struct {
+			Id string `json:"id"`
+		} `json:"findContractOutput"`
+	}
+	if err := d.gqlQuery(ctx, node, `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){id}}`,
+		map[string]any{"id": txid}, &o); err != nil || len(o.FindContractOutput) == 0 {
+		return "no contract output found"
+	}
+	var g struct {
+		GetDagByCID string `json:"getDagByCID"`
+	}
+	if err := d.gqlQuery(ctx, node, `query($c:String!){getDagByCID(cidString:$c)}`,
+		map[string]any{"c": o.FindContractOutput[0].Id}, &g); err != nil {
+		return "output read failed: " + err.Error()
+	}
+	var dag struct {
+		Inputs  []string         `json:"inputs"`
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(g.GetDagByCID), &dag); err != nil {
+		return "output decode failed: " + err.Error()
+	}
+	for i, in := range dag.Inputs {
+		if in == txid && i < len(dag.Results) {
+			b, _ := json.Marshal(dag.Results[i])
+			return string(b)
+		}
+	}
+	return "tx not in its contract output"
 }

@@ -111,7 +111,9 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 	}
 	requireDocker(t)
 
-	const runTimeout = 50 * time.Minute
+	// Scaled like the other vault tests: at a 0.9 floor the run first waits for the
+	// version to activate and retries the genesis registration (about 54 min in all).
+	runTimeout := vfTestBudget(50 * time.Minute)
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
@@ -131,6 +133,14 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
+	// The node-side theft-halt mirror (F18-THEFT-TRIP/FROZEN/CLEAR) only applies from the
+	// 0.7.0 line (consensusversion.BtcKeysignHaltActive, 3becf71e); below it the contract
+	// still sets "th" but no node mirrors it, by design (mainnet 0.3.0 nodes have no halt).
+	// Pin 0.7.0 from epoch 1, as testnet runs, so the halt is live. FloorEpoch must be
+	// non-zero: 0 means "no floor".
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorMajor = 0
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 7
+	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}

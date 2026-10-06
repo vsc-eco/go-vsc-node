@@ -22,11 +22,10 @@ import (
 // test deliberately runs with the flag OFF — i.e. exactly the post-merge mainnet
 // state. What is live regardless of the flag:
 //
-//	(1) refreshBtcTheftHalt runs EVERY block once OracleParams.ContractId("BTC")
-//	    is set (it is, on mainnet) — an extra contract-output + datalayer read
-//	    inside the block loop, on new nodes only.
-//	(2) the vsc.tss_halt op handler — no consensus-version gate, so an upgraded
-//	    node acts on the op and a non-upgraded node ignores it entirely.
+//	(1) refreshBtcTheftHalt, the per-block read of the BTC contract's theft flag,
+//	    and (2) the vsc.tss_halt op handler. Since 3becf71e both apply only from
+//	    the 0.7.0 line (BtcKeysignHaltActive), so below it (this fleet, and
+//	    mainnet's rollout at 0.3.0) new nodes ignore them like old nodes do.
 //	(3) consensus_unstake ledger records now always carry Params["from"].
 //
 // Each of those makes NEW nodes do work OLD nodes do not. The question this test
@@ -76,11 +75,18 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 	cfg.GenesisNode = 1 // genesis on a new-code node
 	cfg.OldCodeSourceDir = oldCodeDir
 	cfg.OldCodeNodes = oldNodes
+	// The old nodes must run the same network parameters as the new ones; without
+	// -sysconfig they ran devnet defaults (other rotate interval, timeouts, election
+	// interval), so the two halves started TSS sessions at different heights.
+	cfg.OldCodeSysconfig = true
 	// The old-code image's default Go base is 1.24.1, but the merge-base go.mod
 	// requires >= 1.25.7 (GOTOOLCHAIN=local in the image, so it won't self-upgrade).
 	cfg.OldCodeGoImage = "golang:1.25.10"
 	// v2 OFF — the mainnet post-merge state. The whole point of the test.
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = 0
+	// MV-03 signs vsc.gateway ops with keys it re-derives itself, which match the
+	// authority devnet-setup installs only with deterministic seeds (as TssHalt, F16).
+	cfg.MagiEnv = map[string]string{"DEVNET_DETERMINISTIC_BLS": "1"}
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
 	}
@@ -134,15 +140,10 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 		allKeys = append(allKeys, devnetGatewayKeypair(t, fmt.Sprintf("%s%d", cfg.WitnessPrefix, n)))
 	}
 	signWith := allKeys[:4]
-	// The gateway module rotates the elected witnesses' keys into vsc.gateway's ACTIVE
-	// authority on-chain (account_update) only after the committee is established, so an
-	// immediate broadcast is rejected with "Missing Active Authority vsc.gateway". Retry
-	// until the authority is live.
+	// devnet-setup creates vsc.gateway with every witness's gateway key at weight 1.
+	// Retry briefly in case the first broadcast races the chain.
 	payload, _ := json.Marshal(map[string]any{"active": true, "keyId": cid + "-main"})
 	var haltTx string
-	// Run 2 on a main/develop mixed fleet never saw the vsc.gateway authority go live in
-	// 10 minutes (30 retries) while the all-new TssHalt fleet needed none: give it 25 so
-	// the verdict separates "slow" from "never" (VR2-13 candidate).
 	deadline := time.Now().Add(25 * time.Minute)
 	for time.Now().Before(deadline) {
 		haltTx, err = broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), signWith)
@@ -153,37 +154,29 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 		time.Sleep(20 * time.Second)
 	}
 	if err != nil {
-		// VR2-13 CONFIRMED (not a test error): on a mixed main/develop fleet the
-		// vsc.gateway multisig authority never went live within 25 minutes (run 2 saw the
-		// same at 10 min; an all-new fleet has it at the first attempt). "Missing Active
-		// Authority vsc.gateway" is structural, not slow: while the fleet is mixed NO
-		// gateway operation (tss_halt here, and the gateway's normal signed deposits and
-		// withdrawals) can be broadcast. MV-03/MV-04 (which both need a live gateway
-		// authority) are therefore unreachable on a mixed fleet by the very finding, so
-		// they are recorded, not run. MV-01/MV-02 above already proved the mixed fleet
-		// converges on plain consensus and on the ledger change; this last observation
-		// closes the upgrade-path picture: consensus survives a mixed fleet, gateway
-		// operations do not. When VR2-13 is fixed (the authority goes live on a mixed
-		// fleet) this branch stops firing and MV-03/MV-04 run their halt assertions.
-		t.Logf("CASE MV-03 VR2-13 CONFIRMED — vsc.gateway multisig authority never went live on the mixed fleet within 25m (structural, not slow); no gateway op can be broadcast while the fleet is mixed. last error: %v", firstLine(err.Error()))
-		t.Logf("CASE MV-04 SKIPPED — unreachable on a mixed fleet (needs a live gateway authority; see MV-03/VR2-13)")
-		t.Logf("MIXED-VERSION SUMMARY: MV-01 PASS, MV-02 PASS, MV-03 VR2-13-confirmed (gateway authority never live), MV-04 skipped CONTRACT=%s", cid)
+		// Withdrawals through the gateway multisig work on a mixed fleet
+		// (TestGatewayMixedFleet), so an authority that never goes live here is a failure.
+		t.Errorf("CASE MV-03 FAIL: vsc.gateway authority not usable on the mixed fleet within 25m; last error: %v", firstLine(err.Error()))
 		return
 	}
 	t.Logf("vsc.tss_halt (active=true) broadcast: %s", haltTx)
 
 	halted := requireConverged(t, ctx, d, cfg.Nodes, after+20, 6*time.Minute)
 
+	// Since 3becf71e the op only applies from the 0.7.0 line (BtcKeysignHaltActive).
+	// This fleet runs below it, as mainnet's rolling upgrade does at 0.3.0, so NEW
+	// nodes must ignore the op exactly like the old nodes (which have no handler):
+	// no halt anywhere, no asymmetry, and the fleet stays converged.
 	newHalted := countHaltFlag(t, ctx, d, newNodes)
 	oldHalted := countHaltFlag(t, ctx, d, oldNodes)
 	switch {
-	case newHalted != len(newNodes):
-		t.Errorf("CASE MV-03 FAIL — only %d/%d NEW nodes set btc_keysign_halted (the op should be live on merge, ungated)", newHalted, len(newNodes))
+	case newHalted != 0:
+		t.Errorf("CASE MV-03 FAIL: %d/%d NEW nodes set btc_keysign_halted below the 0.7.0 line (the op must be ignored there, as on the old nodes)", newHalted, len(newNodes))
 	case oldHalted != 0:
-		t.Errorf("CASE MV-03 FAIL — %d OLD nodes set btc_keysign_halted (they have no handler; impossible)", oldHalted)
+		t.Errorf("CASE MV-03 FAIL: %d OLD nodes set btc_keysign_halted (they have no handler; impossible)", oldHalted)
 	default:
-		t.Logf("CASE MV-03 PASS — halt asymmetry is benign: %d/%d new nodes halted, 0/%d old nodes, fleet converged at %d (no fork, no stall)",
-			newHalted, len(newNodes), len(oldNodes), halted)
+		t.Logf("CASE MV-03 PASS: below the 0.7.0 line the halt is ignored by new and old nodes alike (0/%d new, 0/%d old), fleet converged at %d (no fork, no stall)",
+			len(newNodes), len(oldNodes), halted)
 	}
 
 	// ── CASE MV-04: clear the halt. Proves the flag is recoverable on a mixed

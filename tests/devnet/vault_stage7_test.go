@@ -1,12 +1,18 @@
 package devnet
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -71,7 +77,7 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 		t.Fatalf("keygen: %v", err)
 	}
 	primary := kd.PublicKey
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("register: %s", s)
 	}
@@ -122,12 +128,89 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 		"status="+sSubDust)
 
 	// ── GP-03: deduct-fee unmap accepted (fee taken from amount) and debits the owner ──
+	// ACCT-1 (contract 49c4161): a deduct_fee unmap debits what actually leaves the vault
+	// (vscFee + amount sent + true miner fee), not the requested amount; the unused part of
+	// the fee estimate stays with the user. vscFee is 0 in this contract, so the debit must
+	// equal the built spend's inputs minus its change, to the satoshi, and never exceed the
+	// requested amount by more than the dust a sub-dust change output would burn.
 	balBeforeDF := balanceSats(t, d, ctx, cid, owner)
+	spendsBeforeDF := txSpendIds(t, d, ctx, cid)
+	destDF := mustNewBtcAddr(t, d, ctx)
 	sDF := vstatus(t, d, ctx, 1, cid, "unmap",
-		fmt.Sprintf(`{"amount":"%d","to":"%s","deduct_fee":true}`, 10_000_000, mustNewBtcAddr(t, d, ctx)))
+		fmt.Sprintf(`{"amount":"%d","to":"%s","deduct_fee":true}`, 10_000_000, destDF))
 	balAfterDF := balanceSats(t, d, ctx, cid, owner)
-	rec("MD03-GP-03", "deduct-fee unmap accepted + owner debited by amount", isOK(sDF) && balAfterDF == balBeforeDF-10_000_000,
-		fmt.Sprintf("bal %d->%d status=%s", balBeforeDF, balAfterDF, sDF))
+	leftDF, spendDF := stage7SpendLeftVault(t, d, ctx, cid, spendsBeforeDF, destDF)
+	debitDF := balBeforeDF - balAfterDF
+	rec("MD03-GP-03", "deduct-fee unmap accepted + owner debited by exactly what left the vault (ACCT-1)",
+		isOK(sDF) && leftDF > 0 && debitDF == leftDF && debitDF <= 10_000_000+546,
+		fmt.Sprintf("bal %d->%d debit=%d left-vault=%d (%s) status=%s", balBeforeDF, balAfterDF, debitDF, leftDF, spendDF, sDF))
 
 	t.Logf("STAGE-7 SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
+}
+
+// stage7SpendLeftVault returns what the newest pending spend moves out of the vault: the sum
+// of its inputs minus its change outputs, i.e. the amount sent to dest plus the true miner fee.
+// Input values come from bitcoind (the devnet regtest node runs with -txindex).
+func stage7SpendLeftVault(t *testing.T, d *Devnet, ctx context.Context, cid string, before []string, dest string) (int64, string) {
+	t.Helper()
+	txid := ""
+	for i := 0; i < 20 && txid == ""; i++ {
+		for _, id := range txSpendIds(t, d, ctx, cid) {
+			if !contains(before, id) {
+				txid = id
+				break
+			}
+		}
+		if txid == "" {
+			time.Sleep(3 * time.Second)
+		}
+	}
+	if txid == "" {
+		return 0, "no new pending spend"
+	}
+	sd := waitSigningData(t, d, ctx, cid, txid)
+	if sd == nil {
+		return 0, "no signing data for " + txid
+	}
+	var mtx wire.MsgTx
+	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
+		return 0, "deserialise " + txid + ": " + err.Error()
+	}
+	var in int64
+	for _, ti := range mtx.TxIn {
+		raw, err := d.bitcoinCli(ctx, "getrawtransaction", ti.PreviousOutPoint.Hash.String(), "true")
+		if err != nil {
+			return 0, "getrawtransaction " + ti.PreviousOutPoint.Hash.String() + ": " + err.Error()
+		}
+		var prev struct {
+			Vout []struct {
+				Value json.Number `json:"value"`
+				N     uint32      `json:"n"`
+			} `json:"vout"`
+		}
+		if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+			return 0, "decode prev tx: " + err.Error()
+		}
+		found := false
+		for _, o := range prev.Vout {
+			if o.N == ti.PreviousOutPoint.Index {
+				f, _ := o.Value.Float64()
+				in += int64(math.Round(f * 1e8))
+				found = true
+			}
+		}
+		if !found {
+			return 0, fmt.Sprintf("input %s:%d not found", ti.PreviousOutPoint.Hash, ti.PreviousOutPoint.Index)
+		}
+	}
+	var sent, change int64
+	for _, o := range mtx.TxOut {
+		_, addrs, _, _ := txscript.ExtractPkScriptAddrs(o.PkScript, &chaincfg.RegressionNetParams)
+		if len(addrs) == 1 && addrs[0].EncodeAddress() == dest {
+			sent += o.Value
+		} else {
+			change += o.Value
+		}
+	}
+	return in - change, fmt.Sprintf("spend %s: inputs %d, sent %d, change %d, miner fee %d", txid[:12], in, sent, change, in-sent-change)
 }
