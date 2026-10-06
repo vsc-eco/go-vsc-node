@@ -113,10 +113,17 @@ func (s *StateStore) TryAcquireBlockLease(
 }
 
 // ReleaseBlockLease releases a previously acquired block lease.
+//
+// The lease is released by OWNER, not by height: a cycle that processed its
+// block advances "current" to the next height before it releases, so a release
+// keyed on the old height matched nothing and the lease stayed held until it
+// expired. A restarted bot (a new owner id) then sat idle for up to 2 x
+// BlockInterval, 20 minutes on BTC (BOT-LEASE-1, testnet 2026-10-06). There is
+// one "current" document, so the owner alone identifies the lease.
 func (s *StateStore) ReleaseBlockLease(ctx context.Context, height uint64, owner string) error {
 	_, err := s.heightCollection.UpdateOne(
 		ctx,
-		bson.M{"_id": "current", "height": height, "lockOwner": owner},
+		bson.M{"_id": "current", "lockOwner": owner},
 		bson.M{"$unset": bson.M{"lockOwner": "", "lockUntil": ""}},
 	)
 	if err != nil {

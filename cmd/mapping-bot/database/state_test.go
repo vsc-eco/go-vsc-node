@@ -253,3 +253,37 @@ func TestDeleteOldPendingTransactions(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
+
+// BOT-LEASE-1: a cycle that advanced the height must still release its lease, so
+// another instance (a restarted bot) can take the next block at once.
+func TestReleaseBlockLease_AfterTheHeightAdvanced(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.State.SetBlockHeight(ctx, 100))
+
+	ok, err := db.State.TryAcquireBlockLease(ctx, 100, "bot-A", 20*time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	advanced, err := db.State.AdvanceBlockHeightIfCurrent(ctx, 100, 101)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	require.NoError(t, db.State.ReleaseBlockLease(ctx, 100, "bot-A"))
+
+	ok, err = db.State.TryAcquireBlockLease(ctx, 101, "bot-B", 20*time.Minute)
+	require.NoError(t, err)
+	assert.True(t, ok, "a released lease must be free for another instance immediately")
+}
+
+// A release by an owner that does not hold the lease changes nothing.
+func TestReleaseBlockLease_OnlyTheOwnerReleases(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.State.SetBlockHeight(ctx, 200))
+	ok, err := db.State.TryAcquireBlockLease(ctx, 200, "bot-A", 20*time.Minute)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, db.State.ReleaseBlockLease(ctx, 200, "bot-B"))
+	ok, err = db.State.TryAcquireBlockLease(ctx, 200, "bot-B", 20*time.Minute)
+	require.NoError(t, err)
+	assert.False(t, ok, "bot-B must not take a lease bot-A still holds")
+}
