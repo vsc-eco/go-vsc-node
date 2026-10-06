@@ -19,13 +19,14 @@ import (
 type mockGraphQL struct {
 	accountRC map[string]int64 // VR2-04 RC pre-flight; nil = unknown (fail-open)
 	rcErr     error
-	mu sync.Mutex
+	mu        sync.Mutex
 
 	txSpends   map[string]*contractinterface.SigningData
 	signatures map[string]database.SignatureUpdate
 	lastHeight string
-	pruneFloor string // "" = not set
-	sim        *SimulatedCall // nil = simulateContractCalls unavailable
+	pruneFloor string           // "" = not set
+	readErr    map[string]error // method name -> error, a read the node could not answer
+	sim        *SimulatedCall   // nil = simulateContractCalls unavailable
 	simErr     error
 	simCalls   int
 	primaryKey []byte
@@ -61,6 +62,9 @@ func (m *mockGraphQL) recordCall(method string, args ...interface{}) {
 
 func (m *mockGraphQL) FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error) {
 	m.recordCall("FetchTxSpends")
+	if err := m.readErr["FetchTxSpends"]; err != nil {
+		return nil, err
+	}
 	if m.txSpends == nil {
 		return make(map[string]*contractinterface.SigningData), nil
 	}
@@ -77,11 +81,17 @@ func (m *mockGraphQL) FetchSignatures(ctx context.Context, msgHex []string) (map
 
 func (m *mockGraphQL) FetchLastHeight(ctx context.Context) (string, error) {
 	m.recordCall("FetchLastHeight")
+	if err := m.readErr["FetchLastHeight"]; err != nil {
+		return "", err
+	}
 	return m.lastHeight, nil
 }
 
 func (m *mockGraphQL) FetchPruneFloor(ctx context.Context) (uint64, bool, error) {
 	m.recordCall("FetchPruneFloor")
+	if err := m.readErr["FetchPruneFloor"]; err != nil {
+		return 0, false, err
+	}
 	if m.pruneFloor == "" {
 		return 0, false, nil
 	}

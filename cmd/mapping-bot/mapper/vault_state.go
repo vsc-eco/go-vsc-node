@@ -1,8 +1,8 @@
 package mapper
 
 import (
-	"encoding/binary"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
