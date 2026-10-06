@@ -128,3 +128,19 @@ func TestRunningVersionImplementsPoa(t *testing.T) {
 			RunningVersion().Format(), V0_7_0.Format())
 	}
 }
+
+// ELECT-50: the settlement slot window changes with the 0.9.0 batch and not before,
+// so settlements composed under 0.7.0 (testnet) and 0.3.0 (mainnet) re-derive
+// unchanged on replay.
+func TestSettlementClosedSlotsFollowsThe090Line(t *testing.T) {
+	for _, v := range []Version{{0, 3, 0}, {0, 7, 0}, {0, 8, 0}} {
+		if SettlementClosedSlotsActive(v) {
+			t.Errorf("active at %v", v)
+		}
+	}
+	for _, v := range []Version{{0, 9, 0}, {0, 10, 0}} {
+		if !SettlementClosedSlotsActive(v) {
+			t.Errorf("inactive at %v", v)
+		}
+	}
+}
