@@ -14,6 +14,9 @@ type GraphQLFetcher interface {
 	FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error)
 	FetchSignatures(ctx context.Context, msgHex []string) (map[string]database.SignatureUpdate, error)
 	FetchLastHeight(ctx context.Context) (string, error)
+	// FetchPruneFloor returns the contract's prune floor ("pf") and whether it is
+	// set. Headers below it are gone, so a spend mined there cannot be proven.
+	FetchPruneFloor(ctx context.Context) (uint64, bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
@@ -28,6 +31,9 @@ type GraphQLFetcher interface {
 	// and whether the node has a record for it (VR2-04 pre-flight). An account the
 	// node cannot report on is "unknown", not zero.
 	FetchAccountRC(ctx context.Context, account string) (int64, bool, error)
+	// SimulateContractCall dry-runs one contract call as `caller` without committing
+	// anything (simulateContractCalls). rcLimit is capped at 100000 by the node.
+	SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error)
 	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
 	// and signature, base64url-encoded) and returns the resulting CID tx ID.
 	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)
@@ -72,4 +78,12 @@ type FailedTxStore interface {
 	GetOne(ctx context.Context, txId string) (*database.FailedVscTx, error)
 	TryMarkRetrying(ctx context.Context, txId string, throttle time.Duration) (bool, error)
 	Delete(ctx context.Context, txId string) error
+}
+
+// SimulatedCall is the dry-run verdict for one contract call.
+type SimulatedCall struct {
+	Success bool
+	Err     string // error code, e.g. "gas_limit_hit", "no_permission"
+	ErrMsg  string // the contract's own reason
+	RcUsed  int64
 }

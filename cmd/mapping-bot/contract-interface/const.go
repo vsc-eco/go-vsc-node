@@ -13,6 +13,10 @@ const SupplyKey = "s"
 
 const LastHeightKey = "h"
 
+// PruneFloorKey is the lowest BTC block height whose header the contract still
+// holds (decimal string). A spend mined below it can no longer be proven.
+const PruneFloorKey = "pf"
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -348,11 +349,43 @@ func (b *Bot) awaitTxStatus(ctx context.Context, txId string, action string) (st
 }
 
 // postTxWithRetry retries a transaction broadcast up to maxAttempts times with exponential backoff.
+// isAlreadyBroadcast reports a broadcast refused only because the network already
+// has this exact transaction: mined ("Transaction outputs already in utxo set", or
+// "Transaction already in block chain" on older nodes, both RPC -27) or waiting in
+// the mempool ("txn-already-in-mempool", "txn-already-known"). The txid commits to
+// the whole transaction, so the job is done.
+//
+// BOT-BCAST-1 (testnet 2026-10-06): this used to be retried as a failure, so the tx
+// was never marked sent, never reached confirmSpend, and was re-posted every cycle
+// forever. It happens whenever someone else broadcast the spend first: another bot
+// instance, a restart onto an empty database, or the old bot before an upgrade.
+func isAlreadyBroadcast(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"already in utxo set",
+		"already in block chain",
+		"txn-already-in-mempool",
+		"txn-already-known",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Bot) postTxWithRetry(rawTx string, maxAttempts int) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		lastErr = b.Chain.Client.PostTx(rawTx)
 		if lastErr == nil {
+			return nil
+		}
+		if isAlreadyBroadcast(lastErr) {
+			b.L.Info("tx already on chain or in the mempool; treating it as broadcast", "detail", lastErr)
 			return nil
 		}
 		if attempt < maxAttempts {

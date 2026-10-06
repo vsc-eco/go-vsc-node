@@ -96,15 +96,13 @@ const vaultOpRcLimit uint64 = 8_000_000
 // ops while leaving every existing action on the operator's configured value.
 func (b *Bot) rcLimitFor(action string) uint64 {
 	configured := b.BotConfig.RcLimit()
-	switch action {
-	case "migrateVault", "retireVault", "writeOffDust", "redriveSpend":
-		if configured > vaultOpRcLimit {
-			return configured
-		}
-		return vaultOpRcLimit
-	default:
+	if !isVaultOp(action) {
 		return configured
 	}
+	if configured > vaultOpRcLimit {
+		return configured
+	}
+	return vaultOpRcLimit
 }
 
 // All driver state is process-global and touched from the block-loop goroutine,
