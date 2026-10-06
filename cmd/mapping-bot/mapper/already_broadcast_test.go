@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -192,4 +193,38 @@ func TestHandleConfirmations_UnreadableGateSkipsThePass(t *testing.T) {
 			state.mu.Unlock()
 		})
 	}
+}
+
+// A spend Bitcoin keeps refusing (the testnet phantom legacy coin: an input that
+// does not exist) is re-posted at most once per postRetryInterval, not three times
+// every cycle until it is abandoned days later.
+func TestHandleUnmap_RefusedSpendIsNotRepostedEveryCycle(t *testing.T) {
+	bot, gql, _, state, _, chainClient := newTestBotWithMocks()
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0xA3
+	raw, txid := oneInputTx(t, 3)
+	gql.txSpends = map[string]*contractinterface.SigningData{
+		txid: {
+			Tx:                raw,
+			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0xDE, 0xAD}}},
+		},
+	}
+	gql.signatures = map[string]database.SignatureUpdate{string(sigHash): {Bytes: []byte{0x30, 0x02, 0x01, 0x01}}}
+	chainClient.postTxErr = errors.New(`sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}`)
+	now := time.Now()
+	postNow = func() time.Time { return now }
+	t.Cleanup(func() { postNow = time.Now })
+	posts := func() int { chainClient.mu.Lock(); defer chainClient.mu.Unlock(); return len(chainClient.posted) }
+
+	bot.HandleUnmap()
+	require.Equal(t, 3, posts(), "the first cycle keeps its retries")
+	bot.HandleUnmap()
+	assert.Equal(t, 3, posts(), "the next cycle must not post it again")
+
+	now = now.Add(postRetryInterval)
+	bot.HandleUnmap()
+	assert.Equal(t, 6, posts(), "after the interval it is tried again")
+	state.mu.Lock()
+	assert.Equal(t, database.TxStatePending, state.txs[txid].State)
+	state.mu.Unlock()
 }

@@ -66,11 +66,16 @@ func (b *Bot) HandleUnmap() {
 			txPairs[i] = txPair
 		}
 		for _, tx := range txPairs {
-			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
-				b.L.Warn("transaction failed to post after retries", "err", err, "txId", tx.TxId)
+			if tx == nil || !postDue(tx.TxId) {
 				continue
 			}
+			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
+			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
+				notePostFailed(tx.TxId)
+				b.L.Warn("transaction failed to post after retries; next attempt in "+postRetryInterval.String(), "err", err, "txId", tx.TxId)
+				continue
+			}
+			clearPostFailed(tx.TxId)
 			height, _ := b.LastBlock()
 			b.stateDB().MarkTransactionSent(ctx, tx.TxId, height)
 		}
@@ -339,6 +344,40 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 		RawTx: hex.EncodeToString(buf.Bytes()),
 		TxId:  tx.TxID(),
 	}, nil
+}
+
+// postRetryInterval spaces re-posts of a signed spend Bitcoin refused. A refusal
+// that never clears (an input that does not exist, like the shared testnet vault's
+// phantom legacy coin, or one already spent by a backup-key spend) was re-posted
+// three times every cycle until the sweep was abandoned days later: thousands of
+// requests to the same API the bot reads blocks and confirmations from.
+const postRetryInterval = 5 * time.Minute
+
+var (
+	postFailMu   sync.Mutex
+	postFailedAt = map[string]time.Time{}
+	postNow      = time.Now
+)
+
+// postDue reports whether txId may be posted now: never refused, or refused at
+// least postRetryInterval ago.
+func postDue(txId string) bool {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	at, ok := postFailedAt[txId]
+	return !ok || postNow().Sub(at) >= postRetryInterval
+}
+
+func notePostFailed(txId string) {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	postFailedAt[txId] = postNow()
+}
+
+func clearPostFailed(txId string) {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	delete(postFailedAt, txId)
 }
 
 var (
