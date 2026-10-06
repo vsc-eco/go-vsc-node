@@ -3,6 +3,7 @@ package mapper
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -186,6 +187,17 @@ func isUneconomicResidual(err error) bool {
 	return strings.Contains(msg, "too small to cover the sweep fee") ||
 		strings.Contains(msg, "fee exceeds half the tranche value")
 }
+
+// retireNoTransitions is what the contract's retireVault returns when it advanced
+// no generation (retireResultString, btc-mapping-contract vault_lifecycle.go).
+const retireNoTransitions = "retire: no generation transitions"
+
+// errRetireNoTransition: the retireVault dry run would change nothing, so nothing
+// is submitted (BOT-RETIRE-1). A drained generation sits Inactive for the purge
+// grace (144 BTC blocks, ~24 h on mainnet) and retireVault succeeds as a no-op in
+// that window; submitted every vaultOpMinInterval it cost ~1,070 RC per call on
+// testnet 2026-10-06, about 770,000 a day against a mainnet bot of 469,000.
+var errRetireNoTransition = errors.New("retireVault would advance no generation yet")
 
 // isNothingToMigrate reports the benign "there is no retiring generation" case.
 func isNothingToMigrate(err error) bool {
@@ -399,8 +411,10 @@ func (b *Bot) HandleVaultRotation() {
 		return
 
 	case vaultRetire:
-		// retireVault is a no-op-tolerant sweeper, so re-issuing is safe; the rate
-		// limit keeps it from burning RC while the 144-block purge grace elapses.
+		// retireVault is a no-op-tolerant sweeper, so re-issuing is safe. While the
+		// 144-block purge grace elapses it would advance nothing: its dry run then
+		// returns errRetireNoTransition and nothing is submitted (BOT-RETIRE-1); the
+		// rate limit bounds the dry runs.
 		if !mayIssueVaultOp(contractId) {
 			return
 		}

@@ -633,7 +633,7 @@ func (b *Bot) FetchLastHeight(ctx context.Context) (string, error) {
 // SimulateContractCall dry-runs one contract call through simulateContractCalls.
 func (b *Bot) SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error) {
 	reqBody, err := json.Marshal(map[string]any{
-		"query": `query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success err err_msg rc_used } }`,
+		"query": `query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success err err_msg ret rc_used } }`,
 		"variables": map[string]any{"i": map[string]any{
 			"tx_id":          fmt.Sprintf("bot-dryrun-%d", time.Now().UnixNano()),
 			"required_auths": []string{caller},
@@ -651,6 +651,7 @@ func (b *Bot) SimulateContractCall(ctx context.Context, caller, contractId, acti
 				Success bool    `json:"success"`
 				Err     *string `json:"err"`
 				ErrMsg  *string `json:"err_msg"`
+				Ret     *string `json:"ret"`
 				RcUsed  int64   `json:"rc_used"`
 			} `json:"simulateContractCalls"`
 		} `json:"data"`
@@ -677,6 +678,9 @@ func (b *Bot) SimulateContractCall(ctx context.Context, caller, contractId, acti
 	}
 	if r.ErrMsg != nil {
 		out.ErrMsg = *r.ErrMsg
+	}
+	if r.Ret != nil {
+		out.Ret = *r.Ret
 	}
 	return out, nil
 }
