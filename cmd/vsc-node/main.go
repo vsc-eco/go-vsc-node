@@ -28,8 +28,8 @@ import (
 	"vsc-node/modules/db/vsc/hive_blocks"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
-	"vsc-node/modules/db/vsc/poaseats"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
+	"vsc-node/modules/db/vsc/poaseats"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -39,6 +39,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/haf"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
@@ -70,12 +71,33 @@ func main() {
 		startPprofServer(args.pprofAddr)
 	}
 
+	// All node configuration lives in one aggregate so every config file is
+	// loaded from disk (or seeded) exactly once, up front, before any code
+	// below reads a value from it (Hive URIs, HAF URI, identity key, ...).
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)
 	oracleConf := oracle.NewOracleConfig(args.dataDir)
 	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
-	hiveApiUrlErr := hiveApiUrl.Init()
+	identityConfig := common.NewIdentityConfig(args.dataDir)
+
+	configs := aggregate.New([]aggregate.Plugin{
+		dbConf,
+		p2pConf,
+		identityConfig,
+		gqlConf,
+		oracleConf,
+		hiveApiUrl,
+	})
+	if err := configs.Init(); err != nil {
+		log.Error("failed to initialize config", "err", err)
+		os.Exit(1)
+	}
+
+	if args.isInit {
+		log.Info("config initialized", "path", args.dataDir)
+		return
+	}
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
@@ -144,9 +166,6 @@ func main() {
 	if err != nil {
 		log.Error("startup error", "err", err)
 		os.Exit(1)
-	} else if hiveApiUrlErr != nil {
-		log.Error("failed to parse Hive API config", "err", hiveApiUrlErr)
-		os.Exit(1)
 	}
 
 	// choose the source
@@ -162,21 +181,30 @@ func main() {
 	}
 
 	stBlock := sysConfig.StartHeight()
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
-
-	identityConfig := common.NewIdentityConfig(args.dataDir)
-	// Load the identity config from disk BEFORE reading it. NewIdentityConfig
-	// only seeds in-memory defaults (HiveActiveKey == "ADD_YOUR_PRIVATE_WIF");
-	// the on-disk key is not read until Config.Init(). Without this explicit
-	// load, the HasPrivateKey() check below always observed the placeholder and
-	// returned false, so bp/oracle/ep/multisig/tss/announcements were never
-	// registered even on witnesses with a valid key. identityConfig is also in
-	// the aggregate plugin list and gets Init'd again by a.Run(); Config.Init()
-	// is idempotent (re-opens and re-unmarshals the same file), so that is safe.
-	if err := identityConfig.Init(); err != nil {
-		log.Error("failed to load identity config", "err", err)
-		os.Exit(1)
+	// Block source: a non-empty HafDbURI in dbConfig switches block ingestion
+	// to the local HAF database (hive.irreversible_*_view) and mongo keeps
+	// only the graphql timestamp shims + cursor metadata. Otherwise the
+	// classic Hive API streamer stores a filtered copy of every block.
+	var blockSource hive_blocks.HiveBlocks = hiveBlocks
+	var streamerPlugin aggregate.Plugin
+	var hafSource *haf.Source
+	if hafURI := dbConf.GetHafDbURI(); hafURI != "" {
+		hafSource, err = haf.New(hafURI, hiveBlocks, filters, vFilters, stBlock)
+		if err != nil {
+			log.Error("failed to init HAF block source", "err", err)
+			os.Exit(1)
+		}
+		blockSource = hafSource
+		streamerPlugin = hafSource
+		log.Info("block source", "source", "haf")
+	} else {
+		streamerPlugin = streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
+		log.Info("block source", "source", "hive_api")
 	}
+
+	// identityConfig was loaded from disk by the configs aggregate above, so the
+	// on-disk Hive WIF is visible here (HasPrivateKey would otherwise only see
+	// the in-memory "ADD_YOUR_PRIVATE_WIF" placeholder).
 	hasPrivateKey := identityConfig.HasPrivateKey()
 
 	hiveCreator := hive.LiveTransactionCreator{
@@ -221,7 +249,7 @@ func main() {
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
-		hiveBlocks,
+		blockSource,
 		interestClaims,
 		vscBlocks,
 		actionsDb,
@@ -261,7 +289,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem, se)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
@@ -279,7 +307,7 @@ func main() {
 		hiveRpcClient,
 	)
 
-	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
+	sr := streamer.NewStreamReader(blockSource, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
 	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
 	if err != nil {
@@ -313,7 +341,7 @@ func main() {
 		Transactions:   txDb,
 		Nonces:         nonceDb,
 		Rc:             rcDb,
-		HiveBlocks:     hiveBlocks,
+		HiveBlocks:     blockSource,
 		StateEngine:    se,
 		Da:             da,
 		Contracts:      contractDb,
@@ -329,13 +357,6 @@ func main() {
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
-		//Configuration init
-		dbConf,
-		p2pConf,
-		identityConfig,
-		gqlConf,
-		oracleConf,
-
 		//DB plugin initialization
 		dbImpl,
 		vscDb,
@@ -388,52 +409,51 @@ func main() {
 		plugins,
 	)
 
-	if args.isInit {
-		log.Info("initializing config")
-		configs := aggregate.New([]aggregate.Plugin{
-			dbConf,
-			p2pConf,
-			identityConfig,
-			gqlConf,
-			oracleConf,
-			hiveApiUrl,
-		})
-		err = configs.Init()
-	} else {
-		// SIGINT/SIGTERM → graceful shutdown. Run() is the sole exit
-		// authority: RequestShutdown flags the request and cancels the
-		// aggregate ctx; Run's race-wait returns, Run stops every
-		// plugin in reverse order and returns nil → main exits 0, so
-		// supervisors see a clean stop, not a crash. A second signal
-		// and a 30s timer are backstops against a hung teardown (a
-		// clean one is bounded at ~10s: gql's 5s Shutdown cap plus the
-		// streamer's 5s processing wait, sequential in reverse order).
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-		defer signal.Stop(sigs)
+	// SIGINT/SIGTERM → graceful shutdown. Run() is the sole exit
+	// authority: RequestShutdown flags the request and cancels the
+	// aggregate ctx; Run's race-wait returns, Run stops every
+	// plugin in reverse order and returns nil → main exits 0, so
+	// supervisors see a clean stop, not a crash. A second signal
+	// and a 30s timer are backstops against a hung shutdown (the
+	// drain below is bounded at 10s; a clean teardown — gql's 5s
+	// Shutdown cap plus the streamer's bounded store/stream/tracker
+	// waits — normally completes in well under a second since every
+	// loop observes the stop context immediately).
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
 
+	go func() {
+		sig := <-sigs
+		log.Info("shutdown signal received; waiting for the current block to finish processing", "signal", sig.String())
+
+		// Second signal forces an immediate exit.
 		go func() {
 			sig := <-sigs
-			log.Info("shutdown signal received; stopping node", "signal", sig.String())
-
-			// Second signal forces an immediate exit.
-			go func() {
-				sig := <-sigs
-				log.Error("second shutdown signal received; forcing immediate exit", "signal", sig.String())
-				os.Exit(1)
-			}()
-
-			// Hung-teardown backstop.
-			time.AfterFunc(30*time.Second, func() {
-				log.Error("graceful shutdown timed out after 30s; forcing exit")
-				os.Exit(1)
-			})
-
-			a.RequestShutdown()
+			log.Error("second shutdown signal received; forcing immediate exit", "signal", sig.String())
+			os.Exit(1)
 		}()
 
-		err = a.Run()
-	}
+		// Hung-teardown backstop.
+		time.AfterFunc(30*time.Second, func() {
+			log.Error("graceful shutdown timed out after 30s; forcing exit")
+			os.Exit(1)
+		})
+
+		// Quiesce the block pipeline BEFORE any plugin teardown:
+		// sr.Stop() cancels the block feed and then waits (bounded by
+		// streamer.StopDrainTimeout) for the state engine to finish the
+		// in-flight block — the listener's ProcessBlock runs to
+		// completion, DB writes included — so plugins are never torn
+		// down under a mid-block state write and the last-processed
+		// cursor is checkpointed for a minimal-replay restart.
+		sr.Stop()
+		log.Info("block processing quiesced; proceeding with shutdown", "processedHeight", se.LastProcessedHeight())
+
+		a.RequestShutdown()
+	}()
+
+	err = a.Run()
 	if err != nil {
 		log.Error("startup failure", "err", err)
 		os.Exit(1)
