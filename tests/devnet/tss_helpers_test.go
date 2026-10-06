@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,20 +265,11 @@ func tssTestConfig() *Config {
 			PreParamsTimeout:   10 * time.Minute,            // generous timeout for loaded test servers
 		},
 	}
-	// Parallel-lane support (used by the devnet test loop): DEVNET_PORT_OFFSET shifts every
-	// host/base port so a second lane can't collide, and DEVNET_PROJECT pins a stable docker
-	// compose project name → stable image name → docker REUSES the built image (no rebuild)
-	// and cleanup can be scoped to this lane. Both are no-ops when unset, so single-lane runs
-	// are byte-identical to before.
-	if off, err := strconv.Atoi(os.Getenv("DEVNET_PORT_OFFSET")); err == nil && off != 0 {
-		cfg.GQLBasePort += off
-		cfg.P2PBasePort += off
-		cfg.MongoPort += off
-		cfg.HivePort += off
-		cfg.DronePort += off
-		cfg.BitcoindRPCPort += off
-		cfg.DashdRPCPort += off
-	}
+	// Parallel-lane support (used by the devnet test loop): DEVNET_PROJECT pins a stable
+	// docker compose project name → stable image name → docker REUSES the built image (no
+	// rebuild) and cleanup can be scoped to this lane. A no-op when unset. DEVNET_PORT_OFFSET
+	// is applied once, by DefaultConfig; adding it here again ran every TSS devnet at twice
+	// the lane's offset, onto the next lane's ports (TestDevnetPortOffsetAppliedOnce).
 	if pj := os.Getenv("DEVNET_PROJECT"); pj != "" {
 		cfg.ProjectName = pj
 	}
