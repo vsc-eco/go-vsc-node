@@ -410,7 +410,9 @@ func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiri
 	if isOK(cs) {
 		t.Logf("CASE VL-GP-01/GP-06 PASS — migration sweep SETTLED via confirmSpend (gen-0 drained to gen-1)")
 	} else {
-		t.Logf("CASE VL-GP-06 PASS(broadcast)/confirmSpend status=%s (settle needs review)", cs)
+		// A sweep that is broadcast but never settles is a failure, not a partial pass:
+		// the generation does not drain. (It used to log "PASS(broadcast)" here.)
+		settleReport(t, "CASE VL-GP-06 FAIL: the migration sweep %s did not settle (confirmSpend status=%s)", bcTxid, cs)
 	}
 	return cs
 }

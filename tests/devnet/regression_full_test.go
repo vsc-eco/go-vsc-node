@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -226,19 +227,19 @@ func TestFullNetworkRegression(t *testing.T) {
 		fireTransfers(numTransfers/2, numTransfers)
 		for i := 0; i < numStakeHbd; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.StakeHBD(w, w, "1.000"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.StakeHBD(w, w, "1.000"); return err }); err != nil {
 				t.Errorf("stake_hbd %d: %v", i, err)
 			}
 		}
 		for i := 0; i < numConsStake; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.ConsensusStake(w, w, "1.000"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.ConsensusStake(w, w, "1.000"); return err }); err != nil {
 				t.Errorf("consensus_stake %d: %v", i, err)
 			}
 		}
 		for i := 0; i < numWithdraws; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.Withdraw(w, d.witnessAccount(w), "1.000", "hive", "w"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.Withdraw(w, d.witnessAccount(w), "1.000", "hive", "w"); return err }); err != nil {
 				t.Errorf("withdraw %d: %v", i, err)
 			}
 		}
@@ -452,6 +453,11 @@ func TestFullNetworkRegression(t *testing.T) {
 		t.Log("S4: unstaking + stopping magi-4 while it holds an active key")
 		if tx, err := d.ConsensusUnstake(4, "1500.000"); err != nil {
 			t.Errorf("consensus_unstake node4: %v", err)
+		} else if v := vfActiveConsensus(d, ctx); v >= 7 {
+			// From 0.7.0 the POA collateral exit-halt holds a seated, electable
+			// member's bond, so the unstake must be REFUSED (its release is
+			// TestPoaExitHaltReleases). magi-4 still leaves the sessions by readiness.
+			assertTxRefused(t, d, ctx, 2, tx)
 		} else {
 			assertTxProcessed(t, d, ctx, 2, tx)
 		}
@@ -474,7 +480,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		reshare, err := d.WaitForCommitment(ctx, 2, bson.M{
 			"key_id": fullKeyId, "type": "reshare",
 			"block_height": bson.M{"$gt": before},
-		}, 16*time.Minute)
+		}, time.Duration(float64(16*time.Minute)*vfTimeoutScale()))
 		if err != nil {
 			dumpDiagnostics(t, d, ctx)
 			t.Fatalf("reshare to surviving committee never landed: %v", err)
@@ -733,4 +739,16 @@ func msg32hex(seed int) string {
 		b[i] = byte(seed + i)
 	}
 	return hex.EncodeToString(b)
+}
+
+// regRetryOpLimit retries a storm broadcast refused by Hive's per-account limit of
+// custom_json ops per block (HIVE_CUSTOM_OP_BLOCK_LIMIT): the storm sends several ops
+// per witness back to back, and the node's own ops share the same per-block budget.
+func regRetryOpLimit(f func() error) error {
+	err := f()
+	for i := 0; i < 3 && err != nil && strings.Contains(err.Error(), "HIVE_CUSTOM_OP_BLOCK_LIMIT"); i++ {
+		time.Sleep(4 * time.Second)
+		err = f()
+	}
+	return err
 }

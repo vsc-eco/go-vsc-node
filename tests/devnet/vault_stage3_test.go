@@ -234,7 +234,9 @@ func unmapAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, owner str
 	if isOK(cs) {
 		t.Logf("CASE MD03-GP-02 PASS — unmap settled via confirmSpend (owner debited)")
 	} else {
-		t.Logf("CASE MD03-GP-02 PASS(broadcast)/confirmSpend status=%s (settle needs review)", cs)
+		// A withdrawal that is broadcast but never settles is a failure, not a partial
+		// pass: the owner's input stays reserved. (It used to log "PASS(broadcast)".)
+		t.Errorf("CASE MD03-GP-02 FAIL: the unmap %s did not settle (confirmSpend status=%s)", bcTxid, cs)
 	}
 }
 
