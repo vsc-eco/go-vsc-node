@@ -110,3 +110,31 @@ func TestNotOwnerLatchExpires(t *testing.T) {
 		t.Fatal("the latch must expire after notOwnerRecheck")
 	}
 }
+
+// BOT-RETIRE-1 (testnet 2026-10-06): during the purge grace retireVault succeeds
+// with no transition. Each no-op went on chain every two minutes (~1,070 RC each),
+// so a no-transition dry run must not be submitted; a retire that advances a
+// generation still is.
+func TestVaultOpDryRun_RetireWithNoTransitionIsNotSubmitted(t *testing.T) {
+	gql := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: "retire: no generation transitions", RcUsed: 1070}}
+	bot, did := buildBotForL2Test(t, gql)
+	gql.accountRC = map[string]int64{did.String(): 465785}
+	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "retireVault"); err != errRetireNoTransition {
+		t.Fatalf("a no-transition retire returned %v, want errRetireNoTransition", err)
+	}
+	if len(gql.submitted) != 0 {
+		t.Fatalf("a no-transition retire was submitted (%d txs)", len(gql.submitted))
+	}
+
+	for _, ret := range []string{"retire: inactivated=0", "retire: purged=0"} {
+		gql := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: ret, RcUsed: 1070}}
+		bot, did := buildBotForL2Test(t, gql)
+		gql.accountRC = map[string]int64{did.String(): 465785}
+		if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "retireVault"); err != nil {
+			t.Fatalf("%q: a retire that advances a generation was refused: %v", ret, err)
+		}
+		if len(gql.submitted) != 1 {
+			t.Fatalf("%q: expected one submission, got %d", ret, len(gql.submitted))
+		}
+	}
+}

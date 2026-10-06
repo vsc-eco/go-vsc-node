@@ -182,6 +182,9 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 		}
 		return 0, fmt.Errorf("%s refused in dry run (%s): %s", action, sim.Err, sim.ErrMsg)
 	}
+	if action == "retireVault" && sim.Ret == retireNoTransitions {
+		return 0, errRetireNoTransition
+	}
 	sized := uint64(0)
 	if sim.RcUsed > 0 {
 		sized = uint64(sim.RcUsed) * 2

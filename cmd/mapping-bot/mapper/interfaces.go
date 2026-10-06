@@ -85,5 +85,6 @@ type SimulatedCall struct {
 	Success bool
 	Err     string // error code, e.g. "gas_limit_hit", "no_permission"
 	ErrMsg  string // the contract's own reason
+	Ret     string // the contract's return value on success
 	RcUsed  int64
 }
