@@ -506,9 +506,44 @@ func (b *Bot) SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (st
 	return *result.Data.SubmitTransactionV1.ID, nil
 }
 
-// FetchPublicKeys fetches the primary and backup public keys from contract state.
-// Keys are stored as raw bytes in the contract and returned as hex strings.
+// FetchPublicKeys returns the keys new deposit addresses are derived from: the
+// ACTIVE generation's when the contract has a vault registry, else the legacy
+// single key pair.
+//
+// BOT-ADDR-1 (testnet 2026-10-06): this read only the legacy "pubkey"/"backupkey"
+// state, which a rotation does not move: three weeks after gen 1 took over, the
+// bot still handed users gen 0's (DRAINING) address. Deposits there must be swept
+// again, sit under the key the rotation retires, and are refused once that
+// generation is purged.
 func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.VaultRegistryKey, contractinterface.VaultActiveGenKey})
+	if err != nil {
+		return nil, nil, err
+	}
+	if raw := st[contractinterface.VaultRegistryKey]; len(raw) > 0 {
+		vaults, err := btcvault.UnmarshalVaultRegistry(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("undecodable vault registry: %w", err)
+		}
+		active, ok := btcvault.ReadUint32BE(st[contractinterface.VaultActiveGenKey])
+		if !ok {
+			return nil, nil, fmt.Errorf("vault registry present but no active generation (va)")
+		}
+		for _, v := range vaults {
+			if v.Generation == active {
+				if v.Status != btcvault.VaultStatusActive {
+					return nil, nil, fmt.Errorf("generation %d is %d, not active", active, v.Status)
+				}
+				return v.Primary, v.Backup, nil
+			}
+		}
+		return nil, nil, fmt.Errorf("active generation %d is not in the vault registry", active)
+	}
+	return b.fetchLegacyPublicKeys(ctx)
+}
+
+// fetchLegacyPublicKeys reads the single pre-rotation key pair ("pubkey"/"backupkey").
+func (b *Bot) fetchLegacyPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error) {
 	vars := map[string]interface{}{
 		"contractId": b.BotConfig.ContractId(),
 		"keys":       []string{contractinterface.PrimaryPublicKeyStateKey, contractinterface.BackupPublicKeyStateKey},

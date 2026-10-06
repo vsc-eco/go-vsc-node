@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"vsc-node/cmd/mapping-bot/chain"
@@ -24,6 +26,14 @@ func releaseBlockLease(bot *mapper.Bot, blockHeight uint64, instanceID string) {
 	defer cancel()
 	if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
 		bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+	}
+}
+
+// sleepOrStop waits d, or less if a shutdown signal arrives.
+func sleepOrStop(stop context.Context, d time.Duration) {
+	select {
+	case <-stop.Done():
+	case <-time.After(d):
 	}
 }
 
@@ -132,8 +142,20 @@ func main() {
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, bot)
 
+	// BOT-LEASE-1 (testnet 2026-10-06): a stop used to kill the bot mid-cycle with
+	// the block lease held, so the next start sat idle and silent for up to
+	// 2 x BlockInterval (20 minutes on BTC). Stop between cycles instead: every
+	// cycle releases its lease before the loop comes round again.
+	stop, stopCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopCancel()
+	var lastLeaseWaitLog time.Time
+
 	var wg sync.WaitGroup
 	for {
+		if stop.Err() != nil {
+			bot.L.Info("shutdown signal received; stopping between cycles with no block lease held")
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		// Periodic cleanup (every 24h)
@@ -161,7 +183,7 @@ func main() {
 			startHeight, err := bot.Chain.Client.GetTipHeight()
 			if err != nil {
 				bot.L.Error("error fetching tip height", "err", err)
-				time.Sleep(chainCfg.SleepInterval)
+				sleepOrStop(stop, chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
@@ -169,7 +191,7 @@ func main() {
 
 			if err := bot.Db.State.SetBlockHeight(ctx, startHeight); err != nil {
 				bot.L.Error("error seeding block height", "err", err)
-				time.Sleep(chainCfg.SleepInterval)
+				sleepOrStop(stop, chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
@@ -180,13 +202,18 @@ func main() {
 		if err != nil {
 			bot.L.Error("error acquiring block lease", "height", blockHeight, "err", err)
 			cancel()
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			continue
 		}
 		if !leaseAcquired {
-			// Another bot instance is processing this height right now.
+			// Another bot instance is processing this height right now (or a
+			// previous instance stopped without releasing it; the lease expires).
+			if time.Since(lastLeaseWaitLog) > time.Minute {
+				bot.L.Info("waiting for another instance's block lease", "height", blockHeight)
+				lastLeaseWaitLog = time.Now()
+			}
 			cancel()
-			time.Sleep(2 * time.Second)
+			sleepOrStop(stop, 2*time.Second)
 			continue
 		}
 
@@ -198,13 +225,13 @@ func main() {
 			bot.HandleConfirmations()
 			bot.HandleVaultRotation()
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		} else if err != nil {
 			bot.L.Error("error fetching block hash", "height", blockHeight, "err", err)
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
@@ -212,7 +239,7 @@ func main() {
 		if err != nil {
 			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
@@ -241,7 +268,7 @@ func main() {
 		cancel()
 		// If the block wasn't processed (e.g., not yet in the contract), sleep before retrying.
 		if !mapped {
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 		}
 	}
 }

@@ -22,6 +22,8 @@ func NewBTCMainnet(httpClient *http.Client) *ChainConfig {
 		HistoricalTxLookback: 1080, // ~7.5 days
 		ChainParams:          &chaincfg.MainNetParams,
 		DefaultDbName:        "btc-mapping-bot",
+		// contract constants.MinConfirmationDepth: 4 on mainnet
+		ConfirmationsRequired: 4,
 	}
 }
 
@@ -38,6 +40,8 @@ func NewBTCTestnet4(httpClient *http.Client) *ChainConfig {
 		HistoricalTxLookback: 1080,
 		ChainParams:          &chaincfg.TestNet3Params,
 		DefaultDbName:        "btc-mapping-bot-testnet",
+		// contract constants.MinConfirmationDepth: 2 on testnet3/testnet4
+		ConfirmationsRequired: 2,
 	}
 }
 
@@ -54,6 +58,8 @@ func NewBTCTestnet3(httpClient *http.Client) *ChainConfig {
 		HistoricalTxLookback: 1080,
 		ChainParams:          &chaincfg.TestNet3Params,
 		DefaultDbName:        "btc-mapping-bot-testnet",
+		// contract constants.MinConfirmationDepth: 2 on testnet3/testnet4
+		ConfirmationsRequired: 2,
 	}
 }
 
@@ -70,5 +76,7 @@ func NewBTCRegtest(httpClient *http.Client) *ChainConfig {
 		HistoricalTxLookback: 100,
 		ChainParams:          &chaincfg.RegressionNetParams,
 		DefaultDbName:        "btc-mapping-bot-regtest",
+		// contract constants.MinConfirmationDepth: 2 on regtest
+		ConfirmationsRequired: 2,
 	}
 }

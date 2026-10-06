@@ -130,6 +130,7 @@ func TestHandleConfirmations_SkipsSpendBelowPruneFloor(t *testing.T) {
 	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
 	gql.lastHeight = "1000"
 	gql.pruneFloor = "600"
+	gql.txSpends = map[string]*contractinterface.SigningData{"txPruned": {}}
 	sentTxConfirmedAt(t, state, chainClient, "txPruned", 500)
 
 	bot.HandleConfirmations()
@@ -146,6 +147,7 @@ func TestHandleConfirmations_ProvesSpendAtThePruneFloor(t *testing.T) {
 	gql.lastHeight = "1000"
 	gql.pruneFloor = "500"
 	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+	gql.txSpends = map[string]*contractinterface.SigningData{"txAtFloor": {}}
 	sentTxConfirmedAt(t, state, chainClient, "txAtFloor", 500)
 
 	bot.HandleConfirmations()
