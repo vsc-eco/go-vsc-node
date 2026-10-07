@@ -217,11 +217,13 @@ func readCommitteeBondAt(ctx context.Context, d *Devnet, node int, account strin
 // on this branch).
 //
 // The hive_blocks document layout (modules/db/vsc/hive_blocks) puts
-// the block payload under `block`. Hive ops are stored as
-// {operations: [{type, value: {...}}]} per Hive's standard JSON
-// shape. The exact path may vary across pre-/post-HAF formats —
-// this helper does a loose substring scan rather than a strict
-// path lookup for that reason.
+// the block payload under `block`, with each stored tx's ops at
+// block.transactions[].operations[].type. The streamer strips the
+// "_operation" suffix before filtering (modules/hive/streamer
+// streamer.go), so the stored type is "feed_publish". Devnet nodes
+// run the Hive API streamer (no HafDbURI), so full ops are stored;
+// a HAF-sourced node keeps only a {block_number, timestamp} shim and
+// would count 0 here.
 func countHiveBlocksWithFeedPublishOps(ctx context.Context, d *Devnet, node int, fromBlock, toBlock uint64) (int64, error) {
 	client, err := d.mongoClient(ctx)
 	if err != nil {
@@ -230,15 +232,12 @@ func countHiveBlocksWithFeedPublishOps(ctx context.Context, d *Devnet, node int,
 	defer client.Disconnect(ctx)
 
 	coll := client.Database(d.nodeDbName(node)).Collection("hive_blocks")
-	// $where is brittle but the hive_blocks schema mixes top-level
-	// and nested fields across versions; a regex over the serialised
-	// doc is the most robust cross-version count. The collection is
-	// indexed by block number, so the range filter is the cheap part.
+	// Match the op type field itself: a $regex on the `block`
+	// subdocument never matches (Mongo applies $regex to string
+	// values only), which made this count 0 on every run.
 	count, err := coll.CountDocuments(ctx, bson.M{
-		"$and": []bson.M{
-			{"block.block_number": bson.M{"$gte": fromBlock, "$lte": toBlock}},
-			{"block": bson.M{"$regex": "feed_publish"}},
-		},
+		"block.block_number":                 bson.M{"$gte": fromBlock, "$lte": toBlock},
+		"block.transactions.operations.type": "feed_publish",
 	})
 	if err != nil {
 		return 0, fmt.Errorf("magi-%d: counting feed_publish hive_blocks in [%d, %d]: %w", node, fromBlock, toBlock, err)
