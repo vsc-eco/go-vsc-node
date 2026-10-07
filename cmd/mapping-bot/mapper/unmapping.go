@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
@@ -72,6 +73,7 @@ func (b *Bot) HandleUnmap() {
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
 			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
 				notePostFailed(tx.TxId)
+				noteInputsMissing(tx.TxId, err)
 				b.L.Warn("transaction failed to post after retries; next attempt in "+postRetryInterval.String(), "err", err, "txId", tx.TxId)
 				continue
 			}
@@ -378,6 +380,26 @@ func clearPostFailed(txId string) {
 	postFailMu.Lock()
 	defer postFailMu.Unlock()
 	delete(postFailedAt, txId)
+	delete(inputsMissing, txId)
+}
+
+// inputsMissing remembers spends Bitcoin refused because an input does not exist
+// or is already spent. A fee bump cannot help those (BOT-REDRIVE-1).
+var inputsMissing = map[string]bool{}
+
+func noteInputsMissing(txId string, err error) {
+	if err == nil || !strings.Contains(err.Error(), "missingorspent") {
+		return
+	}
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	inputsMissing[txId] = true
+}
+
+func refusedForMissingInputs(txId string) bool {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	return inputsMissing[txId]
 }
 
 var (

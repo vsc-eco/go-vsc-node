@@ -38,5 +38,10 @@ const VaultActiveGenKey = "va"
 // presence means a migration sweep is in flight and not yet settled.
 const MigrationSweepPrefix = "ms" + DirPathDelimiter
 
+// SpendGroupPrefix keys a re-driven sweep's spend group ("g-<smallest input id>").
+// The contract writes it on the first re-drive, so its presence means the sweep
+// has been re-driven at least once.
+const SpendGroupPrefix = "g" + DirPathDelimiter
+
 // PendingUnmapPrefix keys the per-unmap record ("us-<txid>", delete-at-confirm).
 const PendingUnmapPrefix = "us" + DirPathDelimiter

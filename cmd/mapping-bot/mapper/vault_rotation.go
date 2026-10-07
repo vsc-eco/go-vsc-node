@@ -175,6 +175,31 @@ func clearFeeReserveWarning(contractId string) {
 	delete(feeReserveWarned, contractId)
 }
 
+// redriveHeldBack reports whether a stale sweep must NOT be re-driven (BOT-REDRIVE-1).
+//
+// A fee bump cannot help a sweep Bitcoin refuses for a missing or spent input. The
+// contract wants ONE re-drive before such a sweep can be abandoned, and counts the
+// abandon wait (SweepAbandonBlocks) from the group's latest build, so re-driving it
+// every stale window kept that wait from ever ending: on the shared testnet vault
+// the phantom legacy coin would have been re-driven ~every 13 blocks, each a TSS
+// signature and ~10,000 RC, until the 64-member group cap. Re-drive it once, then
+// leave it for abandonSweep. A sweep stuck on fee is re-driven as before.
+func (b *Bot) redriveHeldBack(ctx context.Context, txId string) bool {
+	if !refusedForMissingInputs(txId) {
+		return false
+	}
+	redriven, err := b.sweepAlreadyRedriven(ctx, txId)
+	if err != nil {
+		b.L.Debug("vault rotation: cannot read the sweep's spend group; not re-driving this cycle", "txId", txId, "error", err)
+		return true
+	}
+	if redriven && warnUnprovableOnce("redrive-"+txId) {
+		b.L.Warn("vault rotation: a sweep's input is missing or already spent on Bitcoin and it was re-driven once; "+
+			"a fee bump cannot help, so it is left for abandonSweep (permissionless, SweepAbandonBlocks after its last build)", "txId", txId)
+	}
+	return redriven
+}
+
 // isUneconomicResidual reports whether migrateVault refused because what's left
 // of the retiring generation cannot pay for its own sweep. That is NOT a
 // transient failure: retrying forever would never drain it. The escape hatch is
@@ -384,6 +409,9 @@ func (b *Bot) HandleVaultRotation() {
 	if inFlight {
 		if h, herr := b.FetchContractHeight(ctx); herr == nil {
 			for _, txId := range noteSweepsInFlight(inFlightSweeps, h) {
+				if b.redriveHeldBack(ctx, txId) {
+					continue
+				}
 				if !mayIssueVaultOp(contractId) {
 					break
 				}

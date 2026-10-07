@@ -207,6 +207,42 @@ func (b *Bot) InFlightSweepTxIds(ctx context.Context, pendingTxIds []string) ([]
 	return sweeps, nil
 }
 
+// sweepAlreadyRedriven reports whether the in-flight sweep txId belongs to a spend
+// group, i.e. it or its original has been re-driven at least once. The group is
+// keyed by the smallest input id of the sweep record ("ms-<txid>": fee u64,
+// successor gen u32, build height u32, n u16, n input ids u16, successor address).
+func (b *Bot) sweepAlreadyRedriven(ctx context.Context, txId string) (bool, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.MigrationSweepPrefix + txId})
+	if err != nil {
+		return false, err
+	}
+	rec, ok := st[contractinterface.MigrationSweepPrefix+txId]
+	if !ok {
+		return false, fmt.Errorf("no sweep record for %s", txId)
+	}
+	const head = 8 + 4 + 4
+	if len(rec) < head+2 {
+		return false, fmt.Errorf("sweep record too short (%d bytes)", len(rec))
+	}
+	n := int(binary.BigEndian.Uint16(rec[head:]))
+	if n == 0 || len(rec) < head+2+2*n {
+		return false, fmt.Errorf("sweep record has a malformed input list")
+	}
+	min := binary.BigEndian.Uint16(rec[head+2:])
+	for i := 1; i < n; i++ {
+		if id := binary.BigEndian.Uint16(rec[head+2+2*i:]); id < min {
+			min = id
+		}
+	}
+	key := contractinterface.SpendGroupPrefix + strconv.FormatUint(uint64(min), 10)
+	g, err := b.fetchStateHex(ctx, []string{key})
+	if err != nil {
+		return false, err
+	}
+	raw, ok := g[key]
+	return ok && len(raw) > 0, nil
+}
+
 // FetchContractHeight reads the contract's committed last BTC height ("h"). The
 // stuck-sweep re-drive clock is measured against this, mirroring the contract's
 // own staleness gate (which compares its LastHeight to the sweep's BuildHeight).
