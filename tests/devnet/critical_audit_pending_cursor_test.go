@@ -100,7 +100,9 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 	t.Logf("submitting unstake B for %s", targetAccount)
-	if err := d.Unstake(ctx, targetAccount, "1.000"); err != nil {
+	// A different amount: the same op half a second later is the same Hive
+	// transaction, which hived refuses as a duplicate.
+	if err := d.Unstake(ctx, targetAccount, "1.001"); err != nil {
 		t.Fatalf("broadcasting unstake B: %v", err)
 	}
 
