@@ -68,7 +68,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	}
 
 	cfg := tssTestConfig()
-	d, ctx := startDevnetNoKey(t, cfg, 20*time.Minute)
+	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(30*time.Minute))
 
 	// Wait until every node has ingested a running election. The unstake
 	// guard from PR #181 (#96) rejects pre-election unstakes, and we
@@ -133,7 +133,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	// then give state-engine a few extra slots to actually process the
 	// release. UpdateBalances runs every slot, so 4 slots is generous.
 	t.Logf("waiting for release epoch %d on magi-1...", releaseEpoch)
-	if err := d.waitForElectionEpoch(ctx, 1, releaseEpoch, 12*time.Minute); err != nil {
+	if err := d.waitForElectionEpoch(ctx, 1, releaseEpoch, time.Duration(float64(12*time.Minute)*vfTimeoutScale())); err != nil {
 		t.Fatalf("magi-1 never ingested release epoch %d: %v", releaseEpoch, err)
 	}
 	time.Sleep(45 * time.Second)
