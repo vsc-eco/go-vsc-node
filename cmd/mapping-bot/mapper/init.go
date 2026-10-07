@@ -348,7 +348,6 @@ func (b *Bot) awaitTxStatus(ctx context.Context, txId string, action string) (st
 	}
 }
 
-// postTxWithRetry retries a transaction broadcast up to maxAttempts times with exponential backoff.
 // isAlreadyBroadcast reports a broadcast refused only because the network already
 // has this exact transaction: mined ("Transaction outputs already in utxo set", or
 // "Transaction already in block chain" on older nodes, both RPC -27) or waiting in
@@ -377,6 +376,7 @@ func isAlreadyBroadcast(err error) bool {
 	return false
 }
 
+// postTxWithRetry retries a transaction broadcast up to maxAttempts times with exponential backoff.
 func (b *Bot) postTxWithRetry(rawTx string, maxAttempts int) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
