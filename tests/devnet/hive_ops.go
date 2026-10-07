@@ -122,6 +122,8 @@ func (d *Devnet) Unstake(ctx context.Context, accountName string, amount string)
 	wif := d.cfg.InitminerWIF
 
 	log.Printf("[devnet] unstaking %s %s from %s", amount, "TESTS", accountName)
-	_, err := d.BroadcastCustomJSON("vsc.consensus_unstake", []string{"hive:" + accountName}, payload, wif)
+	// required_auths takes the bare Hive account (as ledgerOp does): hived has no
+	// account named "hive:magi.test1" and refuses the whole transaction.
+	_, err := d.BroadcastCustomJSON("vsc.consensus_unstake", []string{accountName}, payload, wif)
 	return err
 }
