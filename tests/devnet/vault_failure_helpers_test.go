@@ -983,7 +983,9 @@ func vfDevnetBudgetCap() time.Duration {
 func vfRegisterGenesis(t *testing.T, d *Devnet, ctx context.Context, node int, cid, payload string) string {
 	t.Helper()
 	attempts := 1
-	if v, err := strconv.Atoi(os.Getenv("DEVNET_FLOOR_CONSENSUS")); err == nil && v >= 8 {
+	// v2 (and with it BRK-2) is in force from 0.8, whether the floor came from
+	// DEVNET_FLOOR_CONSENSUS or from a test's own sysconfig (the POA tests).
+	if v, err := strconv.Atoi(os.Getenv("DEVNET_FLOOR_CONSENSUS")); (err == nil && v >= 8) || vfActiveConsensus(d, ctx) >= 8 {
 		attempts = int(math.Ceil(20 * vfTimeoutScale()))
 	}
 	s := ""
