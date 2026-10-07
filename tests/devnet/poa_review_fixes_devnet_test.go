@@ -234,7 +234,9 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 		t.Fatalf("gen0 keygen: %v", err)
 	}
 	vfWaitPreparams(t, d, ctx, 12*time.Minute)
-	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey", fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, kd0.PublicKey, backupPubKeyG)); !isOK(s) {
+	// At the POA floor (0.9) v2 is in force and registration waits for the key's
+	// BRK-2 check-signature, which lands a little after the key is active.
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid, fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, kd0.PublicKey, backupPubKeyG)); !isOK(s) {
 		t.Fatalf("gen0 register: %s", s)
 	}
 	st0 := -1
