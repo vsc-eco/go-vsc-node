@@ -19,8 +19,11 @@ import (
 //     snapshot_range_from, snapshot_range_to, total_distributed_hbd,
 //     residual_hbd) are byte-identical across every node for the
 //     same epoch — i.e. settlement consensus actually converged.
-//  3. TotalDistributedHBD > 0 — at least one DistributionEntry was
-//     produced; the settlement didn't degenerate to a no-op.
+//  3. The marker pays out nothing it was not given: nothing in this
+//     setup credits the pendulum:nodes bucket (only a whitelisted pool's
+//     swap does), and a marker balances to the bucket (distributed +
+//     residual), so both are 0. That a credited bucket IS paid out is
+//     proven by TestPendulumLPFloorDevnet, which fires a real swap.
 //  4. Snapshot range is well-formed (from <= to, both > 0).
 //
 // What's deferred to a follow-up (call it M3.5):
@@ -49,9 +52,8 @@ import (
 //   - Settlement never lands: marker stays nil after the timeout
 //     (pendulum scheduler is wedged, or oracle window never produced
 //     usable inputs).
-//   - Settlement produces zero distribution: marker.TotalDistributedHBD
-//     == 0 (committee bond reader returned no bonds, fee inputs are
-//     all zero, or stabilizer suppressed everything).
+//   - Settlement pays out of an empty bucket (distributed or residual
+//     nonzero with no swap credited).
 //
 // Run with:
 //
@@ -115,9 +117,9 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	}
 
 	// Assertion 1: well-formed marker on magi-1 (sanity baseline).
-	if first.TotalDistributedHBD <= 0 {
-		t.Errorf("settlement marker on magi-1 has total_distributed_hbd=%d (expected > 0) — settlement produced no rewards",
-			first.TotalDistributedHBD)
+	if first.TotalDistributedHBD != 0 || first.ResidualHBD != 0 {
+		t.Errorf("settlement marker on magi-1 has total_distributed_hbd=%d residual_hbd=%d with nothing credited to the bucket (expected 0, 0)",
+			first.TotalDistributedHBD, first.ResidualHBD)
 	}
 	if first.SnapshotRangeTo == 0 || first.SnapshotRangeFrom > first.SnapshotRangeTo {
 		t.Errorf("settlement marker on magi-1 has malformed snapshot range [%d, %d]",
