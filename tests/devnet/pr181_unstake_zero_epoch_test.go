@@ -148,18 +148,35 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 		t.Fatalf("broadcasting later unstake: %v", err)
 	}
 	exitHalt := vfActiveConsensus(d, ctx) >= 7
-	if exitHalt {
-		assertTxRefused(t, d, ctx, 1, txL)
+	// Wait for the verdict rather than a fixed time: the action record is only
+	// written when the L2 block closes, which under load took longer than 30 s.
+	status := ""
+	for deadline := time.Now().Add(3 * time.Minute); time.Now().Before(deadline); time.Sleep(3 * time.Second) {
+		status, _ = d.FindTransactionStatus(ctx, 1, txL)
+		if status == "CONFIRMED" || status == "PROCESSED" || status == "FAILED" {
+			break
+		}
 	}
-	time.Sleep(30 * time.Second)
+	t.Logf("later unstake %s: %s (exit-halt in force: %v)", txL, status, exitHalt)
 	want := 2
 	if exitHalt {
 		want = 1
+		if status != "FAILED" {
+			t.Errorf("later unstake %s by an electable seat is %q at >= 0.7, expected refused by the exit-halt", txL, status)
+		}
+	} else if status != "CONFIRMED" && status != "PROCESSED" {
+		t.Errorf("later unstake %s is %q below 0.7, expected accepted", txL, status)
 	}
 	for n := 1; n <= cfg.Nodes; n++ {
-		acts, err := unstakeActions(ctx, d, n, targetAccount)
-		if err != nil {
-			t.Fatalf("reading unstake actions on magi-%d: %v", n, err)
+		var acts []unstakeAction
+		for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(3 * time.Second) {
+			acts, err = unstakeActions(ctx, d, n, targetAccount)
+			if err != nil {
+				t.Fatalf("reading unstake actions on magi-%d: %v", n, err)
+			}
+			if len(acts) >= want || time.Now().After(deadline) {
+				break
+			}
 		}
 		if len(acts) != want {
 			t.Errorf("magi-%d: %d unstake actions after the later unstake, expected %d (exit-halt in force: %v)", n, len(acts), want, exitHalt)
