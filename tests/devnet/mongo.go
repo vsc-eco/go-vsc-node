@@ -345,14 +345,21 @@ func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock 
 // an election with epoch >= minEpoch.
 func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch uint64, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	highest := int64(-1)
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("node %d: election epoch %d never arrived (timeout %v)", node, minEpoch, timeout)
+			return fmt.Errorf("node %d: election epoch %d never arrived (timeout %v, highest epoch seen %d)", node, minEpoch, timeout, highest)
 		}
 		client, err := d.mongoClient(ctx)
 		if err == nil {
 			coll := client.Database(d.nodeDbName(node)).Collection("elections")
 			count, _ := coll.CountDocuments(ctx, bson.M{"epoch": bson.M{"$gte": minEpoch}})
+			var top struct {
+				Epoch int64 `bson:"epoch"`
+			}
+			if coll.FindOne(ctx, bson.M{}, options.FindOne().SetSort(bson.D{{Key: "epoch", Value: -1}})).Decode(&top) == nil {
+				highest = top.Epoch
+			}
 			client.Disconnect(ctx)
 			if count > 0 {
 				return nil
