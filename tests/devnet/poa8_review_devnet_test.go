@@ -85,14 +85,27 @@ func (d *Devnet) feedOnly(ctx context.Context, node, keep int) error {
 // session at bh ("reshare accusations"), and whether it logged one.
 func leaderAccused(ctx context.Context, d *Devnet, node, bh int) ([]string, bool) {
 	out, _ := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf(
-		"docker logs %s 2>&1 | grep 'reshare accusations' | grep -o 'sessionId=reshare-%d-0-test-key-main[^ ]* .*accused=\"\\[[^]]*\\]' | head -1", d.containerName(node), bh)).CombinedOutput()
-	line := string(out)
-	i := strings.Index(line, "accused=\"[")
+		"docker logs %s 2>&1 | grep 'reshare accusations' | grep -o 'sessionId=reshare-%d-0-test-key-main[^ ]* .*accused=\"\\?\\[[^]]*\\]' | head -1", d.containerName(node), bh)).CombinedOutput()
+	return parseAccused(string(out))
+}
+
+// parseAccused reads the accused list off a "reshare accusations" line. The
+// logger quotes the value only when it has a space, so a list of one name is
+// logged as accused=[magi.test7] and a longer one as accused="[a b]".
+func parseAccused(line string) ([]string, bool) {
+	i := strings.Index(line, "accused=")
 	if i < 0 {
 		return nil, false
 	}
-	list := strings.TrimSuffix(strings.TrimSpace(line[i+len("accused=\"["):]), "]")
-	return strings.Fields(list), true
+	v := strings.TrimPrefix(line[i+len("accused="):], "\"")
+	if !strings.HasPrefix(v, "[") {
+		return nil, false
+	}
+	end := strings.Index(v, "]")
+	if end < 0 {
+		return nil, false
+	}
+	return strings.Fields(v[1:end]), true
 }
 
 // ledSession reports whether node broadcast the commitments of the session at
@@ -438,4 +451,26 @@ func sliceHas(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+// TestParseAccused: a one-name list is logged without quotes. Before, only the
+// quoted form was read, so a leader that named one party looked like a leader
+// that logged nothing and the session was dropped from the count.
+func TestParseAccused(t *testing.T) {
+	cases := []struct {
+		line   string
+		want   []string
+		logged bool
+	}{
+		{`sessionId=reshare-380-0-test-key-main-266f keyId=test-key-main accused=[magi.test7]`, []string{"magi.test7"}, true},
+		{`sessionId=reshare-340-0-test-key-main-266f keyId=test-key-main accused="[magi.test1 magi.test7]`, []string{"magi.test1", "magi.test7"}, true},
+		{`sessionId=reshare-340-0-test-key-main-266f keyId=test-key-main accused=[]`, nil, true},
+		{"", nil, false},
+	}
+	for _, c := range cases {
+		got, logged := parseAccused(c.line)
+		if logged != c.logged || strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("parseAccused(%q) = %v, %v; want %v, %v", c.line, got, logged, c.want, c.logged)
+		}
+	}
 }
