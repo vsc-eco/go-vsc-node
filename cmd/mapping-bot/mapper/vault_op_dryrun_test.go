@@ -2,9 +2,14 @@ package mapper
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSizeVaultOpByDryRun(t *testing.T) {
@@ -161,4 +166,51 @@ func TestVaultOpDryRun_RetireWithNoTransitionIsNotSubmitted(t *testing.T) {
 			t.Fatalf("%q: expected one submission, got %d", ret, len(gql.submitted))
 		}
 	}
+}
+
+// sweepRecordHex encodes an "ms-" record the way the contract does: fee u64,
+// successor gen u32, build height u32, n u16, n input ids u16, successor address.
+func sweepRecordHex(ids ...uint16) string {
+	b := make([]byte, 0, 18+2*len(ids)+8)
+	b = binary.BigEndian.AppendUint64(b, 135)
+	b = binary.BigEndian.AppendUint32(b, 1)
+	b = binary.BigEndian.AppendUint32(b, 5156868)
+	b = binary.BigEndian.AppendUint16(b, uint16(len(ids)))
+	for _, id := range ids {
+		b = binary.BigEndian.AppendUint16(b, id)
+	}
+	return hex.EncodeToString(append(b, []byte("tb1qsuccessor")...))
+}
+
+// BOT-REDRIVE-1 (testnet 2026-10-07): the phantom legacy sweep (input not on
+// Bitcoin) is re-driven once, which the contract needs before abandonSweep, and
+// then left alone; every further re-drive would restart the abandon wait.
+func TestRedriveHeldBack_MissingInputsRedrivenOnce(t *testing.T) {
+	const phantom = "ebc108a80fb99f7a299ebfa26d286c1032651216577a82f804dc60ceff41f5a6"
+	const batch = "1bc5b3833e9f5ebef706699d6f3da804fade3e84ebb389eb28c8b2261314f922"
+	refused := errors.New(`API returned status 400: sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}`)
+	t.Cleanup(func() { clearPostFailed(phantom); clearPostFailed(batch) })
+	ctx := context.Background()
+
+	// Not refused for missing inputs (stuck on fee, or never refused): re-drive as before.
+	bot := keyNode(t, map[string]string{"ms-" + phantom: sweepRecordHex(16), "g-16": "00"})
+	assert.False(t, bot.redriveHeldBack(ctx, phantom), "a fee-stuck sweep keeps its re-drives")
+
+	noteInputsMissing(phantom, refused)
+	// Refused, never re-driven: the one re-drive abandonSweep requires goes ahead.
+	bot = keyNode(t, map[string]string{"ms-" + phantom: sweepRecordHex(16)})
+	assert.False(t, bot.redriveHeldBack(ctx, phantom), "the first re-drive must happen")
+	// Refused and its spend group exists (re-driven once): leave it for abandonSweep.
+	bot = keyNode(t, map[string]string{"ms-" + phantom: sweepRecordHex(16), "g-16": "00"})
+	assert.True(t, bot.redriveHeldBack(ctx, phantom), "no second re-drive for missing inputs")
+	// Record unreadable: hold back this cycle rather than guess.
+	bot = keyNode(t, map[string]string{})
+	assert.True(t, bot.redriveHeldBack(ctx, phantom))
+
+	// The group is keyed by the smallest input id of the record.
+	noteInputsMissing(batch, refused)
+	bot = keyNode(t, map[string]string{"ms-" + batch: sweepRecordHex(40, 12, 33), "g-12": "00"})
+	assert.True(t, bot.redriveHeldBack(ctx, batch))
+	bot = keyNode(t, map[string]string{"ms-" + batch: sweepRecordHex(40, 12, 33), "g-33": "00"})
+	assert.False(t, bot.redriveHeldBack(ctx, batch))
 }
