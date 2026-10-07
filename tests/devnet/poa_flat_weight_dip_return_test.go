@@ -118,6 +118,20 @@ func TestPoaFlatWeightDipThenReturn(t *testing.T) {
 	}
 	t.Logf("DIP: %s fully unstaked (tx %s) at ~block %d (epoch %d)", dipper, txU, bhUnstake, epUnstake)
 
+	// From 0.7 the collateral exit-halt holds an electable seat's bond
+	// (poa_seats.go poaExitHalt), so this unstake is REFUSED and a seated member
+	// cannot dip by unstaking at all. The dip that remains is a slash; a slashed
+	// seat that tops up re-serves the inclusion window before it returns
+	// (TestPoaSlashedSeatReturnsAfterTopUp, RED at 0.9 by design: item 14,
+	// accepted). At such a floor the scenario below never starts: assert the
+	// refusal and stop. (It used to wait 24 elections for an exit the protocol
+	// forbids, and fail.)
+	if vfActiveConsensus(d, ctx) >= 7 {
+		assertTxRefused(t, d, ctx, 2, txU)
+		t.Logf("exit-halt in force: the seated dipper's full unstake was refused, as required")
+		return
+	}
+
 	// Poll ratified elections until the dipper is gone (their stake is 0 — a
 	// legitimate exit, NOT a reset). The floor guard must NOT resurrect them.
 	epochOut, err := d.pollUntilMembership(ctx, t, stays, dipper, false, epUnstake+1, 24, 12*time.Minute)
