@@ -136,7 +136,22 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	if err := d.waitForElectionEpoch(ctx, 1, releaseEpoch, time.Duration(float64(12*time.Minute)*vfTimeoutScale())); err != nil {
 		t.Fatalf("magi-1 never ingested release epoch %d: %v", releaseEpoch, err)
 	}
-	time.Sleep(45 * time.Second)
+	// The release runs in the next L2 slots (UpdateBalances). A fixed 45 s was
+	// shorter than two slots under load (10-07: epoch 6 arrived, both actions
+	// still pending). Wait, bounded, until every node has completed both.
+	for deadline := time.Now().Add(time.Duration(float64(4*time.Minute) * vfTimeoutScale())); ; time.Sleep(10 * time.Second) {
+		done := 0
+		for n := 1; n <= cfg.Nodes; n++ {
+			for _, sib := range siblings {
+				if rec, err := readActionById(ctx, d, n, sib.Id); err == nil && rec.Status == "complete" {
+					done++
+				}
+			}
+		}
+		if done == cfg.Nodes*len(siblings) || time.Now().After(deadline) {
+			break
+		}
+	}
 
 	// Both action records should now be status="complete" on every node.
 	for n := 1; n <= cfg.Nodes; n++ {
