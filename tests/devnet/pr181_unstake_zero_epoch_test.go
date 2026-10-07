@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"vsc-node/modules/common/params"
+
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // TestPR181ConsensusUnstakeRejectedBeforeFirstElection verifies the
@@ -41,6 +41,16 @@ import (
 //
 // The fix refuses the tx so the user resubmits once the lookup
 // recovers, instead of locking under a stale zero epoch.
+//
+// Superseded 2026-05-22/26 (f935ac6e, 120b765c): the read is now the
+// fail-stop GetElectionInfoOrBlock. A read error blocks instead of becoming
+// epoch 0, so the bug cannot happen, and the genesis election (epoch 0) is a
+// real election: an unstake under it is accepted and locked to epoch
+// 0 + CONSENSUS_UNSTAKE_LOCK_EPOCHS. The test now checks that invariant on
+// every recorded unstake (lock epoch = the epoch in force at its block + the
+// lock period), which the original bug, a zero epoch at a later epoch,
+// breaks. From 0.7 the POA exit-halt also refuses an unstake by an electable
+// seat, so the post-election unstake is refused there.
 //
 // Devnet-exercisable window:
 //
@@ -113,103 +123,105 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 		cancel()
 	}
 
-	// Give magid extra blocks to fully process the early unstake either
-	// way (recorded as rejected, or accepted under the buggy code path).
+	// Give magid extra blocks to process the early unstake.
 	time.Sleep(15 * time.Second)
 
-	// Snapshot how many unstake actions exist after the pre-election
-	// window. Under the fix this should be 0; under the bug it would be 1.
-	earlyCounts := make([]int64, cfg.Nodes)
+	// Under the genesis election the early unstake is accepted (see above).
 	for n := 1; n <= cfg.Nodes; n++ {
-		c, err := countUnstakeActions(ctx, d, n, targetAccount)
+		acts, err := unstakeActions(ctx, d, n, targetAccount)
 		if err != nil {
-			t.Fatalf("counting early unstake actions on magi-%d: %v", n, err)
+			t.Fatalf("reading unstake actions on magi-%d: %v", n, err)
 		}
-		earlyCounts[n-1] = c
-		t.Logf("magi-%d: %d unstake action(s) recorded after pre-election window (expect 0)", n, c)
+		if len(acts) != 1 {
+			t.Fatalf("PRECONDITION: magi-%d holds %d unstake actions after the early unstake, expected 1 (accepted under the genesis election); if 0, it landed after the first election", n, len(acts))
+		}
+		assertUnstakeLockEpoch(t, d, ctx, n, acts[0])
 	}
 
-	// Now submit a second unstake — this one must succeed because epoch >= 1
-	// is in place.
+	// A second unstake after the first election. From 0.7 the POA exit-halt
+	// refuses it (magi.test1 is an electable committee seat); below 0.7 it is
+	// accepted and locked like the first.
 	laterAmount := "2.000"
 	t.Logf("submitting later consensus_unstake for %s (%s) post-election", targetAccount, laterAmount)
-	if err := d.Unstake(ctx, targetAccount, laterAmount); err != nil {
+	txL, err := d.ConsensusUnstake(witnessIdx, laterAmount)
+	if err != nil {
 		t.Fatalf("broadcasting later unstake: %v", err)
 	}
-
-	// Wait a generous window for the later unstake's L1 op to be ingested,
-	// processed, and recorded in ledger_actions.
-	time.Sleep(30 * time.Second)
-
-	// Verify post-state: each node should have exactly one MORE unstake
-	// action than it had after the pre-election window — the late one.
-	for n := 1; n <= cfg.Nodes; n++ {
-		c, err := countUnstakeActions(ctx, d, n, targetAccount)
-		if err != nil {
-			t.Fatalf("counting final unstake actions on magi-%d: %v", n, err)
-		}
-		expected := earlyCounts[n-1] + 1
-		if c != expected {
-			t.Errorf("magi-%d: expected %d unstake actions after post-election unstake, got %d", n, expected, c)
-		}
+	exitHalt := vfActiveConsensus(d, ctx) >= 7
+	if exitHalt {
+		assertTxRefused(t, d, ctx, 1, txL)
 	}
-
-	// Final guard: ensure earlyCounts was 0 everywhere. If it was >= 1, the
-	// early unstake was NOT rejected — the fix is not in effect on this
-	// node. We assert this AFTER the late-unstake step so we still get the
-	// "+1 happens correctly" signal as a sanity check on the happy path.
+	time.Sleep(30 * time.Second)
+	want := 2
+	if exitHalt {
+		want = 1
+	}
 	for n := 1; n <= cfg.Nodes; n++ {
-		if earlyCounts[n-1] != 0 {
-			t.Errorf("magi-%d: %d unstake action(s) recorded from the pre-election submission — guard did not reject", n, earlyCounts[n-1])
+		acts, err := unstakeActions(ctx, d, n, targetAccount)
+		if err != nil {
+			t.Fatalf("reading unstake actions on magi-%d: %v", n, err)
+		}
+		if len(acts) != want {
+			t.Errorf("magi-%d: %d unstake actions after the later unstake, expected %d (exit-halt in force: %v)", n, len(acts), want, exitHalt)
+		}
+		for _, a := range acts {
+			assertUnstakeLockEpoch(t, d, ctx, n, a)
 		}
 	}
 }
 
-// countUnstakeActions returns the number of `ledger_actions` records on
-// the given node whose `type` indicates consensus_unstake and whose
-// owning account matches `account`. The exact bson layout is:
-//
-//	{ id: ..., type: "unstake" or contains "unstake", to/from: "hive:<account>", ... }
-//
-// We filter loosely on `type` containing "unstake" to be robust to small
-// schema tweaks (e.g. "consensus_unstake" vs "unstake").
-func countUnstakeActions(ctx context.Context, d *Devnet, node int, account string) (int64, error) {
+type unstakeAction struct {
+	Id          string `bson:"id"`
+	BlockHeight uint64 `bson:"block_height"`
+	Data        struct {
+		Epoch int64 `bson:"epoch"`
+	} `bson:"data"`
+}
+
+// unstakeActions returns the consensus_unstake action records whose payout or
+// bonded account is the given witness.
+func unstakeActions(ctx context.Context, d *Devnet, node int, account string) ([]unstakeAction, error) {
 	client, err := d.mongoClient(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer client.Disconnect(ctx)
-
 	coll := client.Database(d.nodeDbName(node)).Collection("ledger_actions")
 	hiveAcc := "hive:" + account
-
-	// Try multiple plausible filters; the action record may key the account
-	// on `to`, `from`, or carry it in the `data` subdoc. Count the union.
-	queries := []bson.M{
-		{"type": bson.M{"$regex": "unstake"}, "to": hiveAcc},
-		{"type": bson.M{"$regex": "unstake"}, "from": hiveAcc},
-		{"type": bson.M{"$regex": "unstake"}, "data.from": hiveAcc},
+	cur, err := coll.Find(ctx, bson.M{"type": "consensus_unstake", "$or": []bson.M{{"to": hiveAcc}, {"data.from": hiveAcc}, {"data.node": hiveAcc}}})
+	if err != nil {
+		return nil, fmt.Errorf("find on magi-%d: %w", node, err)
 	}
-	seen := map[string]struct{}{}
-	for _, q := range queries {
-		cur, err := coll.Find(ctx, q, options.Find().SetProjection(bson.M{"id": 1}))
-		if err != nil {
-			return 0, fmt.Errorf("find on magi-%d: %w", node, err)
-		}
-		for cur.Next(ctx) {
-			var doc struct {
-				Id string `bson:"id"`
-			}
-			if err := cur.Decode(&doc); err != nil {
-				cur.Close(ctx)
-				return 0, fmt.Errorf("decode on magi-%d: %w", node, err)
-			}
-			seen[doc.Id] = struct{}{}
-		}
-		cur.Close(ctx)
+	defer cur.Close(ctx)
+	var out []unstakeAction
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, fmt.Errorf("decode on magi-%d: %w", node, err)
 	}
-	return int64(len(seen)), nil
+	return out, nil
 }
 
-// silence the unused-import linter if mongo isn't referenced directly elsewhere
-var _ = mongo.ErrNoDocuments
+// assertUnstakeLockEpoch: an unstake is locked to the epoch in force when it was
+// processed plus CONSENSUS_UNSTAKE_LOCK_EPOCHS. The record's height is the end of
+// its L2 block, which can sit just past an election, so the epoch one below is
+// accepted too. The #96 bug (a failed read becoming epoch 0) gives a lock of 5 at
+// any later epoch, far below both.
+func assertUnstakeLockEpoch(t *testing.T, d *Devnet, ctx context.Context, node int, a unstakeAction) {
+	t.Helper()
+	var out struct {
+		ElectionByBlockHeight struct {
+			Epoch int64 `json:"epoch"`
+		} `json:"electionByBlockHeight"`
+	}
+	q := fmt.Sprintf(`{ electionByBlockHeight(blockHeight: %d) { epoch } }`, a.BlockHeight)
+	if err := d.gqlQuery(ctx, node, q, nil, &out); err != nil {
+		t.Errorf("magi-%d: election at %d: %v", node, a.BlockHeight, err)
+		return
+	}
+	lock := int64(params.CONSENSUS_UNSTAKE_LOCK_EPOCHS)
+	at := out.ElectionByBlockHeight.Epoch
+	if a.Data.Epoch != at+lock && a.Data.Epoch != at-1+lock {
+		t.Errorf("magi-%d: unstake %s at block %d (epoch %d) is locked to epoch %d, expected %d", node, a.Id, a.BlockHeight, at, a.Data.Epoch, at+lock)
+		return
+	}
+	t.Logf("magi-%d: unstake %s at block %d (epoch %d) locked to epoch %d", node, a.Id, a.BlockHeight, at, a.Data.Epoch)
+}
