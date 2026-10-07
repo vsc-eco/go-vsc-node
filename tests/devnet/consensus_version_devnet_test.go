@@ -3,6 +3,7 @@ package devnet
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ func TestConsensusVersionDevnetManual(t *testing.T) {
 	cfg.MagiEnv = map[string]string{
 		"DEVNET_DETERMINISTIC_BLS": "1", // deterministic witness keys so genesis-elector forms a valid committee
 	}
-	// Floor pinned to 0.2 (one below the running 0.3 binary) so 0.3 is a valid
+	// Floor pinned to 0.2 (below the running binary, 0.3 or later) so 0.3 is a valid
 	// propose target; short election interval to iterate epochs fast.
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
 		ConsensusParams: &params.ConsensusParams{
@@ -59,19 +60,21 @@ func TestConsensusVersionDevnetManual(t *testing.T) {
 
 	const proposer = "magi.test1"
 
-	// 1) Wait until the floor has settled at 0.2 and the nodes report running 0.3.
+	// 1) Wait until the floor has settled at 0.2 and the nodes run a build that
+	// supports the 0.3 line being proposed (0.3 or later: the build moves on, this
+	// scenario does not).
 	deadline := time.Now().Add(8 * time.Minute)
 	var line, running string
 	for time.Now().Before(deadline) {
 		var err error
 		line, running, _, err = d.ConsensusInfo(ctx, 1)
-		if err == nil && line == "0.2" && strings.HasPrefix(running, "0.3") {
+		if err == nil && line == "0.2" && cvRunsAtLeast(running, 3) {
 			break
 		}
 		time.Sleep(3 * time.Second)
 	}
-	if line != "0.2" || !strings.HasPrefix(running, "0.3") {
-		t.Fatalf("[cv] expected active line 0.2 with running 0.3.x, got line=%q running=%q", line, running)
+	if line != "0.2" || !cvRunsAtLeast(running, 3) {
+		t.Fatalf("[cv] expected active line 0.2 with nodes running 0.3 or later, got line=%q running=%q", line, running)
 	}
 	_, epoch, err := d.LocalNodeInfo(ctx, 1)
 	if err != nil {
@@ -216,7 +219,7 @@ func TestConsensusVersionLateAdoptionReindexDevnet(t *testing.T) {
 	cfg.MagiEnv = map[string]string{
 		"DEVNET_DETERMINISTIC_BLS": "1",
 	}
-	// Floor pinned to 0.2 (one below the running 0.3 binary) so 0.3 is a valid
+	// Floor pinned to 0.2 (below the running binary, 0.3 or later) so 0.3 is a valid
 	// propose target; short election interval to iterate epochs fast.
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
 		ConsensusParams: &params.ConsensusParams{
@@ -235,19 +238,19 @@ func TestConsensusVersionLateAdoptionReindexDevnet(t *testing.T) {
 	const proposer = "magi.test1"
 	const downNode = 5 // magi.test5 — its announced 0.3 version stays counted while offline
 
-	// 1) Floor settled at 0.2 with nodes running 0.3.
+	// 1) Floor settled at 0.2 with nodes running 0.3 or later.
 	deadline := time.Now().Add(8 * time.Minute)
 	var line, running string
 	for time.Now().Before(deadline) {
 		var err error
 		line, running, _, err = d.ConsensusInfo(ctx, 1)
-		if err == nil && line == "0.2" && strings.HasPrefix(running, "0.3") {
+		if err == nil && line == "0.2" && cvRunsAtLeast(running, 3) {
 			break
 		}
 		time.Sleep(3 * time.Second)
 	}
-	if line != "0.2" || !strings.HasPrefix(running, "0.3") {
-		t.Fatalf("[cv] expected active line 0.2 with running 0.3.x, got line=%q running=%q", line, running)
+	if line != "0.2" || !cvRunsAtLeast(running, 3) {
+		t.Fatalf("[cv] expected active line 0.2 with nodes running 0.3 or later, got line=%q running=%q", line, running)
 	}
 	t.Logf("[cv] floor stable at 0.2, nodes run %s", running)
 
@@ -344,4 +347,28 @@ func TestConsensusVersionLateAdoptionReindexDevnet(t *testing.T) {
 		t.Fatalf("[cv] node-%d did not recover (re-adopt 0.3 and catch back up) after reindex: %v", downNode, err)
 	}
 	t.Logf("[cv] SUCCESS: node-%d survived restart, caught up late, reindexed on simulated lag, and recovered", downNode)
+}
+
+// cvRunsAtLeast reports whether a running version "0.<c>.<n>" has consensus >= c.
+func cvRunsAtLeast(running string, c int) bool {
+	parts := strings.Split(running, ".")
+	if len(parts) < 2 || parts[0] != "0" {
+		return false
+	}
+	v, err := strconv.Atoi(parts[1])
+	return err == nil && v >= c
+}
+
+func TestCvRunsAtLeast(t *testing.T) {
+	for _, tc := range []struct {
+		running string
+		c       int
+		want    bool
+	}{
+		{"0.3.0", 3, true}, {"0.9.0", 3, true}, {"0.2.5", 3, false}, {"1.0.0", 3, false}, {"", 3, false}, {"0.x.0", 3, false},
+	} {
+		if got := cvRunsAtLeast(tc.running, tc.c); got != tc.want {
+			t.Errorf("cvRunsAtLeast(%q, %d) = %v, want %v", tc.running, tc.c, got, tc.want)
+		}
+	}
 }
