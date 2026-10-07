@@ -384,9 +384,25 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		decStatus, _ = d.FindTransactionStatus(ctx, 1, decTx)
 	}
+	// Sample each node's stored L2 slot until it moves past `before`, for up to
+	// two slots (~60 s) and with the row still bad. The unstake can read FAILED a
+	// few seconds in, before a node one block behind the others has stored the
+	// next slot (10-07: four nodes at 510, one still at 500). A node stuck
+	// retrying the row never stores another block, however long this waits.
 	after := make([]int, cfg.Nodes+1)
-	for n := 1; n <= cfg.Nodes; n++ {
-		after[n], _ = d.pfMaxSlotHeight(ctx, n)
+	for waitStart := time.Now(); ; time.Sleep(2 * time.Second) {
+		moved := 0
+		for n := 1; n <= cfg.Nodes; n++ {
+			if after[n] <= before[n] {
+				after[n], _ = d.pfMaxSlotHeight(ctx, n)
+			}
+			if after[n] > before[n] {
+				moved++
+			}
+		}
+		if moved == cfg.Nodes || time.Since(waitStart) > 60*time.Second {
+			break
+		}
 	}
 	for n := 1; n <= cfg.Nodes; n++ {
 		coll(n).UpdateOne(ctx, badFilter, bson.M{"$set": bson.M{"epoch": uint64(900002)}})
