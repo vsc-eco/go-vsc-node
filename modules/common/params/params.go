@@ -248,25 +248,22 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // transaction succeeded at all. A future addition marked Collateral would
 // additionally shift P — hence the same coordinated-height treatment for both.
 //
-// RE-PINNED 2026-09-29: head 110,331,725 +144,000 blocks (5 DAYS at 3 s).
-// The 48–72 h windows used so far all expired before the release could ship —
-// no rollout has come out of CI yet — so this one is sized to survive a few
-// days of that rather than needing a nudge every other day.
+// RE-PINNED 2026-10-08: head 110,595,737 +144,000 blocks (5 DAYS at 3 s) =
+// 110,739,737, rounded up to 110,741,000 (~2026-10-13 14:00 UTC) — the exact
+// height origin/main already carries. With both branches on the same height a
+// develop-built and a main-built binary agree on when the addition activates,
+// so mixing them on one network is no longer a hazard for this constant.
 //
-// Previously: 09-27 110,366,900 (+72 h), 09-23 +1 day from 110,193,400, 09-22
-// from head 110,135,804 +57,600, after the original 09-20 pin eroded to ~8 h —
-// cf. the 0.3.0 rollout, where un-upgraded nodes dropped the committee 18 -> 12.
-//
-// NOTE: the main branch deliberately carries a DIFFERENT, longer height (14
-// days). This constant is consensus input, so the branch a binary is built
-// from decides when the addition activates — binaries from the two branches
-// must never be mixed on one network.
+// Previously: 09-29 110,475,700 (+5 days; PASSED unshipped), 09-27 110,366,900
+// (+72 h), 09-23 +1 day from 110,193,400, 09-22 from head 110,135,804 +57,600,
+// after the original 09-20 pin eroded to ~8 h — cf. the 0.3.0 rollout, where
+// un-upgraded nodes dropped the committee 18 -> 12.
 //
 // RE-PIN AGAIN BEFORE RELEASE if this window erodes too. A height already in
 // the past makes the addition immediate on upgrade, i.e. exactly the staggered
 // rollout this exists to prevent — the gate fails open, and silently.
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
-var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_475_700
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
 
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
