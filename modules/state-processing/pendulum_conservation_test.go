@@ -98,7 +98,7 @@ func TestPendulumAccrualHBDConservation(t *testing.T) {
 
 	a := pendulumwasm.New(
 		&stubGeometryForConservation{out: balancedConservationGeometry()},
-		func() []string { return []string{contractID} },
+		func(uint64) []string { return []string{contractID} },
 		nil, // LP floor inert in conservation tests
 		pendulumwasm.DefaultConfig(),
 	)
@@ -173,7 +173,7 @@ func TestPendulumAccrualFailsWhenContractUnderfunded(t *testing.T) {
 
 	a := pendulumwasm.New(
 		&stubGeometryForConservation{out: balancedConservationGeometry()},
-		func() []string { return []string{contractID} },
+		func(uint64) []string { return []string{contractID} },
 		nil, // LP floor inert in conservation tests
 		pendulumwasm.DefaultConfig(),
 	)
@@ -248,7 +248,7 @@ func TestPendulumLPFloorBindsUnderSecured(t *testing.T) {
 
 		a := pendulumwasm.New(
 			&stubGeometryForConservation{out: underSecuredConservationGeometry()},
-			func() []string { return []string{contractID} },
+			func(uint64) []string { return []string{contractID} },
 			func(uint64) consensusversion.Version {
 				return consensusversion.Version{Major: 0, Consensus: consensus}
 			},

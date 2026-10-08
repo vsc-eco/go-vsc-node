@@ -237,6 +237,34 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 // 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
 // devnet run the fix immediately (Config.ActivationHeight 0).
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
+
+// PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
+//
+// Still consensus-affecting even though this particular addition is swap-only
+// (Collateral: false, so P and therefore the fee split do not move): below the
+// height every node REFUSES a LASSECASH swap, at/after it every node accepts
+// one. Witnesses on either side of the height would disagree about whether the
+// transaction succeeded at all. A future addition marked Collateral would
+// additionally shift P — hence the same coordinated-height treatment for both.
+//
+// RE-PINNED 2026-10-08: head 110,595,737 +144,000 blocks (5 DAYS at 3 s) =
+// 110,739,737, rounded up to 110,741,000 (~2026-10-13 14:00 UTC) — the exact
+// height origin/main already carries. With both branches on the same height a
+// develop-built and a main-built binary agree on when the addition activates,
+// so mixing them on one network is no longer a hazard for this constant.
+//
+// Previously: 09-29 110,475,700 (+5 days; PASSED unshipped), 09-27 110,366,900
+// (+72 h), 09-23 +1 day from 110,193,400, 09-22 from head 110,135,804 +57,600,
+// after the original 09-20 pin eroded to ~8 h — cf. the 0.3.0 rollout, where
+// un-upgraded nodes dropped the committee 18 -> 12.
+//
+// RE-PIN AGAIN BEFORE RELEASE if this window erodes too. A height already in
+// the past makes the addition immediate on upgrade, i.e. exactly the staggered
+// rollout this exists to prevent — the gate fails open, and silently.
+// Mainnet only — testnet and devnet apply their lists immediately (height 0).
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────
