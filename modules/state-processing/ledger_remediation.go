@@ -102,8 +102,8 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// driven from slotStatus.SlotHeight, which is always a multiple of
 	// SlotLength, so a target that is not slot-aligned is first seen at the next
 	// boundary. Comparing against target directly would then make EVERY node in
-	// the fleet log "APPLIED LATE ... MUST BE REINDEXED" on a correct,
-	// fully-coordinated rollout, purely because the pin was off a boundary.
+	// the fleet judge itself late on a correct, fully-coordinated rollout,
+	// purely because the pin was off a boundary.
 	slotLen := CONSENSUS_SPECS.SlotLength
 	onTimeSlot := target
 	if slotLen > 0 && target%slotLen != 0 {
@@ -120,6 +120,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// determinism note.
 	readHeight := target - 1
 
+	alreadyApplied, writtenNow := 0, 0
 	for _, rem := range params.LEDGER_REMEDIATIONS {
 		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", target, rem.Account, rem.Asset)
 		debitID := creditID + "#shortfall"
@@ -129,7 +130,9 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		// run wrote them and there is nothing to redo. (Both, not just the credit:
 		// rewriting is what repairs a pair a crash left half-written.)
 		applied := se.remediationRowsStored(creditID, debitID)
-		if !applied {
+		if applied {
+			alreadyApplied++
+		} else {
 			bal := se.LedgerState.GetBalance(rem.Account, readHeight, rem.Asset)
 			if bal >= 0 {
 				log.Info("ledger remediation: nothing to write off (balance already non-negative)",
@@ -187,6 +190,7 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 					},
 				)
 			})
+			writtenNow++
 			log.Info("ledger remediation: negative balance written off",
 				"account", rem.Account, "asset", rem.Asset, "amount", amount,
 				"counterparty", params.LedgerShortfallAccount, "height", target, "appliedAtSlot", blockHeight)
@@ -223,6 +227,9 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			}
 		}
 	}
+	log.Info("ledger remediation: checked",
+		"accounts", len(params.LEDGER_REMEDIATIONS), "alreadyApplied", alreadyApplied, "writtenNow", writtenNow,
+		"activationHeight", target, "slot", blockHeight)
 }
 
 // remediationRowsStored reports whether both rows of one write-off are stored.

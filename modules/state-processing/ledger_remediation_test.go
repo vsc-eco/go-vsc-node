@@ -643,6 +643,7 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_NoReindexAlarm(t *testing.T) 
 	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
 	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 200_000)
 
+	assert.Contains(t, logs.String(), "alreadyApplied=1", "the restart must actually have run the check (not returned early)")
 	assert.NotContains(t, logs.String(), reindexAlarm, "a restart of a correct node must not ask for a reindex")
 	assert.NotContains(t, logs.String(), "applied late", "nor call the write-off late")
 	assert.Equal(t, rows, remediationRows(restarted, "hive:dhedge"), "the stored rows are left as they are")
