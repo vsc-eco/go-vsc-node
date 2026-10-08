@@ -1,7 +1,8 @@
 # Builds the node image and publishes it to GitHub Container Registry.
 #
-#   push to main  -> ghcr.io/vsc-eco/go-vsc-node:main + :sha-<7>
-#   tag vX.Y.Z    -> ghcr.io/vsc-eco/go-vsc-node:vX.Y.Z + :X.Y + :sha-<7>
+#   push to main    -> ghcr.io/vsc-eco/go-vsc-node:main + :sha-<7>     (mainnet)
+#   push to develop -> ghcr.io/vsc-eco/go-vsc-node:develop + :sha-<7>  (testnet)
+#   tag vX.Y.Z      -> ghcr.io/vsc-eco/go-vsc-node:vX.Y.Z + :X.Y + :sha-<7>
 #
 # Auth uses the workflow's own GITHUB_TOKEN, so there are no registry
 # credentials to store or lose. Each arch builds on a native runner and pushes
@@ -10,7 +11,7 @@ name: docker-publish
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     tags: ['v*']
   workflow_dispatch:
 
@@ -103,6 +104,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=develop,enable=${{ github.ref == 'refs/heads/develop' }}
             type=semver,pattern=v{{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-,format=short
