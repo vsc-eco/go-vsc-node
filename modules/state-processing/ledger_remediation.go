@@ -42,6 +42,27 @@ import (
 // asset before activation the negative self-collects, and crediting a fixed
 // amount would hand over spendable value. Expected is documentation — logged
 // and compared so drift is visible, never used to decide the credit.
+//
+// ── Why only the activation slot ──
+//
+// The emission is gated to blockHeight == target: the one slot transition whose
+// slot contains the activation height, the transition that runs
+// UpdateBalances(target) immediately after this call. Only there is the credit
+// guaranteed to be folded into the same snapshot, on every node and on every
+// reindex replay.
+//
+// Nothing is emitted before it, and nothing after it. A late write is only safe
+// while the account's snapshot has not yet passed target, and the balance
+// cannot tell that apart from the two cases that make the write invisible or
+// wrong: a post-snapshot inflow can mask a still-missing credit (the balance
+// reads positive while the credit stays permanently unfolded), and a correctly
+// remediated account can go negative again for unrelated reasons. GetBalance
+// folds only the records ABOVE the account's snapshot, so a row stamped at
+// target and inserted after the snapshot passed target is invisible forever —
+// the node would look fixed while staying short. Confining the emission to the
+// slot where it is guaranteed visible means a node that reaches a later slot
+// without the rows has simply missed the write-off and needs a reindex, which
+// replays this slot.
 func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	// A6: network-gate it, matching every height-constant precedent in the
 	// tree — CONTRACT_DEPLOYMENT_FEE_START_HEIGHT, CONTRACT_UPDATE_HEIGHT and
@@ -63,59 +84,29 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	if target == 0 {
 		return
 	}
-	// At or past the activation height — NOT exact equality, and deliberately
-	// with no upper bound.
-	//
-	// The emission runs in the slot-TRANSITION branch, which a restart can skip
-	// entirely: a node stopped inside slot R resumes with slotStatus
-	// initialised to the slot it resumes in, so the transition for R never
-	// fires. Under exact-equality gating that node would silently miss the
-	// write-off forever. An upper bound reintroduces the same hazard for any
-	// node upgraded after the window closes — it would keep the negatives
-	// permanently, recoverable only by a full reindex, which is the cross-node
-	// balance disagreement that halted mainnet on 2026-08-13.
-	//
-	// Applying late is safe precisely because nothing here depends on WHEN it
-	// runs: the amount is read at target-1 (immutable history) and every row is
-	// stamped at `target` with a fixed id, so a node catching up days later
-	// writes rows byte-identical to one that fired on time, and the upsert makes
-	// a repeat a no-op.
-	if blockHeight < target {
+	// The exact-slot gate. ApplyLedgerRemediation is driven from
+	// slotStatus.SlotHeight, which is always a multiple of SlotLength, so this
+	// only ever matches when the activation height itself is slot-aligned. That
+	// alignment is enforced at CI time by
+	// TestLedgerRemediation_HeightMustBeOnASlotBoundary: a misaligned pin would
+	// make this comparison never true and the write-off would silently never
+	// run. (The row is stamped at target and has to land inside the target
+	// slot's snapshot, so the alignment is a real requirement, not just this
+	// gate's convenience — the raw BalanceRecord fields are read directly by
+	// some consumers with no replay fold to catch a row above the snapshot.)
+	if blockHeight != target {
 		return
 	}
 	if se.LedgerState == nil || se.LedgerState.LedgerDb == nil {
-		// Do NOT latch the done flag here: this is a transient wiring/startup
-		// condition, and latching would disable the write-off for the whole
-		// process instead of retrying on the next slot.
-		log.Error("ledger remediation: no ledger db; will retry next slot",
+		// The only run is this transition; a missing ledger db here cannot be
+		// retried later (the slot has passed). The engine cannot process
+		// anything without a ledger db, so this is a wiring fault, not a
+		// transient state to paper over.
+		log.Error("ledger remediation: no ledger db; write-off skipped for this activation slot",
 			"activationHeight", target, "slot", blockHeight)
 		return
 	}
-	// Bounded work: the records are upserts, so re-emitting is harmless, but
-	// there is no reason to rewrite them on every slot. Once per process is
-	// enough; a restart re-runs it and lands on the same rows.
-	if se.ledgerRemediationDone {
-		return
-	}
-	se.ledgerRemediationDone = true
-	// The slot the emission can FIRST be reached in. ApplyLedgerRemediation is
-	// driven from slotStatus.SlotHeight, which is always a multiple of
-	// SlotLength, so a target that is not slot-aligned is first seen at the next
-	// boundary. Comparing against target directly would then make EVERY node in
-	// the fleet judge itself late on a correct, fully-coordinated rollout,
-	// purely because the pin was off a boundary.
-	slotLen := CONSENSUS_SPECS.SlotLength
-	onTimeSlot := target
-	if slotLen > 0 && target%slotLen != 0 {
-		onTimeSlot = target + (slotLen - target%slotLen)
-	}
 
-	// Everything below is keyed to the FIXED activation height, never to the
-	// slot we happened to notice in. A node that catches up late must emit
-	// byte-identical rows (same ids, same BlockHeight, same amounts) to one
-	// that fired exactly at the height, or the catch-up would itself become a
-	// divergence.
-	//
 	// Settled state strictly before the activation height — see the
 	// determinism note.
 	readHeight := target - 1
@@ -125,10 +116,11 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", target, rem.Account, rem.Asset)
 		debitID := creditID + "#shortfall"
 
-		// The done flag is per process, so every restart runs this again, long
-		// past the activation slot. When both rows are already stored, an earlier
-		// run wrote them and there is nothing to redo. (Both, not just the credit:
-		// rewriting is what repairs a pair a crash left half-written.)
+		// A re-run of the activation slot (a reindex replay, or a process that
+		// died and resumed inside the slot) can reach this again with the rows
+		// already stored. Nothing to redo then. Both rows are checked, not just
+		// the credit: a process death between the two upserts leaves the credit
+		// without its shortfall debit, and the re-run must complete the pair.
 		applied := se.remediationRowsStored(creditID, debitID)
 		if applied {
 			alreadyApplied++
@@ -194,37 +186,6 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 			log.Info("ledger remediation: negative balance written off",
 				"account", rem.Account, "asset", rem.Asset, "amount", amount,
 				"counterparty", params.LedgerShortfallAccount, "height", target, "appliedAtSlot", blockHeight)
-		}
-
-		// The activation height is chosen so the whole fleet is already on this
-		// code before it is reached, so the credit normally lands ON TIME: in the
-		// same slot transition, immediately before UpdateBalances, with no
-		// snapshot at or above target in existence. A reindex takes the same path.
-		//
-		// Past the activation slot the question is whether this node's balance
-		// carries the credit. GetBalance is snapshot-anchored (recordHeight =
-		// balRecord.BlockHeight + 1, folding only ABOVE it), so a row written after
-		// the account's snapshot passed target is invisible and stays invisible:
-		// the balance reads the old negative. That node is wrong and must reindex;
-		// no in-place correction is attempted on purpose (every mechanism for it is
-		// either non-idempotent or a full ledger recompute).
-		//
-		// Judging "late" by the balance rather than by the slot is what keeps a
-		// restart quiet: before, every restart of every correctly upgraded node
-		// reached here past the activation slot and logged the reindex error for
-		// all ten accounts.
-		if blockHeight > onTimeSlot {
-			if cur := se.LedgerState.GetBalance(rem.Account, blockHeight, rem.Asset); cur < 0 {
-				log.Error("ledger remediation: the write-off is stored but this node's balance still carries the negative "+
-					"(its snapshot passed the activation height before the credit was written). "+
-					"THIS NODE MUST BE REINDEXED or it will disagree with its peers about this balance",
-					"account", rem.Account, "asset", rem.Asset, "balance", cur,
-					"activationHeight", target, "slot", blockHeight)
-			} else if !applied {
-				log.Warn("ledger remediation: applied late; the balance carries the credit",
-					"account", rem.Account, "asset", rem.Asset, "balance", cur,
-					"activationHeight", target, "slot", blockHeight)
-			}
 		}
 	}
 	log.Info("ledger remediation: checked",

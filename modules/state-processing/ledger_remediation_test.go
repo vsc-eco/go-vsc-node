@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common/params"
@@ -99,15 +100,16 @@ func TestLedgerRemediation_WritesOffNegative_DoubleEntry(t *testing.T) {
 // ★ THE REINDEX PROPERTY — with a SECOND process, not the same one twice.
 //
 // The earlier version of this test called ApplyLedgerRemediation twice on the
-// SAME StateEngine. The second call returned immediately at
-// `if se.ledgerRemediationDone { return }`, so it never re-read the balance and
-// never called StoreLedger again: `first == second` and `Len == 1` were
+// SAME StateEngine. The second call returned immediately at a process-local
+// done flag (since removed with the late path), so it never re-read the balance
+// and never called StoreLedger again: `first == second` and `Len == 1` were
 // tautologies and the upsert behaviour it claimed to prove was never exercised.
 // (Third instance of the same mistake in this file's history — asserting on the
 // shape of the output instead of on the value that matters.)
 //
-// A reindex or a crash-restart is a NEW process against the SAME database, so
-// that is what this models: two StateEngines sharing one MockLedgerDb.
+// A reindex replays the activation slot in a NEW process against the SAME
+// database, so that is what this models: two StateEngines sharing one
+// MockLedgerDb.
 func TestLedgerRemediation_ReplayIsIdempotent(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
@@ -138,11 +140,10 @@ func TestLedgerRemediation_ReplayIsIdempotent(t *testing.T) {
 	assert.Equal(t, int64(-283), debits[0].Amount)
 }
 
-// Height gate. Nothing may be emitted BEFORE the activation height, or nodes
-// replaying at different speeds would diverge. At or after it (within the
-// catch-up window) the emission fires — see LedgerRemediationCatchupBlocks: the
-// slot-transition branch is skippable across a restart, so exact equality would
-// let a node silently miss the remediation forever.
+// Lower half of the height gate. Nothing may be emitted BEFORE the activation
+// slot: nodes replaying at different speeds would diverge, and the emission is
+// meaningful only at the activation slot itself. The after-the-slot half of
+// the gate is covered by TestLedgerRemediation_OnlyAppliesInTheActivationSlot.
 func TestLedgerRemediation_NeverBeforeActivationHeight(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
@@ -156,59 +157,73 @@ func TestLedgerRemediation_NeverBeforeActivationHeight(t *testing.T) {
 	}
 }
 
-// ★ RESTART CATCH-UP. A node stopped inside the activation slot resumes with
-// slotStatus initialised to the slot it resumes in, so the transition for the
-// activation slot never fires. Under exact-equality gating that node would
-// silently skip the write-off forever — permanent per-node divergence with
-// nothing in the logs. It must still apply when it notices later, and the rows
-// must be stamped at the ACTIVATION height, not the slot it noticed in, or the
-// catch-up would itself be a divergence.
-func TestLedgerRemediation_CatchesUpAfterARestartSkippedTheSlot(t *testing.T) {
+// ★ EXACT-SLOT GATE. The emission runs only in the slot whose start is the
+// activation height — the transition that also snapshots that slot, which is
+// the only place the credit is guaranteed to be folded into the snapshot. A
+// late write is not a repair: stamped at target and inserted after the
+// account's snapshot passed target, it can never be folded (GetBalance reads
+// only records ABOVE the snapshot), so the node would look fixed while staying
+// short. A node that reaches a later slot without the rows has missed the
+// write-off and needs a reindex, which replays the activation slot.
+func TestLedgerRemediation_OnlyAppliesInTheActivationSlot(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
 
-	onTime := newRemediationEnv()
-	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
-	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
-
-	// A node that missed the slot entirely and only reaches it 30 slots later.
-	late := newRemediationEnv()
-	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
-	late.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
-
-	lateRows := remediationRows(late, "hive:dhedge")
-	assert.Len(t, lateRows, 1, "a node that skipped the activation slot must still apply the write-off")
-	assert.Equal(t, remediationRows(onTime, "hive:dhedge"), lateRows,
-		"late catch-up must emit records IDENTICAL to the on-time node (same id, height, amount)")
-	assert.Equal(t, remediationTestHeight, lateRows[0].BlockHeight,
-		"rows must be stamped at the activation height, never the slot they were noticed in")
+	for _, h := range []uint64{
+		remediationTestHeight + 10,      // next slot, missed the activation transition
+		remediationTestHeight + 300,     // a restart that skipped the slot
+		remediationTestHeight + 500_000, // upgraded weeks later
+	} {
+		env := newRemediationEnv()
+		seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+		env.SE.ApplyLedgerRemediation(h)
+		assert.Empty(t, remediationRows(env, "hive:dhedge"),
+			"nothing may be emitted at slot %d — only the activation slot writes", h)
+		assert.Equal(t, int64(-283),
+			env.SE.LedgerState.GetBalance("hive:dhedge", h, "hbd_savings"),
+			"the negative is untouched outside the activation slot")
+	}
 }
 
-// A node upgraded LONG after the activation height must still apply the
-// write-off. There is deliberately no upper bound: one would recreate the very
-// hazard the lower bound was relaxed to fix, leaving a late-upgraded node with
-// the negatives forever (recoverable only by a full reindex) and a permanent
-// cross-node balance disagreement.
-func TestLedgerRemediation_AppliesEvenVeryLate(t *testing.T) {
+// ★ WIRING — the production call site actually passes the activation height.
+//
+// Every other test here invokes ApplyLedgerRemediation directly, so none of
+// them prove the exact-equality gate is ever satisfied by the real driver.
+// The production caller is the slot-transition branch of ProcessBlock, which
+// runs ApplyLedgerRemediation(slotStatus.SlotHeight) and then
+// UpdateBalances(...) for the slot that just closed. This drives the real
+// ProcessBlock path: a block inside the activation slot first (slotStatus
+// initialises to target), then the first block of the NEXT slot, whose arrival
+// closes the activation slot. A reindex replays stored blocks contiguously,
+// so it walks through exactly these two states, and the credit must be written
+// and folded into the snapshot at target.
+func TestLedgerRemediation_AppliedByTheSlotTransition(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
 
-	onTime := newRemediationEnv()
-	seedNegative(onTime, "hive:dhedge", "hbd_savings", -283)
-	onTime.SE.ApplyLedgerRemediation(remediationTestHeight)
+	// A block inside the activation slot: slotStatus initialises to target.
+	env.Reader.LastBlock = remediationTestHeight - 1
+	env.Reader.CreateBlock()
+	time.Sleep(200 * time.Millisecond)
 
-	// Weeks later.
-	late := newRemediationEnv()
-	seedNegative(late, "hive:dhedge", "hbd_savings", -283)
-	late.SE.ApplyLedgerRemediation(remediationTestHeight + 500_000)
+	// First block of the next slot: its arrival closes the activation slot and
+	// runs ApplyLedgerRemediation(target) through the production call site.
+	env.Reader.LastBlock = remediationTestHeight + stateEngine.CONSENSUS_SPECS.SlotLength - 1
+	env.Reader.CreateBlock()
+	time.Sleep(time.Second)
 
-	assert.Equal(t, remediationRows(onTime, "hive:dhedge"), remediationRows(late, "hive:dhedge"),
-		"a very late node must emit records identical to an on-time one")
+	rows := remediationRows(env, "hive:dhedge")
+	assert.Len(t, rows, 1, "the slot transition must apply the write-off")
+	assert.Equal(t, remediationTestHeight, rows[0].BlockHeight,
+		"stamped at the activation height, not the block that noticed it")
+	assert.Equal(t, int64(283), rows[0].Amount)
 	assert.Equal(t, int64(0),
-		late.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight, "hbd_savings"),
-		"and must reach a zero balance, not keep the negative forever")
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+stateEngine.CONSENSUS_SPECS.SlotLength, "hbd_savings"),
+		"and folded into the activation slot's snapshot")
 }
 
 // A zero activation height disables the whole mechanism (testnet/devnet, and
@@ -416,18 +431,12 @@ func TestLedgerRemediation_HeightMustBeOnASlotBoundary(t *testing.T) {
 }
 
 // The test height must model production: ApplyLedgerRemediation is driven from
-// slotStatus.SlotHeight, which CalculateSlotInfo floors to a multiple of
-// SlotLength, so a test height off a slot boundary would exercise a value the
-// production caller can never pass.
-//
-// (This replaces an assertion that checked the file-local constant against
-// itself and claimed the invariant was "behavioural" — there is no modulo check
-// inside ApplyLedgerRemediation. The real enforcement is
-// TestLedgerRemediation_HeightMustBeOnASlotBoundary, which gates the SHIPPED
-// constant. The old comment's "or it will never be reached" was also stale:
-// true under the original exact-equality gate, but under the current
-// `blockHeight < target` gate a misaligned height simply fires at the next slot
-// boundary, up to SlotLength-1 blocks late.)
+// slotStatus.SlotHeight, a multiple of SlotLength, and the emission is gated on
+// blockHeight == target. A test height off a slot boundary would exercise a
+// value the production caller can never pass, and the real caller's behaviour
+// (an exact-slot match) is what these tests must exercise. The shipped
+// constant's alignment is enforced by
+// TestLedgerRemediation_HeightMustBeOnASlotBoundary.
 func TestLedgerRemediation_TestHeightModelsAProductionSlot(t *testing.T) {
 	slotLen := stateEngine.CONSENSUS_SPECS.SlotLength
 	assert.Zero(t, remediationTestHeight%slotLen,
@@ -546,18 +555,13 @@ func TestLedgerRemediation_TransientWriteFailure_IsRetriedNotSkipped(t *testing.
 	assert.Empty(t, env.LedgerDb.StoreErrs, "both injected faults must have been consumed by retries")
 }
 
-// ★ REVIEW FINDING — an ON-TIME node that later RESTARTS must not wipe its
-// balance snapshots.
-//
-// The late-path re-anchor was gated only on `blockHeight > target` plus a
-// process-local flag. But the amount is read at target-1, immutable history, so
-// it is always negative and can never signal "already applied". After a restart
-// the flag resets, blockHeight is past target, and the deletion re-fired —
-// destroying every post-target snapshot for these ten accounts on every restart.
-//
-// That is not cosmetic: ReadCommitteeBonds samples BalanceRecord.HIVE_CONSENSUS
-// directly with no replay, so for the two hive_consensus accounts it diverges
-// the pendulum settlement map and its CID from peers.
+// ★ An ON-TIME node that later RESTARTS must be completely inert. The restart
+// is past the activation slot, so the exact-slot gate stops it before it can
+// rewrite rows or touch balance snapshots. The late path this replaces used to
+// re-anchor snapshots on every restart (and, at one point, re-applied the
+// credit against snapshots that already folded it). The gate removes that whole
+// path; this pins the snapshots — in particular HBD_AVG, which is path-
+// dependent and never rebuilt from the ledger — as untouched.
 func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
@@ -579,8 +583,7 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) 
 		HBD_MODIFY_HEIGHT: remediationTestHeight + 60,
 	}}
 
-	// The node restarts: a NEW StateEngine over the same data, so the
-	// process-local "already done" flag is clear again.
+	// The node restarts: a NEW StateEngine over the same data, past the slot.
 	restarted := newRemediationEnv()
 	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
 	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
@@ -588,14 +591,9 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) 
 
 	snaps := restarted.BalanceDb.BalanceRecords["hive:dhedge"]
 	assert.Len(t, snaps, 1,
-		"a restart must NOT delete snapshots when the credit is already visible")
+		"a restart past the activation slot must not delete snapshots")
 	assert.Equal(t, int64(12345), snaps[0].HBD_AVG,
 		"HBD_AVG must survive — it is path-dependent and never rebuilt from the ledger")
-	// ★ THE ASSERTION THAT WAS MISSING. This test already covered the restart
-	// scenario but checked only Len and HBD_AVG, so it stayed green while the
-	// account was being DOUBLE-CREDITED: the marker was written on the late path
-	// only, so a restart after an on-time apply found none and re-ran the $inc
-	// against snapshots that already folded the credit.
 	assert.Equal(t, int64(0), snaps[0].HBD_SAVINGS,
 		"the balance must stay 0 — a restart must not re-apply the credit")
 	assert.Equal(t, int64(0),
@@ -615,14 +613,13 @@ func captureSELogs(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-const reindexAlarm = "MUST BE REINDEXED"
-
-// ★ The false alarm (10-08, mainnet operators): the done flag is per process, so
-// every restart re-ran the write-off far past the activation slot and logged
-// "MUST BE REINDEXED" for all ten accounts on nodes that had applied it on time.
-// A restart after an on-time apply must say nothing about reindexing and must
-// not rewrite the rows.
-func TestLedgerRemediation_RestartAfterOnTimeApply_NoReindexAlarm(t *testing.T) {
+// ★ A restart past the activation slot must be fully silent: the exact-slot
+// gate returns before anything is written or logged. This is the false-alarm
+// regression from 10-08 (mainnet operators saw "MUST BE REINDEXED" for all ten
+// accounts on every restart of a correct node); the gate deletes the late path
+// that caused it, so the assertion is stronger than "no alarm" — the function
+// does nothing at all and the stored rows are untouched.
+func TestLedgerRemediation_RestartAfterOnTimeApply_IsInert(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
@@ -643,17 +640,19 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_NoReindexAlarm(t *testing.T) 
 	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
 	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 200_000)
 
-	assert.Contains(t, logs.String(), "alreadyApplied=1", "the restart must actually have run the check (not returned early)")
-	assert.NotContains(t, logs.String(), reindexAlarm, "a restart of a correct node must not ask for a reindex")
-	assert.NotContains(t, logs.String(), "applied late", "nor call the write-off late")
+	assert.NotContains(t, logs.String(), "ledger remediation",
+		"a restart of a correct node past the slot must not run or log anything")
 	assert.Equal(t, rows, remediationRows(restarted, "hive:dhedge"), "the stored rows are left as they are")
 }
 
-// The alarm that matters stays: a node whose snapshot passed the activation
-// height before the credit was written keeps the negative (GetBalance is
-// snapshot-anchored), and must be told to reindex, at the late write and again
-// on every restart while the balance is still wrong.
-func TestLedgerRemediation_WrittenBehindASnapshot_StillAlarms(t *testing.T) {
+// The case the exact-slot gate exists for: a node that ran old code through the
+// activation slot has a snapshot past target WITHOUT the credit. A late write
+// would be stamped at target, below that snapshot's fold floor, so GetBalance
+// could never fold it. The gate refuses to write it. It does not claim a
+// reindex either: the balance cannot distinguish this from a masked credit or
+// an unrelated new negative, so the node is left exactly as found. Setting it
+// right needs an operator reindex, which replays the activation slot.
+func TestLedgerRemediation_BehindASnapshot_IsLeftForReindex(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
@@ -667,38 +666,21 @@ func TestLedgerRemediation_WrittenBehindASnapshot_StillAlarms(t *testing.T) {
 
 	logs := captureSELogs(t)
 	env.SE.ApplyLedgerRemediation(remediationTestHeight + 200)
-	assert.Len(t, remediationRows(env, "hive:dhedge"), 1, "the rows are still written")
-	assert.Contains(t, logs.String(), reindexAlarm, "the late write behind a snapshot must ask for a reindex")
 
-	logs.Reset()
-	restarted := newRemediationEnv()
-	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
-	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
-	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 400)
-	assert.Contains(t, logs.String(), reindexAlarm, "and keep asking on restart while the balance is still negative")
+	assert.Empty(t, remediationRows(env, "hive:dhedge"),
+		"no invisible row may be written behind a snapshot that already passed target")
+	assert.NotContains(t, logs.String(), "ledger remediation",
+		"nothing is run or logged outside the activation slot")
+	assert.Equal(t, int64(-283),
+		env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+200, "hbd_savings"),
+		"the stale balance is left exactly as found")
 }
 
-// A late first write whose balance does carry the credit (no snapshot past the
-// activation height yet) is not wrong, so it warns instead of asking for a
-// reindex.
-func TestLedgerRemediation_LateButVisible_WarnsWithoutReindex(t *testing.T) {
-	withRemediation(t, []params.LedgerRemediation{
-		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
-	})
-	env := newRemediationEnv()
-	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
-
-	logs := captureSELogs(t)
-	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
-
-	assert.Equal(t, int64(0), env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+300, "hbd_savings"))
-	assert.NotContains(t, logs.String(), reindexAlarm)
-	assert.Contains(t, logs.String(), "applied late")
-}
-
-// Skipping the rewrite needs BOTH rows: a crash between the two writes leaves
-// the credit without its shortfall debit, and the next run must complete it.
-func TestLedgerRemediation_HalfWrittenPair_IsCompletedOnRestart(t *testing.T) {
+// Skipping the rewrite needs BOTH rows: a crash between the two upserts leaves
+// the credit without its shortfall debit, and a re-run of the activation slot
+// must complete the pair. Only a process that resumes inside the slot can
+// re-run it, which is what this models.
+func TestLedgerRemediation_HalfWrittenPair_IsCompletedOnRerun(t *testing.T) {
 	withRemediation(t, []params.LedgerRemediation{
 		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
 	})
@@ -710,7 +692,7 @@ func TestLedgerRemediation_HalfWrittenPair_IsCompletedOnRestart(t *testing.T) {
 
 	restarted := newRemediationEnv()
 	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
-	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 100)
+	restarted.SE.ApplyLedgerRemediation(remediationTestHeight)
 
 	debits := remediationRows(restarted, params.LedgerShortfallAccount)
 	assert.Len(t, debits, 1, "the missing shortfall row must be written")
