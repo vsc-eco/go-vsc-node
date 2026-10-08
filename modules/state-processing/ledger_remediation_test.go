@@ -1,9 +1,12 @@
 package state_engine_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"testing"
 
+	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -598,4 +601,117 @@ func TestLedgerRemediation_RestartAfterOnTimeApply_KeepsSnapshots(t *testing.T) 
 	assert.Equal(t, int64(0),
 		restarted.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+200, "hbd_savings"),
 		"and the folded balance must agree")
+}
+
+// captureSELogs routes the state engine's module logger into a buffer for one
+// test, so the remediation's verdicts can be asserted on.
+func captureSELogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	l := vsclog.Module("se")
+	old := l.Logger
+	l.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { l.Logger = old })
+	return &buf
+}
+
+const reindexAlarm = "MUST BE REINDEXED"
+
+// ★ The false alarm (10-08, mainnet operators): the done flag is per process, so
+// every restart re-ran the write-off far past the activation slot and logged
+// "MUST BE REINDEXED" for all ten accounts on nodes that had applied it on time.
+// A restart after an on-time apply must say nothing about reindexing and must
+// not rewrite the rows.
+func TestLedgerRemediation_RestartAfterOnTimeApply_NoReindexAlarm(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+	rows := remediationRows(env, "hive:dhedge")
+
+	// Normal operation snapshots the account past target, with the credit in it.
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account: "hive:dhedge", BlockHeight: remediationTestHeight + 60,
+		HBD_SAVINGS: 0, HBD_MODIFY_HEIGHT: remediationTestHeight + 60,
+	}}
+
+	logs := captureSELogs(t)
+	restarted := newRemediationEnv()
+	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
+	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
+	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 200_000)
+
+	assert.NotContains(t, logs.String(), reindexAlarm, "a restart of a correct node must not ask for a reindex")
+	assert.NotContains(t, logs.String(), "applied late", "nor call the write-off late")
+	assert.Equal(t, rows, remediationRows(restarted, "hive:dhedge"), "the stored rows are left as they are")
+}
+
+// The alarm that matters stays: a node whose snapshot passed the activation
+// height before the credit was written keeps the negative (GetBalance is
+// snapshot-anchored), and must be told to reindex, at the late write and again
+// on every restart while the balance is still wrong.
+func TestLedgerRemediation_WrittenBehindASnapshot_StillAlarms(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	// Snapshotted past target WITHOUT the credit: this node ran old code there.
+	env.BalanceDb.BalanceRecords["hive:dhedge"] = []ledgerDb.BalanceRecord{{
+		Account: "hive:dhedge", BlockHeight: remediationTestHeight + 60,
+		HBD_SAVINGS: -283, HBD_MODIFY_HEIGHT: remediationTestHeight + 60,
+	}}
+
+	logs := captureSELogs(t)
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + 200)
+	assert.Len(t, remediationRows(env, "hive:dhedge"), 1, "the rows are still written")
+	assert.Contains(t, logs.String(), reindexAlarm, "the late write behind a snapshot must ask for a reindex")
+
+	logs.Reset()
+	restarted := newRemediationEnv()
+	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
+	restarted.BalanceDb.BalanceRecords = env.BalanceDb.BalanceRecords
+	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 400)
+	assert.Contains(t, logs.String(), reindexAlarm, "and keep asking on restart while the balance is still negative")
+}
+
+// A late first write whose balance does carry the credit (no snapshot past the
+// activation height yet) is not wrong, so it warns instead of asking for a
+// reindex.
+func TestLedgerRemediation_LateButVisible_WarnsWithoutReindex(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+
+	logs := captureSELogs(t)
+	env.SE.ApplyLedgerRemediation(remediationTestHeight + 300)
+
+	assert.Equal(t, int64(0), env.SE.LedgerState.GetBalance("hive:dhedge", remediationTestHeight+300, "hbd_savings"))
+	assert.NotContains(t, logs.String(), reindexAlarm)
+	assert.Contains(t, logs.String(), "applied late")
+}
+
+// Skipping the rewrite needs BOTH rows: a crash between the two writes leaves
+// the credit without its shortfall debit, and the next run must complete it.
+func TestLedgerRemediation_HalfWrittenPair_IsCompletedOnRestart(t *testing.T) {
+	withRemediation(t, []params.LedgerRemediation{
+		{Account: "hive:dhedge", Asset: "hbd_savings", Expected: 283},
+	})
+	env := newRemediationEnv()
+	seedNegative(env, "hive:dhedge", "hbd_savings", -283)
+	env.SE.ApplyLedgerRemediation(remediationTestHeight)
+	// Drop the shortfall side, as a crash between the two upserts would.
+	env.LedgerDb.LedgerRecords[params.LedgerShortfallAccount] = nil
+
+	restarted := newRemediationEnv()
+	restarted.LedgerDb.LedgerRecords = env.LedgerDb.LedgerRecords
+	restarted.SE.ApplyLedgerRemediation(remediationTestHeight + 100)
+
+	debits := remediationRows(restarted, params.LedgerShortfallAccount)
+	assert.Len(t, debits, 1, "the missing shortfall row must be written")
+	assert.Len(t, remediationRows(restarted, "hive:dhedge"), 1, "and the credit must stay single")
 }

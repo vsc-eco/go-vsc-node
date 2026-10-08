@@ -110,11 +110,6 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 		onTimeSlot = target + (slotLen - target%slotLen)
 	}
 
-	if blockHeight > onTimeSlot {
-		log.Warn("ledger remediation: applying LATE — this node did not process the activation slot",
-			"activationHeight", target, "slot", blockHeight, "blocksLate", blockHeight-target)
-	}
-
 	// Everything below is keyed to the FIXED activation height, never to the
 	// slot we happened to notice in. A node that catches up late must emit
 	// byte-identical rows (same ids, same BlockHeight, same amounts) to one
@@ -126,100 +121,126 @@ func (se *StateEngine) ApplyLedgerRemediation(blockHeight uint64) {
 	readHeight := target - 1
 
 	for _, rem := range params.LEDGER_REMEDIATIONS {
-		bal := se.LedgerState.GetBalance(rem.Account, readHeight, rem.Asset)
-		if bal >= 0 {
-			log.Info("ledger remediation: nothing to write off (balance already non-negative)",
-				"account", rem.Account, "asset", rem.Asset, "balance", bal,
-				"expected", -rem.Expected)
-			continue
-		}
-
-		// Credit exactly the outstanding negative: the goal is a zero balance,
-		// so anything less leaves a residual that would need a second
-		// coordinated height-gated deploy to finish.
-		//
-		// The one bound that matters is already implicit — we credit the
-		// outstanding amount and nothing more. That is what stops a windfall:
-		// if the account funded the asset before activation, the negative has
-		// self-collected and `bal >= 0` skipped it above; if it partly
-		// self-collected, only the remainder is credited. Crediting a fixed
-		// table amount instead WOULD hand over spendable value.
-		//
-		// There is deliberately no ceiling on this figure. Raising a negative
-		// to zero never gives the account spendable funds — they can spend
-		// exactly 0 afterwards — so a large outstanding amount is not a mint,
-		// only a larger recorded loss on the (keyless, double-entry) shortfall
-		// account. A ceiling would buy no protection and could only prevent the
-		// write-off from doing its job. Drift from the reviewed figure is
-		// surfaced loudly below instead.
-		amount := -bal
-		if amount != rem.Expected {
-			log.Warn("ledger remediation: outstanding differs from the reviewed expectation; crediting the live amount",
-				"account", rem.Account, "asset", rem.Asset,
-				"crediting", amount, "expected", rem.Expected,
-				"drift", amount-rem.Expected)
-		}
-
 		creditID := fmt.Sprintf("ledger_remediation_%d#%s#%s", target, rem.Account, rem.Asset)
 		debitID := creditID + "#shortfall"
 
-		// Double-entry: the shortfall account carries the permanent record of
-		// value the protocol over-paid, so the write-off never silently
-		// inflates supply.
-		blockingRetry("ledger remediation: "+creditID, func() error {
-			return se.LedgerState.LedgerDb.StoreLedger(
-				ledger_db.LedgerRecord{
-					Id:          creditID,
-					BlockHeight: target,
-					Amount:      amount,
-					Asset:       rem.Asset,
-					Owner:       rem.Account,
-					Type:        ledgerSystem.LedgerTypeRemediationCredit,
-				},
-				ledger_db.LedgerRecord{
-					Id:          debitID,
-					BlockHeight: target,
-					Amount:      -amount,
-					Asset:       rem.Asset,
-					Owner:       params.LedgerShortfallAccount,
-					Type:        ledgerSystem.LedgerTypeRemediationDebit,
-				},
-			)
-		})
+		// The done flag is per process, so every restart runs this again, long
+		// past the activation slot. When both rows are already stored, an earlier
+		// run wrote them and there is nothing to redo. (Both, not just the credit:
+		// rewriting is what repairs a pair a crash left half-written.)
+		applied := se.remediationRowsStored(creditID, debitID)
+		if !applied {
+			bal := se.LedgerState.GetBalance(rem.Account, readHeight, rem.Asset)
+			if bal >= 0 {
+				log.Info("ledger remediation: nothing to write off (balance already non-negative)",
+					"account", rem.Account, "asset", rem.Asset, "balance", bal,
+					"expected", -rem.Expected)
+				continue
+			}
 
-		// The activation height is chosen so the whole fleet is already on this
-		// code before it is reached, so the credit always lands ON TIME: in the
-		// same slot transition, immediately before UpdateBalances, with no
-		// snapshot at or above target in existence. That is the only supported
-		// path, and it is also what a reindex takes — a reindex replays from
-		// genesis in order, so it passes through the height and applies on time
-		// exactly like a live node.
-		//
-		// If a node somehow reaches this code AFTER the height (upgraded late
-		// without reindexing), the credit row below is still written but its
-		// BALANCE will not move: GetBalance is snapshot-anchored — recordHeight
-		// = balRecord.BlockHeight + 1, folding only ABOVE it — so a row written
-		// retroactively at target is invisible to any account whose snapshot
-		// already advanced past it, and stays invisible because every later
-		// snapshot builds on the previous one.
-		//
-		// That node is silently wrong, so make it loud instead. It must reindex;
-		// no in-place correction is attempted here on purpose. Correcting the
-		// stale snapshot in place was implemented and removed: every mechanism
-		// for it is either non-idempotent (needing a marker, whose ordering is a
-		// crash-safety problem in both directions) or a full ledger recompute,
-		// and none of that complexity is warranted for a case the deployment
-		// procedure rules out.
-		if blockHeight > onTimeSlot {
-			log.Error("ledger remediation: APPLIED LATE — this node passed the activation height before upgrading; "+
-				"the credit row is written but the account's balance is snapshot-anchored above it and will NOT be corrected. "+
-				"THIS NODE MUST BE REINDEXED or it will disagree with its peers about this balance",
-				"account", rem.Account, "asset", rem.Asset,
-				"activationHeight", target, "slot", blockHeight, "blocksLate", blockHeight-target)
+			// Credit exactly the outstanding negative: the goal is a zero balance,
+			// so anything less leaves a residual that would need a second
+			// coordinated height-gated deploy to finish.
+			//
+			// The one bound that matters is already implicit: we credit the
+			// outstanding amount and nothing more. That is what stops a windfall:
+			// if the account funded the asset before activation, the negative has
+			// self-collected and `bal >= 0` skipped it above; if it partly
+			// self-collected, only the remainder is credited. Crediting a fixed
+			// table amount instead WOULD hand over spendable value.
+			//
+			// There is deliberately no ceiling on this figure. Raising a negative
+			// to zero never gives the account spendable funds (they can spend
+			// exactly 0 afterwards), so a large outstanding amount is not a mint,
+			// only a larger recorded loss on the (keyless, double-entry) shortfall
+			// account. A ceiling would buy no protection and could only prevent the
+			// write-off from doing its job. Drift from the reviewed figure is
+			// surfaced loudly below instead.
+			amount := -bal
+			if amount != rem.Expected {
+				log.Warn("ledger remediation: outstanding differs from the reviewed expectation; crediting the live amount",
+					"account", rem.Account, "asset", rem.Asset,
+					"crediting", amount, "expected", rem.Expected,
+					"drift", amount-rem.Expected)
+			}
+
+			// Double-entry: the shortfall account carries the permanent record of
+			// value the protocol over-paid, so the write-off never silently
+			// inflates supply.
+			blockingRetry("ledger remediation: "+creditID, func() error {
+				return se.LedgerState.LedgerDb.StoreLedger(
+					ledger_db.LedgerRecord{
+						Id:          creditID,
+						BlockHeight: target,
+						Amount:      amount,
+						Asset:       rem.Asset,
+						Owner:       rem.Account,
+						Type:        ledgerSystem.LedgerTypeRemediationCredit,
+					},
+					ledger_db.LedgerRecord{
+						Id:          debitID,
+						BlockHeight: target,
+						Amount:      -amount,
+						Asset:       rem.Asset,
+						Owner:       params.LedgerShortfallAccount,
+						Type:        ledgerSystem.LedgerTypeRemediationDebit,
+					},
+				)
+			})
+			log.Info("ledger remediation: negative balance written off",
+				"account", rem.Account, "asset", rem.Asset, "amount", amount,
+				"counterparty", params.LedgerShortfallAccount, "height", target, "appliedAtSlot", blockHeight)
 		}
 
-		log.Info("ledger remediation: negative balance written off",
-			"account", rem.Account, "asset", rem.Asset, "amount", amount,
-			"counterparty", params.LedgerShortfallAccount, "height", target, "appliedAtSlot", blockHeight)
+		// The activation height is chosen so the whole fleet is already on this
+		// code before it is reached, so the credit normally lands ON TIME: in the
+		// same slot transition, immediately before UpdateBalances, with no
+		// snapshot at or above target in existence. A reindex takes the same path.
+		//
+		// Past the activation slot the question is whether this node's balance
+		// carries the credit. GetBalance is snapshot-anchored (recordHeight =
+		// balRecord.BlockHeight + 1, folding only ABOVE it), so a row written after
+		// the account's snapshot passed target is invisible and stays invisible:
+		// the balance reads the old negative. That node is wrong and must reindex;
+		// no in-place correction is attempted on purpose (every mechanism for it is
+		// either non-idempotent or a full ledger recompute).
+		//
+		// Judging "late" by the balance rather than by the slot is what keeps a
+		// restart quiet: before, every restart of every correctly upgraded node
+		// reached here past the activation slot and logged the reindex error for
+		// all ten accounts.
+		if blockHeight > onTimeSlot {
+			if cur := se.LedgerState.GetBalance(rem.Account, blockHeight, rem.Asset); cur < 0 {
+				log.Error("ledger remediation: the write-off is stored but this node's balance still carries the negative "+
+					"(its snapshot passed the activation height before the credit was written). "+
+					"THIS NODE MUST BE REINDEXED or it will disagree with its peers about this balance",
+					"account", rem.Account, "asset", rem.Asset, "balance", cur,
+					"activationHeight", target, "slot", blockHeight)
+			} else if !applied {
+				log.Warn("ledger remediation: applied late; the balance carries the credit",
+					"account", rem.Account, "asset", rem.Asset, "balance", cur,
+					"activationHeight", target, "slot", blockHeight)
+			}
+		}
 	}
+}
+
+// remediationRowsStored reports whether both rows of one write-off are stored.
+// A read error answers false, which takes the normal path: rewriting the rows is
+// an idempotent upsert.
+func (se *StateEngine) remediationRowsStored(creditID, debitID string) bool {
+	recs, err := se.LedgerState.LedgerDb.GetLedgersByTxId(creditID)
+	if err != nil {
+		return false
+	}
+	credit, debit := false, false
+	for _, r := range recs {
+		switch r.Id {
+		case creditID:
+			credit = true
+		case debitID:
+			debit = true
+		}
+	}
+	return credit && debit
 }
