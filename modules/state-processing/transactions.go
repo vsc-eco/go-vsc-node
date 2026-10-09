@@ -188,6 +188,9 @@ func (t TxVscCallContract) ExecuteTx(
 			se.SystemConfig() != nil &&
 				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
 		),
+		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
+		// coordinated height and history re-executes unchanged.
+		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)

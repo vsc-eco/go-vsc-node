@@ -105,9 +105,18 @@ import (
 //     A new line rather than a change to 0.7.0, so a node replaying the testnet's
 //     0.7.0 history reproduces it byte for byte. Until 0.9.0 is chain-active
 //     every fix is inert and old and new binaries interoperate.
+//   - 0.10.0: the Consensus 9→10 bump gates the PRE-MAINNET FIX batch
+//     (consensusversion.V0_10_0): a user balance is pulled only with that
+//     account's active authority, SP1 proof checks are priced by work, block
+//     apply skips a transaction an earlier block already handled, and a slot
+//     applies one block. A new line rather than a change to 0.9.0 because the
+//     testnet already runs 0.9.0, so a node replaying that history must
+//     reproduce it. Mainnet raises its floor from 0.3.0 straight to 0.10.0.
+//     Until 0.10.0 is chain-active every fix is inert and old and new binaries
+//     interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 9
+	currentConsensus    uint64 = 10
 	currentNonConsensus uint64 = 0
 )
 

@@ -66,10 +66,6 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 
 	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
-		"anchr_height":           offTx.AnchoredHeight,
-		"anchr_block":            offTx.AnchoredBlock,
-		"anchr_index":            offTx.AnchoredIndex,
-		"anchr_id":               offTx.AnchoredId,
 		"type":                   offTx.Type,
 		"ops":                    offTx.Ops,
 		"op_types":               offTx.OpTypes,
@@ -77,6 +73,22 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"required_posting_auths": offTx.RequiredPostingAuths,
 		"nonce":                  offTx.Nonce,
 		"rc_limit":               offTx.RcLimit,
+	}
+
+	// Only set the anchor a caller actually gives. The pool ingests without one,
+	// and a gossip copy of a transaction can arrive after a block already
+	// anchored it; writing nil here would erase that anchor.
+	if offTx.AnchoredHeight != nil {
+		setOp["anchr_height"] = offTx.AnchoredHeight
+	}
+	if offTx.AnchoredBlock != nil {
+		setOp["anchr_block"] = offTx.AnchoredBlock
+	}
+	if offTx.AnchoredIndex != nil {
+		setOp["anchr_index"] = offTx.AnchoredIndex
+	}
+	if offTx.AnchoredId != nil {
+		setOp["anchr_id"] = offTx.AnchoredId
 	}
 
 	// Extract recipients buried in contract-call payloads (e.g. sats/token

@@ -2781,7 +2781,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 	}
 	if !hasFr {
-		frBal, _ := se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+		var frBal *ledgerDb.BalanceRecord
+		blockingRetry(fmt.Sprintf("GetBalanceRecord(%s @%d)", params.FR_VIRTUAL_ACCOUNT, endBlock), func() error {
+			var err error
+			frBal, err = se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+			return err
+		})
 		if frBal != nil {
 			distinctAccounts = append(distinctAccounts, params.FR_VIRTUAL_ACCOUNT)
 		}
@@ -2804,7 +2809,15 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	for _, k := range distinctAccounts {
 		accountStart := time.Now()
 		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+		// Fail-stop (GV-H1): a read error taken as "no previous snapshot" would
+		// rebuild this account from zero and reset its path-dependent HBD_AVG /
+		// modify / claim heights on this node only.
+		var prevBalRecord *ledgerDb.BalanceRecord
+		blockingRetry(fmt.Sprintf("GetBalanceRecord(%s @%d)", k, endBlock), func() error {
+			var err error
+			prevBalRecord, err = se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+			return err
+		})
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -2975,12 +2988,9 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		// stalls the slot instead of being swallowed — retries converge because the
 		// upserts are deterministic and idempotent.
 		pendingBalanceRecords = append(pendingBalanceRecords, newRecord)
-		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
-			se.LedgerState.VirtualLedger[k],
-			func(v ledgerSystem.LedgerUpdate) bool {
-				return v.Type == "deposit"
-			},
-		)
+		se.LedgerState.DropVirtual(k, func(v ledgerSystem.LedgerUpdate) bool {
+			return v.Type == "deposit"
+		})
 		se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
 	}
 	// Fail-stop flush of the slot's balance records (see the loop above). A

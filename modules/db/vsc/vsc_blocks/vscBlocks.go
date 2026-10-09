@@ -50,10 +50,18 @@ func (blocks *vscBlocks) Init() error {
 	return nil
 }
 
-func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) {
+// StoreHeader upserts the header by id. A failed write is returned: the header
+// set feeds later slots (oplog start height, producer stats), so a write that
+// one node silently drops makes that node diverge from its peers.
+func (vblks *vscBlocks) StoreHeader(header VscHeaderRecord) error {
 	opts := options.FindOneAndUpdate()
 	opts.SetUpsert(true)
-	vblks.FindOneAndUpdate(context.Background(), bson.M{"id": header.Id}, bson.M{"$set": header}, opts)
+	err := vblks.FindOneAndUpdate(context.Background(), bson.M{"id": header.Id}, bson.M{"$set": header}, opts).Err()
+	if err == mongo.ErrNoDocuments {
+		// An upsert that inserted has no prior document to return.
+		return nil
+	}
+	return err
 }
 
 // Gets VSC block by height

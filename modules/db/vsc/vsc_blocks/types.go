@@ -8,7 +8,7 @@ import (
 
 type VscBlocks interface {
 	aggregate.Plugin
-	StoreHeader(header VscHeaderRecord)
+	StoreHeader(header VscHeaderRecord) error
 	GetBlockByHeight(height uint64) (*VscHeaderRecord, error)
 	GetBlockById(id string) (*VscHeaderRecord, error)
 	GetBlocksByElection(epoch uint64) ([]VscHeaderRecord, error)

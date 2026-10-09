@@ -66,22 +66,19 @@ func (dbr *DbReindex) Init() error {
 		reason = fmt.Sprintf("reindex_id %d != %d", indexId, REINDEX_ID)
 	}
 
-	// Consensus-version-lag trigger. Skipped on the first boot that records a version
-	// (ProcessedUnderConsensus nil) — we assume the existing DB is consistent with the
-	// current binary rather than forcing an unnecessary genesis replay; the trigger
-	// then arms for any FUTURE lag.
-	if dbr.verCheck != nil && dbr.verCheck.ChainActiveAt != nil && result.ProcessedUnderConsensus != nil {
+	// Consensus-version-lag trigger. A DB with no recorded version was written by
+	// a binary from before this metadata existed, so it is judged against the
+	// highest version such a binary could run (see processedVersion): a node that
+	// kept running one past a version rise it could not follow is reindexed, and
+	// one that upgrades before the rise is not.
+	if dbr.verCheck != nil && dbr.verCheck.ChainActiveAt != nil {
 		var lastBlock uint64
 		if result.LastProcessedBlock != nil {
 			lastBlock = *result.LastProcessedBlock
 		}
 		chMajor, chCons, ok := dbr.verCheck.ChainActiveAt(lastBlock)
 		if ok {
-			procMajor := uint64(0)
-			if result.ProcessedUnderMajor != nil {
-				procMajor = *result.ProcessedUnderMajor
-			}
-			procCons := *result.ProcessedUnderConsensus
+			procMajor, procCons := processedVersion(result)
 			if versionLagNeedsReindex(dbr.verCheck.RunningMajor, dbr.verCheck.RunningConsensus, chMajor, chCons, procMajor, procCons) {
 				shouldReindex = true
 				reason = fmt.Sprintf("consensus-version lag: last processed under %d.%d but chain-active was %d.%d at block %d (this binary %d.%d)",
@@ -133,6 +130,23 @@ func versionLagNeedsReindex(runningMajor, runningCons, chMajor, chCons, procMajo
 	runningMeets := runningMajor >= chMajor && runningCons >= chCons
 	processedMeets := procMajor >= chMajor && procCons >= chCons
 	return runningMeets && !processedMeets
+}
+
+// preMetadataConsensus is the highest consensus version a binary that does not
+// record processed_under could run: the last such release (aa112bc1) ran 0.3.
+const preMetadataConsensus = 3
+
+// processedVersion is the version the DB was last processed under. When the
+// previous binary recorded nothing, it predates the metadata and ran at most
+// 0.preMetadataConsensus.
+func processedVersion(result SearchResult) (major, consensus uint64) {
+	if result.ProcessedUnderConsensus == nil {
+		return 0, preMetadataConsensus
+	}
+	if result.ProcessedUnderMajor != nil {
+		major = *result.ProcessedUnderMajor
+	}
+	return major, *result.ProcessedUnderConsensus
 }
 
 func NewReindex(db *DbInstance, force bool, verCheck *VersionReindex) *DbReindex {

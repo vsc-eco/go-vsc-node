@@ -35,3 +35,31 @@ func TestVersionLagNeedsReindex(t *testing.T) {
 		}
 	}
 }
+
+// A DB written by a binary that predates the processed_under metadata is judged
+// as processed under 0.3 (the last such release): a node that upgrades before a
+// version rise keeps its DB, one that ran the old binary past the rise replays.
+func TestProcessedVersionWithoutMetadata(t *testing.T) {
+	maj, cons := processedVersion(SearchResult{})
+	if maj != 0 || cons != preMetadataConsensus {
+		t.Fatalf("no metadata: got %d.%d, want 0.%d", maj, cons, preMetadataConsensus)
+	}
+	// Upgraded from the old binary before the rise: chain still 0.3 -> keep.
+	if versionLagNeedsReindex(0, 9, 0, 3, maj, cons) {
+		t.Fatal("old binary, chain still at 0.3: must not reindex")
+	}
+	// Kept running the old binary past the rise to 0.9 -> replay.
+	if !versionLagNeedsReindex(0, 9, 0, 9, maj, cons) {
+		t.Fatal("old binary ran past the 0.9 rise: must reindex")
+	}
+
+	nine, zero := uint64(9), uint64(0)
+	maj, cons = processedVersion(SearchResult{ProcessedUnderMajor: &zero, ProcessedUnderConsensus: &nine})
+	if maj != 0 || cons != 9 {
+		t.Fatalf("recorded 0.9: got %d.%d", maj, cons)
+	}
+	maj, cons = processedVersion(SearchResult{ProcessedUnderConsensus: &nine})
+	if maj != 0 || cons != 9 {
+		t.Fatalf("recorded consensus only: got %d.%d", maj, cons)
+	}
+}

@@ -3,10 +3,12 @@ package datalayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	uio "github.com/ipfs/boxo/ipld/unixfs/io"
 	"github.com/ipfs/go-cid"
@@ -330,6 +332,10 @@ func (db *DataBin) Save() cid.Cid {
 		// }
 		wg.Wait()
 		db.DataLayer.blockServ.AddBlock(context.Background(), nodeDir)
+		if db.DataLayer.bitswap == nil {
+			// The LocalOnly view has no network side: the root stays local.
+			return
+		}
 		db.DataLayer.bitswap.NotifyNewBlocks(context.Background(), nodeDir)
 
 		db.DataLayer.p2pService.BroadcastCid(nodeDir.Cid())
@@ -359,29 +365,61 @@ func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 	}
 }
 
+// newLeafFromCid loads the state directory at inputCid. Contract execution, the
+// block producer and the TSS/oracle gates read state through here, so a failed
+// read must not turn into an empty directory: a node whose blockstore hiccups
+// would then run a contract against empty state while its peers read the real
+// one, and its result would silently differ. On the full data layer a failed
+// read is retried until it succeeds, so the node either computes the same
+// result as its peers or makes no progress, the same fail-stop rule as the
+// ledger reads. The LocalOnly view (API reads, where a CID the node does not
+// hold is expected) keeps answering with an empty directory.
 func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		leaf, err := loadLeafFromCid(da, inputCid)
+		if err == nil {
+			if attempt > 1 {
+				log.Error("databin: state read recovered; resuming", "cid", inputCid, "attempts", attempt)
+			}
+			return leaf
+		}
+		if da.localOnly {
+			log.Warn("databin: state not available locally", "cid", inputCid, "err", err)
+			return LeafDir{
+				Dir:    uio.NewDirectory(da.DagServ),
+				leaves: make(map[string]*LeafDir),
+			}
+		}
+		log.Error("databin: state read failed; blocking until it succeeds", "cid", inputCid, "attempt", attempt, "err", err)
+		time.Sleep(delay)
+		if delay *= 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
+func loadLeafFromCid(da *DataLayer, inputCid cid.Cid) (LeafDir, error) {
 	ctx := context.Background()
 
 	node, err := da.DagServ.Get(ctx, inputCid)
 	if err != nil {
-		log.Warn("databin: error loading node for CID", "cid", inputCid, "err", err)
-		// Return empty leaf to avoid panic
-		return LeafDir{
-			Dir:    uio.NewDirectory(da.DagServ),
-			leaves: make(map[string]*LeafDir),
-		}
+		return LeafDir{}, fmt.Errorf("loading node: %w", err)
 	}
 
 	dir, err := uio.NewDirectoryFromNode(da.DagServ, node)
 	if err != nil {
-		log.Warn("databin: error creating directory from node", "cid", inputCid, "err", err)
-		return LeafDir{
-			Dir:    uio.NewDirectory(da.DagServ),
-			leaves: make(map[string]*LeafDir),
-		}
+		return LeafDir{}, fmt.Errorf("directory from node: %w", err)
 	}
 
-	links, _ := dir.Links(ctx)
+	links, err := dir.Links(ctx)
+	if err != nil {
+		return LeafDir{}, fmt.Errorf("listing links: %w", err)
+	}
 
 	leaves := make(map[string]*LeafDir)
 	for _, lnk := range links {
@@ -394,5 +432,5 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	return LeafDir{
 		Dir:    dir,
 		leaves: leaves,
-	}
+	}, nil
 }

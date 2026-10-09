@@ -716,7 +716,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		txStrs = append(txStrs, s)
 	}
 
-	transactions := []vscBlocks.VscBlockTx{}
+	blockTxs := []vscBlocks.VscBlockTx{}
 	for _, txStr := range txStrs {
 		txRecord := bp.TxDb.GetTransaction(txStr)
 		if txRecord == nil {
@@ -731,7 +731,7 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 			return "", errors.New("transaction has no ops")
 		}
 		op := txRecord.Ops[0].Type
-		transactions = append(transactions, vscBlocks.VscBlockTx{
+		blockTxs = append(blockTxs, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,
 			Type: int(common.BlockTypeTransaction),
@@ -754,9 +754,21 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 	waitCancel()
 
+	// A block may only list transactions that are still pending. This runs after
+	// the state engine has caught up to the slot, so a transaction that an earlier
+	// block already included or settled is never seen with a stale pending status.
+	// An honest producer only picks pending entries, so a repeat can only come from
+	// a faulty or malicious producer, and refusing to sign keeps it short of 2/3.
+	for _, txStr := range txStrs {
+		rec := bp.TxDb.GetTransaction(txStr)
+		if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed {
+			return "", fmt.Errorf("refusing to sign: transaction %s was already handled", txStr)
+		}
+	}
+
 	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, localComps, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
-		Transactions: transactions,
+		Transactions: blockTxs,
 	})
 
 	if err != nil {

@@ -1570,7 +1570,7 @@ type ConsensusDelegation {
   to: String!
   """Gross HIVE staked on this edge (base units)."""
   delegated: Int64!
-  """HIVE currently reclaimable — `delegated` unless the node is slashed, then reduced pro-rata."""
+  """HIVE an unstake of `delegated` returns now: `delegated` unless the node is slashed, then reduced pro-rata. A display value, not an unstake amount."""
   claimable: Int64!
 }
 
@@ -1652,7 +1652,10 @@ type Query {
   `delegated` is the gross amount staked on this edge; `claimable` is what
   unstaking it would return now — equal to `delegated` unless the node has been
   slashed, in which case it is reduced pro-rata (every delegator to that node is
-  reduced by the same fraction). Use `claimable` to drive an unstake form.
+  reduced by the same fraction). An unstake form must submit `delegated` (or a
+  part of it) as the amount: the unstake applies the slash reduction itself, so
+  submitting `claimable` would reduce it twice. Show `claimable` as the amount
+  that will be returned.
   """
   getConsensusDelegation(
     """Delegator account (the signer that can reclaim this stake)."""

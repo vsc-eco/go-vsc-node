@@ -293,7 +293,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if err != nil {
 		return nil, err
 	}
-	databin := datalayer.NewDataBinFromCid(r.Da, cidz)
+	databin := datalayer.NewDataBinFromCid(r.Da.LocalOnly(), cidz)
 	result := make(map[string]interface{})
 	var keyErr error
 	for _, key := range keys {
@@ -306,7 +306,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 			}
 			continue
 		}
-		rawVal, err := r.Da.GetRaw(*cidVal)
+		rawVal, err := r.Da.LocalOnly().GetRaw(*cidVal)
 		if err != nil {
 			keyErr = err
 			continue
@@ -711,7 +711,7 @@ func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (stri
 	if parseErr != nil {
 		return "", parseErr
 	}
-	node, nodeErr := r.Da.GetDag(blockCid)
+	node, nodeErr := r.Da.LocalOnly().GetDag(blockCid)
 	if nodeErr != nil {
 		return "", nodeErr
 	}
@@ -866,7 +866,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 	// Create sessions from live DB state
 	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
-	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
 
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
 
@@ -911,7 +911,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			return results, nil
 		}
 
-		node, err := r.Da.Get(c, nil)
+		node, err := r.Da.LocalOnly().Get(c, nil)
 		if err != nil {
 			errMsg := err.Error()
 			results = append(results, SimulateContractCallResult{
@@ -970,10 +970,15 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// Same "in force" rule as the real call (transactions.go): the height pin
 			// OR the attested 0.8.0 floor. Keying on the pin alone left the preview on
 			// the 3-field TssGetKey once the floor, not a pin, turned the batch on.
+			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
 			if sc := r.StateEngine.SystemConfig(); sc != nil &&
-				stateEngine.VaultRotationV2InForce(sc.ConsensusParams(), blockHeight, r.StateEngine.ActiveConsensusVersion(blockHeight)) {
+				stateEngine.VaultRotationV2InForce(sc.ConsensusParams(), blockHeight, activeVersion) {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithVaultRotationV2(true))
 			}
+			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
+			ctxOpts = append(ctxOpts,
+				contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
+			)
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
