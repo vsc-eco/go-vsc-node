@@ -661,3 +661,36 @@ func GatewayEqualWeightsActive(active Version) bool {
 func SettlementClosedSlotsActive(active Version) bool {
 	return Version0_9_0Active(active)
 }
+
+// V0_10_0 is the version line of the pre-mainnet fix batch. A new line rather
+// than an addition to 0.9.0, because the testnet has run 0.9.0 since epoch 1358:
+// changing what 0.9.0 computes would make a node replaying that history diverge
+// from the chain it joins, and split a fleet mid-upgrade. Mainnet, still below
+// 0.9.0, raises its floor straight to 0.10.0 and activates every batch together.
+var V0_10_0 = Version{Major: 0, Consensus: 10, NonConsensus: 0}
+
+// Version0_10_0Active reports whether the pre-mainnet fix batch is in force
+// given the chain-active consensus version.
+func Version0_10_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_10_0)
+}
+
+// Sp1WorkPricingActive reports whether sp1_verify_groth16 is charged by work
+// (a base for the pairing checks plus a per-byte charge for the public inputs)
+// instead of a flat cost that let a loop of verifications overrun a slot.
+// Resolve `active` at the transaction's height.
+func Sp1WorkPricingActive(active Version) bool {
+	return Version0_10_0Active(active)
+}
+
+// ApplySkipsHandledTxActive reports whether block apply skips a listed
+// transaction that an earlier block already handled, or one listed twice in the
+// same block, instead of running its contract writes again. Resolve `active`
+// at the block's height.
+func ApplySkipsHandledTxActive(active Version) bool {
+	return Version0_10_0Active(active)
+}
+
+// (OneBlockPerSlotActive removed: a verbatim re-post is dup-rejected by Hive and
+// a different block for the same slot is the double-sign/equivocation path that
+// already slashes; the guard was redundant and never demonstrated to fix a bug.)

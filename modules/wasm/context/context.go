@@ -114,6 +114,9 @@ type ExecContextValue interface {
 	TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string]
 	TssRenewKey(keyId string, additionalEpochs uint64) result.Result[string]
 	TssGetKey(keyId string) result.Result[string]
+	// Sp1WorkPricingActive reports whether sp1_verify_groth16 is priced by work
+	// (consensus 0.10.0) rather than at the legacy flat cost.
+	Sp1WorkPricingActive() bool
 	TssKeySign(keyId string, msg string) result.Result[string]
 	PendulumApplySwapFees(args PendulumSwapFeeArgs) result.Result[PendulumSwapFeeResult]
 }

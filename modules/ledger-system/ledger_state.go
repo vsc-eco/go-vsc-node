@@ -3,6 +3,7 @@ package ledgerSystem
 import (
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 )
@@ -98,6 +99,12 @@ type LedgerState struct {
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
 	VirtualLedger map[string][]LedgerUpdate
+	// vlMu guards VirtualLedger. Block processing writes it, while read-only
+	// GraphQL queries read it from their own goroutines through a ledger session
+	// (getConsensusDelegation, simulateContractCalls). A concurrent map read and
+	// write is a fatal runtime error that recover() cannot catch, so without the
+	// lock an unauthenticated query flood could crash the node.
+	vlMu sync.RWMutex
 
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
@@ -143,7 +150,9 @@ func (le *LedgerState) Export() struct {
 }
 
 func (state *LedgerState) Flush() {
+	state.vlMu.Lock()
 	state.VirtualLedger = make(map[string][]LedgerUpdate)
+	state.vlMu.Unlock()
 	state.Oplog = make([]OpLogEvent, 0)
 
 	//qq: should this be cleared when flushing?
@@ -175,6 +184,7 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 
 	//le.Ls.log.Debug("getBalance le.VirtualLedger["+account+"]", le.VirtualLedger[account], blockHeight)
 
+	state.vlMu.RLock()
 	for _, v := range state.VirtualLedger[account] {
 		//Must be ledger ops with height below or equal to the current block height
 		//Current block height ledger ops are recently executed
@@ -182,7 +192,17 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 			bal += v.Amount
 		}
 	}
+	state.vlMu.RUnlock()
 	return bal
+}
+
+// DropVirtual removes the entries of account's virtual ledger for which drop
+// returns true, under the same lock readers take. slices.DeleteFunc compacts the
+// slice in place, so a reader iterating it unlocked could see shifted entries.
+func (state *LedgerState) DropVirtual(account string, drop func(LedgerUpdate) bool) {
+	state.vlMu.Lock()
+	state.VirtualLedger[account] = slices.DeleteFunc(state.VirtualLedger[account], drop)
+	state.vlMu.Unlock()
 }
 
 // GetBalance returns the spendable balance of asset for account as of blockHeight:

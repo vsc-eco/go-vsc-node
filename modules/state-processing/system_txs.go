@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1114,7 +1115,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
-	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
+	header := vscBlocks.VscHeaderRecord{
 		Id: t.Self.TxId,
 
 		MerkleRoot: blockContentC.MerkleRoot,
@@ -1136,11 +1137,32 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			Size: uint64(len(jsonBytes)),
 		},
 		Ts: t.Self.Timestamp,
+	}
+	// Fail-stop: a header write that one node drops while its peers keep theirs
+	// changes what later slots read back (the oplog start height), so retry
+	// until it lands. A duplicate slot cannot occur here: the produce_block
+	// handler applies one block per slot.
+	blockingRetry("StoreHeader "+t.Self.TxId, func() error {
+		err := se.vscBlocks.StoreHeader(header)
+		if mongo.IsDuplicateKeyError(err) {
+			log.Error("block header for an already-filled slot not stored", "id", t.Self.TxId, "slot_height", header.SlotHeight, "err", err)
+			return nil
+		}
+		return err
 	})
 
 	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)
 
 	txsToInjest := make([]TxPacket, 0)
+	// Transaction ids already handled in this block, so a producer cannot list
+	// the same transaction twice to run its contract writes more than once.
+	// Consensus 0.10.0 rule (see below): inert until then, so history
+	// re-executes unchanged.
+	seenTxIds := make(map[string]bool)
+	skipHandled := consensusversion.ApplySkipsHandledTxActive(se.ActiveConsensusVersion(t.Self.BlockHeight))
+	// Account nonces as they stood before this block (SetNonce runs after the
+	// loop), read once per signer set.
+	blockStartNonces := make(map[string]uint64)
 
 	nonceUpdates := make(map[string]uint64)
 
@@ -1185,6 +1207,48 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				log.Error("block tx AsTransaction failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
 				continue
+			}
+
+			// Run each transaction at most once. A transaction a prior block
+			// already included is no longer pending in the local index, and one
+			// listed twice in this block is caught by seenTxIds. Ledger operations
+			// dedupe on their own id, but contract state writes do not, so without
+			// this a repeated transaction re-applies its contract state. Both
+			// conditions are a pure function of already-applied on-chain state, so
+			// every node skips the identical set and the block stays deterministic.
+			if skipHandled {
+				txId := tx.Cid().String()
+				if seenTxIds[txId] {
+					log.Warn("skipping transaction listed twice in one block", "id", txId, "idx", idx)
+					continue
+				}
+				seenTxIds[txId] = true
+				rec := se.txRecord(txId)
+				ownBlock := rec != nil && includedByThisBlock(rec, t.Self.TxId)
+				if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed && !ownBlock {
+					log.Warn("skipping transaction a prior block already handled", "id", txId, "status", rec.Status, "idx", idx)
+					continue
+				}
+				// The nonce rule the pool and an honest producer already apply: a
+				// transaction whose nonce is below its signers' account nonce is
+				// stale (superseded or already used) and must not run. Without it a
+				// producer could run a signed transaction that was never included
+				// and has since been superseded, and its nonce would set the account
+				// nonce back (SetNonce stores this block's highest nonce + 1). A node
+				// re-processing its own block after a restart has already advanced
+				// the nonce, hence ownBlock.
+				if !ownBlock && len(tx.Headers.RequiredAuths) > 0 {
+					keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
+					accountNonce, ok := blockStartNonces[keyId]
+					if !ok {
+						accountNonce = se.storedNonce(keyId)
+						blockStartNonces[keyId] = accountNonce
+					}
+					if tx.Headers.Nonce < accountNonce {
+						log.Warn("skipping transaction with a nonce below its account nonce", "id", txId, "nonce", tx.Headers.Nonce, "accountNonce", accountNonce, "idx", idx)
+						continue
+					}
+				}
 			}
 
 			// Ingest records the tx in the pool and returns the already-resolved
@@ -1273,7 +1337,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+		// Fail-stop: from consensus 0.10 the account nonce is read back when a
+		// block is applied, so a write one node drops while its peers keep
+		// theirs would change which transactions that node runs.
+		blockingRetry("SetNonce "+k, func() error {
+			return se.nonceDb.SetNonce(k, v+1)
+		})
 	}
 
 	for _, info := range confirmedNonces {
@@ -1285,6 +1354,50 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
+}
+
+// includedByThisBlock reports whether rec was marked included by the block
+// carried in L1 transaction blockTxId. That happens when a node re-processes
+// the same block after a restart: the earlier pass already wrote INCLUDED, but
+// the results it computed lived in memory and were lost, so the transaction
+// must run again to rebuild them. Any other block listing the transaction
+// comes from a different L1 transaction.
+func includedByThisBlock(rec *transactions.TransactionRecord, blockTxId string) bool {
+	return rec.Status == transactions.TransactionStatusIncluded &&
+		rec.AnchoredId != nil && *rec.AnchoredId == blockTxId
+}
+
+// txRecord reads txId's record for the apply path, nil when none exists. A read
+// error is retried until it clears: a node that read nil on a transient error
+// would run a transaction its peers skip as already handled.
+func (se *StateEngine) txRecord(txId string) *transactions.TransactionRecord {
+	var rec *transactions.TransactionRecord
+	blockingRetry("GetTransaction "+txId, func() error {
+		var err error
+		rec, err = se.txDb.GetTransactionErr(txId)
+		return err
+	})
+	return rec
+}
+
+// storedNonce returns the account nonce stored for keyId, 0 when none is stored
+// yet. Any other read error is retried until it clears: a node that read 0 on a
+// transient error would run a stale transaction its peers skip.
+func (se *StateEngine) storedNonce(keyId string) uint64 {
+	var nonce uint64
+	blockingRetry("GetNonce "+keyId, func() error {
+		rec, err := se.nonceDb.GetNonce(keyId)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			nonce = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		nonce = rec.Nonce
+		return nil
+	})
+	return nonce
 }
 
 type SignedBlockHeader struct {

@@ -27,10 +27,12 @@ func (session *ledgerSession) Done() []string {
 	}
 
 	session.state.Oplog = append(session.state.Oplog, session.oplog...)
+	session.state.vlMu.Lock()
 	for _, op := range session.ledgerOps {
 		// lss.le.Ls.log.Debug("LedgerSession.Done adding LedgerResult", op)
 		session.state.VirtualLedger[op.Owner] = append(session.state.VirtualLedger[op.Owner], op)
 	}
+	session.state.vlMu.Unlock()
 	session.balances = make(map[string]*int64)
 	session.oplog = make([]OpLogEvent, 0)
 	session.ledgerOps = make([]LedgerUpdate, 0)

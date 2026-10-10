@@ -34,6 +34,8 @@ func (e *ledger) Init() error {
 	for _, m := range []mongo.IndexModel{
 		{Keys: bson.D{{Key: "owner", Value: 1}, {Key: "block_height", Value: 1}}},
 		{Keys: bson.D{{Key: "id", Value: 1}}},
+		// GetLedgerRecordsByType (the per-epoch delegation and settlement scan).
+		{Keys: bson.D{{Key: "t", Value: 1}, {Key: "block_height", Value: 1}}},
 	} {
 		if err := e.CreateIndexIfNotExist(m); err != nil {
 			return err
@@ -236,11 +238,20 @@ func (ledger *ledger) GetLedgerRecordsByType(types []string, toBlock uint64) ([]
 	if err != nil {
 		return nil, err
 	}
+	defer findResult.Close(context.Background())
+	// A decode or cursor error is returned, not swallowed: the settlement and
+	// delegation readers fail-stop on an error, and a partial set read as
+	// complete would give this node a different settlement than its peers.
 	results := make([]LedgerRecord, 0)
 	for findResult.Next(context.Background()) {
 		ledRes := LedgerRecord{}
-		findResult.Decode(&ledRes)
+		if err := findResult.Decode(&ledRes); err != nil {
+			return nil, err
+		}
 		results = append(results, ledRes)
+	}
+	if err := findResult.Err(); err != nil {
+		return nil, err
 	}
 	return results, nil
 }

@@ -66,10 +66,6 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 
 	opts := options.Update().SetUpsert(true)
 	setOp := bson.M{
-		"anchr_height":           offTx.AnchoredHeight,
-		"anchr_block":            offTx.AnchoredBlock,
-		"anchr_index":            offTx.AnchoredIndex,
-		"anchr_id":               offTx.AnchoredId,
 		"type":                   offTx.Type,
 		"ops":                    offTx.Ops,
 		"op_types":               offTx.OpTypes,
@@ -77,6 +73,22 @@ func (e *transactions) Ingest(offTx IngestTransactionUpdate) error {
 		"required_posting_auths": offTx.RequiredPostingAuths,
 		"nonce":                  offTx.Nonce,
 		"rc_limit":               offTx.RcLimit,
+	}
+
+	// Only set the anchor a caller actually gives. The pool ingests without one,
+	// and a gossip copy of a transaction can arrive after a block already
+	// anchored it; writing nil here would erase that anchor.
+	if offTx.AnchoredHeight != nil {
+		setOp["anchr_height"] = offTx.AnchoredHeight
+	}
+	if offTx.AnchoredBlock != nil {
+		setOp["anchr_block"] = offTx.AnchoredBlock
+	}
+	if offTx.AnchoredIndex != nil {
+		setOp["anchr_index"] = offTx.AnchoredIndex
+	}
+	if offTx.AnchoredId != nil {
+		setOp["anchr_id"] = offTx.AnchoredId
 	}
 
 	// Extract recipients buried in contract-call payloads (e.g. sats/token
@@ -166,6 +178,21 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 		return nil
 	}
 	return &record
+}
+
+// GetTransactionErr is GetTransaction for callers that must tell a missing
+// record from a failed read: (nil, nil) when no record exists, (nil, err) when
+// the read failed. GetTransaction returns nil for both.
+func (e *transactions) GetTransactionErr(id string) (*TransactionRecord, error) {
+	record := TransactionRecord{}
+	err := e.FindOne(context.Background(), bson.M{"id": id}).Decode(&record)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
 
 func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {

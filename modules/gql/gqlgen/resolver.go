@@ -70,7 +70,7 @@ func (r *Resolver) electionSettlement(dataCid string) *settlement.SettlementReco
 	if err != nil {
 		return nil
 	}
-	node, err := r.Da.GetDag(parsed)
+	node, err := r.Da.LocalOnly().GetDag(parsed)
 	if err != nil {
 		return nil
 	}

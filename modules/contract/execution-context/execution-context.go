@@ -69,6 +69,12 @@ type contractExecutionContext struct {
 	// nodes emit different strings) and break historical re-execution. False =>
 	// TssGetKey returns the byte-identical legacy 3-field string.
 	vaultRotationV2Active bool
+
+	// sp1WorkPricing gates the 0.10.0 SP1 work-based pricing exactly like
+	// tryCatchActive: the state engine sets it per tx from the chain-active
+	// consensus version and it propagates into nested calls, so the new price
+	// starts at a coordinated height and history re-executes unchanged.
+	sp1WorkPricing bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -182,6 +188,18 @@ func WithTryCatch(active bool) Option {
 // vaultRotationV2Active field doc for the fork-avoidance rationale).
 func WithVaultRotationV2(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.vaultRotationV2Active = active }
+}
+
+// WithSp1WorkPricing prices sp1_verify_groth16 by work
+// (consensusversion.Sp1WorkPricingActive).
+func WithSp1WorkPricing(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.sp1WorkPricing = active }
+}
+
+// Sp1WorkPricingActive reports whether this execution prices SP1 proof checks
+// by work; the SDK host call reads it.
+func (ctx *contractExecutionContext) Sp1WorkPricingActive() bool {
+	return ctx.sp1WorkPricing
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -677,7 +695,8 @@ func (ctx *contractExecutionContext) ContractCall(
 				WithTryCatch(ctx.tryCatchActive),
 				// Propagate the BRK-2 gate so a nested contract call sees the same
 				// TssGetKey output format as the top-level tx (fork-safe at depth).
-				WithVaultRotationV2(ctx.vaultRotationV2Active))
+				WithVaultRotationV2(ctx.vaultRotationV2Active),
+				WithSp1WorkPricing(ctx.sp1WorkPricing))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
