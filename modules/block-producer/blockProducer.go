@@ -760,9 +760,21 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	// An honest producer only picks pending entries, so a repeat can only come from
 	// a faulty or malicious producer, and refusing to sign keeps it short of 2/3.
 	for _, txStr := range txStrs {
-		rec := bp.TxDb.GetTransaction(txStr)
+		rec, err := bp.TxDb.GetTransactionErr(txStr)
+		if err != nil {
+			return "", fmt.Errorf("refusing to sign: reading transaction %s failed: %w", txStr, err)
+		}
 		if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed {
 			return "", fmt.Errorf("refusing to sign: transaction %s was already handled", txStr)
+		}
+		// The compose rule above (txRecord.Nonce >= the account nonce), read the
+		// same way: an honest producer never lists a transaction whose nonce is
+		// below its signers' account nonce, so one here is stale.
+		if rec != nil && len(rec.RequiredAuths) > 0 {
+			nonceRecord, _ := bp.nonceDb.GetNonce(transactionpool.HashKeyAuths(rec.RequiredAuths))
+			if rec.Nonce < int64(nonceRecord.Nonce) {
+				return "", fmt.Errorf("refusing to sign: transaction %s nonce %d is below its account nonce %d", txStr, rec.Nonce, nonceRecord.Nonce)
+			}
 		}
 	}
 

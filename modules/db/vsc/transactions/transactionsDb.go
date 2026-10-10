@@ -180,6 +180,21 @@ func (e *transactions) GetTransaction(id string) *TransactionRecord {
 	return &record
 }
 
+// GetTransactionErr is GetTransaction for callers that must tell a missing
+// record from a failed read: (nil, nil) when no record exists, (nil, err) when
+// the read failed. GetTransaction returns nil for both.
+func (e *transactions) GetTransactionErr(id string) (*TransactionRecord, error) {
+	record := TransactionRecord{}
+	err := e.FindOne(context.Background(), bson.M{"id": id}).Decode(&record)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
 func (e *transactions) FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error) {
 	if id != nil && ids != nil {
 		return nil, errors.New("either input a single id or a list of ids")

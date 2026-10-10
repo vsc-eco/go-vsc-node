@@ -365,15 +365,16 @@ func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 	}
 }
 
-// newLeafFromCid loads the state directory at inputCid. Contract execution, the
-// block producer and the TSS/oracle gates read state through here, so a failed
-// read must not turn into an empty directory: a node whose blockstore hiccups
-// would then run a contract against empty state while its peers read the real
-// one, and its result would silently differ. On the full data layer a failed
-// read is retried until it succeeds, so the node either computes the same
-// result as its peers or makes no progress, the same fail-stop rule as the
-// ledger reads. The LocalOnly view (API reads, where a CID the node does not
-// hold is expected) keeps answering with an empty directory.
+// newLeafFromCid loads the state directory at inputCid. Contract execution and
+// the block producer read state through here, so a failed read must not turn
+// into an empty directory: a node whose blockstore hiccups would then run a
+// contract against empty state while its peers read the real one, and its
+// result would silently differ. On the full data layer a failed read is retried
+// until it succeeds, so the node either computes the same result as its peers or
+// makes no progress, the same fail-stop rule as the ledger reads. The LocalOnly
+// view keeps answering with an empty directory: API reads (where a CID the node
+// does not hold is expected) and the oracle relay and TSS gates, which run on
+// goroutines or under locks that must not block.
 func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	const (
 		baseDelay = 100 * time.Millisecond

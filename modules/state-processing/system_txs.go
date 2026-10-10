@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1159,6 +1160,9 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	// re-executes unchanged.
 	seenTxIds := make(map[string]bool)
 	skipHandled := consensusversion.ApplySkipsHandledTxActive(se.ActiveConsensusVersion(t.Self.BlockHeight))
+	// Account nonces as they stood before this block (SetNonce runs after the
+	// loop), read once per signer set.
+	blockStartNonces := make(map[string]uint64)
 
 	nonceUpdates := make(map[string]uint64)
 
@@ -1219,10 +1223,31 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 					continue
 				}
 				seenTxIds[txId] = true
-				if rec := se.txDb.GetTransaction(txId); rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed &&
-					!includedByThisBlock(rec, t.Self.TxId) {
+				rec := se.txRecord(txId)
+				ownBlock := rec != nil && includedByThisBlock(rec, t.Self.TxId)
+				if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed && !ownBlock {
 					log.Warn("skipping transaction a prior block already handled", "id", txId, "status", rec.Status, "idx", idx)
 					continue
+				}
+				// The nonce rule the pool and an honest producer already apply: a
+				// transaction whose nonce is below its signers' account nonce is
+				// stale (superseded or already used) and must not run. Without it a
+				// producer could run a signed transaction that was never included
+				// and has since been superseded, and its nonce would set the account
+				// nonce back (SetNonce stores this block's highest nonce + 1). A node
+				// re-processing its own block after a restart has already advanced
+				// the nonce, hence ownBlock.
+				if !ownBlock && len(tx.Headers.RequiredAuths) > 0 {
+					keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
+					accountNonce, ok := blockStartNonces[keyId]
+					if !ok {
+						accountNonce = se.storedNonce(keyId)
+						blockStartNonces[keyId] = accountNonce
+					}
+					if tx.Headers.Nonce < accountNonce {
+						log.Warn("skipping transaction with a nonce below its account nonce", "id", txId, "nonce", tx.Headers.Nonce, "accountNonce", accountNonce, "idx", idx)
+						continue
+					}
 				}
 			}
 
@@ -1312,7 +1337,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+		// Fail-stop: from consensus 0.10 the account nonce is read back when a
+		// block is applied, so a write one node drops while its peers keep
+		// theirs would change which transactions that node runs.
+		blockingRetry("SetNonce "+k, func() error {
+			return se.nonceDb.SetNonce(k, v+1)
+		})
 	}
 
 	for _, info := range confirmedNonces {
@@ -1335,6 +1365,39 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 func includedByThisBlock(rec *transactions.TransactionRecord, blockTxId string) bool {
 	return rec.Status == transactions.TransactionStatusIncluded &&
 		rec.AnchoredId != nil && *rec.AnchoredId == blockTxId
+}
+
+// txRecord reads txId's record for the apply path, nil when none exists. A read
+// error is retried until it clears: a node that read nil on a transient error
+// would run a transaction its peers skip as already handled.
+func (se *StateEngine) txRecord(txId string) *transactions.TransactionRecord {
+	var rec *transactions.TransactionRecord
+	blockingRetry("GetTransaction "+txId, func() error {
+		var err error
+		rec, err = se.txDb.GetTransactionErr(txId)
+		return err
+	})
+	return rec
+}
+
+// storedNonce returns the account nonce stored for keyId, 0 when none is stored
+// yet. Any other read error is retried until it clears: a node that read 0 on a
+// transient error would run a stale transaction its peers skip.
+func (se *StateEngine) storedNonce(keyId string) uint64 {
+	var nonce uint64
+	blockingRetry("GetNonce "+keyId, func() error {
+		rec, err := se.nonceDb.GetNonce(keyId)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			nonce = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		nonce = rec.Nonce
+		return nil
+	})
+	return nonce
 }
 
 type SignedBlockHeader struct {
