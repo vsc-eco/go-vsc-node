@@ -197,12 +197,16 @@ func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key
 	if err != nil {
 		return nil, false
 	}
-	databin := datalayer.NewDataBinFromCid(tssMgr.da, stateCid)
+	local := tssMgr.da.LocalOnly()
+	if local == nil {
+		return nil, false
+	}
+	databin := datalayer.NewDataBinFromCid(local, stateCid)
 	keyCid, err := databin.Get(key)
 	if err != nil || keyCid == nil {
 		return nil, false
 	}
-	raw, err := tssMgr.da.GetRaw(*keyCid)
+	raw, err := local.GetRaw(*keyCid)
 	if err != nil {
 		return nil, false
 	}
@@ -233,13 +237,21 @@ func (tssMgr *TssManager) contractStateReaderAt(contractID string, bh uint64) fu
 	if err != nil {
 		return miss
 	}
-	databin := datalayer.NewDataBinFromCid(tssMgr.da, stateCid)
+	// This runs under the global TSS lock, so the read must not block. State at
+	// a processed height is already local, and the LocalOnly view answers from
+	// the blockstore (a miss reads as absent) instead of retrying a failed read
+	// on the full data layer or waiting on bitswap for a block nobody serves.
+	local := tssMgr.da.LocalOnly()
+	if local == nil {
+		return miss
+	}
+	databin := datalayer.NewDataBinFromCid(local, stateCid)
 	return func(key string) ([]byte, bool) {
 		keyCid, err := databin.Get(key)
 		if err != nil || keyCid == nil {
 			return nil, false
 		}
-		raw, err := tssMgr.da.GetRaw(*keyCid)
+		raw, err := local.GetRaw(*keyCid)
 		if err != nil {
 			return nil, false
 		}

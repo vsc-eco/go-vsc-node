@@ -733,11 +733,18 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	releaseID := pendingID + "#cancel_release"
 	finalizedID := pendingID + "#finalized_marker"
 
-	// Look up pending row to recover amount + maturity height.
-	allPending, err := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+	// Look up pending row to recover amount + maturity height. Fail-stop like
+	// the reads below: a node that read "no rows" on a DB error would skip the
+	// cancel records its peers write.
+	var allPending *[]ledger_db.LedgerRecord
+	blockingLedgerRead("GetLedgerRange(pending burns)", func() error {
+		var err error
+		allPending, err = ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+		})
+		return err
 	})
-	if err != nil || allPending == nil {
+	if allPending == nil {
 		return LedgerResult{Ok: false, Msg: "no pending burn rows"}
 	}
 	var pendingRec *ledger_db.LedgerRecord

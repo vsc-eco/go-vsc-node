@@ -403,7 +403,7 @@ func (c *ChainOracle) getContractBlockHeight(contractId string) (uint64, error) 
 		return 0, fmt.Errorf("failed to get %s from state: %w", lastHeightStateKey, err)
 	}
 
-	rawVal, err := c.da.GetRaw(*cidVal)
+	rawVal, err := c.da.LocalOnly().GetRaw(*cidVal)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read state value: %w", err)
 	}

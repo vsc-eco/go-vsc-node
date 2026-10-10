@@ -7,6 +7,8 @@ type Transactions interface {
 	Ingest(offTx IngestTransactionUpdate) error
 	SetOutput(sOut SetResultUpdate)
 	GetTransaction(id string) *TransactionRecord
+	// GetTransactionErr tells a missing record (nil, nil) from a failed read (nil, err).
+	GetTransactionErr(id string) (*TransactionRecord, error)
 	FindTransactions(ids []string, id *string, account *string, contract *string, status *TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]TransactionRecord, error)
 	FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error)
 	InvalidateCompetingTransactions(requiredAuths []string, nonces []uint64) (int64, error)

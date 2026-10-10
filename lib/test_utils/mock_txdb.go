@@ -48,6 +48,10 @@ func (m *MockTxDb) GetTransaction(id string) *transactions.TransactionRecord {
 	return &rec
 }
 
+func (m *MockTxDb) GetTransactionErr(id string) (*transactions.TransactionRecord, error) {
+	return m.GetTransaction(id), nil
+}
+
 func (m *MockTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *transactions.TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]transactions.TransactionRecord, error) {
 	return make([]transactions.TransactionRecord, 0), nil
 }
