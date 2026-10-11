@@ -107,15 +107,17 @@ func TestVaultOpDryRun_GasCapDeclaresWhatTheBotHolds(t *testing.T) {
 	}
 }
 
-// Only the vault ops are dry-run: map / confirmSpend keep their path unchanged.
-func TestVaultOpDryRun_NotForOtherActions(t *testing.T) {
-	gql := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: "would refuse"}}
+// A refused dry run never blocks map / confirmSpend: their dry run only sizes the
+// rc_limit (BOT-CONF-RC), it is not the vault-op refusal gate, so the call is still
+// submitted with the configured limit and the node judges it.
+func TestVaultOpDryRun_RefusalDoesNotBlockOtherActions(t *testing.T) {
+	gql := &mockGraphQL{nonces: map[string]uint64{}, sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: "would refuse"}}
 	bot, _ := buildBotForL2Test(t, gql)
-	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "confirmSpend"); err != nil && strings.Contains(err.Error(), "dry run") {
-		t.Fatalf("confirmSpend went through the vault-op dry run: %v", err)
+	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "confirmSpend"); err != nil {
+		t.Fatalf("confirmSpend was blocked by a refused dry run: %v", err)
 	}
-	if gql.simCalls != 0 {
-		t.Fatalf("simulate called %d times for a non-vault action", gql.simCalls)
+	if len(gql.submitted) != 1 {
+		t.Fatalf("confirmSpend not submitted after a refused dry run (%d txs)", len(gql.submitted))
 	}
 }
 
