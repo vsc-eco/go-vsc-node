@@ -42,6 +42,7 @@ func (b *Bot) HandleUnmap() {
 	defer cancel()
 
 	txSpends, err := b.gql().FetchTxSpends(ctx)
+	spendsKnown := err == nil
 	if err != nil {
 		b.L.Debug("failed to fetch tx spends from contract", "error", err)
 	} else {
@@ -68,6 +69,13 @@ func (b *Bot) HandleUnmap() {
 		}
 		for _, tx := range txPairs {
 			if tx == nil || !postDue(tx.TxId) {
+				continue
+			}
+			// BOT-ABANDON-1: a spend the contract no longer lists (abandoned with
+			// abandonSweep, or already settled) has nothing left to post. Without this,
+			// an abandoned sweep stays pending in the bot DB and is re-posted every
+			// postRetryInterval forever (testnet 2026-10-11, ebc108a8 / 286b0ec8).
+			if _, live := txSpends[tx.TxId]; spendsKnown && !live {
 				continue
 			}
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)

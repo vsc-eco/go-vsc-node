@@ -228,3 +228,46 @@ func TestHandleUnmap_RefusedSpendIsNotRepostedEveryCycle(t *testing.T) {
 	assert.Equal(t, database.TxStatePending, state.txs[txid].State)
 	state.mu.Unlock()
 }
+
+// BOT-ABANDON-1 (testnet 2026-10-11): once abandonSweep removes a dead sweep from
+// the contract's pending spends, the bot must stop posting it. The release bot kept
+// re-posting the abandoned ebc108a8 / 286b0ec8 every postRetryInterval (120 posts
+// in a day), because the never-accepted spend stays pending in its own DB.
+func TestHandleUnmap_SpendNoLongerListedIsNotPosted(t *testing.T) {
+	bot, gql, _, _, _, chainClient := newTestBotWithMocks()
+	sigHash := make([]byte, 32)
+	sigHash[0] = 0xA4
+	raw, txid := oneInputTx(t, 4)
+	gql.txSpends = map[string]*contractinterface.SigningData{
+		txid: {
+			Tx:                raw,
+			UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0xDE, 0xAD}}},
+		},
+	}
+	gql.signatures = map[string]database.SignatureUpdate{string(sigHash): {Bytes: []byte{0x30, 0x02, 0x01, 0x01}}}
+	chainClient.postTxErr = errors.New(`sendrawtransaction RPC error: {"code":-25,"message":"bad-txns-inputs-missingorspent"}`)
+	now := time.Now()
+	postNow = func() time.Time { return now }
+	t.Cleanup(func() { postNow = time.Now })
+	posts := func() int { chainClient.mu.Lock(); defer chainClient.mu.Unlock(); return len(chainClient.posted) }
+
+	bot.HandleUnmap()
+	require.Equal(t, 3, posts(), "a listed spend is posted (with its retries)")
+
+	// abandonSweep: the contract no longer lists it.
+	gql.mu.Lock()
+	gql.txSpends = map[string]*contractinterface.SigningData{}
+	gql.mu.Unlock()
+	now = now.Add(postRetryInterval)
+	bot.HandleUnmap()
+	assert.Equal(t, 3, posts(), "a spend the contract no longer lists must not be posted again")
+
+	// An unreadable pending-spend list is not "no longer listed": keep posting.
+	gql.mu.Lock()
+	gql.txSpends = map[string]*contractinterface.SigningData{txid: {Tx: raw, UnsignedSigHashes: []contractinterface.UnsignedSigHash{{Index: 0, SigHash: sigHash, WitnessScript: []byte{0xDE, 0xAD}}}}}
+	gql.readErr = map[string]error{"FetchTxSpends": errors.New("node unreachable")}
+	gql.mu.Unlock()
+	now = now.Add(postRetryInterval)
+	bot.HandleUnmap()
+	assert.Equal(t, 6, posts(), "a failed read of the pending spends must not stop posting")
+}
