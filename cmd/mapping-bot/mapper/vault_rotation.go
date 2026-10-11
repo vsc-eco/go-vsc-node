@@ -40,8 +40,9 @@ const vaultOpMinInterval = 2 * time.Minute
 // block ABOVE the contract value so the driver never races the contract's own boundary.
 const redriveStaleBlocks = 13
 
-// firstSeenSweep tracks the contract height at which the driver first observed each
-// in-flight sweep txid, so it can measure staleness the same way the contract does
+// firstSeenSweep tracks the contract height at which the driver first held each
+// in-flight sweep txid fully signed (see signedSweeps), so its stale window starts
+// when the sweep can first be broadcast, never earlier than the contract's own clock
 // (contract LastHeight minus the sweep's build height). Process-global, mutex-guarded.
 var (
 	sweepSeenMu    sync.Mutex
@@ -198,6 +199,38 @@ func (b *Bot) redriveHeldBack(ctx context.Context, txId string) bool {
 			"a fee bump cannot help, so it is left for abandonSweep (permissionless, SweepAbandonBlocks after its last build)", "txId", txId)
 	}
 	return redriven
+}
+
+// signedSweeps narrows the in-flight sweeps to those this bot already holds fully
+// signed (sent, or signed and waiting to post). The re-drive clock must not run
+// while the TSS signatures are still being collected: a large sweep can take longer
+// to sign than the stale window (testnet 2026-10-11: 17 inputs, ~49 min), and
+// re-driving it right after its first broadcast only burns fee reserve, signatures
+// and RC (BOT-REDRIVE-2). A sweep Bitcoin refuses to post is still held fully signed,
+// so the one re-drive abandonSweep requires (BOT-REDRIVE-1) still happens.
+func (b *Bot) signedSweeps(ctx context.Context, inFlight []string) ([]string, error) {
+	sent, err := b.stateDB().GetSentTransactionIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := b.stateDB().GetFullySignedPendingTransactions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ready := make(map[string]struct{}, len(sent)+len(pending))
+	for _, id := range sent {
+		ready[id] = struct{}{}
+	}
+	for _, tx := range pending {
+		ready[tx.TxID] = struct{}{}
+	}
+	out := make([]string, 0, len(inFlight))
+	for _, txId := range inFlight {
+		if _, ok := ready[txId]; ok {
+			out = append(out, txId)
+		}
+	}
+	return out, nil
 }
 
 // isUneconomicResidual reports whether migrateVault refused because what's left
@@ -407,9 +440,33 @@ func (b *Bot) HandleVaultRotation() {
 	// contract's own staleness gate is the final arbiter, so an early call is simply
 	// refused. Do this BEFORE building a new tranche.
 	if inFlight {
-		if h, herr := b.FetchContractHeight(ctx); herr == nil {
-			for _, txId := range noteSweepsInFlight(inFlightSweeps, h) {
+		h, herr := b.FetchContractHeight(ctx)
+		var signed []string
+		if herr == nil {
+			signed, herr = b.signedSweeps(ctx, inFlightSweeps)
+		}
+		if herr == nil {
+			for _, txId := range noteSweepsInFlight(signed, h) {
 				if b.redriveHeldBack(ctx, txId) {
+					continue
+				}
+				// Only the group's newest member may be re-driven. The contract accepts a
+				// re-drive of any member whose own build is stale and out-bids the group's
+				// highest fee every time, so re-driving the replaced original again each
+				// cycle would escalate the fee up to the member cap (BOT-REDRIVE-2).
+				if superseded, gerr := b.sweepSuperseded(ctx, txId); gerr != nil || superseded {
+					if gerr != nil {
+						b.L.Debug("vault rotation: cannot read the sweep's spend group; not re-driving this cycle", "txId", txId, "error", gerr)
+					}
+					continue
+				}
+				// A sweep Bitcoin already confirmed only waits for its confirmSpend; a
+				// re-drive can never confirm (its inputs are spent) and only burns TSS
+				// signatures and RC. A txid Bitcoin does not know reads as unconfirmed.
+				if mined, cerr := b.Chain.Client.GetTxStatus(txId); cerr != nil || mined {
+					if cerr != nil {
+						b.L.Debug("vault rotation: cannot read the sweep's Bitcoin status; not re-driving this cycle", "txId", txId, "error", cerr)
+					}
 					continue
 				}
 				if !mayIssueVaultOp(contractId) {
@@ -425,7 +482,7 @@ func (b *Bot) HandleVaultRotation() {
 				}
 			}
 		} else {
-			b.L.Debug("vault rotation: cannot read contract height for stuck-sweep detection", "error", herr)
+			b.L.Debug("vault rotation: cannot read the contract height or signed sweeps for stuck-sweep detection", "error", herr)
 		}
 	}
 

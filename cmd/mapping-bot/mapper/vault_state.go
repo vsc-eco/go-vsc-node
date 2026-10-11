@@ -212,21 +212,31 @@ func (b *Bot) InFlightSweepTxIds(ctx context.Context, pendingTxIds []string) ([]
 // keyed by the smallest input id of the sweep record ("ms-<txid>": fee u64,
 // successor gen u32, build height u32, n u16, n input ids u16, successor address).
 func (b *Bot) sweepAlreadyRedriven(ctx context.Context, txId string) (bool, error) {
-	st, err := b.fetchStateHex(ctx, []string{contractinterface.MigrationSweepPrefix + txId})
+	raw, err := b.sweepGroupRaw(ctx, txId)
 	if err != nil {
 		return false, err
 	}
+	return len(raw) > 0, nil
+}
+
+// sweepGroupRaw returns the raw spend-group object of the in-flight sweep txId,
+// or nil when the sweep has never been re-driven (no group yet).
+func (b *Bot) sweepGroupRaw(ctx context.Context, txId string) ([]byte, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.MigrationSweepPrefix + txId})
+	if err != nil {
+		return nil, err
+	}
 	rec, ok := st[contractinterface.MigrationSweepPrefix+txId]
 	if !ok {
-		return false, fmt.Errorf("no sweep record for %s", txId)
+		return nil, fmt.Errorf("no sweep record for %s", txId)
 	}
 	const head = 8 + 4 + 4
 	if len(rec) < head+2 {
-		return false, fmt.Errorf("sweep record too short (%d bytes)", len(rec))
+		return nil, fmt.Errorf("sweep record too short (%d bytes)", len(rec))
 	}
 	n := int(binary.BigEndian.Uint16(rec[head:]))
 	if n == 0 || len(rec) < head+2+2*n {
-		return false, fmt.Errorf("sweep record has a malformed input list")
+		return nil, fmt.Errorf("sweep record has a malformed input list")
 	}
 	min := binary.BigEndian.Uint16(rec[head+2:])
 	for i := 1; i < n; i++ {
@@ -237,10 +247,31 @@ func (b *Bot) sweepAlreadyRedriven(ctx context.Context, txId string) (bool, erro
 	key := contractinterface.SpendGroupPrefix + strconv.FormatUint(uint64(min), 10)
 	g, err := b.fetchStateHex(ctx, []string{key})
 	if err != nil {
+		return nil, err
+	}
+	return g[key], nil
+}
+
+// sweepSuperseded reports whether the in-flight sweep txId has already been
+// replaced by a re-drive, i.e. its spend group has a newer member. The group
+// ("g-<min input id>": highest fee u64, k u16, k txids as 64-char hex) lists
+// members in the order the contract appended them, so the last one is the
+// newest replacement.
+func (b *Bot) sweepSuperseded(ctx context.Context, txId string) (bool, error) {
+	raw, err := b.sweepGroupRaw(ctx, txId)
+	if err != nil || len(raw) == 0 {
 		return false, err
 	}
-	raw, ok := g[key]
-	return ok && len(raw) > 0, nil
+	const head, txidLen = 8 + 2, 64
+	if len(raw) < head {
+		return false, fmt.Errorf("spend group too short (%d bytes)", len(raw))
+	}
+	k := int(binary.BigEndian.Uint16(raw[8:]))
+	if k == 0 || len(raw) != head+k*txidLen {
+		return false, fmt.Errorf("spend group has a malformed member list")
+	}
+	newest := string(raw[head+(k-1)*txidLen:])
+	return newest != txId, nil
 }
 
 // FetchContractHeight reads the contract's committed last BTC height ("h"). The
