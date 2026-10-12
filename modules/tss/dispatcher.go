@@ -429,22 +429,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 					keydata, _ := json.Marshal(reshareResult)
 
-					k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-					if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
-						log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-					} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
-						log.Error("reshared keystore write failed", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
-					}
-
-					dispatcher.result = &ReshareResult{
-						Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
-						KeyId:       dispatcher.keyId,
-						SessionId:   dispatcher.sessionId,
-						NewEpoch:    dispatcher.newEpoch,
-						BlockHeight: dispatcher.blockHeight,
-					}
-
-					dispatcher.signalDone()
+					dispatcher.storeReshareResult("ECDSA", keydata)
 					return
 				}
 			}
@@ -580,22 +565,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 				keydata, _ := json.Marshal(reshareResult)
 
-				k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-				if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
-					log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-				} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
-					log.Error("reshared keystore write failed", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
-				}
-
-				dispatcher.result = &ReshareResult{
-					Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
-					KeyId:       dispatcher.keyId,
-					SessionId:   dispatcher.sessionId,
-					NewEpoch:    dispatcher.newEpoch,
-					BlockHeight: dispatcher.blockHeight,
-				}
-
-				dispatcher.signalDone()
+				dispatcher.storeReshareResult("EdDSA", keydata)
 				return
 			}
 		}()
@@ -605,6 +575,27 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	dispatcher.baseStart()
 
 	return nil
+}
+
+// storeReshareResult writes this node's share of the reshared key under the
+// new epoch and records the session's success result.
+func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []byte) {
+	k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
+	if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
+		log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", algo, "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
+	} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
+		log.Error("reshared keystore write failed", "algo", algo, "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
+	}
+
+	dispatcher.result = &ReshareResult{
+		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+		KeyId:       dispatcher.keyId,
+		SessionId:   dispatcher.sessionId,
+		NewEpoch:    dispatcher.newEpoch,
+		BlockHeight: dispatcher.blockHeight,
+	}
+
+	dispatcher.signalDone()
 }
 
 func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
@@ -1995,27 +1986,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			bytes, _ := json.Marshal(savedOutput)
 
-			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-			if encErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
-			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
-			} else {
-				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
-			}
-
-			dispatcher.result = &KeyGenResult{
-				PublicKey:   pubBytes,
-				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
-				SavedSecret: bytes,
-				SessionId:   dispatcher.sessionId,
-				KeyId:       dispatcher.keyId,
-
-				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
-			}
-			dispatcher.signalDone()
+			dispatcher.storeKeygenResult(pubBytes, bytes)
 		}()
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
@@ -2051,31 +2022,37 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			bytes, _ := json.Marshal(savedOutput)
 
-			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-			if encErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
-			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
-			} else {
-				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
-			}
-
-			dispatcher.result = &KeyGenResult{
-				PublicKey:   pubBytes,
-				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
-				SavedSecret: bytes,
-				SessionId:   dispatcher.sessionId,
-				KeyId:       dispatcher.keyId,
-
-				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
-			}
-			dispatcher.signalDone()
+			dispatcher.storeKeygenResult(pubBytes, bytes)
 		}()
 	}
 	dispatcher.baseStart()
 	return nil
+}
+
+// storeKeygenResult writes this node's share of the new key and records the
+// session's success result.
+func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
+	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
+	encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
+	if encErr != nil {
+		log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
+	} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey); ksErr != nil {
+		log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
+	} else {
+		log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
+	}
+
+	dispatcher.result = &KeyGenResult{
+		PublicKey:   pubBytes,
+		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
+		SavedSecret: saved,
+		SessionId:   dispatcher.sessionId,
+		KeyId:       dispatcher.keyId,
+
+		BlockHeight: dispatcher.blockHeight,
+		Epoch:       dispatcher.epoch,
+	}
+	dispatcher.signalDone()
 }
 
 func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
