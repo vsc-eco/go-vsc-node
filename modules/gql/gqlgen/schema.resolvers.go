@@ -866,7 +866,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 	// Create sessions from live DB state
 	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
-	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, r.TssCommitments, blockHeight, nil)
 
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
 

@@ -188,6 +188,9 @@ func (t TxVscCallContract) ExecuteTx(
 			se.SystemConfig() != nil &&
 				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
 		),
+		// 0.11.0: TssGetKey reports whether a key has been reshared since its
+		// keygen, gated the same way so the output format changes at one height.
+		contract_execution_context.WithKeyReshared(consensusversion.KeyResharedFlagActive(activeVersion)),
 		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
 		// coordinated height and history re-executes unchanged.
 		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),

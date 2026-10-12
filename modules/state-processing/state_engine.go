@@ -2474,6 +2474,7 @@ func (se *StateEngine) ExecuteBatch() {
 					se.contractDb,
 					se.contractState,
 					se.tssKeys,
+					se.tssCommitments,
 					lastBlockBh,
 					se.TempOutputs,
 				)
