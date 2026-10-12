@@ -3,6 +3,7 @@ package tss
 import (
 	"strconv"
 
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/vaultrotation"
@@ -37,6 +38,7 @@ func emptyRetiringSet() vaultrotation.RetiringSignerSet {
 	return vaultrotation.RetiringSignerSet{
 		SignerElection:        map[string]elections.ElectionResult{},
 		PendingSignerElection: map[string]elections.ElectionResult{},
+		ActiveSignerElection:  map[string]elections.ElectionResult{},
 		KeyIds:                map[string]bool{},
 		PendingKeyIds:         map[string]bool{},
 		ReshareSkipKeyIds:     map[string]bool{},
@@ -73,7 +75,18 @@ func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) vaultrotation.Retiring
 		GetElection: func(epoch uint64) *elections.ElectionResult {
 			return tssMgr.electionDb.GetElection(epoch)
 		},
+		IncludeActiveHolders: tssMgr.activeKeyHoldersBound(bh),
 	})
+}
+
+// activeKeyHoldersBound reports whether the 0.11.0 active-key-holder rules are in
+// force at bh (consensusversion.ActiveKeyHoldersBoundActive on the chain-active
+// version, the same source every node reads at that height).
+func (tssMgr *TssManager) activeKeyHoldersBound(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.ActiveKeyHoldersBoundActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
 }
 
 // retiringGenSignerSetCached is the memoized accessor used ONLY on the untrusted

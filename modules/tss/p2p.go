@@ -319,11 +319,16 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	// Build a set of valid election members for cheap pre-filtering
 	// before the expensive BLS signature verification.
-	electionMembers := make(map[string]bool, len(election.Members)+len(retiringSet.SignerElection))
+	// 0.11.0 widens it further (ReadinessAccounts): the active generation's
+	// holders, so the active key can still sign and be reshared after they leave
+	// the election, and a pending generation's keygen committee, whose readiness
+	// was emitted (tss.go HasReadiness) but never accepted here.
+	readinessExtra := retiringSet.ReadinessAccounts()
+	electionMembers := make(map[string]bool, len(election.Members)+len(readinessExtra))
 	for _, m := range election.Members {
 		electionMembers[m.Account] = true
 	}
-	for acct := range retiringSet.SignerElection {
+	for _, acct := range readinessExtra {
 		electionMembers[acct] = true
 	}
 
@@ -342,7 +347,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	// Cap bundle size at the election member count to prevent a malicious peer
 	// from sending an oversized bundle that wastes CPU on BLS verification.
-	maxAttestations := len(election.Members) + len(retiringSet.SignerElection)
+	maxAttestations := len(election.Members) + len(readinessExtra)
 	if len(attList) > maxAttestations {
 		log.Warn("oversized gossip bundle, truncating",
 			"received", len(attList), "max", maxAttestations,
@@ -403,7 +408,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		// epoch election, which carries its BLS key.
 		verified := s.tssMgr.verifyAttestation(att, election)
 		if !verified {
-			if relec, isRetiring := retiringSet.SignerElection[account]; isRetiring {
+			if relec, eligible := retiringSet.ReadinessElection(account); eligible {
 				verified = s.tssMgr.verifyAttestation(att, relec)
 			}
 		}
