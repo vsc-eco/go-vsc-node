@@ -2632,37 +2632,44 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						})
 					}
 
-					rawJson, _ := json.Marshal(map[string]any{
-						"packet": sigPacket,
-					})
-					deployOp := hivego.CustomJsonOperation{
-						RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
-						RequiredPostingAuths: []string{},
-						Id:                   "vsc.tss_sign",
-						Json:                 string(rawJson),
+					// NT-1: one vsc.tss_sign op per size-bounded chunk so no op exceeds Hive's
+					// 8192-byte custom_json limit. The state engine marks each packet entry
+					// signed independently, so N ops produce the same on-chain result as one op.
+					chunks := chunkSigPacket(sigPacket, maxTssSignPacketBytes)
+					for ci, chunk := range chunks {
+						rawJson, _ := json.Marshal(map[string]any{
+							"packet": chunk,
+						})
+						deployOp := hivego.CustomJsonOperation{
+							RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+							RequiredPostingAuths: []string{},
+							Id:                   "vsc.tss_sign",
+							Json:                 string(rawJson),
+						}
+						hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+							deployOp,
+						})
+						if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
+							log.Error("tss_sign: hive tx signing props unavailable; not broadcasting", "chunk", ci, "of", len(chunks), "err", err)
+							return
+						}
+						sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+						if signErr != nil {
+							// M-8: do NOT AddSig+Broadcast an unsigned tx — Hive rejects it and the
+							// tss_sign silently never lands, stalling the request. Surface and skip.
+							log.Error("tss_sign: hive tx signing failed; not broadcasting", "chunk", ci, "of", len(chunks), "err", signErr)
+							return
+						}
+						hiveTx.AddSig(sig)
+						txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
+						if err != nil {
+							// NT-1: surface a broadcast failure at Error (was Trace/invisible); the
+							// chunk's signatures simply retry at the next sign interval.
+							log.Error("tss_sign: signature broadcast failed", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "err", err)
+							continue
+						}
+						log.Debug("tss_sign: signatures broadcast", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "txId", txId)
 					}
-
-					hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
-						deployOp,
-					})
-					if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
-						log.Error("tss_sign: hive tx signing props unavailable; not broadcasting", "err", err)
-						return
-					}
-					sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
-					if signErr != nil {
-						// M-8: do NOT AddSig+Broadcast an unsigned tx — Hive
-						// rejects it and the tss_sign silently never lands,
-						// stalling the request. Surface and skip.
-						log.Error("tss_sign: hive tx signing failed; not broadcasting", "err", signErr)
-						return
-					}
-					hiveTx.AddSig(sig)
-					txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
-					if err != nil {
-						log.Trace("signature broadcast error", "err", err)
-					}
-					log.Trace("signature broadcast result", "txId", txId)
 				}
 			}()
 
