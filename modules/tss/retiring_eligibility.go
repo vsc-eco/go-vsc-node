@@ -80,9 +80,13 @@ func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) vaultrotation.Retiring
 }
 
 // activeKeyHoldersBound reports whether the 0.11.0 active-key-holder rules are in
-// force at bh (consensusversion.ActiveKeyHoldersBoundActive on the chain-active
-// version, the same source every node reads at that height).
+// force at bh: consensusversion.ActiveKeyHoldersBoundActive on the chain-active
+// version, or the vault-rotation-v2 height pin (ephemeral networks only, 0 on
+// every shipped network; same inputs as stateEngine.KeyCustodyInForce).
 func (tssMgr *TssManager) activeKeyHoldersBound(bh uint64) bool {
+	if tssMgr.sconf != nil && tssMgr.sconf.ConsensusParams().VaultRotationV2Enabled(bh) {
+		return true
+	}
 	if tssMgr.scheduler == nil {
 		return false
 	}

@@ -117,6 +117,16 @@ func TestActiveKeyHoldersBound_FollowsTheChainVersion(t *testing.T) {
 	if (&TssManager{}).activeKeyHoldersBound(1000) {
 		t.Error("no scheduler: inert")
 	}
+
+	// An ephemeral network that pins vault-rotation-v2 runs the rules with it,
+	// below 0.11.0 and from the pinned height only.
+	base := systemconfig.MainnetConfig()
+	cpOn := base.ConsensusParams()
+	cpOn.VaultRotationV2ActivationHeight = 100
+	pinned := &TssManager{sconf: flagOnConfig{SystemConfig: base, cp: cpOn}, scheduler: &fakeSolvencyScheduler{minVer: consensusversion.V0_10_0}}
+	if pinned.activeKeyHoldersBound(99) || !pinned.activeKeyHoldersBound(100) {
+		t.Error("the vault-rotation-v2 pin must switch the rules on at its height and not before")
+	}
 }
 
 // The real receive path: an attestation from an active-key holder (and from a

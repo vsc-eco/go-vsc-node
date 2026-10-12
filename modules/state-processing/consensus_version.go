@@ -326,6 +326,16 @@ func VaultRotationV2InForce(cp params.ConsensusParams, blockHeight uint64, activ
 	return cp.VaultRotationV2Enabled(blockHeight) || consensusversion.VaultRotationV2Active(active)
 }
 
+// KeyCustodyInForce reports whether the 0.11.0 key-custody rules are in force at
+// this height (TssGetKey's reshared field; active-key holders signing outside
+// the election). Same two inputs as VaultRotationV2InForce: the chain-active
+// version, and the vault-rotation-v2 height pin, so an ephemeral network that
+// pins vault rotation (a fresh devnet has no floor to raise) runs the custody
+// rules with it. The pin is 0 on every shipped network.
+func KeyCustodyInForce(cp params.ConsensusParams, blockHeight uint64, active consensusversion.Version) bool {
+	return cp.VaultRotationV2Enabled(blockHeight) || consensusversion.KeyResharedFlagActive(active)
+}
+
 // vaultRotationV2InForce is the StateEngine-side form. It short-circuits on the
 // height pin so a pinned ephemeral network never pays for the election read that
 // resolving the chain-active version costs.
