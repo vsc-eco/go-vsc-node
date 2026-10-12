@@ -114,9 +114,19 @@ import (
 //     reproduce it. Mainnet raises its floor from 0.3.0 straight to 0.10.0.
 //     Until 0.10.0 is chain-active every fix is inert and old and new binaries
 //     interoperate.
+//   - 0.11.0: the Consensus 10→11 bump gates the KEY-CUSTODY batch
+//     (consensusversion.V0_11_0): contracts can see whether a TSS key has been
+//     reshared since its keygen (a fifth TssGetKey field), so the BTC vault moves
+//     funds only to a key the committee has already handed on once; and the
+//     holders of the active vault key stay able to sign and reshare it after
+//     they leave the election (the retiring-key V-A rule, extended to the active
+//     key; their bond is already locked by POA-1 from 0.9.0). A new line because
+//     the testnet already runs 0.10.0. Mainnet
+//     can raise its floor from 0.3.0 straight to 0.11.0. Until 0.11.0 is
+//     chain-active every rule is inert and old and new binaries interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 10
+	currentConsensus    uint64 = 11
 	currentNonConsensus uint64 = 0
 )
 
