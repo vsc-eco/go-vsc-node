@@ -581,10 +581,15 @@ func (dispatcher *ReshareDispatcher) Start() error {
 // new epoch and records the session's success result.
 func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []byte) {
 	k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-	if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
-		log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", algo, "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-	} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
-		log.Error("reshared keystore write failed", "algo", algo, "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
+	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+	if err == nil {
+		err = keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey)
+	}
+	if err != nil {
+		log.Error("reshared key share NOT saved, not reporting success", "algo", algo, "keyId", dispatcher.keyId, "err", err, "sessionId", dispatcher.sessionId)
+		dispatcher.shareErr = fmt.Errorf("reshared key share not saved: %w", err)
+		dispatcher.signalDone()
+		return
 	}
 
 	dispatcher.result = &ReshareResult{
@@ -601,6 +606,12 @@ func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []b
 func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
+
+		if dispatcher.shareErr != nil {
+			log.Warn("reshare done: share not saved, not vouching for the session", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", dispatcher.shareErr)
+			reject(dispatcher.shareErr)
+			return
+		}
 
 		tssErr, culprits, errorText := dispatcher.snapshotTssError()
 		accused := dispatcher.accusedAfterTimeout()
@@ -1409,6 +1420,12 @@ type BaseDispatcher struct {
 	p2pMu                      sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
+	// shareErr is set when this node finished a keygen or reshare but could
+	// not save its share. Done rejects on it before every other branch: a
+	// share that is not on disk cannot sign later, so the node must not vouch
+	// for a commitment naming it a holder, nor emit a blame.
+	shareErr error
+
 	done       chan struct{}
 	msgCtx     context.Context // cancelled by signalDone to unblock message-loop goroutines
 	cancelMsgs context.CancelFunc
@@ -2033,14 +2050,17 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 // session's success result.
 func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-	encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-	if encErr != nil {
-		log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
-	} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey); ksErr != nil {
-		log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
-	} else {
-		log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
+	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+	if err == nil {
+		err = keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey)
 	}
+	if err != nil {
+		log.Error("keygen key share NOT saved, not reporting success", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", err)
+		dispatcher.shareErr = fmt.Errorf("key share not saved: %w", err)
+		dispatcher.signalDone()
+		return
+	}
+	log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 
 	dispatcher.result = &KeyGenResult{
 		PublicKey:   pubBytes,
@@ -2058,6 +2078,12 @@ func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
+
+		if dispatcher.shareErr != nil {
+			log.Warn("keygen done: share not saved, not vouching for the session", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", dispatcher.shareErr)
+			reject(dispatcher.shareErr)
+			return
+		}
 
 		tssErr, culprits, errorText := dispatcher.snapshotTssError()
 
