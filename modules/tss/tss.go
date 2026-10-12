@@ -430,6 +430,11 @@ type TssManager struct {
 	keystoreKey     []byte
 	keystoreKeyErr  error
 
+	// missingShareLogged: when each missing share was last reported
+	// (reportMissingShares), so one stays visible without flooding the log.
+	missingShareMu     sync.Mutex
+	missingShareLogged map[string]time.Time
+
 	//Pool of fresh local key params (Paillier pre-parameters), one per ECDSA
 	//keygen or new-party reshare. Kept filled ahead of each batch (TSS-BATCH-1).
 	preParams chan ecKeyGen.LocalPreParams
@@ -999,6 +1004,12 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	rotateInterval := getRotateInterval(tssMgr.sconf)
 	signInterval := getSignInterval(tssMgr.sconf)
 	readinessOffset := getReadinessOffset(tssMgr.sconf)
+
+	// Flag any key this node is a listed holder of but cannot load its share
+	// for (held_shares.go). Read only, off the tick's path.
+	if bh%rotateInterval == 0 {
+		go tssMgr.reportMissingShares(bh)
+	}
 
 	// Collect upcoming target blocks that need readiness gossip.
 	// Only broadcast if there is actual work scheduled for that height.
