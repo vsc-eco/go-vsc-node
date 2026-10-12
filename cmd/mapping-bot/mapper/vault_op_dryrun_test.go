@@ -58,6 +58,7 @@ func TestVaultOpDryRun_RefusalCarriesTheReasonAndIsNotSubmitted(t *testing.T) {
 		{"migration fee exceeds half the tranche value: sweep deferred", isUneconomicResidual, "uneconomic residual -> writeOffDust"},
 		{"action must be performed by the contract owner or the vault operator", isNotOwner, "not the owner/operator -> latch"},
 		{"no retiring or draining vault to migrate", isNothingToMigrate, "nothing to migrate"},
+		{"the active generation's key has not been reshared since its keygen: migration waits for its first reshare", isAwaitingReshare, "awaiting the new key's first reshare"},
 	} {
 		gql := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: tc.msg}}
 		bot, did := buildBotForL2Test(t, gql)

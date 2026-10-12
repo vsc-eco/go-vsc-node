@@ -172,6 +172,13 @@ func warnFeeReserveOnce(contractId string) bool {
 	return true
 }
 
+// isAwaitingReshare reports whether migrateVault refused because the active
+// generation's key has not been reshared since its keygen (or the node cannot
+// report it yet).
+func isAwaitingReshare(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "has not been reshared since its keygen")
+}
+
 // noteAwaitingReshare reports whether this is the first cycle the driver holds a
 // migration back for keyId's first reshare.
 func noteAwaitingReshare(keyId string) bool {
@@ -585,6 +592,17 @@ func (b *Bot) HandleVaultRotation() {
 
 	if isNothingToMigrate(err) {
 		return // raced a concurrent settle; nothing to do
+	}
+
+	// The contract holds the migration until the active key has been reshared
+	// since its keygen, and the node reports that only from consensus 0.11.0.
+	// Waiting, not failing: report it once.
+	if isAwaitingReshare(err) {
+		if noteAwaitingReshare("contract:" + contractId) {
+			b.L.Warn("vault rotation: the contract holds the migration until the active key has been reshared "+
+				"since its keygen (reported by the network from consensus 0.11.0)", "error", err)
+		}
+		return
 	}
 
 	if isNotOwner(err) {
