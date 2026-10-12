@@ -113,6 +113,9 @@ var (
 	vaultOpMu        sync.Mutex
 	lastVaultOpAt    = map[string]time.Time{}
 	feeReserveWarned = map[string]bool{}
+	// awaitingReshare remembers the key ids the operator was already told the
+	// driver is waiting on, so the wait is reported once, not every cycle.
+	awaitingReshare = map[string]bool{}
 	// notOwner latches per contract: the vault ops are owner-only, so if this bot's
 	// identity is not the owner, NO retry will ever succeed. Keep issuing them and we
 	// just burn RC on guaranteed rejections.
@@ -167,6 +170,36 @@ func warnFeeReserveOnce(contractId string) bool {
 	}
 	feeReserveWarned[contractId] = true
 	return true
+}
+
+// noteAwaitingReshare reports whether this is the first cycle the driver holds a
+// migration back for keyId's first reshare.
+func noteAwaitingReshare(keyId string) bool {
+	vaultOpMu.Lock()
+	defer vaultOpMu.Unlock()
+	if awaitingReshare[keyId] {
+		return false
+	}
+	awaitingReshare[keyId] = true
+	return true
+}
+
+// activeKeyReshared reports whether the ACTIVE generation's key has been reshared
+// since its keygen: the newest keygen/reshare commitment the node holds for it is a
+// reshare. It also returns that key id.
+func (b *Bot) activeKeyReshared(ctx context.Context, contractId string, vaults []btcvault.Vault) (string, bool, error) {
+	for _, v := range vaults {
+		if v.Status != btcvault.VaultStatusActive {
+			continue
+		}
+		keyId := contractId + "-" + btcvault.VaultKeyName(v.Generation)
+		typ, found, err := b.gql().FetchLatestKeyCommitmentType(ctx, keyId)
+		if err != nil {
+			return keyId, false, err
+		}
+		return keyId, found && typ == "reshare", nil
+	}
+	return "", false, errors.New("no active generation in the vault registry")
 }
 
 // clearFeeReserveWarning re-arms the warning once a migrate succeeds again.
@@ -516,6 +549,25 @@ func (b *Bot) HandleVaultRotation() {
 	}
 
 	// vaultMigrate
+	//
+	// No funds move to the new key until it has been reshared once. Its
+	// check-signature only proves it signs with the committee that made it; a
+	// reshare proves it can be handed to a changed committee, and the keygen
+	// committee keeps its own shares as a second copy (shares are never deleted).
+	// Before that, members leaving the election can strand everything moved to it
+	// until the backup key's timelock. Only the active key reshares, so this waits
+	// at most until the epoch after its keygen. The owner can still call
+	// migrateVault by hand.
+	if keyId, reshared, rerr := b.activeKeyReshared(ctx, contractId, vaults); rerr != nil {
+		b.L.Warn("vault rotation: cannot tell whether the active key has been reshared; not migrating this cycle", "error", rerr)
+		return
+	} else if !reshared {
+		if noteAwaitingReshare(keyId) {
+			b.L.Warn("vault rotation: waiting for the new active key's first reshare before moving funds to it; "+
+				"until then withdrawals larger than what it holds wait too", "keyId", keyId)
+		}
+		return
+	}
 	if !mayIssueVaultOp(contractId) {
 		return
 	}

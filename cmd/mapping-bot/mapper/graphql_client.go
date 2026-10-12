@@ -685,6 +685,42 @@ func (b *Bot) SimulateContractCall(ctx context.Context, caller, contractId, acti
 	return out, nil
 }
 
+// FetchLatestKeyCommitmentType reads the newest keygen/reshare commitment the node
+// holds for keyId (findTssCommitments pages newest first) and returns its type.
+func (b *Bot) FetchLatestKeyCommitmentType(ctx context.Context, keyId string) (string, bool, error) {
+	reqBody, err := json.Marshal(map[string]any{
+		"query":     `query($k: String!){ findTssCommitments(filterOptions: {byKeyId: $k, byTypes: ["keygen", "reshare"], limit: 1}){ type } }`,
+		"variables": map[string]any{"k": keyId},
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("marshal request: %w", err)
+	}
+
+	var result struct {
+		Data struct {
+			FindTssCommitments []struct {
+				Type string `json:"type"`
+			} `json:"findTssCommitments"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	err = b.gqlHTTPPost(ctx, reqBody, func(resp *http.Response) error {
+		return json.NewDecoder(resp.Body).Decode(&result)
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("fetch key commitments: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", false, fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+	if len(result.Data.FindTssCommitments) == 0 {
+		return "", false, nil
+	}
+	return result.Data.FindTssCommitments[0].Type, true, nil
+}
+
 // FetchAccountRC returns an account's currently available resource credits.
 //
 // VR2-04: a rotation cycle costs roughly 28,000 RC across map, topUpFeeReserve,

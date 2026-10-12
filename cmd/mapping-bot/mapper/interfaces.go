@@ -34,6 +34,10 @@ type GraphQLFetcher interface {
 	// SimulateContractCall dry-runs one contract call as `caller` without committing
 	// anything (simulateContractCalls). rcLimit is capped at 100000 by the node.
 	SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error)
+	// FetchLatestKeyCommitmentType returns the type ("keygen" or "reshare") of the
+	// newest keygen/reshare commitment the node holds for a TSS key, and whether it
+	// holds any.
+	FetchLatestKeyCommitmentType(ctx context.Context, keyId string) (string, bool, error)
 	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
 	// and signature, base64url-encoded) and returns the resulting CID tx ID.
 	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)
