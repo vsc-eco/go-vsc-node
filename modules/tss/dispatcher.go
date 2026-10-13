@@ -1114,6 +1114,21 @@ type SignDispatcher struct {
 	result *KeySignResult
 }
 
+// leaderInParty reports whether `leader` (the slot's witness-leader account) is a
+// participant of this sign session's party. NT-3 publishes a sign result from the
+// leader when true, and from every completer when false (the leader holds no result
+// for a key whose committee has churned out of the election). A false-positive here
+// (returning true when the leader is NOT a party member) would strand such a sign,
+// so it is unit-tested: TestSignDispatcherLeaderInParty.
+func (dispatcher *SignDispatcher) leaderInParty(leader string) bool {
+	for _, p := range dispatcher.participants {
+		if p.Account == leader {
+			return true
+		}
+	}
+	return false
+}
+
 func (dispatcher *SignDispatcher) Start() error {
 
 	sortedPids, myParty, p2pCtx := dispatcher.baseInfo()

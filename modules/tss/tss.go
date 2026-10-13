@@ -2647,12 +2647,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// the completers publish instead (see the selection below).
 					leaderInParty := false
 					if sd, ok := dsc.(*SignDispatcher); ok {
-						for _, p := range sd.participants {
-							if p.Account == leader {
-								leaderInParty = true
-								break
-							}
-						}
+						leaderInParty = sd.leaderInParty(leader)
 					}
 
 					resultsMu.Lock()

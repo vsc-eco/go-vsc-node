@@ -31,3 +31,33 @@ func TestSelectSignBroadcasts(t *testing.T) {
 		t.Fatalf("empty input should yield no broadcasts, got %d", len(got))
 	}
 }
+
+// TestSignDispatcherLeaderInParty executes the leaderInParty loop on a real
+// *SignDispatcher. The brick-risk slip is a false-positive (returning true when
+// the leader is NOT a party member): NT-3 would then treat the leader as the
+// publisher for a key whose committee has churned out of the election, the leader
+// holds no result, and no completer publishes, so the sign strands. The "carol"
+// case (a non-member) is that guard; it must be false.
+func TestSignDispatcherLeaderInParty(t *testing.T) {
+	sd := &SignDispatcher{BaseDispatcher: BaseDispatcher{
+		participants: []Participant{{Account: "alice"}, {Account: "bob"}},
+	}}
+
+	if !sd.leaderInParty("alice") {
+		t.Fatal("alice is a participant; want true")
+	}
+	if !sd.leaderInParty("bob") {
+		t.Fatal("bob is a participant; want true")
+	}
+	if sd.leaderInParty("carol") {
+		t.Fatal("carol is NOT a participant; want false (a false-positive strands the sign)")
+	}
+	if sd.leaderInParty("") {
+		t.Fatal("empty leader; want false")
+	}
+
+	empty := &SignDispatcher{}
+	if empty.leaderInParty("alice") {
+		t.Fatal("no participants; want false")
+	}
+}
