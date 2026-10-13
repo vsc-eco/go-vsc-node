@@ -22,7 +22,7 @@ import (
 // still break.
 //
 //	CUST-WAIT   funds do not move into a new vault key before it has been
-//	            reshared once; they do right after.
+//	            reshared once; they do right after, and a dry run agrees.
 //	CUST-SAVE   a node that cannot save its share does not vouch for the keygen,
 //	            the key is still made by the others, the node flags its missing
 //	            share, and the vault still activates (or the stall is measured).
@@ -231,6 +231,17 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 		c.summary("TestVaultCustodyMigrationWaitsForReshare")
 		t.FailNow()
 	}
+
+	// 2b. A dry run sees the reshare too. The mapping bot dry-runs migrateVault
+	// before sending it, so a preview stuck on "not reshared" stalls every rotation.
+	simOK, simMsg := false, ""
+	for end := time.Now().Add(2 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+		if simOK, simMsg = vfSimulate(d, ctx, 1, cid, caller, "migrateVault", ""); simOK {
+			break
+		}
+	}
+	c.rec("CUST-SIM", "a dry run of migrateVault passes once the key has been reshared", simOK,
+		fmt.Sprintf("dry run ok=%v msg=%q", simOK, simMsg))
 
 	// 3. Now the migration goes, and settles.
 	txid, sd, buildStatus := vfBuildSweep(t, d, ctx, 1, cid)

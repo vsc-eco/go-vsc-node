@@ -974,13 +974,13 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// before the new committee has proven signability. Read-only sim
 			// (reverted like the rest); non-consensus, so this only affects the
 			// preview's accuracy, never the state root.
-			// Same "in force" rule as the real call (transactions.go): the height pin
+			// Same "in force" rules as the real call (transactions.go): the height pin
 			// OR the attested 0.8.0 floor. Keying on the pin alone left the preview on
-			// the 3-field TssGetKey once the floor, not a pin, turned the batch on.
+			// the 3-field TssGetKey once the floor, not a pin, turned the batch on. The
+			// 0.11.0 reshared field follows the same way (simulateTssKeyOpts).
 			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
-			if sc := r.StateEngine.SystemConfig(); sc != nil &&
-				stateEngine.VaultRotationV2InForce(sc.ConsensusParams(), blockHeight, activeVersion) {
-				ctxOpts = append(ctxOpts, contract_execution_context.WithVaultRotationV2(true))
+			if sc := r.StateEngine.SystemConfig(); sc != nil {
+				ctxOpts = append(ctxOpts, simulateTssKeyOpts(sc.ConsensusParams(), blockHeight, activeVersion)...)
 			}
 			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
 			ctxOpts = append(ctxOpts,
