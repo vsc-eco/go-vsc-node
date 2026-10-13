@@ -13,6 +13,14 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 )
 
+// errTxTooLarge: the bot's OWN pre-flight refused the L2 tx because its CBOR exceeds
+// transaction-pool's MAX_TX_SIZE, before it ever reached the node. P2: the map handler
+// recognises an oversize deposit through isTooBigForPool, which matched only the NODE's
+// "transaction size too big" string - so a tx the bot stopped itself (this different
+// string) slipped past the escape and the deposit's block was retried forever. A sentinel
+// makes both the bot pre-flight and the node refusal recognisable by errors.Is.
+var errTxTooLarge = errors.New("L2 tx exceeds the transaction-pool size limit")
+
 // errBotEthKeyMissing is returned when the bot is asked to submit an L2 tx but
 // no signing key is configured.
 var errBotEthKeyMissing = errors.New("L2 signing key not configured for this bot")
@@ -116,7 +124,7 @@ func (b *Bot) callContractL2(
 			"cbor_size", len(sTx.Tx),
 			"limit", transactionpool.MAX_TX_SIZE,
 		)
-		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), transactionpool.MAX_TX_SIZE)
+		return "", fmt.Errorf("%w: %d bytes (limit %d)", errTxTooLarge, len(sTx.Tx), transactionpool.MAX_TX_SIZE)
 	}
 
 	txID, err := b.gql().SubmitTransactionV1(

@@ -238,10 +238,14 @@ func txIDFromRawTxHex(rawTxHex string) string {
 	return tx.TxID()
 }
 
-// isTooBigForPool reports the node's refusal of an L2 tx above its size limit
-// (transaction-pool.go: "transaction size too big N > MAX_TX_SIZE").
+// isTooBigForPool reports an L2 tx above the transaction-pool size limit, from EITHER
+// source (P2): the bot's own pre-flight (errTxTooLarge, caught before submit) or the
+// node's refusal (transaction-pool.go: "transaction size too big N > MAX_TX_SIZE").
+// An oversize map deposit (e.g. inside an exchange's batched withdrawal) can never be
+// credited, so the map handler must recognise both and record it for the operator rather
+// than hold the deposit's block forever.
 func isTooBigForPool(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "transaction size too big")
+	return err != nil && (errors.Is(err, errTxTooLarge) || strings.Contains(err.Error(), "transaction size too big"))
 }
 
 // contractHeightNeededFor is the contract header height at which a deposit or
