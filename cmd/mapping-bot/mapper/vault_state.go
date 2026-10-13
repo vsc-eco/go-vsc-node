@@ -14,47 +14,64 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
+// maxStateKeysPerQuery is the node's getStateByKeys cap: the resolver refuses a request
+// of more than 100 keys (modules/gql/gqlgen/schema.resolvers.go). fetchStateHex pages at
+// this size.
+const maxStateKeysPerQuery = 100
+
 // fetchStateHex reads raw contract state keys and returns the decoded bytes for
 // each key that exists. Missing keys are simply absent from the result.
+//
+// A1-A4: the node refuses a getStateByKeys of more than maxStateKeysPerQuery keys, so the
+// request is PAGED. A single rotation can carry more than 100 pending spends or UTXOs; an
+// unpaged request would be refused whole, so the confirmSpend driver would send nothing and
+// the rotation driver would go blind the moment the count crossed 100. A request of 100 or
+// fewer keys makes exactly one query, byte-identical to before.
 func (b *Bot) fetchStateHex(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
 	}
-	vars := map[string]interface{}{
-		"contractId": b.BotConfig.ContractId(),
-		"keys":       keys,
-		"encoding":   "hex",
-	}
-
-	var result json.RawMessage
-	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
-		var q GetContractStateQuery
-		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
-			return err
+	out := make(map[string][]byte, len(keys))
+	for start := 0; start < len(keys); start += maxStateKeysPerQuery {
+		end := start + maxStateKeysPerQuery
+		if end > len(keys) {
+			end = len(keys)
 		}
-		result = q.GetStateByKeys
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var stateMap map[string]json.RawMessage
-	if err := json.Unmarshal(result, &stateMap); err != nil {
-		return nil, err
-	}
-
-	out := make(map[string][]byte, len(stateMap))
-	for k, raw := range stateMap {
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil || s == "" {
-			continue // key absent (null) or empty
+		vars := map[string]interface{}{
+			"contractId": b.BotConfig.ContractId(),
+			"keys":       keys[start:end],
+			"encoding":   "hex",
 		}
-		decoded, err := hex.DecodeString(s)
+
+		var result json.RawMessage
+		err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
+			var q GetContractStateQuery
+			if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+				return err
+			}
+			result = q.GetStateByKeys
+			return nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("decoding state key %s: %w", k, err)
+			return nil, err
 		}
-		out[k] = decoded
+
+		var stateMap map[string]json.RawMessage
+		if err := json.Unmarshal(result, &stateMap); err != nil {
+			return nil, err
+		}
+
+		for k, raw := range stateMap {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil || s == "" {
+				continue // key absent (null) or empty
+			}
+			decoded, err := hex.DecodeString(s)
+			if err != nil {
+				return nil, fmt.Errorf("decoding state key %s: %w", k, err)
+			}
+			out[k] = decoded
+		}
 	}
 	return out, nil
 }
