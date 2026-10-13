@@ -309,10 +309,28 @@ const retireNoTransitions = "retire: no generation transitions"
 // testnet 2026-10-06, about 770,000 a day against a mainnet bot of 469,000.
 var errRetireNoTransition = errors.New("retireVault would advance no generation yet")
 
-// isNothingToMigrate reports the benign "there is no retiring generation" case.
+// migrateNothingPrefix is what HandleMigrateVault returns (with a NIL error, i.e. a
+// successful dry run) when a target generation exists but this tranche would sweep
+// nothing - every remaining input is already in flight (btc-mapping-contract
+// migration.go: "nothing to migrate for generation <n>"). Prefix-matched because the
+// gen number is appended.
+const migrateNothingPrefix = "nothing to migrate for generation "
+
+// errMigrateNoop: the migrateVault dry run succeeds but would build no sweep (F8), so
+// skip the broadcast - otherwise the bot posts a do-nothing migrateVault on chain every
+// cycle, burning RC. Mirrors errRetireNoTransition; recognised by isNothingToMigrate so
+// the caller treats it as the benign "nothing to do" case.
+var errMigrateNoop = errors.New("migrateVault would sweep nothing yet")
+
+// isNothingToMigrate reports the benign "nothing to migrate this cycle" cases: no
+// retiring/draining generation at all (a hard refusal), or a target exists but the dry
+// run would build no sweep (errMigrateNoop, F8).
 func isNothingToMigrate(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errMigrateNoop) {
+		return true
 	}
 	return strings.Contains(err.Error(), "no retiring or draining vault to migrate")
 }

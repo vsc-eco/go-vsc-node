@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/contracts"
@@ -189,6 +190,12 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 	}
 	if action == "retireVault" && sim.Ret == retireNoTransitions {
 		return 0, errRetireNoTransition
+	}
+	// F8: a migrateVault whose dry run SUCCEEDS but would sweep nothing (every remaining
+	// input already in flight) returns migrateNothingPrefix with no error. Without this it
+	// passes the success filter and a do-nothing migrateVault is broadcast every cycle.
+	if action == "migrateVault" && strings.HasPrefix(sim.Ret, migrateNothingPrefix) {
+		return 0, errMigrateNoop
 	}
 	sized := uint64(0)
 	if sim.RcUsed > 0 {

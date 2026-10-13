@@ -171,6 +171,38 @@ func TestVaultOpDryRun_RetireWithNoTransitionIsNotSubmitted(t *testing.T) {
 	}
 }
 
+// F8 (cold-scan): a migrateVault whose dry run SUCCEEDS but would sweep nothing this
+// cycle (every remaining input already in flight) returns "nothing to migrate for
+// generation <n>" with no error. Before the fix it passed the success filter and a
+// do-nothing migrateVault went on chain every cycle, burning RC. It must not be
+// submitted; a migrateVault that builds a real sweep still is.
+func TestVaultOpDryRun_MigrateNoopIsNotSubmitted(t *testing.T) {
+	gql := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: "nothing to migrate for generation 3", RcUsed: 900}}
+	bot, did := buildBotForL2Test(t, gql)
+	gql.accountRC = map[string]int64{did.String(): 465785}
+	_, err := bot.callContractL2(context.Background(), []byte(`{}`), "migrateVault")
+	if !errors.Is(err, errMigrateNoop) {
+		t.Fatalf("a no-op migrate returned %v, want errMigrateNoop", err)
+	}
+	if !isNothingToMigrate(err) {
+		t.Fatal("the rotation driver must recognise a no-op migrate as nothing-to-migrate")
+	}
+	if len(gql.submitted) != 0 {
+		t.Fatalf("a no-op migrate was submitted (%d txs)", len(gql.submitted))
+	}
+
+	// A migrate that builds a real sweep (the dry run returns a txid) still goes out.
+	gql2 := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: "a1b2c3d4", RcUsed: 10678}}
+	bot2, did2 := buildBotForL2Test(t, gql2)
+	gql2.accountRC = map[string]int64{did2.String(): 465785}
+	if _, err := bot2.callContractL2(context.Background(), []byte(`{}`), "migrateVault"); err != nil {
+		t.Fatalf("a real migrate was refused: %v", err)
+	}
+	if len(gql2.submitted) != 1 {
+		t.Fatalf("a real migrate was not submitted (%d txs)", len(gql2.submitted))
+	}
+}
+
 // sweepRecordHex encodes an "ms-" record the way the contract does: fee u64,
 // successor gen u32, build height u32, n u16, n input ids u16, successor address.
 func sweepRecordHex(ids ...uint16) string {
