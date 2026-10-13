@@ -2488,10 +2488,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	// RunActions entry so per-ceremony Paillier variance cannot make a slow node drift
 	// later each batch; cross-node start skew is then only the difference in when nodes
 	// reach this height, which must stay under RpcTimeout (measured by the devnet A/B).
-	// StartBatchSize 0 disables batching. ReshareDispatcher is NOT scheduled here (the
-	// fragile path stays exactly as develop, started inline by the loop below).
+	// ReshareDispatcher is NOT scheduled here (the fragile path stays exactly as
+	// develop, started inline by the loop below).
+	//
+	// H4: the batch schedule rides the 0.11 floor. During a mixed-binary rollout a
+	// batched node and an un-upgraded serial node would start the SAME ceremony at
+	// skewed times; past RpcTimeout that skew becomes a dropped message, a stall and
+	// a timeout blame. So pre-floor every node uses the serial timing develop has
+	// (one ceremony per ReshareSyncDelay), and only once the chain-active version is
+	// 0.11 - at which point any node still announcing 0.10 is filtered out of parties
+	// by version - do all nodes flip to the batched schedule together.
 	{
 		tp := tssMgr.sconf.TssParams()
+		batchN, batchGap := uint64(1), tp.ReshareSyncDelay // pre-0.11: serial (develop timing)
+		if tssMgr.startBatchScheduleActive(bh) {
+			batchN, batchGap = tp.StartBatchSize, tp.StartBatchGap // post-0.11: batched
+		}
+		if batchN == 0 {
+			batchN = 1 // StartBatchSize 0 => no batching, one ceremony per gap
+		}
 		scheduledN := uint64(0)
 		for _, d := range dispatchers {
 			var base *BaseDispatcher
@@ -2504,11 +2519,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			if base == nil {
 				continue // reshare (or any other): start inline, unscheduled
 			}
-			batch := uint64(0)
-			if tp.StartBatchSize > 0 {
-				batch = scheduledN / tp.StartBatchSize
-			}
-			base.startAt = runActionsStart.Add(tp.ReshareSyncDelay + time.Duration(batch)*tp.StartBatchGap)
+			base.startAt = runActionsStart.Add(tp.ReshareSyncDelay + time.Duration(scheduledN/batchN)*batchGap)
 			scheduledN++
 		}
 	}

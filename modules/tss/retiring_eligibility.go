@@ -93,6 +93,16 @@ func (tssMgr *TssManager) activeKeyHoldersBound(bh uint64) bool {
 	return consensusversion.ActiveKeyHoldersBoundActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
 }
 
+// startBatchScheduleActive reports whether the NT-2 batched ceremony-start schedule
+// (H4) is in force at bh. It rides the 0.11 floor exactly like the key-custody rules
+// (same inputs as activeKeyHoldersBound: the vault-rotation-v2 height pin for
+// ephemeral networks, or the chain-active 0.11 version). Gated so a mixed-binary
+// rollout keeps develop's serial start timing on every node until the floor crosses,
+// then all nodes flip to the batched schedule together (no cross-node start skew).
+func (tssMgr *TssManager) startBatchScheduleActive(bh uint64) bool {
+	return tssMgr.activeKeyHoldersBound(bh)
+}
+
 // retiringGenSignerSetCached is the memoized accessor used ONLY on the untrusted
 // ready_gossip receive path (V-A council A3): that handler runs once per message
 // from any peer, and an uncached retiringGenSignerSet does a contract-state
