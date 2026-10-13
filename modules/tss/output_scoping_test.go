@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"testing"
 
 	"vsc-node/lib/btcvault"
@@ -162,6 +163,10 @@ func newScopeFixture(t *testing.T) *scopeFixture {
 			v, ok := f.state[key]
 			return v, ok
 		},
+		readKeyStrict: func(key string) ([]byte, bool, error) {
+			v, ok := f.state[key]
+			return v, ok, nil
+		},
 		findKey: func(id string) (tss_db.TssKey, error) {
 			if id == f.gen1KeyId {
 				return tss_db.TssKey{Id: id, Status: tss_db.TssKeyActive, PublicKey: hex.EncodeToString(f.successorPub)}, nil
@@ -253,6 +258,31 @@ func TestEvaluateScope_UnresolvableRegistryFailsClosed(t *testing.T) {
 	// safe recoverable freeze, never a fail-open.
 	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash); got != scopeRefuse {
 		t.Fatalf("malformed registry, active-gen keyId: got %v, want scopeRefuse", got)
+	}
+}
+
+// TestEvaluateScope_UnreadableVaultRegistryFailsClosed — NT-6: a read ERROR on the "v"
+// registry (a transient/unreadable committed-state read, NOT a genuine absent key) must fail
+// CLOSED. Before the fix, readKey collapsed a read error into "absent", which admitted the
+// legacy gen-0 key — for a rotated vault, the WRONG key. resolveVaultView now reads "v" through
+// readKeyStrict and returns vaultUnresolvable on a read error, so every BTC-vault keysign is
+// refused this tick (the node retries next tick). A genuine absent "v" (no error) stays
+// vaultAbsent, exercised by the no-registry tests above.
+func TestEvaluateScope_UnreadableVaultRegistryFailsClosed(t *testing.T) {
+	f := newScopeFixture(t)
+	// "v" errors (unreadable); every other key still reads fine.
+	f.deps.readKeyStrict = func(key string) ([]byte, bool, error) {
+		if key == "v" {
+			return nil, false, errors.New("datalayer read failed")
+		}
+		v, ok := f.state[key]
+		return v, ok, nil
+	}
+	if got := f.deps.evaluateScope(f.gen0KeyId, f.sweepSigHash); got != scopeRefuse {
+		t.Fatalf("unreadable 'v' (retiring keyId): got %v, want scopeRefuse — a read error must fail closed, not fall open to legacy signing", got)
+	}
+	if got := f.deps.evaluateScope(f.gen1KeyId, f.sweepSigHash); got != scopeRefuse {
+		t.Fatalf("unreadable 'v' (active keyId): got %v, want scopeRefuse — the whole gate freezes until 'v' is readable", got)
 	}
 }
 

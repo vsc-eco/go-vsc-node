@@ -2,6 +2,9 @@ package tss
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -225,37 +228,75 @@ func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key
 // bh are local, so a network stall is an edge — a context-bounded GetRaw is a
 // tracked hardening (needs a datalayer API that takes a context).
 func (tssMgr *TssManager) contractStateReaderAt(contractID string, bh uint64) func(key string) ([]byte, bool) {
-	miss := func(string) ([]byte, bool) { return nil, false }
+	strict := tssMgr.contractStateReaderAtStrict(contractID, bh)
+	return func(key string) ([]byte, bool) {
+		raw, ok, _ := strict(key)
+		return raw, ok
+	}
+}
+
+// contractStateReaderAtStrict is contractStateReaderAt that DISTINGUISHES a read ERROR from a
+// genuine ABSENT key (NT-6). A failure to READ the committed state — the output lookup, the
+// state CID, the LocalOnly view, or a per-key datalayer/blockstore error — returns a non-nil
+// error; a key that is simply not present (databin.Get returns a nil CID with no error, or the
+// contract has no state yet) returns (nil, false, nil). The "v" vault-registry read in
+// resolveVaultView must fail CLOSED on a read error (refuse to sign) rather than mistake an
+// unreadable registry for an absent one and fall open to legacy gen-0 signing.
+//
+// This runs under the global TSS lock, so the read must not block. State at a processed height
+// is already local, and the LocalOnly view answers from the blockstore instead of retrying on
+// the full data layer or waiting on bitswap for a block nobody serves; a LocalOnly datalayer
+// error therefore surfaces here as a read error (caller fails closed + retries next tick).
+func (tssMgr *TssManager) contractStateReaderAtStrict(contractID string, bh uint64) func(key string) ([]byte, bool, error) {
+	fail := func(err error) func(string) ([]byte, bool, error) {
+		return func(string) ([]byte, bool, error) { return nil, false, err }
+	}
 	if tssMgr.contractState == nil || tssMgr.da == nil {
-		return miss
+		return fail(fmt.Errorf("contract state reader unavailable"))
 	}
 	output, err := tssMgr.contractState.GetLastOutput(contractID, bh)
-	if err != nil || output.StateMerkle == "" {
-		return miss
+	if err != nil {
+		return fail(fmt.Errorf("get last output for %s@%d: %w", contractID, bh, err))
+	}
+	if output.StateMerkle == "" {
+		return func(string) ([]byte, bool, error) { return nil, false, nil } // no state yet: genuine absent
 	}
 	stateCid, err := cid.Parse(output.StateMerkle)
 	if err != nil {
-		return miss
+		return fail(fmt.Errorf("parse state cid %q: %w", output.StateMerkle, err))
 	}
-	// This runs under the global TSS lock, so the read must not block. State at
-	// a processed height is already local, and the LocalOnly view answers from
-	// the blockstore (a miss reads as absent) instead of retrying a failed read
-	// on the full data layer or waiting on bitswap for a block nobody serves.
 	local := tssMgr.da.LocalOnly()
 	if local == nil {
-		return miss
+		return fail(fmt.Errorf("local datalayer view unavailable"))
 	}
 	databin := datalayer.NewDataBinFromCid(local, stateCid)
-	return func(key string) ([]byte, bool) {
+	return func(key string) ([]byte, bool, error) {
 		keyCid, err := databin.Get(key)
-		if err != nil || keyCid == nil {
-			return nil, false
+		if err != nil {
+			// DataBin.Get returns os.ErrNotExist for a genuinely ABSENT key, NOT a
+			// (nil, nil): boxo BasicDirectory.Find maps mdag.ErrLinkNotFound ->
+			// os.ErrNotExist (ipld/unixfs/io/directory.go), and a missing parent-dir
+			// path or a directory-leaf also return os.ErrNotExist (lib/datalayer/dir.go
+			// :190,:202). That is not a read failure - the key is simply not in the
+			// committed state - so report it as absent exactly as the old ([]byte,bool)
+			// reader's !ok did. If this were treated as a read error, an unfolded BTC
+			// contract (v2 in force, no "v" registry yet) would fail CLOSED and refuse
+			// every legacy "main" keysign -> a withdrawal halt. ONLY a non-NotExist
+			// error is a real read failure (e.g. Find's dserv.Get or GetRaw below hit
+			// the blockstore/bitswap for a present link) -> fail closed (NT-6).
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("read %s: %w", key, err)
+		}
+		if keyCid == nil {
+			return nil, false, nil // defensive: Get does not currently return (nil, nil)
 		}
 		raw, err := local.GetRaw(*keyCid)
 		if err != nil {
-			return nil, false
+			return nil, false, fmt.Errorf("getraw %s: %w", key, err)
 		}
-		return raw, true
+		return raw, true, nil
 	}
 }
 
