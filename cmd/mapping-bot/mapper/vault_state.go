@@ -27,6 +27,11 @@ const maxStateKeysPerQuery = 100
 // unpaged request would be refused whole, so the confirmSpend driver would send nothing and
 // the rotation driver would go blind the moment the count crossed 100. A request of 100 or
 // fewer keys makes exactly one query, byte-identical to before.
+//
+// Paging trades single-snapshot consistency for liveness: pages are separate queries, so a
+// >100-key read can straddle a state change (a page read before it, a later page after). The
+// bot re-reads every cycle and acts only on what it sees, so a straddled read self-heals on
+// the next pass; no caller needs all keys to be from one atomic snapshot.
 func (b *Bot) fetchStateHex(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
