@@ -17,6 +17,10 @@ const LastHeightKey = "h"
 // holds (decimal string). A spend mined below it can no longer be proven.
 const PruneFloorKey = "pf"
 
+// PausedKey is "1" while the owner has paused the contract (constants.PausedKey).
+// map, unmap, transfer and the vault ops are refused while it is set.
+const PausedKey = "paused"
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

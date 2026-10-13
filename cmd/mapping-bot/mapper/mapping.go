@@ -8,10 +8,28 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
 )
+
+// pausedSeen latches the paused state the map loop last reported, so a pause is
+// logged once, not every block.
+var (
+	pausedMu   sync.Mutex
+	pausedSeen bool
+)
+
+// notePaused records the contract's pause flag and reports whether it just became
+// paused (true only on the transition, for a single warning).
+func notePaused(paused bool) bool {
+	pausedMu.Lock()
+	defer pausedMu.Unlock()
+	was := pausedSeen
+	pausedSeen = paused
+	return paused && !was
+}
 
 // dropHeightDiff is set per-chain via ChainConfig.DropHeightDiff
 
@@ -40,6 +58,23 @@ func (b *Bot) HandleMap(
 			"confirmationsRequired", b.Chain.ConfirmationsRequired)
 		return false
 	}
+
+	// BOT-PAUSE-1: while the owner has paused the contract, every map is refused on
+	// chain, and a map refused on chain is final for its proof (recorded for /retry,
+	// block advanced below), so a deposit seen during a pause would stay uncredited
+	// until an operator retried it by hand. Hold the block instead and map it after
+	// the unpause. A flag that cannot be read holds the block too, like the height
+	// read above.
+	if paused, err := b.gql().FetchPaused(ctx); err != nil {
+		b.L.Error("cannot read the contract's pause flag; block kept for retry", "err", err, "blockHeight", blockHeight)
+		return false
+	} else if paused {
+		if notePaused(true) {
+			b.L.Warn("contract is paused: deposits are held and mapped after the unpause", "blockHeight", blockHeight)
+		}
+		return false
+	}
+	notePaused(false)
 
 	foundTxs, err := b.ParseBlock(ctx, blockBytes, blockHeight)
 	if err != nil {

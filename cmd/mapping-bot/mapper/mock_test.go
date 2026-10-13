@@ -25,6 +25,7 @@ type mockGraphQL struct {
 	signatures map[string]database.SignatureUpdate
 	lastHeight string
 	pruneFloor string           // "" = not set
+	paused     bool             // the contract's pause flag
 	readErr    map[string]error // method name -> error, a read the node could not answer
 	sim        *SimulatedCall   // nil = simulateContractCalls unavailable
 	simErr     error
@@ -99,6 +100,14 @@ func (m *mockGraphQL) FetchPruneFloor(ctx context.Context) (uint64, bool, error)
 	}
 	v, err := strconv.ParseUint(m.pruneFloor, 10, 64)
 	return v, err == nil, err
+}
+
+func (m *mockGraphQL) FetchPaused(ctx context.Context) (bool, error) {
+	m.recordCall("FetchPaused")
+	if err := m.readErr["FetchPaused"]; err != nil {
+		return false, err
+	}
+	return m.paused, nil
 }
 
 func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, error) {

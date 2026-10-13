@@ -17,6 +17,8 @@ type GraphQLFetcher interface {
 	// FetchPruneFloor returns the contract's prune floor ("pf") and whether it is
 	// set. Headers below it are gone, so a spend mined there cannot be proven.
 	FetchPruneFloor(ctx context.Context) (uint64, bool, error)
+	// FetchPaused reports whether the owner has paused the contract ("paused" = "1").
+	FetchPaused(ctx context.Context) (bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction

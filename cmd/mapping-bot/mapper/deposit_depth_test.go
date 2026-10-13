@@ -212,3 +212,36 @@ func TestHandleMap_TooLargeForThePoolDoesNotHoldTheBlock(t *testing.T) {
 	assert.True(t, strings.HasPrefix(all[0].TxId, "map-too-large-"), all[0].TxId)
 	assert.Equal(t, "map", all[0].Action)
 }
+
+// BOT-PAUSE-1: a paused contract refuses every map on chain, and an on-chain
+// refusal is final for that proof. So while paused the block is held (no map
+// sent, cursor unchanged) and mapped after the unpause; an unreadable pause flag
+// holds it too.
+func TestHandleMap_HoldsTheBlockWhilePaused(t *testing.T) {
+	bot, gql, caller, state, addr, _ := newTestBotWithMocks()
+	depositAddr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr.instructions[depositAddr] = "deposit_to=hive:testuser"
+	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
+	require.NoError(t, state.SetBlockHeight(context.Background(), 100))
+	gql.lastHeight = "200"
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+
+	gql.paused = true
+	assert.False(t, bot.HandleMap(blockBytes, 100))
+	assert.Empty(t, caller.getCalls(), "no map is sent while the contract is paused")
+	h, _ := state.GetBlockHeight(context.Background())
+	assert.Equal(t, uint64(100), h, "the deposit's block must wait for the unpause")
+
+	gql.paused = false
+	gql.readErr = map[string]error{"FetchPaused": errors.New("node unreachable")}
+	assert.False(t, bot.HandleMap(blockBytes, 100))
+	assert.Empty(t, caller.getCalls(), "an unreadable pause flag holds the block too")
+
+	gql.readErr = nil
+	assert.True(t, bot.HandleMap(blockBytes, 100))
+	calls := caller.getCalls()
+	require.NotEmpty(t, calls)
+	assert.Equal(t, "map", calls[0].Action)
+	h, _ = state.GetBlockHeight(context.Background())
+	assert.Equal(t, uint64(101), h)
+}
