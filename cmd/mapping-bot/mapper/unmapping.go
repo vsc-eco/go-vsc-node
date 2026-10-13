@@ -243,16 +243,21 @@ func (b *Bot) buildConfirmSpendPayload(
 
 	rawTxHex := hex.EncodeToString(dbTx.RawTx)
 
-	// Collect the input indices that correspond to VSC-mapped UTXOs.
-	indices := make([]uint32, 0, len(dbTx.Signatures))
-	seen := make(map[uint32]struct{})
-	for _, sig := range dbTx.Signatures {
-		idx := uint32(sig.Index)
-		if _, ok := seen[idx]; !ok {
-			seen[idx] = struct{}{}
-			indices = append(indices, idx)
-		}
+	// C1: confirmSpend's indices are OUTPUT vouts, not input indices. The contract
+	// (HandleConfirmSpend) promotes each unconfirmed change UTXO of this tx whose VOUT is in
+	// the set; it never looks at inputs. The old code sent the signed INPUT indices, so a
+	// spend whose change sits at a vout those indices do not cover (e.g. a 1-input unmap with
+	// the recipient at vout 0 and change at vout 1 -> indices [0]) matched nothing and the
+	// unmap could never settle. Send every output vout: the contract promotes only the vouts
+	// that are genuinely this tx's unconfirmed, unreserved change and ignores the rest (a
+	// recipient output has no vault UTXO to promote), so extra vouts are harmless. The vouts
+	// come from the confirmed tx the Merkle proof above covers
+	// (msgBlock.Transactions[details.TxIndex]) - the same tx as dbTx.RawTx, proof-bound to
+	// this block position, and already deserialized and validated here.
+	if int(details.TxIndex) >= len(msgBlock.Transactions) {
+		return nil, fmt.Errorf("confirmSpend: tx index %d out of range (%d txs in block)", details.TxIndex, len(msgBlock.Transactions))
 	}
+	indices := confirmSpendOutputVouts(msgBlock.Transactions[details.TxIndex])
 
 	params := ConfirmSpendParams{
 		TxData: &VerificationRequest{
@@ -264,6 +269,18 @@ func (b *Bot) buildConfirmSpendPayload(
 		Indices: indices,
 	}
 	return json.Marshal(params)
+}
+
+// confirmSpendOutputVouts returns [0, 1, ..., n-1] for the n outputs of tx. confirmSpend's
+// indices are OUTPUT vouts (C1); the contract promotes only the vouts that are this tx's
+// unconfirmed, unreserved change, so listing every output vout is correct and the rest are
+// ignored.
+func confirmSpendOutputVouts(tx *wire.MsgTx) []uint32 {
+	vouts := make([]uint32, len(tx.TxOut))
+	for i := range tx.TxOut {
+		vouts[i] = uint32(i)
+	}
+	return vouts
 }
 
 func (b *Bot) ProcessTxSpends(
