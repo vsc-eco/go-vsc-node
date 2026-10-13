@@ -938,19 +938,6 @@ type TssParams struct {
 	// the deterministic governance FLAG (vsc.tss_halt), NOT this tolerance.
 	// Handled by the reflection Marshal/Unmarshal above as a uint64 field.
 	SolvencyGapSats uint64 `json:"solvencyGapSats,omitempty"`
-	// StartBatchSize and StartBatchGap schedule TSS sign/keygen ceremony starts
-	// within one RunActions in deterministic batches (NT-2). Batch i of at most
-	// StartBatchSize dispatchers (slice order) starts at the RunActions-entry time
-	// plus ReshareSyncDelay plus i*StartBatchGap. This bounds the concurrent start
-	// burst of a large sign tranche without holding the global TSS lock, on a fixed
-	// clock schedule so every node starts the same ceremony at the same relative
-	// time (cross-node start skew stays well under RpcTimeout). StartBatchSize 0
-	// disables batching: every scheduled ceremony starts after the single
-	// ReshareSyncDelay pre-delay (the first NT-2's all-at-once, NOT develop's serial
-	// start). Reshare is never scheduled here (started inline).
-	// StartBatchSize is uint64 so the reflection Marshal/Unmarshal above carries it.
-	StartBatchSize uint64        `json:"startBatchSize,omitempty"`
-	StartBatchGap  time.Duration `json:"startBatchGap,omitempty"`
 }
 
 // MarshalJSON serializes TssParams with durations as human-readable
@@ -1038,11 +1025,6 @@ var DefaultTssParams = TssParams{
 	// OracleParams().ContractId("BTC") is empty. The primary, durable freeze is
 	// the deterministic vsc.tss_halt FLAG, not this tolerance.
 	SolvencyGapSats: 100_000,
-	// NT-2: batch TSS sign/keygen ceremony starts 4 at a time, StartBatchGap (5s)
-	// apart, so a large sign tranche (one tranche is <=70 inputs) does not start
-	// all at once. Defaults pending the N=1/4/8 devnet A/B.
-	StartBatchSize: 4,
-	StartBatchGap:  5 * time.Second,
 }
 
 var MocknetTssParams = TssParams{

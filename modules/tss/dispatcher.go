@@ -1215,25 +1215,14 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignSecp256k1.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
-			// NT-2: wait for this ceremony's scheduled batch start (absolute
-			// schedule set by RunActions; see scheduledStartSleep) off the
-			// lock-holding path, then start the party. armAfterStart (deferred, so
-			// it runs on success, error, or panic) arms the inactivity timer and
-			// releases startLock AFTER party.Start(), and on failure cleans up and
-			// signals done so Await can never hang on an unstarted session.
-			var startErr error
-			defer func() {
-				if r := recover(); r != nil {
-					startErr = fmt.Errorf("panic in sign party start: %v", r)
-				}
-				dispatcher.armAfterStart("sign party started", startErr)
-			}()
-			dispatcher.scheduledStartSleep()
 			log.Trace("starting sign party", "algo", "ECDSA", "sessionId", dispatcher.sessionId)
-			startErr = startParty(dispatcher.party)
-			if startErr != nil {
-				log.Warn("sign party start failed", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "err", startErr)
+			err := dispatcher.party.Start()
+
+			if err != nil {
+				log.Warn("sign party start failed", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "err", err)
+				dispatcher.err = err
 			}
 		}()
 		go func() {
@@ -1300,20 +1289,13 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignEddsa.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
-			// NT-2: scheduled batch start off the lock-holding path; arm + startLock
-			// release happen after party.Start() (see the ECDSA branch above).
-			var startErr error
-			defer func() {
-				if r := recover(); r != nil {
-					startErr = fmt.Errorf("panic in sign party start: %v", r)
-				}
-				dispatcher.armAfterStart("sign party started", startErr)
-			}()
-			dispatcher.scheduledStartSleep()
-			startErr = startParty(dispatcher.party)
-			if startErr != nil {
-				log.Warn("sign party start failed", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "err", startErr)
+			err := dispatcher.party.Start()
+
+			if err != nil {
+				log.Warn("sign party start failed", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "err", err)
+				dispatcher.err = err
 			}
 		}()
 		go func() {
@@ -1334,10 +1316,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		}()
 	}
 
-	// NT-2: Start() no longer arms synchronously. The party-start goroutine runs
-	// the timer-arm + startLock release (armAfterStart) AFTER party.Start(), on the
-	// scheduled batch start, so Start() returns fast and the inactivity timer is not
-	// armed while the ceremony is still queued.
+	dispatcher.baseStart()
 	return nil
 }
 
@@ -1474,12 +1453,6 @@ type BaseDispatcher struct {
 
 	started   bool
 	startLock sync.Mutex
-
-	// startAt is the NT-2 scheduled absolute start time for this sign/keygen
-	// ceremony, set by RunActions (batch i -> T0 + ReshareSyncDelay + i*gap). Zero
-	// when unscheduled (reshare, or batching disabled) -> scheduledStartSleep falls
-	// back to a single ReshareSyncDelay.
-	startAt time.Time
 
 	lastMsg   time.Time
 	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
@@ -1910,69 +1883,6 @@ func (dispatcher *BaseDispatcher) baseStart() {
 	dispatcher.startLock.Unlock()
 }
 
-// scheduledStartSleep blocks until this dispatcher's NT-2 scheduled start time
-// (startAt, set by RunActions). The schedule is absolute (anchored at the
-// RunActions-entry T0, not relative to the previous batch), so per-ceremony
-// Paillier compute variance cannot make a slower node drift later each batch and
-// cross-node start skew does not accumulate. When startAt is zero (reshare, or
-// batching disabled) it falls back to a single ReshareSyncDelay, matching the
-// pre-NT-2 receiver-ready delay.
-func (dispatcher *BaseDispatcher) scheduledStartSleep() {
-	if dispatcher.startAt.IsZero() {
-		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
-		return
-	}
-	if d := time.Until(dispatcher.startAt); d > 0 {
-		time.Sleep(d)
-	}
-}
-
-// armAfterStart runs the post-party-start tail for a sign/keygen ceremony (NT-2).
-// It MUST be called exactly once per dispatcher, after party.Start() returns (or
-// panics), from the party-start goroutine's deferred call, so Done()/Await() can
-// never hang on an unstarted session:
-//   - on a party.Start() error it records the error, releases startLock via
-//     Cleanup (started is still false) so HandleP2P callers blocked in startWait
-//     return, and signals done so Done() rejects with the error;
-//   - on success it logs the actual start (startedMsg is the A/B's start marker)
-//     and runs baseStart, which arms the inactivity timer at the ACTUAL start
-//     (not while the ceremony was queued), releases startLock, and starts
-//     retryFailedMsgs.
-func (dispatcher *BaseDispatcher) armAfterStart(startedMsg string, startErr error) {
-	if startErr != nil {
-		dispatcher.err = startErr
-		dispatcher.Cleanup()
-		dispatcher.signalDone()
-		return
-	}
-	log.Info(startedMsg, "sessionId", dispatcher.sessionId)
-	dispatcher.baseStart()
-}
-
-// startParty starts a btss party and returns a proper error interface. btss
-// Party.Start() returns a CONCRETE *btss.Error; a successful start returns a nil
-// *btss.Error, which becomes a NON-nil error interface if assigned straight into
-// an `error` variable (the Go typed-nil trap) and would make every successful
-// start look like a failure. The nil check happens here on the typed pointer,
-// before any boxing, so a clean start yields a true nil error. Regression:
-// TestStartPartyNilError (a party whose Start returns a nil *btss.Error must give
-// a nil error; the direct-assignment form fails it).
-//
-// partyStarter is the subset of btss.Party startParty needs, narrowed so the fix
-// is unit-testable: btss.Party has unexported methods and cannot be implemented by
-// a fake outside tss-lib, but a one-method interface can. btss.Party satisfies it
-// (Start() returns *btss.Error).
-type partyStarter interface {
-	Start() *btss.Error
-}
-
-func startParty(p partyStarter) error {
-	if err := p.Start(); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID, *btss.PeerContext) {
 	pIds := make([]*btss.PartyID, 0)
 	for idx, p := range dispatcher.participants {
@@ -2078,21 +1988,12 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
-			// NT-2: scheduled batch start off the lock-holding path; the timer arm +
-			// startLock release happen after party.Start() (see the sign branch).
-			// Deferred so it runs on success, error, or panic.
-			var startErr error
-			defer func() {
-				if r := recover(); r != nil {
-					startErr = fmt.Errorf("panic in keygen party start: %v", r)
-				}
-				dispatcher.armAfterStart("keygen party started", startErr)
-			}()
-			dispatcher.scheduledStartSleep()
-			startErr = startParty(dispatcher.party)
-			if startErr != nil {
-				log.Error("keygen party start failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", startErr)
+			err := dispatcher.party.Start()
+			if err != nil {
+				log.Error("keygen party start failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", err)
+				dispatcher.err = err
 			}
 		}()
 
@@ -2128,21 +2029,12 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
+		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
+
 		go func() {
-			// NT-2: scheduled batch start off the lock-holding path; the timer arm +
-			// startLock release happen after party.Start() (see the sign branch).
-			// Deferred so it runs on success, error, or panic.
-			var startErr error
-			defer func() {
-				if r := recover(); r != nil {
-					startErr = fmt.Errorf("panic in keygen party start: %v", r)
-				}
-				dispatcher.armAfterStart("keygen party started", startErr)
-			}()
-			dispatcher.scheduledStartSleep()
-			startErr = startParty(party)
-			if startErr != nil {
-				log.Error("keygen party start failed", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", startErr)
+			err := party.Start()
+			if err != nil {
+				dispatcher.err = err
 			}
 		}()
 
@@ -2165,9 +2057,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 			dispatcher.storeKeygenResult(pubBytes, bytes)
 		}()
 	}
-	// NT-2: Start() no longer arms synchronously; the party-start goroutine runs
-	// armAfterStart (timer arm + startLock release) after party.Start() on the
-	// scheduled batch start. See the sign branch.
+	dispatcher.baseStart()
 	return nil
 }
 
