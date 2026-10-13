@@ -1604,6 +1604,30 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 // custom ops per account per pending block).
 const hiveBlockInterval = 3 * time.Second
 
+// signedSignResult pairs a completed sign result with whether the slot leader was a
+// participant in that session's party. When the leader is absent (a fully churned-out
+// retiring/drain committee) its completers publish the signature instead of it being
+// stranded by a leader-only publish (NT-3).
+type signedSignResult struct {
+	res           KeySignResult
+	leaderInParty bool
+}
+
+// selectSignBroadcasts picks the sign results THIS node should broadcast: the leader
+// broadcasts all it holds; a non-leader broadcasts only results whose session party
+// does not contain the leader (NT-3 never-brick). A leader-only policy (dropping the
+// `|| !sr.leaderInParty`) would strand a sign whose party has no leader - that
+// mutation fails TestSelectSignBroadcasts. Pure and unit-tested.
+func selectSignBroadcasts(signedResults []signedSignResult, isLeader bool) []KeySignResult {
+	out := make([]KeySignResult, 0, len(signedResults))
+	for _, sr := range signedResults {
+		if isLeader || !sr.leaderInParty {
+			out = append(out, sr.res)
+		}
+	}
+	return out
+}
+
 // broadcastSignResults posts the given completed sign results to Hive as
 // vsc.tss_sign ops. NT-3: callable by any node that holds the results, not only
 // the slot leader. The vsc.tss_sign ingest (state_engine.go) verifies each
@@ -2543,10 +2567,6 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		// participant in that session's party - so a result whose party has no
 		// leader (a fully-churned-out retiring/drain committee) can be published
 		// by its completers instead of being stranded by a leader-only publish.
-		type signedSignResult struct {
-			res           KeySignResult
-			leaderInParty bool
-		}
 		signedResults := make([]signedSignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
 		// POA-8: per-accused statements for this node's failed reshares
@@ -2771,12 +2791,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		// spend - node-side only, no consensus-version gate. This leaves the
 		// leader-present case exactly as before (only the leader is selected) and
 		// only adds completer-publish when the leader is absent from the party.
-		toBroadcast := make([]KeySignResult, 0, len(signedResults))
-		for _, sr := range signedResults {
-			if isLeader || !sr.leaderInParty {
-				toBroadcast = append(toBroadcast, sr.res)
-			}
-		}
+		toBroadcast := selectSignBroadcasts(signedResults, isLeader)
 		if len(toBroadcast) > 0 {
 			// Fire-and-forget but bounded: the Hive RPC client has its own
 			// HTTP timeout so Broadcast won't block forever.
