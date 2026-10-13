@@ -21,6 +21,11 @@ const PruneFloorKey = "pf"
 // map, unmap, transfer and the vault ops are refused while it is set.
 const PausedKey = "paused"
 
+// AbandonedSweepPrefix ("sa-"+txid) marks a migration sweep the contract wrote
+// off with abandonSweep (constants.AbandonedSweepPrefix). If it confirms anyway,
+// confirmSpend settles it.
+const AbandonedSweepPrefix = "sa" + DirPathDelimiter
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

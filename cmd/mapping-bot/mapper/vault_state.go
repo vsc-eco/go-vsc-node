@@ -87,6 +87,17 @@ func (b *Bot) FetchPaused(ctx context.Context) (bool, error) {
 	return string(st[contractinterface.PausedKey]) == "1", nil
 }
 
+// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep record
+// for txId ("sa-<txid>").
+func (b *Bot) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error) {
+	key := contractinterface.AbandonedSweepPrefix + txId
+	st, err := b.fetchStateHex(ctx, []string{key})
+	if err != nil {
+		return false, err
+	}
+	return len(st[key]) > 0, nil
+}
+
 // FetchVaultRegistry reads the vault-generation registry ("v"). An absent or
 // empty registry is NOT an error: a non-vault mapping contract (dash/ltc/...) and
 // a pre-rotation BTC deploy both legitimately have none, and the rotation driver

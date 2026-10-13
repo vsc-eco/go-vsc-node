@@ -19,6 +19,9 @@ type GraphQLFetcher interface {
 	FetchPruneFloor(ctx context.Context) (uint64, bool, error)
 	// FetchPaused reports whether the owner has paused the contract ("paused" = "1").
 	FetchPaused(ctx context.Context) (bool, error)
+	// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep
+	// record ("sa-<txid>") for txId: a sweep it wrote off that can still settle.
+	FetchAbandonedSweep(ctx context.Context, txId string) (bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction

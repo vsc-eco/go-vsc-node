@@ -26,6 +26,7 @@ type mockGraphQL struct {
 	lastHeight string
 	pruneFloor string           // "" = not set
 	paused     bool             // the contract's pause flag
+	abandoned  map[string]bool  // txid -> the contract holds an "sa-" record
 	readErr    map[string]error // method name -> error, a read the node could not answer
 	sim        *SimulatedCall   // nil = simulateContractCalls unavailable
 	simErr     error
@@ -108,6 +109,14 @@ func (m *mockGraphQL) FetchPaused(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return m.paused, nil
+}
+
+func (m *mockGraphQL) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error) {
+	m.recordCall("FetchAbandonedSweep", txId)
+	if err := m.readErr["FetchAbandonedSweep"]; err != nil {
+		return false, err
+	}
+	return m.abandoned[txId], nil
 }
 
 func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, error) {

@@ -168,11 +168,24 @@ func (b *Bot) HandleConfirmations() {
 		// testnet 2026-10-06 the bot re-sent it every two minutes after the sweep
 		// had settled. Record it confirmed and move on.
 		if _, still := pending[txId]; !still {
-			b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
-			if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
-				b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+			// BOT-ABANDON-2: a sweep written off with abandonSweep is off the pending
+			// list too. If it confirms after all, confirmSpend settles it (pause-exempt):
+			// its output is indexed to the successor and the written-off amount returns
+			// to the fee reserve. Marking it confirmed here would leave those coins
+			// unindexed for good.
+			abandoned, aerr := b.gql().FetchAbandonedSweep(ctx, txId)
+			if aerr != nil {
+				b.L.Warn("cannot read the contract's abandoned-sweep record; retrying next pass", "txId", txId, "error", aerr)
+				continue
 			}
-			continue
+			if !abandoned {
+				b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
+				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+				}
+				continue
+			}
+			b.L.Info("an abandoned sweep confirmed after all; settling it", "txId", txId)
 		}
 
 		if pruneFloorSet && details.BlockHeight < pruneFloor {
