@@ -1599,6 +1599,87 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 // - Dispatcher instance is created; Handling p2p translation and others
 // - Application specific instance is created (i.e ed25519, secp256k1, etc)
 
+// hiveBlockInterval is one Hive L1 block (3s). N1-1: used to space tss_sign
+// chunks so an account never exceeds hived's HIVE_CUSTOM_OP_BLOCK_LIMIT (5
+// custom ops per account per pending block).
+const hiveBlockInterval = 3 * time.Second
+
+// broadcastSignResults posts the given completed sign results to Hive as
+// vsc.tss_sign ops. NT-3: callable by any node that holds the results, not only
+// the slot leader. The vsc.tss_sign ingest (state_engine.go) verifies each
+// entry's signature against the key and applies UpdateRequest->SignComplete
+// idempotently on (KeyId, Msg) with no submitter check, so duplicate broadcasts
+// from multiple completers collapse to one SignComplete and one spend.
+// Fire-and-forget; the Hive client has its own HTTP timeout.
+func (tssMgr *TssManager) broadcastSignResults(signedResults []KeySignResult) {
+	if len(signedResults) == 0 {
+		return
+	}
+
+	//Signed Results submission
+	sigPacket := make([]map[string]any, 0)
+	for _, signResult := range signedResults {
+		sigPacket = append(sigPacket, map[string]any{
+			"key_id": signResult.KeyId,
+			"msg":    hex.EncodeToString(signResult.Msg),
+			"sig":    hex.EncodeToString(signResult.Signature),
+		})
+	}
+
+	// NT-1: one vsc.tss_sign op per size-bounded chunk so no op exceeds Hive's
+	// 8192-byte custom_json limit. The state engine marks each packet entry
+	// signed independently, so N ops produce the same on-chain result as one op.
+	chunks := chunkSigPacket(sigPacket, maxTssSignPacketBytes)
+	for ci, chunk := range chunks {
+		if ci > 0 {
+			// N1-1: hived refuses an account's 6th and later custom op in one
+			// pending block (HIVE_CUSTOM_OP_BLOCK_LIMIT = 5, database.cpp
+			// limit_custom_op_count). Broadcasting every chunk back to back
+			// meant ops 6+ (above ~130 signatures) were dropped for that block,
+			// so "N ops produce the same result as one op" held only up to 5
+			// chunks and the node's other custom_json ops shared the budget.
+			// Space the chunks one Hive block apart so at most one tss_sign op
+			// per block comes from this account, leaving the other four slots
+			// free. The goroutine is fire-and-forget, so the wait costs no
+			// liveness: a large batch lands over a few blocks and the next sign
+			// interval re-signs anything still missing.
+			time.Sleep(hiveBlockInterval)
+		}
+		rawJson, _ := json.Marshal(map[string]any{
+			"packet": chunk,
+		})
+		deployOp := hivego.CustomJsonOperation{
+			RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
+			RequiredPostingAuths: []string{},
+			Id:                   "vsc.tss_sign",
+			Json:                 string(rawJson),
+		}
+		hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
+			deployOp,
+		})
+		if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
+			log.Error("tss_sign: hive tx signing props unavailable; not broadcasting", "chunk", ci, "of", len(chunks), "err", err)
+			return
+		}
+		sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
+		if signErr != nil {
+			// M-8: do NOT AddSig+Broadcast an unsigned tx - Hive rejects it and the
+			// tss_sign silently never lands, stalling the request. Surface and skip.
+			log.Error("tss_sign: hive tx signing failed; not broadcasting", "chunk", ci, "of", len(chunks), "err", signErr)
+			return
+		}
+		hiveTx.AddSig(sig)
+		txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
+		if err != nil {
+			// NT-1: surface a broadcast failure at Error (was Trace/invisible); the
+			// chunk's signatures simply retry at the next sign interval.
+			log.Error("tss_sign: signature broadcast failed", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "err", err)
+			continue
+		}
+		log.Debug("tss_sign: signatures broadcast", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "txId", txId)
+	}
+}
+
 func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLeader bool, bh uint64) {
 	locked := tssMgr.lock.TryLock()
 
@@ -2421,7 +2502,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			}
 		}()
 
-		signedResults := make([]KeySignResult, 0)
+		// NT-3: carry, per completed sign result, whether the slot leader is a
+		// participant in that session's party - so a result whose party has no
+		// leader (a fully-churned-out retiring/drain committee) can be published
+		// by its completers instead of being stranded by a leader-only publish.
+		type signedSignResult struct {
+			res           KeySignResult
+			leaderInParty bool
+		}
+		signedResults := make([]signedSignResult, 0)
 		commitableResults := make([]tss_helpers.BaseCommitment, 0)
 		// POA-8: per-accused statements for this node's failed reshares
 		// (accuse.go), one per party of the session. Collected on their own
@@ -2492,8 +2581,25 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					tssMgr.sessionResults[dsc.SessionId()] = sessionResultEntry{result: res, blockHeight: bh}
 					tssMgr.bufferLock.Unlock()
 
+					// NT-3: is the on-chain slot leader a participant in THIS
+					// sign session's party? Computed from this dispatcher's own
+					// participant list - the same readiness/commitment-derived
+					// party every node holds at this bh - and the deterministic
+					// witness `leader`, so the answer is identical across nodes.
+					// When it is false the leader holds no result to publish, so
+					// the completers publish instead (see the selection below).
+					leaderInParty := false
+					if sd, ok := dsc.(*SignDispatcher); ok {
+						for _, p := range sd.participants {
+							if p.Account == leader {
+								leaderInParty = true
+								break
+							}
+						}
+					}
+
 					resultsMu.Lock()
-					signedResults = append(signedResults, res)
+					signedResults = append(signedResults, signedSignResult{res: res, leaderInParty: leaderInParty})
 					resultsMu.Unlock()
 				} else if result.Type() == ReshareResultType {
 					res := result.(ReshareResult)
@@ -2616,63 +2722,31 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 		// Lock was already released before this goroutine started.
 
-		if isLeader {
+		// NT-3: publish completed sign results from the slot leader, OR from any
+		// completer for a session whose party does not contain the leader. A
+		// retiring/drain key whose committee has fully churned out of the current
+		// election has no leader in its signing party, so a leader-only publish
+		// would strand the threshold signature forever (NEVER-BRICK). The
+		// vsc.tss_sign ingest (state_engine.go) verifies each entry's signature
+		// against the key and applies UpdateRequest->SignComplete idempotently on
+		// (KeyId, Msg) with no submitter/leader/member check, so duplicate
+		// broadcasts from several completers collapse to one SignComplete and one
+		// spend - node-side only, no consensus-version gate. This leaves the
+		// leader-present case exactly as before (only the leader is selected) and
+		// only adds completer-publish when the leader is absent from the party.
+		toBroadcast := make([]KeySignResult, 0, len(signedResults))
+		for _, sr := range signedResults {
+			if isLeader || !sr.leaderInParty {
+				toBroadcast = append(toBroadcast, sr.res)
+			}
+		}
+		if len(toBroadcast) > 0 {
 			// Fire-and-forget but bounded: the Hive RPC client has its own
 			// HTTP timeout so Broadcast won't block forever.
-			go func() {
-				if len(signedResults) > 0 {
+			go tssMgr.broadcastSignResults(toBroadcast)
+		}
 
-					//Signed Results submission
-					sigPacket := make([]map[string]any, 0)
-					for _, signResult := range signedResults {
-						sigPacket = append(sigPacket, map[string]any{
-							"key_id": signResult.KeyId,
-							"msg":    hex.EncodeToString(signResult.Msg),
-							"sig":    hex.EncodeToString(signResult.Signature),
-						})
-					}
-
-					// NT-1: one vsc.tss_sign op per size-bounded chunk so no op exceeds Hive's
-					// 8192-byte custom_json limit. The state engine marks each packet entry
-					// signed independently, so N ops produce the same on-chain result as one op.
-					chunks := chunkSigPacket(sigPacket, maxTssSignPacketBytes)
-					for ci, chunk := range chunks {
-						rawJson, _ := json.Marshal(map[string]any{
-							"packet": chunk,
-						})
-						deployOp := hivego.CustomJsonOperation{
-							RequiredAuths:        []string{tssMgr.config.Get().HiveUsername},
-							RequiredPostingAuths: []string{},
-							Id:                   "vsc.tss_sign",
-							Json:                 string(rawJson),
-						}
-						hiveTx := tssMgr.hiveClient.MakeTransaction([]hivego.HiveOperation{
-							deployOp,
-						})
-						if err := tssMgr.hiveClient.PopulateSigningProps(&hiveTx, nil); err != nil {
-							log.Error("tss_sign: hive tx signing props unavailable; not broadcasting", "chunk", ci, "of", len(chunks), "err", err)
-							return
-						}
-						sig, signErr := tssMgr.hiveClient.Sign(hiveTx)
-						if signErr != nil {
-							// M-8: do NOT AddSig+Broadcast an unsigned tx — Hive rejects it and the
-							// tss_sign silently never lands, stalling the request. Surface and skip.
-							log.Error("tss_sign: hive tx signing failed; not broadcasting", "chunk", ci, "of", len(chunks), "err", signErr)
-							return
-						}
-						hiveTx.AddSig(sig)
-						txId, err := tssMgr.hiveClient.Broadcast(hiveTx)
-						if err != nil {
-							// NT-1: surface a broadcast failure at Error (was Trace/invisible); the
-							// chunk's signatures simply retry at the next sign interval.
-							log.Error("tss_sign: signature broadcast failed", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "err", err)
-							continue
-						}
-						log.Debug("tss_sign: signatures broadcast", "chunk", ci, "of", len(chunks), "sigs", len(chunk), "txId", txId)
-					}
-				}
-			}()
-
+		if isLeader {
 			if len(commitableResults) > 0 || len(accuseResults) > 0 {
 				time.Sleep(tssMgr.sconf.TssParams().CommitDelay)
 

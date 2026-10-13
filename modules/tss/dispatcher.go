@@ -1200,8 +1200,15 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignSecp256k1.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
+			// NT-2: the receiver-ready pre-delay runs INSIDE the party-start
+			// goroutine, not in Start()'s synchronous body, so Start() returns
+			// fast and the global tssMgr.lock (held across the sequential
+			// RunActions Start loop) is no longer summed across a k-input sign
+			// tranche. Ordering is preserved: handleMsgs() above is already
+			// running, so the party still starts ReshareSyncDelay after the
+			// message handler is up.
+			time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 			log.Trace("starting sign party", "algo", "ECDSA", "sessionId", dispatcher.sessionId)
 			err := dispatcher.party.Start()
 
@@ -1274,8 +1281,9 @@ func (dispatcher *SignDispatcher) Start() error {
 		dispatcher.party = keySignEddsa.NewLocalParty(m, params, keydata, dispatcher.p2pMsg, end)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
+			// NT-2: pre-delay moved off the lock-holding path (see the ECDSA branch above).
+			time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 			err := dispatcher.party.Start()
 
 			if err != nil {
@@ -1973,8 +1981,9 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
 
 		go dispatcher.handleMsgs()
-		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 		go func() {
+			// NT-2: pre-delay moved off the lock-holding path (see the sign branch).
+			time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 			err := dispatcher.party.Start()
 			if err != nil {
 				log.Error("keygen party start failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", err)
@@ -2014,9 +2023,9 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		dispatcher.party = party
 
 		go dispatcher.handleMsgs()
-		time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
-
 		go func() {
+			// NT-2: pre-delay moved off the lock-holding path (see the sign branch).
+			time.Sleep(dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay)
 			err := party.Start()
 			if err != nil {
 				dispatcher.err = err

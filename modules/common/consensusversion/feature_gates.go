@@ -726,6 +726,18 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 	return Version0_11_0Active(active)
 }
 
-// (OneBlockPerSlotActive removed: a verbatim re-post is dup-rejected by Hive and
-// a different block for the same slot is the double-sign/equivocation path that
-// already slashes; the guard was redundant and never demonstrated to fix a bug.)
+// (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
+// without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
+// ValidateDetailed within the slot window - only a byte-identical Hive tx is
+// dup-rejected by Hive, not a re-sign with a new expiration - but the
+// re-application is harmless to durable state: ContractOutput.Ingest re-runs
+// contractState.IngestOutput from the authoritative anchored output idempotently
+// (same StateMerkle/results), ledger ops dedupe on their own ids, and the
+// se.Flush() it triggers clears ONLY the block-producer assembly scratch
+// (TempOutputs/ContractResults/TxOutput/TxOutIds, consumed solely by MakeOplog/
+// MakeOutputs) - never durable contract/ledger/nonce state. A DIFFERENT block for
+// the same slot is the equivocation path that already slashes. The only residual
+// is a bounded slot-window liveness-griefing of a producer's in-flight scratch,
+// never demonstrated to cost a slot; if a devnet A/B ever demonstrates it, re-add a
+// 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
+// different Hive tx Id, so own-block restart-reprocess still runs.)

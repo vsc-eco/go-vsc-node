@@ -487,8 +487,15 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
-
-	if err == mongo.ErrNoDocuments {
+	// NC-4: GetBalanceRecord returns (nil, nil) for an account with no balance record (a
+	// fresh account), NOT mongo.ErrNoDocuments - so the old ErrNoDocuments-only guard fell
+	// through and balRecord.HBD below nil-panicked on any fresh account's RC query. Surface a
+	// real DB error, and treat an absent record (nil, with or without ErrNoDocuments) as a
+	// zero-HBD account that reports only the free allowance.
+	if err != nil && err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("failed to get balance record for %s: %w", account, err)
+	}
+	if balRecord == nil {
 		return &rcDb.RcRecord{
 			Account:     account,
 			Amount:      amount,
