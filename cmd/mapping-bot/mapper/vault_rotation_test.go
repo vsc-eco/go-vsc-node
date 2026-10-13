@@ -67,12 +67,16 @@ func TestDecideVaultAction(t *testing.T) {
 			want:   vaultRetire,
 		},
 		{
-			// S5/L4-C1: a late or reorged deposit can re-fund an already-emptied
-			// generation. It must be swept again, not allowed to escape with the gen.
-			name:   "INACTIVE generation re-funded by a late deposit — sweep it again",
+			// S5/L4-C1 + B: a late or reorged deposit can re-fund an already-emptied
+			// generation. It must be swept again, not allowed to escape. migrateVault only
+			// sweeps RETIRING/DRAINING, so a funded INACTIVE gen routes to retireVault first:
+			// ReconcileRetiringVaults REVERTs it INACTIVE->DRAINING (status only), then a
+			// later cycle migrates it. Routing straight to migrate would no-op ("nothing to
+			// migrate") and the gen would never drain.
+			name:   "INACTIVE generation re-funded by a late deposit — revert it first",
 			vaults: []btcvault.Vault{vault(0, btcvault.VaultStatusInactive), vault(1, btcvault.VaultStatusActive)},
 			counts: map[uint32]int{0: 1},
-			want:   vaultMigrate,
+			want:   vaultRetire,
 		},
 		{
 			name:   "inactive and empty — keep advancing toward purge",
