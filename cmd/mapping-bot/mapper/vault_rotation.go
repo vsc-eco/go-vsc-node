@@ -401,6 +401,18 @@ func decideVaultAction(vaults []btcvault.Vault, counts map[uint32]int, sweepInFl
 		// Drained — the contract's fund-gate will now let retireVault advance it.
 		return vaultRetire, nil
 	}
+	// B: a re-funded INACTIVE gen (a late deposit landed on an emptied gen's still-matchable
+	// address) is fund-holding again, but migrateVault only sweeps RETIRING/DRAINING, so it
+	// would return "nothing to migrate" and the gen would never drain. retireVault's
+	// ReconcileRetiringVaults REVERTs it INACTIVE->DRAINING (a status-only op, no fund move),
+	// after which an ordinary migrate cycle sweeps it. Run retire first whenever a funded gen
+	// is INACTIVE; it is a no-op for a funded RETIRING/DRAINING gen, so an in-flight sweep is
+	// undisturbed (and this cannot stack tranches — retireVault builds no sweep).
+	for _, v := range stillFunded {
+		if v.Status == btcvault.VaultStatusInactive {
+			return vaultRetire, stillFunded
+		}
+	}
 	if sweepInFlight {
 		// Never stack tranches: a second sweep while one is unconfirmed draws the fee
 		// reserve down twice and races the same UTXO set.
