@@ -19,7 +19,7 @@ import (
 // "transaction size too big" string - so a tx the bot stopped itself (this different
 // string) slipped past the escape and the deposit's block was retried forever. A sentinel
 // makes both the bot pre-flight and the node refusal recognisable by errors.Is.
-var errTxTooLarge = errors.New("L2 tx exceeds the transaction-pool size limit")
+var errTxTooLarge = errors.New("L2 tx too large for the transaction pool")
 
 // errBotEthKeyMissing is returned when the bot is asked to submit an L2 tx but
 // no signing key is configured.
