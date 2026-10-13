@@ -1699,6 +1699,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		return
 	}
 
+	// NT-2: anchor the ceremony-start batch schedule at RunActions entry, BEFORE
+	// building dispatchers (blame scoring + DB reads for up to ~70 actions), so
+	// per-node construction time does not add to cross-node start skew.
+	runActionsStart := time.Now()
+
 	currentElection, err := tssMgr.electionDb.GetElectionByHeight(uint64(bh))
 	log.Trace("election lookup result", "election", currentElection, "err", err)
 	if err != nil || currentElection.Members == nil {
@@ -2450,6 +2455,38 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			action: actionType,
 		}
 		tssMgr.bufferLock.Unlock()
+	}
+
+	// NT-2: schedule sign/keygen ceremony starts in deterministic batches so a large
+	// sign tranche does not all start at once (the committed all-at-once NT-2 removed
+	// the only throttle). Batch i (slice order, identical on every node) starts at
+	// t0 + ReshareSyncDelay + i*StartBatchGap, an ABSOLUTE schedule anchored at this
+	// RunActions entry so per-ceremony Paillier variance cannot make a slow node drift
+	// later each batch; cross-node start skew is then only the difference in when nodes
+	// reach this height, which must stay under RpcTimeout (measured by the devnet A/B).
+	// StartBatchSize 0 disables batching. ReshareDispatcher is NOT scheduled here (the
+	// fragile path stays exactly as develop, started inline by the loop below).
+	{
+		tp := tssMgr.sconf.TssParams()
+		scheduledN := uint64(0)
+		for _, d := range dispatchers {
+			var base *BaseDispatcher
+			switch dd := d.(type) {
+			case *SignDispatcher:
+				base = &dd.BaseDispatcher
+			case *KeyGenDispatcher:
+				base = &dd.BaseDispatcher
+			}
+			if base == nil {
+				continue // reshare (or any other): start inline, unscheduled
+			}
+			batch := uint64(0)
+			if tp.StartBatchSize > 0 {
+				batch = scheduledN / tp.StartBatchSize
+			}
+			base.startAt = runActionsStart.Add(tp.ReshareSyncDelay + time.Duration(batch)*tp.StartBatchGap)
+			scheduledN++
+		}
 	}
 
 	startedDispatcher := make([]Dispatcher, 0)
