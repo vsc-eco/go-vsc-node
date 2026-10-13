@@ -172,6 +172,18 @@ func warnFeeReserveOnce(contractId string) bool {
 	return true
 }
 
+// noteVaultPaused records the pause flag the driver last saw and reports whether
+// it just became paused, so a pause is logged once.
+var vaultPausedSeen bool
+
+func noteVaultPaused(paused bool) bool {
+	vaultOpMu.Lock()
+	defer vaultOpMu.Unlock()
+	was := vaultPausedSeen
+	vaultPausedSeen = paused
+	return paused && !was
+}
+
 // isAwaitingReshare reports whether migrateVault refused because the active
 // generation's key has not been reshared since its keygen (or the node cannot
 // report it yet).
@@ -412,6 +424,17 @@ func (b *Bot) HandleVaultRotation() {
 	if isNotOwnerLatched(contractId) {
 		return
 	}
+
+	// A paused contract refuses every vault op. Skip the cycle instead of reporting
+	// each refusal as a stuck rotation (BOT-PAUSE-1). An unreadable flag goes on: the
+	// ops are dry-run first, so a refusal still costs nothing.
+	if paused, perr := b.gql().FetchPaused(ctx); perr == nil && paused {
+		if noteVaultPaused(true) {
+			b.L.Info("vault rotation: contract is paused; the driver waits for the unpause")
+		}
+		return
+	}
+	noteVaultPaused(false)
 
 	vaults, err := b.FetchVaultRegistry(ctx)
 	if err != nil {
