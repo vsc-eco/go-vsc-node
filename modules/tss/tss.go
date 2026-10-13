@@ -2499,14 +2499,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	// 0.11 - at which point any node still announcing 0.10 is filtered out of parties
 	// by version - do all nodes flip to the batched schedule together.
 	{
-		tp := tssMgr.sconf.TssParams()
-		batchN, batchGap := uint64(1), tp.ReshareSyncDelay // pre-0.11: serial (develop timing)
-		if tssMgr.startBatchScheduleActive(bh) {
-			batchN, batchGap = tp.StartBatchSize, tp.StartBatchGap // post-0.11: batched
-		}
-		if batchN == 0 {
-			batchN = 1 // StartBatchSize 0 => no batching, one ceremony per gap
-		}
+		// Read TssParams lazily, only once the first sign/keygen dispatcher is found:
+		// RunActions with no schedulable dispatcher (empty actions, or reshare-only) must
+		// not touch sconf at all, so a manager built without sconf (unit suite) does not panic
+		// here. Production always has sconf and always hits the same read, so the schedule
+		// is byte-identical whenever there is anything to schedule.
+		var batchN uint64
+		var batchGap, syncDelay time.Duration
+		computed := false
 		scheduledN := uint64(0)
 		for _, d := range dispatchers {
 			var base *BaseDispatcher
@@ -2519,7 +2519,19 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			if base == nil {
 				continue // reshare (or any other): start inline, unscheduled
 			}
-			base.startAt = runActionsStart.Add(tp.ReshareSyncDelay + time.Duration(scheduledN/batchN)*batchGap)
+			if !computed {
+				tp := tssMgr.sconf.TssParams()
+				syncDelay = tp.ReshareSyncDelay
+				batchN, batchGap = uint64(1), tp.ReshareSyncDelay // pre-0.11: serial (develop timing)
+				if tssMgr.startBatchScheduleActive(bh) {
+					batchN, batchGap = tp.StartBatchSize, tp.StartBatchGap // post-0.11: batched
+				}
+				if batchN == 0 {
+					batchN = 1 // StartBatchSize 0 => no batching, one ceremony per gap
+				}
+				computed = true
+			}
+			base.startAt = runActionsStart.Add(syncDelay + time.Duration(scheduledN/batchN)*batchGap)
 			scheduledN++
 		}
 	}
