@@ -61,6 +61,31 @@ func TestDecideVaultAction(t *testing.T) {
 			want:          vaultNoop,
 		},
 		{
+			// An empty superseded generation ahead of a funded one must not stop the
+			// driver. It still migrates; the contract picks the funded generation.
+			name: "empty retiring generation ahead of a funded one — still build a tranche",
+			vaults: []btcvault.Vault{vault(0, btcvault.VaultStatusRetiring), vault(1, btcvault.VaultStatusRetiring),
+				vault(2, btcvault.VaultStatusActive)},
+			counts: map[uint32]int{1: 2},
+			want:   vaultMigrate,
+		},
+		{
+			name: "empty draining generation ahead of a funded retiring one — still build a tranche",
+			vaults: []btcvault.Vault{vault(0, btcvault.VaultStatusDraining), vault(1, btcvault.VaultStatusRetiring),
+				vault(2, btcvault.VaultStatusActive)},
+			counts: map[uint32]int{1: 2},
+			want:   vaultMigrate,
+		},
+		{
+			// Once the funded generation drains, the empty ones are retired (retireVault finalizes an
+			// empty RETIRING generation to INACTIVE, like an empty DRAINING one).
+			name: "every superseded generation empty, one still retiring — advance the lifecycle",
+			vaults: []btcvault.Vault{vault(0, btcvault.VaultStatusRetiring), vault(1, btcvault.VaultStatusDraining),
+				vault(2, btcvault.VaultStatusActive)},
+			counts: map[uint32]int{2: 4},
+			want:   vaultRetire,
+		},
+		{
 			name:   "drained — advance the lifecycle",
 			vaults: []btcvault.Vault{vault(0, btcvault.VaultStatusDraining), vault(1, btcvault.VaultStatusActive)},
 			counts: map[uint32]int{1: 3}, // gen-0 holds nothing
