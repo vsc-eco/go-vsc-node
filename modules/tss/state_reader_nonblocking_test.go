@@ -118,7 +118,7 @@ func TestContractStateReaderDoesNotBlockOnMissingBlock(t *testing.T) {
 //
 // This exercises a REAL DataBin rather than a readKey stub, because the defect is
 // exactly in how DataBin.Get's os.ErrNotExist is classified - a function stub
-// cannot reproduce it (08 caught the first cut, which used a stub). Mutation
+// cannot reproduce it (a first cut of this fix used a stub and missed it). Mutation
 // guard: delete the `errors.Is(err, os.ErrNotExist)` branch in
 // contractStateReaderAtStrict and the "absent" subtest FAILS (a missing key comes
 // back as a read error).
