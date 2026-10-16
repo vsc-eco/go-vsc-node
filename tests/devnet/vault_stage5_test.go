@@ -1,12 +1,17 @@
 package devnet
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -106,6 +111,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	spender := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 2)
 	vstatus(t, d, ctx, 1, cid, "approve", fmt.Sprintf(`{"spender":"%s","amount":"%d"}`, spender, 5_000_000))
 	time.Sleep(6 * time.Second)
+	spendsBefore := txSpendIds(t, d, ctx, cid)
 	sUF := vstatus(t, d, ctx, 2, cid, "unmapFrom",
 		fmt.Sprintf(`{"amount":"%d","to":"%s","from":"%s","deduct_fee":true}`, 5_000_000, mustNewBtcAddr(t, d, ctx), owner))
 	rec("MD03-GP-10", "unmapFrom via allowance accepted (exact allowance, deduct_fee)", isOK(sUF), "status="+sUF)
@@ -114,6 +120,28 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	sUF2 := vstatus(t, d, ctx, 2, cid, "unmapFrom",
 		fmt.Sprintf(`{"amount":"%d","to":"%s","from":"%s"}`, 50_000_000, mustNewBtcAddr(t, d, ctx), owner))
 	rec("MD03-PEN-06", "unmapFrom beyond allowance rejected", !isOK(sUF2), "status="+sUF2)
+
+	// F1: activateKey refuses while the active generation still has an in-flight user
+	// unmap (it could be stranded once the key retires), so GP-10's withdrawal is settled
+	// before the rotation, the contract's settle-before-activate path.
+	ufTxid := ""
+	for i := 0; i < 20 && ufTxid == ""; i++ {
+		for _, id := range txSpendIds(t, d, ctx, cid) {
+			if !contains(spendsBefore, id) {
+				ufTxid = id
+				break
+			}
+		}
+		if ufTxid == "" {
+			time.Sleep(3 * time.Second)
+		}
+	}
+	sSettle := "NO_PENDING_SPEND"
+	if ufTxid != "" {
+		sSettle = settlePendingUnmap(t, d, ctx, cid, cid+"-main", ufTxid)
+	}
+	rec("F1-SETTLE", "GP-10's unmapFrom withdrawal is signed, broadcast and settled before the rotation", isOK(sSettle),
+		fmt.Sprintf("txid=%s confirmSpend=%s", ufTxid, sSettle))
 
 	// ── rotate to gen-1 under v2 ──
 	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
@@ -180,6 +208,59 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	rec("VL-GP-10b", "retireVault inactive→purged (after grace)", isOK(sRet2), "status="+sRet2)
 
 	t.Logf("STAGE-5 SUMMARY: %d PASS %d FAIL CONTRACT=%s", pass, fail, cid)
+}
+
+// settlePendingUnmap signs, broadcasts, mines and confirms a user unmap the caller already
+// created (unmapAndSettle does the same for an unmap it makes itself). It returns the
+// confirmSpend status, or a short reason when the spend never reached confirmSpend.
+func settlePendingUnmap(t *testing.T, d *Devnet, ctx context.Context, cid, keyId, txid string) string {
+	t.Helper()
+	sd := waitSigningData(t, d, ctx, cid, txid)
+	if sd == nil {
+		return "NO_SIGNING_DATA"
+	}
+	var mtx wire.MsgTx
+	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
+		return "DESERIALIZE_FAILED"
+	}
+	for _, uh := range sd.UnsignedSigHashes {
+		sig := waitSignature(t, d, ctx, keyId, uh.SigHash)
+		if sig == nil {
+			return "NOT_SIGNED"
+		}
+		signature := append(append([]byte{}, sig...), byte(txscript.SigHashAll))
+		mtx.TxIn[uh.Index].Witness = wire.TxWitness{signature, []byte{0x01}, uh.WitnessScript}
+	}
+	var buf bytes.Buffer
+	if err := mtx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding); err != nil {
+		return "ENCODE_FAILED"
+	}
+	bcTxid, err := d.bitcoinCli(ctx, "sendrawtransaction", hex.EncodeToString(buf.Bytes()))
+	if err != nil {
+		t.Logf("unmap %s broadcast rejected: %v", txid, err)
+		return "BROADCAST_REJECTED"
+	}
+	h, _ := d.MineBlocks(ctx, 1)
+	// The settle waits MinConfirmationDepth, and addBlocks must chain onto the contract's
+	// own last header, so bury the block and relay from the contract's height.
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	}
+	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
+	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
+	var blk struct {
+		Tx []string `json:"tx"`
+	}
+	json.Unmarshal([]byte(blockJSON), &blk)
+	if len(blk.Tx) < 2 {
+		return "BLOCK_UNREADABLE"
+	}
+	rawTx, _ := d.bitcoinCli(ctx, "getrawtransaction", bcTxid)
+	proof := reverseHexBytes(blk.Tx[0])
+	return vstatus(t, d, ctx, 1, cid, "confirmSpend", fmt.Sprintf(
+		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"indices":[0]}`, h, rawTx, proof))
 }
 
 func mustNewBtcAddr(t *testing.T, d *Devnet, ctx context.Context) string {

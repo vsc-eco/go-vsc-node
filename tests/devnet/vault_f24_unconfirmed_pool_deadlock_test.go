@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"testing"
@@ -49,38 +50,34 @@ import (
 // (c) an operator-callable expiry that returns the inputs of a spend that can no
 // longer be confirmed to the selectable pool (and re-arms the change accounting).
 //
-// HOW THIS DEVNET TEST REPRODUCES IT (and where it deviates from the testnet state)
+// HOW THIS DEVNET TEST EXERCISES IT (and where it deviates from the testnet state)
 // On a FRESH v2 deploy nothing ever allocates an unconfirmed-pool id: every credited
 // output (deposit, unmap change, migration sweep output, fee-reserve top-up) is
 // indexed with allocateConfirmedId, and allocateUnconfirmedId has no caller at all.
 // The literal testnet shape (registry entries with id < 1024) is therefore only
-// reachable through the v1 to v2 upgrade path, which is F21's subject. This test
-// reproduces the IDENTICAL deadlock on a fresh v2 deploy through the sibling clause of
-// the very same selection filter: an unmap that is signed, broadcast and mined but
-// never confirmed leaves its input REGISTERED and RESERVED under Guard 1
-// (delete-at-confirm), so getMigrationInputs skips it exactly as it skips an
-// unconfirmed-pool input, while NN#3 and the bond lock still count it. F24-SETUP
-// therefore accepts EITHER form (id < 1024, or reserved) and records which one it saw,
-// and every later step is unchanged.
+// reachable through the v1 to v2 upgrade path, which is F21's subject. The sibling
+// form on a fresh deploy is an unmap that is signed, broadcast and mined but never
+// confirmed: its input stays REGISTERED and RESERVED under Guard 1 (delete-at-confirm),
+// so getMigrationInputs would skip it once its generation retired. The contract's F1
+// guard now refuses activateKey while the active generation has such an in-flight
+// unmap, and a user unmap only selects active-generation inputs once a superseded
+// generation exists, so that form can no longer reach a Retiring generation. This test
+// builds the in-flight unmap, proves F1 holds the cut-over, settles the unmap (the
+// escape F1 asks for), and then checks the rest of the rotation.
 //
 // WHAT THIS TEST PROVES
 //  1. F24-SETUP: after a broadcast but unconfirmed unmap, generation 0 holds exactly
 //     one registry UTXO and ZERO migration-selectable UTXOs.
-//  2. F24-NOTHING: migrateVault SUCCEEDS three times in a row and changes nothing at
-//     all (no new pending spend, byte-identical UTXO registry, vault registry and
-//     migration sweep index, generation 0 still Retiring and still holding 1 UTXO).
-//     There is no contract-output log reader in tests/devnet (nothing here reads a
-//     contract call's return string or logs), so the "nothing to migrate" return value
-//     is proven by that state comparison rather than by reading the string.
-//  3. F24-NN3: createKey is REFUSED while the superseded generation holds that UTXO.
-//  4. F24-BONDLOCK: a committee member's consensus_unstake creates no pending unstake.
-//     Nothing inside the contract can move the UTXO, so this is the deadlock.
-//  5. F24-ESCAPE-CONFIRM / F24-PROMOTED: the ONLY escape is the missing confirmSpend.
-//     On devnet the header still exists, so relaying it and confirming the unmap with
-//     the change vout settles it and leaves generation 0 holding one selectable UTXO.
-//  6. F24-DRAINED / F24-NN3-RELEASED / F24-BOND-RELEASED: with the UTXO selectable
-//     again the rotation completes, createKey is admitted again, and the bond releases.
-//  7. F24-PRUNED: INFO, why step 5 is impossible on the live testnet.
+//  2. F24-F1-GATE: with generation 1 minted, registered and its BRK-2 check-signature
+//     landed, activateKey is REFUSED and generation 0 stays Active.
+//  3. F24-ESCAPE-CONFIRM / F24-PROMOTED: relaying the header and confirming the unmap
+//     with the change vout settles it, leaving generation 0 holding selectable UTXOs.
+//  4. F24-F1-RELEASED: the same activateKey is then admitted and generation 0 retires.
+//  5. F24-NN3 / F24-BONDLOCK: while generation 0 is superseded and holds funds,
+//     createKey is refused and a committee member's consensus_unstake is refused.
+//  6. F24-DRAINED / F24-NN3-RELEASED / F24-BOND-RELEASED: the migration sweep drains
+//     generation 0, createKey is admitted again, and the bond releases.
+//  7. F24-PRUNED: INFO, why the escape in step 3 is impossible on the live testnet.
 //  8. F24-IDENT: the vault state is byte-identical across all 5 nodes at the end.
 //
 // A precondition that cannot be established is a t.Fatalf, never a t.Skip, so this
@@ -226,128 +223,76 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	}
 
 	// ---------------------------------------------------------------------------
-	// 1. Rotate to generation 1 so generation 0 is superseded (Retiring) and funded
-	//    ONLY by the stuck change of that unmap, then fund the fee reserve so an
-	//    empty reserve can never be confused with the deadlock under test (that is
-	//    F11's subject, not this one).
+	// 1. F24-F1-GATE: the contract's F1 guard (ActivatePendingGeneration refuses while
+	//    the active generation still has an in-flight user unmap) now stops generation 0
+	//    from retiring in this state at all, so the fresh-deploy reserved form of the
+	//    deadlock can no longer form. Mint and register generation 1, wait until its
+	//    BRK-2 check-signature has landed (so a refusal cannot be the check-sig gate),
+	//    and require activateKey to be refused with generation 0 still Active.
 	// ---------------------------------------------------------------------------
-	primary1, rotated := vfRotate(t, d, ctx, cid, 1)
-	if !rotated {
-		t.Fatalf("PRECONDITION FAILED: the generation 0 to generation 1 rotation did not complete (primary1=%q). Without a Retiring generation 0 there is nothing for migrateVault to refuse", primary1)
+	primary1, minted := vfMintNextGen(t, d, ctx, cid, 1, 2, 8*time.Minute)
+	if !minted {
+		t.Fatalf("PRECONDITION FAILED: generation 1 was not minted (primary1=%q)", primary1)
 	}
-	// fundFeeReserve relays every header from the contract's last height, which
-	// INCLUDES the unmap's block. Relaying a header settles nothing: only confirmSpend
-	// can move the stuck output, which is the whole point of step 5.
-	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
-
-	gen0Stat := -1
-	for i := 0; i < 8; i++ {
-		gen0Stat = vfVaultStatusOn(d, ctx, 2, cid, 0)
-		if gen0Stat >= int(btcvault.VaultStatusRetiring) {
-			break
+	vfWaitPreparams(t, d, ctx, time.Duration(float64(12*time.Minute)*vfTimeoutScale()))
+	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG)); !isOK(s) {
+		t.Fatalf("PRECONDITION FAILED: registerPublicKey for generation 1 status=%s", s)
+	}
+	key1 := cid + "-" + btcvault.VaultKeyName(1)
+	checkSigLanded := false
+	checkSigDeadline := time.Now().Add(time.Duration(float64(10*time.Minute) * vfTimeoutScale()))
+	for !checkSigLanded && time.Now().Before(checkSigDeadline) {
+		landed := 0
+		for _, n := range []int{1, 2} {
+			if reqs, rerr := d.GetTssRequests(ctx, n, key1); rerr == nil {
+				for _, r := range reqs {
+					if r.Sig != "" {
+						landed++
+						break
+					}
+				}
+			}
 		}
-		time.Sleep(10 * time.Second)
-	}
-	if gen0Stat != int(btcvault.VaultStatusRetiring) {
-		t.Fatalf("PRECONDITION FAILED: generation 0 status is %d, want %d (Retiring) after the rotation. The NN#3 and bond-lock gates under test only apply to a superseded generation", gen0Stat, int(btcvault.VaultStatusRetiring))
-	}
-	t.Logf("rotation done: generation 1 active (primary1=%s), generation 0 Retiring and funded only by the stuck unmap change", primary1)
-
-	// ---------------------------------------------------------------------------
-	// 2. F24-NOTHING: migrateVault succeeds and does absolutely nothing, three times.
-	// ---------------------------------------------------------------------------
-	// ★ TAKE THE BASELINE ONLY ONCE THE READING NODE HAS SETTLED.
-	//
-	// Every snapshot here is read from magi-2 while vstatus confirms on magi-1, so a
-	// baseline captured immediately after the rotation can be a node-behind. The whole case
-	// is a BYTE-EQUALITY comparison against that baseline, so a stale one makes
-	// rByteEqual=false for reasons that have nothing to do with migrateVault - which is
-	// exactly how this failed in the campaign: status CONFIRMED, sameSpends=true,
-	// vByteEqual=true, mslByteEqual=true, gen-0 still Retiring with 1 UTXO on all three
-	// tries, and ONLY the UTXO registry bytes differing. The deadlock was reproduced
-	// perfectly; the baseline was not settled.
-	//
-	// Wait for two consecutive identical reads before freezing it. Bounded, and it logs if
-	// it never settles rather than silently proceeding with a moving baseline.
-	base := vf24Snapshot(t, d, ctx, cid)
-	settled := false
-	for i := 0; i < 24; i++ {
-		time.Sleep(5 * time.Second)
-		next := vf24Snapshot(t, d, ctx, cid)
-		if bytes.Equal(base.utxoReg, next.utxoReg) && bytes.Equal(base.vaultReg, next.vaultReg) &&
-			bytes.Equal(base.sweepIdx, next.sweepIdx) && vf24SameIds(base.spends, next.spends) {
-			base = next
-			settled = true
-			break
+		checkSigLanded = landed == 2
+		if !checkSigLanded {
+			time.Sleep(15 * time.Second)
 		}
-		base = next
 	}
-	if !settled {
-		t.Logf("F24-NOTHING: the reading node never produced two identical consecutive snapshots; "+
-			"the byte-equality baseline may be stale (contract=%s)", cid)
+	if !checkSigLanded {
+		vfDumpCheckSigDiagnostics(t, d, ctx, cid)
+		t.Fatalf("PRECONDITION FAILED: the generation 1 BRK-2 check-signature never landed on magi-1 and magi-2, so an activateKey refusal could not be attributed to F1")
 	}
-	nothingOK := true
-	nothingDetail := ""
+	gateDetail := ""
+	gateRefused := true
 	for i := 1; i <= 3; i++ {
-		if i > 1 {
-			time.Sleep(10 * time.Second)
+		time.Sleep(15 * time.Second)
+		s := vstatus(t, d, ctx, 1, cid, "activateKey", "")
+		gateDetail += fmt.Sprintf(" try%d=%s", i, s)
+		if isOK(s) {
+			gateRefused = false
+			break
 		}
-		s := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
-		snap := vf24Snapshot(t, d, ctx, cid)
-		sameSpends := vf24SameIds(base.spends, snap.spends)
-		sameUtxo := bytes.Equal(base.utxoReg, snap.utxoReg)
-		sameVault := bytes.Equal(base.vaultReg, snap.vaultReg)
-		sameSweeps := bytes.Equal(base.sweepIdx, snap.sweepIdx)
-		stillRetiring := snap.gen0Stat == int(btcvault.VaultStatusRetiring)
-		stillOne := snap.gen0Cnt == 1
-		if !isOK(s) || !sameSpends || !sameUtxo || !sameVault || !sameSweeps || !stillRetiring || !stillOne {
-			nothingOK = false
-		}
-		nothingDetail += fmt.Sprintf(" try%d(status=%s pendingSpends=%d sameSpends=%v rByteEqual=%v vByteEqual=%v mslByteEqual=%v gen0Status=%d gen0Utxos=%d)",
-			i, s, len(snap.spends), sameSpends, sameUtxo, sameVault, sameSweeps, snap.gen0Stat, snap.gen0Cnt)
 	}
-	c.rec("F24-NOTHING", "migrateVault reports success but builds no sweep at all: the pending spend list, the UTXO registry, the vault registry and the migration sweep index are byte-unchanged and generation 0 is still Retiring with 1 UTXO",
-		nothingOK,
-		fmt.Sprintf("baseline pendingSpends=%d gen0Utxos=%d gen0Status=%d;%s | the contract returns the string \"nothing to migrate for generation 0\", which no helper in tests/devnet can read (there is no contract-output log or Results reader here), so the byte-level state comparison above is the proof",
-			len(base.spends), base.gen0Cnt, base.gen0Stat, nothingDetail))
-
-	// ---------------------------------------------------------------------------
-	// 3. F24-NN3: no new key while the superseded generation still "holds funds".
-	// ---------------------------------------------------------------------------
-	nn3Status := vstatus(t, d, ctx, 1, cid, "createKey", "")
-	gen2Status := vfVaultStatusOn(d, ctx, 2, cid, 2)
-	c.rec("F24-NN3", "createKey is refused while the superseded generation still counts a registry UTXO that migration can never select (NN#3, AnyFundedSupersededGen)",
-		!isOK(nn3Status) && gen2Status < 0,
-		fmt.Sprintf("createKey status=%s (want FAILED or REVERTED), generation 2 vault status=%d (want -1, absent), gen0Utxos=%d",
-			nn3Status, gen2Status, vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
-
-	// ---------------------------------------------------------------------------
-	// 4. F24-BONDLOCK: and the committee cannot leave either. This is the deadlock.
-	// ---------------------------------------------------------------------------
-	const unstakeNode = 3
-	member := "hive:" + d.witnessAccount(unstakeNode)
-	head, herr := getHeadBlock(d.HiveRPCEndpoint())
-	if herr != nil {
-		t.Errorf("reading the Hive head block before the locked unstake: %v", herr)
+	gen0AtGate := vfVaultStatusOn(d, ctx, 2, cid, 0)
+	gen1AtGate := vfVaultStatusOn(d, ctx, 2, cid, 1)
+	c.rec("F24-F1-GATE", "with the BRK-2 check-signature already landed, activateKey is refused while generation 0 still has the in-flight unmap, so generation 0 cannot retire holding a reserved input (F1)",
+		gateRefused && gen0AtGate == int(btcvault.VaultStatusActive) && gen1AtGate == int(btcvault.VaultStatusPending),
+		fmt.Sprintf("activateKey%s (want every try refused); gen0Status=%d (want %d Active) gen1Status=%d (want %d Pending); check-sig for %s signed on magi-1 and magi-2; F24-F1-RELEASED below admits the same activateKey once the unmap settles, which attributes this refusal to F1",
+			gateDetail, gen0AtGate, int(btcvault.VaultStatusActive), gen1AtGate, int(btcvault.VaultStatusPending), key1))
+	if !gateRefused {
+		t.Fatalf("F1 GATE MISSING: activateKey retired generation 0 while its unmap %s was still in flight", unmapTxid)
 	}
-	_ = head
-	// Terminal-status read (H-25): FAILED + pending 0 is a refusal; a fixed wait cannot
-	// tell a refusal from an op that has not been applied yet.
-	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
-	c.rec("F24-BONDLOCK", "the committee member's consensus bond stays locked while the stuck UTXO keeps its generation superseded and fund-holding, so nothing in the contract can move the funds and nobody can leave",
-		lockedStatus == "FAILED" && lockedPending == 0,
-		fmt.Sprintf("member=%s unstake status=%s (want FAILED = refused) pending consensus_unstake=%d (want 0), gen0Status=%d gen0Utxos=%d",
-			member, lockedStatus, lockedPending, vfVaultStatusOn(d, ctx, 2, cid, 0), vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
 
 	// ---------------------------------------------------------------------------
-	// 5. THE ESCAPE. On devnet the unmap's header still exists, so the missing
-	//    confirmSpend can still be issued. Relay whatever is not relayed yet, then
-	//    confirm the unmap with the CHANGE vout in indices.
+	// 2. THE ESCAPE, which F1 now requires BEFORE the cut-over. On devnet the
+	//    unmap's header still exists, so the missing confirmSpend can still be
+	//    issued. Relay whatever is not relayed yet, then confirm the unmap with the
+	//    CHANGE vout in indices.
 	// ---------------------------------------------------------------------------
 	// VR2-06: the settle waits MinConfirmationDepth, so the unmap's own block has to
 	// be buried before confirmSpend is accepted. Relaying only up to unmapHeight
-	// leaves it at depth 0 and the escape would be refused for the wrong reason —
-	// which would make this test claim the deadlock is inescapable when it is not.
+	// leaves it at depth 0 and the escape would be refused for the wrong reason.
 	// Mirrors constants.MinConfirmationDepth (regtest).
 	if _, mErr := d.MineBlocks(ctx, vfDepositMaturityBlocks); mErr != nil {
 		t.Logf("mine settle-maturity blocks: %v", mErr)
@@ -383,7 +328,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	confirmStatus := vstatus(t, d, ctx, 1, cid, "confirmSpend", fmt.Sprintf(
 		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"indices":[%s]}`,
 		unmapHeight, rawTx, proof, indices))
-	c.rec("F24-ESCAPE-CONFIRM", "the only escape is the missing confirmSpend: relaying the header and confirming the unmap with the change vout is accepted",
+	c.rec("F24-ESCAPE-CONFIRM", "the missing confirmSpend settles the unmap: relaying the header and confirming the unmap with the change vout is accepted",
 		isOK(confirmStatus),
 		fmt.Sprintf("confirmSpend status=%s at height %d with indices=[%s] for txid=%s", confirmStatus, unmapHeight, indices, bcTxid))
 
@@ -418,7 +363,73 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		promoted,
 		fmt.Sprintf("%s (wanted every gen-0 entry selectable and belonging to txid=%s; the change is split across several vouts, first change vout=%d)", promotedDetail, bcTxid, changeVout))
 
-	// ---- F24-DRAINED: the rotation can now finish. ----
+	// ---------------------------------------------------------------------------
+	// 3. F24-F1-RELEASED: with the unmap settled the same activateKey is admitted,
+	//    generation 0 retires holding only selectable UTXOs, then fund the fee reserve
+	//    so an empty reserve can never be confused with a stuck sweep (F11's subject).
+	// ---------------------------------------------------------------------------
+	activated := false
+	activateDetail := ""
+	activateAttempts := int(math.Ceil(8 * vfTimeoutScale()))
+	for i := 1; i <= activateAttempts && !activated; i++ {
+		s := vstatus(t, d, ctx, 1, cid, "activateKey", "")
+		activateDetail += fmt.Sprintf(" try%d=%s", i, s)
+		if isOK(s) {
+			activated = true
+			break
+		}
+		time.Sleep(15 * time.Second)
+	}
+	gen0Stat := -1
+	for i := 0; i < 8 && activated; i++ {
+		gen0Stat = vfVaultStatusOn(d, ctx, 2, cid, 0)
+		if gen0Stat >= int(btcvault.VaultStatusRetiring) {
+			break
+		}
+		time.Sleep(10 * time.Second)
+	}
+	c.rec("F24-F1-RELEASED", "once the unmap is settled the same activateKey is admitted and generation 0 retires",
+		activated && gen0Stat == int(btcvault.VaultStatusRetiring),
+		fmt.Sprintf("activateKey%s; gen0Status=%d (want %d Retiring)", activateDetail, gen0Stat, int(btcvault.VaultStatusRetiring)))
+	if !activated || gen0Stat != int(btcvault.VaultStatusRetiring) {
+		t.Fatalf("PRECONDITION FAILED: generation 0 did not retire after the unmap settled (activateKey%s, gen0Status=%d). The NN#3, bond-lock and drain checks below only apply to a superseded generation", activateDetail, gen0Stat)
+	}
+	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
+
+	t.Logf("rotation done: generation 1 active (primary1=%s), generation 0 Retiring and funded only by the settled unmap change", primary1)
+
+	// ---------------------------------------------------------------------------
+	// 4. F24-NN3: no new key while the superseded generation still holds funds.
+	//    (F24-NOTHING, migrateVault doing nothing on an unmigratable Retiring
+	//    generation, is gone: after F1 a fresh deploy can no longer retire a
+	//    generation that holds a reserved input, so that state is unreachable here.)
+	// ---------------------------------------------------------------------------
+	nn3Status := vstatus(t, d, ctx, 1, cid, "createKey", "")
+	gen2Status := vfVaultStatusOn(d, ctx, 2, cid, 2)
+	c.rec("F24-NN3", "createKey is refused while the superseded generation still holds registry UTXOs (NN#3, AnyFundedSupersededGen)",
+		!isOK(nn3Status) && gen2Status < 0,
+		fmt.Sprintf("createKey status=%s (want FAILED or REVERTED), generation 2 vault status=%d (want -1, absent), gen0Utxos=%d",
+			nn3Status, gen2Status, vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
+
+	// ---------------------------------------------------------------------------
+	// 5. F24-BONDLOCK: and the committee cannot leave while generation 0 is superseded.
+	// ---------------------------------------------------------------------------
+	const unstakeNode = 3
+	member := "hive:" + d.witnessAccount(unstakeNode)
+	head, herr := getHeadBlock(d.HiveRPCEndpoint())
+	if herr != nil {
+		t.Errorf("reading the Hive head block before the locked unstake: %v", herr)
+	}
+	_ = head
+	// Terminal-status read (H-25): FAILED + pending 0 is a refusal; a fixed wait cannot
+	// tell a refusal from an op that has not been applied yet.
+	lockedStatus, lockedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
+	c.rec("F24-BONDLOCK", "the committee member's consensus bond stays locked while generation 0 is superseded and fund-holding",
+		lockedStatus == "FAILED" && lockedPending == 0,
+		fmt.Sprintf("member=%s unstake status=%s (want FAILED = refused) pending consensus_unstake=%d (want 0), gen0Status=%d gen0Utxos=%d",
+			member, lockedStatus, lockedPending, vfVaultStatusOn(d, ctx, 2, cid, 0), vfGenUtxoCountOn(d, ctx, 2, cid, 0)))
+
+	// ---- F24-DRAINED: the retiring generation drains. ----
 	drained := false
 	tranches := 0
 	drainDetail := ""
@@ -448,7 +459,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 		}
 	}
-	c.rec("F24-DRAINED", "with the stuck output made selectable the migration sweep builds, signs, broadcasts and settles, and generation 0 drains to 0 UTXOs",
+	c.rec("F24-DRAINED", "with the settled change selectable the migration sweep builds, signs, broadcasts and settles, and generation 0 drains to 0 UTXOs",
 		drained,
 		fmt.Sprintf("%d tranche(s), %s", tranches, drainDetail))
 
@@ -546,7 +557,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 
 	// ---- F24-PRUNED (INFO) ----
 	c.rec("F24-PRUNED", "why the escape above does not exist on the live testnet", true,
-		fmt.Sprintf("INFO (not a pass): step 5 worked here only because the unmap's block header (height %d) is still inside the contract's header retention window on this devnet. On the live testnet the equivalent legacy withdrawals were mined thousands of blocks ago and their headers have been pruned (retention 1,080 on the deployed contract, 4,608 on v2), so verifyTransaction can no longer validate any SPV proof for them and confirmSpend is impossible. No other contract entry point can promote, reindex, expire or migrate such a UTXO, so the deadlock proved by F24-NOTHING, F24-NN3 and F24-BONDLOCK is PERMANENT there: the retiring generation can never drain, no successor key can be minted, and the committee's bonds stay locked",
+		fmt.Sprintf("INFO (not a pass): step 2 worked here only because the unmap's block header (height %d) is still inside the contract's header retention window on this devnet. On the live testnet the equivalent legacy withdrawals were mined thousands of blocks ago and their headers have been pruned (retention 1,080 on the deployed contract, 4,608 on v2), so verifyTransaction can no longer validate any SPV proof for them and confirmSpend is impossible. No other contract entry point can promote, reindex, expire or migrate such a UTXO, so the live-testnet deadlock (an unconfirmed-pool id on a retiring generation, reachable only through the v1 to v2 upgrade, F21's path) is PERMANENT there: the retiring generation can never drain, no successor key can be minted, and the committee's bonds stay locked. On a fresh deploy F1 (F24-F1-GATE) now stops the sibling reserved-input form from forming at all",
 			unmapHeight))
 
 	// ---- F24-IDENT ----
