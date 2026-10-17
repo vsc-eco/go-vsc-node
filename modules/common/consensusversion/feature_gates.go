@@ -691,6 +691,53 @@ func ApplySkipsHandledTxActive(active Version) bool {
 	return Version0_10_0Active(active)
 }
 
-// (OneBlockPerSlotActive removed: a verbatim re-post is dup-rejected by Hive and
-// a different block for the same slot is the double-sign/equivocation path that
-// already slashes; the guard was redundant and never demonstrated to fix a bug.)
+// V0_11_0 is the version line of the key-custody batch: funds move only to a
+// vault key the committee has already handed on once, and the holders of the
+// active vault key can still sign and hand it on after leaving the election. A
+// new line rather than an addition to 0.10.0, because the testnet already runs
+// 0.10.0. Mainnet can raise its floor straight to 0.11.0.
+var V0_11_0 = Version{Major: 0, Consensus: 11, NonConsensus: 0}
+
+// Version0_11_0Active reports whether the key-custody batch is in force given
+// the chain-active consensus version.
+func Version0_11_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_11_0)
+}
+
+// KeyResharedFlagActive reports whether TssGetKey appends a fifth field, "1"
+// once the key's epoch has moved past the keygen that created it (it has been
+// reshared at least once), else "0". The BTC vault contract refuses to start a
+// migration into a key that has not. Resolve `active` at the transaction's
+// height.
+func KeyResharedFlagActive(active Version) bool {
+	return Version0_11_0Active(active)
+}
+
+// ActiveKeyHoldersBoundActive reports whether the holders named by the newest
+// keygen/reshare commitment of the ACTIVE BTC vault generation stay
+// readiness/signing-eligible after leaving the election, as a retiring
+// generation's committee already does (V-A), so the active key can still sign
+// and be reshared to the members who replaced them. Their bond is already held
+// by POA-1 (PoaBondLockedWhileShareFundedActive). The gossip receive path then
+// also accepts a pending generation's keygen committee from outside the
+// election (emitted since VR2-10, never accepted). Resolve `active` at the
+// decision height.
+func ActiveKeyHoldersBoundActive(active Version) bool {
+	return Version0_11_0Active(active)
+}
+
+// (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
+// without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
+// ValidateDetailed within the slot window - only a byte-identical Hive tx is
+// dup-rejected by Hive, not a re-sign with a new expiration - but the
+// re-application is harmless to durable state: ContractOutput.Ingest re-runs
+// contractState.IngestOutput from the authoritative anchored output idempotently
+// (same StateMerkle/results), ledger ops dedupe on their own ids, and the
+// se.Flush() it triggers clears ONLY the block-producer assembly scratch
+// (TempOutputs/ContractResults/TxOutput/TxOutIds, consumed solely by MakeOplog/
+// MakeOutputs) - never durable contract/ledger/nonce state. A DIFFERENT block for
+// the same slot is the equivocation path that already slashes. The only residual
+// is a bounded slot-window liveness-griefing of a producer's in-flight scratch,
+// never demonstrated to cost a slot; if a devnet A/B ever demonstrates it, re-add a
+// 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
+// different Hive tx Id, so own-block restart-reprocess still runs.)

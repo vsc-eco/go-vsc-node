@@ -17,6 +17,15 @@ const LastHeightKey = "h"
 // holds (decimal string). A spend mined below it can no longer be proven.
 const PruneFloorKey = "pf"
 
+// PausedKey is "1" while the owner has paused the contract (constants.PausedKey).
+// map, unmap, transfer and the vault ops are refused while it is set.
+const PausedKey = "paused"
+
+// AbandonedSweepPrefix ("sa-"+txid) marks a migration sweep the contract wrote
+// off with abandonSweep (constants.AbandonedSweepPrefix). If it confirms anyway,
+// confirmSpend settles it.
+const AbandonedSweepPrefix = "sa" + DirPathDelimiter
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

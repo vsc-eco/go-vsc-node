@@ -6,11 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
 )
+
+// errTxTooLarge: the bot's OWN pre-flight refused the L2 tx because its CBOR exceeds
+// transaction-pool's MAX_TX_SIZE, before it ever reached the node. P2: the map handler
+// recognises an oversize deposit through isTooBigForPool, which matched only the NODE's
+// "transaction size too big" string - so a tx the bot stopped itself (this different
+// string) slipped past the escape and the deposit's block was retried forever. A sentinel
+// makes both the bot pre-flight and the node refusal recognisable by errors.Is.
+var errTxTooLarge = errors.New("L2 tx too large for the transaction pool")
 
 // errBotEthKeyMissing is returned when the bot is asked to submit an L2 tx but
 // no signing key is configured.
@@ -53,6 +62,8 @@ func (b *Bot) callContractL2(
 			return "", err
 		}
 		rcLimit = sized
+	} else {
+		rcLimit = b.sizeCallByDryRun(ctx, did.String(), action, string(contractInput), rcLimit)
 	}
 
 	// VR2-04: refuse before submitting rather than stalling mid-cycle.
@@ -113,7 +124,7 @@ func (b *Bot) callContractL2(
 			"cbor_size", len(sTx.Tx),
 			"limit", transactionpool.MAX_TX_SIZE,
 		)
-		return "", fmt.Errorf("L2 tx too large: %d bytes (limit %d)", len(sTx.Tx), transactionpool.MAX_TX_SIZE)
+		return "", fmt.Errorf("%w: %d bytes (limit %d)", errTxTooLarge, len(sTx.Tx), transactionpool.MAX_TX_SIZE)
 	}
 
 	txID, err := b.gql().SubmitTransactionV1(
@@ -188,6 +199,12 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 	if action == "retireVault" && sim.Ret == retireNoTransitions {
 		return 0, errRetireNoTransition
 	}
+	// F8: a migrateVault whose dry run SUCCEEDS but would sweep nothing (every remaining
+	// input already in flight) returns migrateNothingPrefix with no error. Without this it
+	// passes the success filter and a do-nothing migrateVault is broadcast every cycle.
+	if action == "migrateVault" && strings.HasPrefix(sim.Ret, migrateNothingPrefix) {
+		return 0, errMigrateNoop
+	}
 	sized := uint64(0)
 	if sim.RcUsed > 0 {
 		sized = uint64(sim.RcUsed) * 2
@@ -199,6 +216,33 @@ func (b *Bot) sizeVaultOpByDryRun(ctx context.Context, caller, action, payload s
 		sized = ceiling
 	}
 	return sized, nil
+}
+
+// sizeCallByDryRun raises the rc_limit of a non-vault call (map, confirmSpend) to
+// what its dry run shows it needs. The configured limit (default 10,000) is a flat
+// ceiling, but these calls cost more as the Bitcoin tx grows (inputs, outputs,
+// proof): on testnet 2026-10-11 a 17-input sweep's confirmSpend used 16,752 RC, so
+// every attempt FAILED on chain and drained the bot's RC while the sweep could not
+// settle (BOT-CONF-RC); a map that fails on chain is final, so its deposit would go
+// uncredited. Never lowers the configured limit. An unavailable or refused dry run
+// leaves it unchanged; the node stays the judge of the call itself.
+func (b *Bot) sizeCallByDryRun(ctx context.Context, caller, action, payload string, configured uint64) uint64 {
+	sim, err := b.gql().SimulateContractCall(ctx, caller, b.BotConfig.ContractId(), action, payload, simulateRcCap)
+	if err != nil {
+		return configured
+	}
+	if !sim.Success {
+		if sim.Err == "gas_limit_hit" {
+			if sized, serr := b.sizeAboveDryRunCap(ctx, caller, action, vaultOpRcLimit); serr == nil && sized > configured {
+				return sized
+			}
+		}
+		return configured
+	}
+	if need := uint64(sim.RcUsed) * 2; need > configured {
+		return need
+	}
+	return configured
 }
 
 // sizeAboveDryRunCap sizes a vault op the dry run could not measure because it

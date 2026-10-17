@@ -42,6 +42,7 @@ func (b *Bot) HandleUnmap() {
 	defer cancel()
 
 	txSpends, err := b.gql().FetchTxSpends(ctx)
+	spendsKnown := err == nil
 	if err != nil {
 		b.L.Debug("failed to fetch tx spends from contract", "error", err)
 	} else {
@@ -68,6 +69,13 @@ func (b *Bot) HandleUnmap() {
 		}
 		for _, tx := range txPairs {
 			if tx == nil || !postDue(tx.TxId) {
+				continue
+			}
+			// BOT-ABANDON-1: a spend the contract no longer lists (abandoned with
+			// abandonSweep, or already settled) has nothing left to post. Without this,
+			// an abandoned sweep stays pending in the bot DB and is re-posted every
+			// postRetryInterval forever (testnet 2026-10-11, ebc108a8 / 286b0ec8).
+			if _, live := txSpends[tx.TxId]; spendsKnown && !live {
 				continue
 			}
 			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
@@ -160,11 +168,24 @@ func (b *Bot) HandleConfirmations() {
 		// testnet 2026-10-06 the bot re-sent it every two minutes after the sweep
 		// had settled. Record it confirmed and move on.
 		if _, still := pending[txId]; !still {
-			b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
-			if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
-				b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+			// BOT-ABANDON-2: a sweep written off with abandonSweep is off the pending
+			// list too. If it confirms after all, confirmSpend settles it (pause-exempt):
+			// its output is indexed to the successor and the written-off amount returns
+			// to the fee reserve. Marking it confirmed here would leave those coins
+			// unindexed for good.
+			abandoned, aerr := b.gql().FetchAbandonedSweep(ctx, txId)
+			if aerr != nil {
+				b.L.Warn("cannot read the contract's abandoned-sweep record; retrying next pass", "txId", txId, "error", aerr)
+				continue
 			}
-			continue
+			if !abandoned {
+				b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
+				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+				}
+				continue
+			}
+			b.L.Info("an abandoned sweep confirmed after all; settling it", "txId", txId)
 		}
 
 		if pruneFloorSet && details.BlockHeight < pruneFloor {
@@ -222,16 +243,21 @@ func (b *Bot) buildConfirmSpendPayload(
 
 	rawTxHex := hex.EncodeToString(dbTx.RawTx)
 
-	// Collect the input indices that correspond to VSC-mapped UTXOs.
-	indices := make([]uint32, 0, len(dbTx.Signatures))
-	seen := make(map[uint32]struct{})
-	for _, sig := range dbTx.Signatures {
-		idx := uint32(sig.Index)
-		if _, ok := seen[idx]; !ok {
-			seen[idx] = struct{}{}
-			indices = append(indices, idx)
-		}
+	// C1: confirmSpend's indices are OUTPUT vouts, not input indices. The contract
+	// (HandleConfirmSpend) promotes each unconfirmed change UTXO of this tx whose VOUT is in
+	// the set; it never looks at inputs. The old code sent the signed INPUT indices, so a
+	// spend whose change sits at a vout those indices do not cover (e.g. a 1-input unmap with
+	// the recipient at vout 0 and change at vout 1 -> indices [0]) matched nothing and the
+	// unmap could never settle. Send every output vout: the contract promotes only the vouts
+	// that are genuinely this tx's unconfirmed, unreserved change and ignores the rest (a
+	// recipient output has no vault UTXO to promote), so extra vouts are harmless. The vouts
+	// come from the confirmed tx the Merkle proof above covers
+	// (msgBlock.Transactions[details.TxIndex]) - the same tx as dbTx.RawTx, proof-bound to
+	// this block position, and already deserialized and validated here.
+	if int(details.TxIndex) >= len(msgBlock.Transactions) {
+		return nil, fmt.Errorf("confirmSpend: tx index %d out of range (%d txs in block)", details.TxIndex, len(msgBlock.Transactions))
 	}
+	indices := confirmSpendOutputVouts(msgBlock.Transactions[details.TxIndex])
 
 	params := ConfirmSpendParams{
 		TxData: &VerificationRequest{
@@ -243,6 +269,18 @@ func (b *Bot) buildConfirmSpendPayload(
 		Indices: indices,
 	}
 	return json.Marshal(params)
+}
+
+// confirmSpendOutputVouts returns [0, 1, ..., n-1] for the n outputs of tx. confirmSpend's
+// indices are OUTPUT vouts (C1); the contract promotes only the vouts that are this tx's
+// unconfirmed, unreserved change, so listing every output vout is correct and the rest are
+// ignored.
+func confirmSpendOutputVouts(tx *wire.MsgTx) []uint32 {
+	vouts := make([]uint32, len(tx.TxOut))
+	for i := range tx.TxOut {
+		vouts[i] = uint32(i)
+	}
+	return vouts
 }
 
 func (b *Bot) ProcessTxSpends(

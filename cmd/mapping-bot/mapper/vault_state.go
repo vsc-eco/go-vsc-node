@@ -14,47 +14,69 @@ import (
 	"github.com/hasura/go-graphql-client"
 )
 
+// maxStateKeysPerQuery is the node's getStateByKeys cap: the resolver refuses a request
+// of more than 100 keys (modules/gql/gqlgen/schema.resolvers.go). fetchStateHex pages at
+// this size.
+const maxStateKeysPerQuery = 100
+
 // fetchStateHex reads raw contract state keys and returns the decoded bytes for
 // each key that exists. Missing keys are simply absent from the result.
+//
+// A1-A4: the node refuses a getStateByKeys of more than maxStateKeysPerQuery keys, so the
+// request is PAGED. A single rotation can carry more than 100 pending spends or UTXOs; an
+// unpaged request would be refused whole, so the confirmSpend driver would send nothing and
+// the rotation driver would go blind the moment the count crossed 100. A request of 100 or
+// fewer keys makes exactly one query, byte-identical to before.
+//
+// Paging trades single-snapshot consistency for liveness: pages are separate queries, so a
+// >100-key read can straddle a state change (a page read before it, a later page after). The
+// bot re-reads every cycle and acts only on what it sees, so a straddled read self-heals on
+// the next pass; no caller needs all keys to be from one atomic snapshot.
 func (b *Bot) fetchStateHex(ctx context.Context, keys []string) (map[string][]byte, error) {
 	if len(keys) == 0 {
 		return map[string][]byte{}, nil
 	}
-	vars := map[string]interface{}{
-		"contractId": b.BotConfig.ContractId(),
-		"keys":       keys,
-		"encoding":   "hex",
-	}
-
-	var result json.RawMessage
-	err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
-		var q GetContractStateQuery
-		if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
-			return err
+	out := make(map[string][]byte, len(keys))
+	for start := 0; start < len(keys); start += maxStateKeysPerQuery {
+		end := start + maxStateKeysPerQuery
+		if end > len(keys) {
+			end = len(keys)
 		}
-		result = q.GetStateByKeys
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var stateMap map[string]json.RawMessage
-	if err := json.Unmarshal(result, &stateMap); err != nil {
-		return nil, err
-	}
-
-	out := make(map[string][]byte, len(stateMap))
-	for k, raw := range stateMap {
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil || s == "" {
-			continue // key absent (null) or empty
+		vars := map[string]interface{}{
+			"contractId": b.BotConfig.ContractId(),
+			"keys":       keys[start:end],
+			"encoding":   "hex",
 		}
-		decoded, err := hex.DecodeString(s)
+
+		var result json.RawMessage
+		err := b.gqlClientDo(ctx, func(client *graphql.Client) error {
+			var q GetContractStateQuery
+			if err := client.Query(ctx, &q, vars, graphql.OperationName("GetContractState")); err != nil {
+				return err
+			}
+			result = q.GetStateByKeys
+			return nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("decoding state key %s: %w", k, err)
+			return nil, err
 		}
-		out[k] = decoded
+
+		var stateMap map[string]json.RawMessage
+		if err := json.Unmarshal(result, &stateMap); err != nil {
+			return nil, err
+		}
+
+		for k, raw := range stateMap {
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil || s == "" {
+				continue // key absent (null) or empty
+			}
+			decoded, err := hex.DecodeString(s)
+			if err != nil {
+				return nil, fmt.Errorf("decoding state key %s: %w", k, err)
+			}
+			out[k] = decoded
+		}
 	}
 	return out, nil
 }
@@ -75,6 +97,27 @@ func (b *Bot) FetchPruneFloor(ctx context.Context) (uint64, bool, error) {
 		return 0, false, fmt.Errorf("invalid prune floor %q: %w", raw, err)
 	}
 	return v, true, nil
+}
+
+// FetchPaused reports whether the owner has paused the contract. The contract's
+// own gate (checkNotPaused) refuses while the flag is exactly "1".
+func (b *Bot) FetchPaused(ctx context.Context) (bool, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.PausedKey})
+	if err != nil {
+		return false, err
+	}
+	return string(st[contractinterface.PausedKey]) == "1", nil
+}
+
+// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep record
+// for txId ("sa-<txid>").
+func (b *Bot) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error) {
+	key := contractinterface.AbandonedSweepPrefix + txId
+	st, err := b.fetchStateHex(ctx, []string{key})
+	if err != nil {
+		return false, err
+	}
+	return len(st[key]) > 0, nil
 }
 
 // FetchVaultRegistry reads the vault-generation registry ("v"). An absent or
@@ -212,21 +255,31 @@ func (b *Bot) InFlightSweepTxIds(ctx context.Context, pendingTxIds []string) ([]
 // keyed by the smallest input id of the sweep record ("ms-<txid>": fee u64,
 // successor gen u32, build height u32, n u16, n input ids u16, successor address).
 func (b *Bot) sweepAlreadyRedriven(ctx context.Context, txId string) (bool, error) {
-	st, err := b.fetchStateHex(ctx, []string{contractinterface.MigrationSweepPrefix + txId})
+	raw, err := b.sweepGroupRaw(ctx, txId)
 	if err != nil {
 		return false, err
 	}
+	return len(raw) > 0, nil
+}
+
+// sweepGroupRaw returns the raw spend-group object of the in-flight sweep txId,
+// or nil when the sweep has never been re-driven (no group yet).
+func (b *Bot) sweepGroupRaw(ctx context.Context, txId string) ([]byte, error) {
+	st, err := b.fetchStateHex(ctx, []string{contractinterface.MigrationSweepPrefix + txId})
+	if err != nil {
+		return nil, err
+	}
 	rec, ok := st[contractinterface.MigrationSweepPrefix+txId]
 	if !ok {
-		return false, fmt.Errorf("no sweep record for %s", txId)
+		return nil, fmt.Errorf("no sweep record for %s", txId)
 	}
 	const head = 8 + 4 + 4
 	if len(rec) < head+2 {
-		return false, fmt.Errorf("sweep record too short (%d bytes)", len(rec))
+		return nil, fmt.Errorf("sweep record too short (%d bytes)", len(rec))
 	}
 	n := int(binary.BigEndian.Uint16(rec[head:]))
 	if n == 0 || len(rec) < head+2+2*n {
-		return false, fmt.Errorf("sweep record has a malformed input list")
+		return nil, fmt.Errorf("sweep record has a malformed input list")
 	}
 	min := binary.BigEndian.Uint16(rec[head+2:])
 	for i := 1; i < n; i++ {
@@ -237,10 +290,31 @@ func (b *Bot) sweepAlreadyRedriven(ctx context.Context, txId string) (bool, erro
 	key := contractinterface.SpendGroupPrefix + strconv.FormatUint(uint64(min), 10)
 	g, err := b.fetchStateHex(ctx, []string{key})
 	if err != nil {
+		return nil, err
+	}
+	return g[key], nil
+}
+
+// sweepSuperseded reports whether the in-flight sweep txId has already been
+// replaced by a re-drive, i.e. its spend group has a newer member. The group
+// ("g-<min input id>": highest fee u64, k u16, k txids as 64-char hex) lists
+// members in the order the contract appended them, so the last one is the
+// newest replacement.
+func (b *Bot) sweepSuperseded(ctx context.Context, txId string) (bool, error) {
+	raw, err := b.sweepGroupRaw(ctx, txId)
+	if err != nil || len(raw) == 0 {
 		return false, err
 	}
-	raw, ok := g[key]
-	return ok && len(raw) > 0, nil
+	const head, txidLen = 8 + 2, 64
+	if len(raw) < head {
+		return false, fmt.Errorf("spend group too short (%d bytes)", len(raw))
+	}
+	k := int(binary.BigEndian.Uint16(raw[8:]))
+	if k == 0 || len(raw) != head+k*txidLen {
+		return false, fmt.Errorf("spend group has a malformed member list")
+	}
+	newest := string(raw[head+(k-1)*txidLen:])
+	return newest != txId, nil
 }
 
 // FetchContractHeight reads the contract's committed last BTC height ("h"). The

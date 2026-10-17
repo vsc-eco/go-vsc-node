@@ -40,8 +40,9 @@ const vaultOpMinInterval = 2 * time.Minute
 // block ABOVE the contract value so the driver never races the contract's own boundary.
 const redriveStaleBlocks = 13
 
-// firstSeenSweep tracks the contract height at which the driver first observed each
-// in-flight sweep txid, so it can measure staleness the same way the contract does
+// firstSeenSweep tracks the contract height at which the driver first held each
+// in-flight sweep txid fully signed (see signedSweeps), so its stale window starts
+// when the sweep can first be broadcast, never earlier than the contract's own clock
 // (contract LastHeight minus the sweep's build height). Process-global, mutex-guarded.
 var (
 	sweepSeenMu    sync.Mutex
@@ -112,6 +113,9 @@ var (
 	vaultOpMu        sync.Mutex
 	lastVaultOpAt    = map[string]time.Time{}
 	feeReserveWarned = map[string]bool{}
+	// awaitingReshare remembers the key ids the operator was already told the
+	// driver is waiting on, so the wait is reported once, not every cycle.
+	awaitingReshare = map[string]bool{}
 	// notOwner latches per contract: the vault ops are owner-only, so if this bot's
 	// identity is not the owner, NO retry will ever succeed. Keep issuing them and we
 	// just burn RC on guaranteed rejections.
@@ -168,6 +172,55 @@ func warnFeeReserveOnce(contractId string) bool {
 	return true
 }
 
+// noteVaultPaused records the pause flag the driver last saw and reports whether
+// it just became paused, so a pause is logged once.
+var vaultPausedSeen bool
+
+func noteVaultPaused(paused bool) bool {
+	vaultOpMu.Lock()
+	defer vaultOpMu.Unlock()
+	was := vaultPausedSeen
+	vaultPausedSeen = paused
+	return paused && !was
+}
+
+// isAwaitingReshare reports whether migrateVault refused because the active
+// generation's key has not been reshared since its keygen (or the node cannot
+// report it yet).
+func isAwaitingReshare(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "has not been reshared since its keygen")
+}
+
+// noteAwaitingReshare reports whether this is the first cycle the driver holds a
+// migration back for keyId's first reshare.
+func noteAwaitingReshare(keyId string) bool {
+	vaultOpMu.Lock()
+	defer vaultOpMu.Unlock()
+	if awaitingReshare[keyId] {
+		return false
+	}
+	awaitingReshare[keyId] = true
+	return true
+}
+
+// activeKeyReshared reports whether the ACTIVE generation's key has been reshared
+// since its keygen: the newest keygen/reshare commitment the node holds for it is a
+// reshare. It also returns that key id.
+func (b *Bot) activeKeyReshared(ctx context.Context, contractId string, vaults []btcvault.Vault) (string, bool, error) {
+	for _, v := range vaults {
+		if v.Status != btcvault.VaultStatusActive {
+			continue
+		}
+		keyId := contractId + "-" + btcvault.VaultKeyName(v.Generation)
+		typ, found, err := b.gql().FetchLatestKeyCommitmentType(ctx, keyId)
+		if err != nil {
+			return keyId, false, err
+		}
+		return keyId, found && typ == "reshare", nil
+	}
+	return "", false, errors.New("no active generation in the vault registry")
+}
+
 // clearFeeReserveWarning re-arms the warning once a migrate succeeds again.
 func clearFeeReserveWarning(contractId string) {
 	vaultOpMu.Lock()
@@ -200,6 +253,38 @@ func (b *Bot) redriveHeldBack(ctx context.Context, txId string) bool {
 	return redriven
 }
 
+// signedSweeps narrows the in-flight sweeps to those this bot already holds fully
+// signed (sent, or signed and waiting to post). The re-drive clock must not run
+// while the TSS signatures are still being collected: a large sweep can take longer
+// to sign than the stale window (testnet 2026-10-11: 17 inputs, ~49 min), and
+// re-driving it right after its first broadcast only burns fee reserve, signatures
+// and RC (BOT-REDRIVE-2). A sweep Bitcoin refuses to post is still held fully signed,
+// so the one re-drive abandonSweep requires (BOT-REDRIVE-1) still happens.
+func (b *Bot) signedSweeps(ctx context.Context, inFlight []string) ([]string, error) {
+	sent, err := b.stateDB().GetSentTransactionIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := b.stateDB().GetFullySignedPendingTransactions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ready := make(map[string]struct{}, len(sent)+len(pending))
+	for _, id := range sent {
+		ready[id] = struct{}{}
+	}
+	for _, tx := range pending {
+		ready[tx.TxID] = struct{}{}
+	}
+	out := make([]string, 0, len(inFlight))
+	for _, txId := range inFlight {
+		if _, ok := ready[txId]; ok {
+			out = append(out, txId)
+		}
+	}
+	return out, nil
+}
+
 // isUneconomicResidual reports whether migrateVault refused because what's left
 // of the retiring generation cannot pay for its own sweep. That is NOT a
 // transient failure: retrying forever would never drain it. The escape hatch is
@@ -224,10 +309,28 @@ const retireNoTransitions = "retire: no generation transitions"
 // testnet 2026-10-06, about 770,000 a day against a mainnet bot of 469,000.
 var errRetireNoTransition = errors.New("retireVault would advance no generation yet")
 
-// isNothingToMigrate reports the benign "there is no retiring generation" case.
+// migrateNothingPrefix is what HandleMigrateVault returns (with a NIL error, i.e. a
+// successful dry run) when a target generation exists but this tranche would sweep
+// nothing - every remaining input is already in flight (btc-mapping-contract
+// migration.go: "nothing to migrate for generation <n>"). Prefix-matched because the
+// gen number is appended.
+const migrateNothingPrefix = "nothing to migrate for generation "
+
+// errMigrateNoop: the migrateVault dry run succeeds but would build no sweep (F8), so
+// skip the broadcast - otherwise the bot posts a do-nothing migrateVault on chain every
+// cycle, burning RC. Mirrors errRetireNoTransition; recognised by isNothingToMigrate so
+// the caller treats it as the benign "nothing to do" case.
+var errMigrateNoop = errors.New("migrateVault would sweep nothing yet")
+
+// isNothingToMigrate reports the benign "nothing to migrate this cycle" cases: no
+// retiring/draining generation at all (a hard refusal), or a target exists but the dry
+// run would build no sweep (errMigrateNoop, F8).
 func isNothingToMigrate(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errMigrateNoop) {
+		return true
 	}
 	return strings.Contains(err.Error(), "no retiring or draining vault to migrate")
 }
@@ -298,6 +401,18 @@ func decideVaultAction(vaults []btcvault.Vault, counts map[uint32]int, sweepInFl
 		// Drained — the contract's fund-gate will now let retireVault advance it.
 		return vaultRetire, nil
 	}
+	// B: a re-funded INACTIVE gen (a late deposit landed on an emptied gen's still-matchable
+	// address) is fund-holding again, but migrateVault only sweeps RETIRING/DRAINING, so it
+	// would return "nothing to migrate" and the gen would never drain. retireVault's
+	// ReconcileRetiringVaults REVERTs it INACTIVE->DRAINING (a status-only op, no fund move),
+	// after which an ordinary migrate cycle sweeps it. Run retire first whenever a funded gen
+	// is INACTIVE; it is a no-op for a funded RETIRING/DRAINING gen, so an in-flight sweep is
+	// undisturbed (and this cannot stack tranches — retireVault builds no sweep).
+	for _, v := range stillFunded {
+		if v.Status == btcvault.VaultStatusInactive {
+			return vaultRetire, stillFunded
+		}
+	}
 	if sweepInFlight {
 		// Never stack tranches: a second sweep while one is unconfirmed draws the fee
 		// reserve down twice and races the same UTXO set.
@@ -339,6 +454,17 @@ func (b *Bot) HandleVaultRotation() {
 	if isNotOwnerLatched(contractId) {
 		return
 	}
+
+	// A paused contract refuses every vault op. Skip the cycle instead of reporting
+	// each refusal as a stuck rotation (BOT-PAUSE-1). An unreadable flag goes on: the
+	// ops are dry-run first, so a refusal still costs nothing.
+	if paused, perr := b.gql().FetchPaused(ctx); perr == nil && paused {
+		if noteVaultPaused(true) {
+			b.L.Info("vault rotation: contract is paused; the driver waits for the unpause")
+		}
+		return
+	}
+	noteVaultPaused(false)
 
 	vaults, err := b.FetchVaultRegistry(ctx)
 	if err != nil {
@@ -407,9 +533,33 @@ func (b *Bot) HandleVaultRotation() {
 	// contract's own staleness gate is the final arbiter, so an early call is simply
 	// refused. Do this BEFORE building a new tranche.
 	if inFlight {
-		if h, herr := b.FetchContractHeight(ctx); herr == nil {
-			for _, txId := range noteSweepsInFlight(inFlightSweeps, h) {
+		h, herr := b.FetchContractHeight(ctx)
+		var signed []string
+		if herr == nil {
+			signed, herr = b.signedSweeps(ctx, inFlightSweeps)
+		}
+		if herr == nil {
+			for _, txId := range noteSweepsInFlight(signed, h) {
 				if b.redriveHeldBack(ctx, txId) {
+					continue
+				}
+				// Only the group's newest member may be re-driven. The contract accepts a
+				// re-drive of any member whose own build is stale and out-bids the group's
+				// highest fee every time, so re-driving the replaced original again each
+				// cycle would escalate the fee up to the member cap (BOT-REDRIVE-2).
+				if superseded, gerr := b.sweepSuperseded(ctx, txId); gerr != nil || superseded {
+					if gerr != nil {
+						b.L.Debug("vault rotation: cannot read the sweep's spend group; not re-driving this cycle", "txId", txId, "error", gerr)
+					}
+					continue
+				}
+				// A sweep Bitcoin already confirmed only waits for its confirmSpend; a
+				// re-drive can never confirm (its inputs are spent) and only burns TSS
+				// signatures and RC. A txid Bitcoin does not know reads as unconfirmed.
+				if mined, cerr := b.Chain.Client.GetTxStatus(txId); cerr != nil || mined {
+					if cerr != nil {
+						b.L.Debug("vault rotation: cannot read the sweep's Bitcoin status; not re-driving this cycle", "txId", txId, "error", cerr)
+					}
 					continue
 				}
 				if !mayIssueVaultOp(contractId) {
@@ -425,7 +575,7 @@ func (b *Bot) HandleVaultRotation() {
 				}
 			}
 		} else {
-			b.L.Debug("vault rotation: cannot read contract height for stuck-sweep detection", "error", herr)
+			b.L.Debug("vault rotation: cannot read the contract height or signed sweeps for stuck-sweep detection", "error", herr)
 		}
 	}
 
@@ -459,6 +609,25 @@ func (b *Bot) HandleVaultRotation() {
 	}
 
 	// vaultMigrate
+	//
+	// No funds move to the new key until it has been reshared once. Its
+	// check-signature only proves it signs with the committee that made it; a
+	// reshare proves it can be handed to a changed committee, and the keygen
+	// committee keeps its own shares as a second copy (shares are never deleted).
+	// Before that, members leaving the election can strand everything moved to it
+	// until the backup key's timelock. Only the active key reshares, so this waits
+	// at most until the epoch after its keygen. The owner can still call
+	// migrateVault by hand.
+	if keyId, reshared, rerr := b.activeKeyReshared(ctx, contractId, vaults); rerr != nil {
+		b.L.Warn("vault rotation: cannot tell whether the active key has been reshared; not migrating this cycle", "error", rerr)
+		return
+	} else if !reshared {
+		if noteAwaitingReshare(keyId) {
+			b.L.Warn("vault rotation: waiting for the new active key's first reshare before moving funds to it; "+
+				"until then withdrawals larger than what it holds wait too", "keyId", keyId)
+		}
+		return
+	}
 	if !mayIssueVaultOp(contractId) {
 		return
 	}
@@ -476,6 +645,17 @@ func (b *Bot) HandleVaultRotation() {
 
 	if isNothingToMigrate(err) {
 		return // raced a concurrent settle; nothing to do
+	}
+
+	// The contract holds the migration until the active key has been reshared
+	// since its keygen, and the node reports that only from consensus 0.11.0.
+	// Waiting, not failing: report it once.
+	if isAwaitingReshare(err) {
+		if noteAwaitingReshare("contract:" + contractId) {
+			b.L.Warn("vault rotation: the contract holds the migration until the active key has been reshared "+
+				"since its keygen (reported by the network from consensus 0.11.0)", "error", err)
+		}
+		return
 	}
 
 	if isNotOwner(err) {

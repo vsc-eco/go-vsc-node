@@ -106,17 +106,34 @@ import (
 //     0.7.0 history reproduces it byte for byte. Until 0.9.0 is chain-active
 //     every fix is inert and old and new binaries interoperate.
 //   - 0.10.0: the Consensus 9→10 bump gates the PRE-MAINNET FIX batch
-//     (consensusversion.V0_10_0): a user balance is pulled only with that
-//     account's active authority, SP1 proof checks are priced by work, block
-//     apply skips a transaction an earlier block already handled, and a slot
-//     applies one block. A new line rather than a change to 0.9.0 because the
+//     (consensusversion.V0_10_0): SP1 proof checks are priced by work instead
+//     of a flat cost (Sp1WorkPricingActive), and block apply skips a
+//     transaction an earlier block already handled, or one listed twice in the
+//     same block (ApplySkipsHandledTxActive). Two rules once drafted for this
+//     batch are deliberately NOT gated on this line: requiring an account's
+//     active authority for the system/money operations that pull a balance is
+//     enforced unconditionally in the state engine (the system-tx vs
+//     posting-only-user-op split at state_engine.go, not a version gate), and
+//     the one-block-per-slot skip was dropped as unnecessary - re-applying a
+//     produce_block is consensus-safe without it (see the removal note in
+//     feature_gates.go). A new line rather than a change to 0.9.0 because the
 //     testnet already runs 0.9.0, so a node replaying that history must
 //     reproduce it. Mainnet raises its floor from 0.3.0 straight to 0.10.0.
 //     Until 0.10.0 is chain-active every fix is inert and old and new binaries
 //     interoperate.
+//   - 0.11.0: the Consensus 10→11 bump gates the KEY-CUSTODY batch
+//     (consensusversion.V0_11_0): contracts can see whether a TSS key has been
+//     reshared since its keygen (a fifth TssGetKey field), so the BTC vault moves
+//     funds only to a key the committee has already handed on once; and the
+//     holders of the active vault key stay able to sign and reshare it after
+//     they leave the election (the retiring-key V-A rule, extended to the active
+//     key; their bond is already locked by POA-1 from 0.9.0). A new line because
+//     the testnet already runs 0.10.0. Mainnet
+//     can raise its floor from 0.3.0 straight to 0.11.0. Until 0.11.0 is
+//     chain-active every rule is inert and old and new binaries interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 10
+	currentConsensus    uint64 = 11
 	currentNonConsensus uint64 = 0
 )
 

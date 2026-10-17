@@ -60,6 +60,20 @@ type RetiringSignerSet struct {
 	// but the bond-lock / V-A consumers must RELEASE a purged gen's members — so
 	// Purged belongs here and NOT in KeyIds. Only the single ACTIVE gen ever reshares.
 	ReshareSkipKeyIds map[string]bool
+	// ActiveSignerElection maps each holder named by the ACTIVE generation's newest
+	// keygen/reshare commitment to the election carrying its BLS key. Filled only
+	// when RetiringSignerDeps.IncludeActiveHolders (consensus 0.11.0). Those holders
+	// stay readiness-eligible after leaving the election, so the active key can
+	// still sign and be reshared to the members who replaced them. Their bond is
+	// already locked by POA-1 (0.9.0, state-processing poa_share_hold.go) while any
+	// generation is funded. Kept apart from SignerElection on purpose: SignerElection
+	// feeds the #11 retiring-member checks, which must not change here.
+	ActiveSignerElection map[string]elections.ElectionResult
+	// ReadinessWidened records that IncludeActiveHolders was set. The gossip
+	// receive path then also accepts a PENDING generation's keygen committee
+	// (PendingSignerElection), which until 0.11.0 could emit readiness from outside
+	// the election but was never accepted by any receiver.
+	ReadinessWidened bool
 	// Unresolvable is true when "v" was PRESENT but failed to decode (corrupt committed
 	// state). The set is then empty and MUST NOT be read as "nobody retiring": the #11
 	// bond-lock consumer treats Unresolvable as "everybody locked" (fail-closed), while
@@ -89,8 +103,46 @@ func (s RetiringSignerSet) HasReadiness(account string) bool {
 	if _, ok := s.SignerElection[account]; ok {
 		return true
 	}
+	if _, ok := s.ActiveSignerElection[account]; ok {
+		return true
+	}
 	_, ok := s.PendingSignerElection[account]
 	return ok
+}
+
+// ReadinessElection returns the election that carries account's BLS key for
+// verifying its readiness attestation when it is not a current-election member:
+// a retiring generation's committee always; from 0.11.0 (ReadinessWidened) also
+// the active generation's holders and a pending generation's keygen committee.
+func (s RetiringSignerSet) ReadinessElection(account string) (elections.ElectionResult, bool) {
+	if e, ok := s.SignerElection[account]; ok {
+		return e, true
+	}
+	if !s.ReadinessWidened {
+		return elections.ElectionResult{}, false
+	}
+	if e, ok := s.ActiveSignerElection[account]; ok {
+		return e, true
+	}
+	e, ok := s.PendingSignerElection[account]
+	return e, ok
+}
+
+// ReadinessAccounts lists every account ReadinessElection accepts.
+func (s RetiringSignerSet) ReadinessAccounts() []string {
+	out := make([]string, 0, len(s.SignerElection)+len(s.ActiveSignerElection)+len(s.PendingSignerElection))
+	for acct := range s.SignerElection {
+		out = append(out, acct)
+	}
+	if s.ReadinessWidened {
+		for acct := range s.ActiveSignerElection {
+			out = append(out, acct)
+		}
+		for acct := range s.PendingSignerElection {
+			out = append(out, acct)
+		}
+	}
+	return out
 }
 
 // RetiringSignerDeps are the injectable dependencies of the pure computation, so
@@ -101,6 +153,9 @@ type RetiringSignerDeps struct {
 	ReadKey       func(key string) ([]byte, bool)                  // contract state at the height
 	GetCommitment func(keyId string) (tss_db.TssCommitment, error) // keygen/reshare commitment at the height
 	GetElection   func(epoch uint64) *elections.ElectionResult     // election by epoch
+	// IncludeActiveHolders fills ActiveSignerElection (consensus 0.11.0,
+	// consensusversion.ActiveKeyHoldersBoundActive at the decision height).
+	IncludeActiveHolders bool
 }
 
 // ComputeRetiringSignerSet is the pure, deterministic core: it reads the BTC vault
@@ -112,9 +167,11 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	out := RetiringSignerSet{
 		SignerElection:        map[string]elections.ElectionResult{},
 		PendingSignerElection: map[string]elections.ElectionResult{},
+		ActiveSignerElection:  map[string]elections.ElectionResult{},
 		KeyIds:                map[string]bool{},
 		PendingKeyIds:         map[string]bool{},
 		ReshareSkipKeyIds:     map[string]bool{},
+		ReadinessWidened:      d.IncludeActiveHolders,
 	}
 	if d.BtcContract == "" {
 		return out
@@ -184,6 +241,20 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 			}
 			out.PendingKeyIds[keyId] = true
 			out.ReshareSkipKeyIds[keyId] = true
+			continue
+		}
+
+		// 0.11.0: the ACTIVE generation's holders (its newest keygen/reshare
+		// commitment), so a holder that leaves the election can still sign and
+		// hand the key on.
+		if v.Status == btcvault.VaultStatusActive {
+			if d.IncludeActiveHolders {
+				if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
+					for _, account := range accounts {
+						out.ActiveSignerElection[account] = elec
+					}
+				}
+			}
 			continue
 		}
 

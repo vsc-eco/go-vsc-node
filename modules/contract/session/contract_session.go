@@ -34,6 +34,9 @@ type CallSession struct {
 	sessions   map[string]*ContractSession
 
 	TssKeys tss_db.TssKeys
+	// TssCommitments lets TssGetKey tell whether a key has been reshared since
+	// the keygen that created it (consensus 0.11.0).
+	TssCommitments tss_db.TssCommitments
 
 	// pending carries the temp contract outputs already produced earlier in the slot.
 	pending map[string]*TempOutput
@@ -45,16 +48,18 @@ func NewCallSession(
 	contractDb contracts.Contracts,
 	stateDb contracts.ContractState,
 	tssKeys tss_db.TssKeys,
+	tssCommitments tss_db.TssCommitments,
 	lastBh uint64,
 	pending map[string]*TempOutput,
 ) *CallSession {
 	return &CallSession{
-		dl:         dl,
-		contractDb: contractDb,
-		stateDb:    stateDb,
-		lastBh:     lastBh,
-		sessions:   make(map[string]*ContractSession),
-		TssKeys:    tssKeys,
+		dl:             dl,
+		contractDb:     contractDb,
+		stateDb:        stateDb,
+		lastBh:         lastBh,
+		sessions:       make(map[string]*ContractSession),
+		TssKeys:        tssKeys,
+		TssCommitments: tssCommitments,
 		pending: cloneTempOutputs(
 			pending,
 		), // Copy temp outputs so mutations here never leak back to the caller.

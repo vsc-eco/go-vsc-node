@@ -17,6 +17,11 @@ type GraphQLFetcher interface {
 	// FetchPruneFloor returns the contract's prune floor ("pf") and whether it is
 	// set. Headers below it are gone, so a spend mined there cannot be proven.
 	FetchPruneFloor(ctx context.Context) (uint64, bool, error)
+	// FetchPaused reports whether the owner has paused the contract ("paused" = "1").
+	FetchPaused(ctx context.Context) (bool, error)
+	// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep
+	// record ("sa-<txid>") for txId: a sweep it wrote off that can still settle.
+	FetchAbandonedSweep(ctx context.Context, txId string) (bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
@@ -34,6 +39,10 @@ type GraphQLFetcher interface {
 	// SimulateContractCall dry-runs one contract call as `caller` without committing
 	// anything (simulateContractCalls). rcLimit is capped at 100000 by the node.
 	SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error)
+	// FetchLatestKeyCommitmentType returns the type ("keygen" or "reshare") of the
+	// newest keygen/reshare commitment the node holds for a TSS key, and whether it
+	// holds any.
+	FetchLatestKeyCommitmentType(ctx context.Context, keyId string) (string, bool, error)
 	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
 	// and signature, base64url-encoded) and returns the resulting CID tx ID.
 	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)

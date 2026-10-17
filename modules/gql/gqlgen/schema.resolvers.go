@@ -487,8 +487,15 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
-
-	if err == mongo.ErrNoDocuments {
+	// NC-4: GetBalanceRecord returns (nil, nil) for an account with no balance record (a
+	// fresh account), NOT mongo.ErrNoDocuments - so the old ErrNoDocuments-only guard fell
+	// through and balRecord.HBD below nil-panicked on any fresh account's RC query. Surface a
+	// real DB error, and treat an absent record (nil, with or without ErrNoDocuments) as a
+	// zero-HBD account that reports only the free allowance.
+	if err != nil && err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("failed to get balance record for %s: %w", account, err)
+	}
+	if balRecord == nil {
 		return &rcDb.RcRecord{
 			Account:     account,
 			Amount:      amount,
@@ -866,7 +873,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 	// Create sessions from live DB state
 	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
-	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, r.TssCommitments, blockHeight, nil)
 
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
 
@@ -967,13 +974,13 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// before the new committee has proven signability. Read-only sim
 			// (reverted like the rest); non-consensus, so this only affects the
 			// preview's accuracy, never the state root.
-			// Same "in force" rule as the real call (transactions.go): the height pin
+			// Same "in force" rules as the real call (transactions.go): the height pin
 			// OR the attested 0.8.0 floor. Keying on the pin alone left the preview on
-			// the 3-field TssGetKey once the floor, not a pin, turned the batch on.
+			// the 3-field TssGetKey once the floor, not a pin, turned the batch on. The
+			// 0.11.0 reshared field follows the same way (simulateTssKeyOpts).
 			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
-			if sc := r.StateEngine.SystemConfig(); sc != nil &&
-				stateEngine.VaultRotationV2InForce(sc.ConsensusParams(), blockHeight, activeVersion) {
-				ctxOpts = append(ctxOpts, contract_execution_context.WithVaultRotationV2(true))
+			if sc := r.StateEngine.SystemConfig(); sc != nil {
+				ctxOpts = append(ctxOpts, simulateTssKeyOpts(sc.ConsensusParams(), blockHeight, activeVersion)...)
 			}
 			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
 			ctxOpts = append(ctxOpts,

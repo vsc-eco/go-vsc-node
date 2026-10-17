@@ -309,7 +309,11 @@ func main() {
 
 	sr := streamer.NewStreamReader(blockSource, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
+	// sync: a key share counts as saved, and the node then signs the commitment
+	// naming it a holder, only once the write is on disk. Without it a crash or
+	// power loss right after a keygen/reshare can lose the share. Writes here are
+	// rare (one per key per keygen/reshare).
+	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), true)
 	if err != nil {
 		panic(err)
 	}

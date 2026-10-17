@@ -58,6 +58,7 @@ func TestVaultOpDryRun_RefusalCarriesTheReasonAndIsNotSubmitted(t *testing.T) {
 		{"migration fee exceeds half the tranche value: sweep deferred", isUneconomicResidual, "uneconomic residual -> writeOffDust"},
 		{"action must be performed by the contract owner or the vault operator", isNotOwner, "not the owner/operator -> latch"},
 		{"no retiring or draining vault to migrate", isNothingToMigrate, "nothing to migrate"},
+		{"the active generation's key has not been reshared since its keygen: migration waits for its first reshare", isAwaitingReshare, "awaiting the new key's first reshare"},
 	} {
 		gql := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: tc.msg}}
 		bot, did := buildBotForL2Test(t, gql)
@@ -107,15 +108,17 @@ func TestVaultOpDryRun_GasCapDeclaresWhatTheBotHolds(t *testing.T) {
 	}
 }
 
-// Only the vault ops are dry-run: map / confirmSpend keep their path unchanged.
-func TestVaultOpDryRun_NotForOtherActions(t *testing.T) {
-	gql := &mockGraphQL{sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: "would refuse"}}
+// A refused dry run never blocks map / confirmSpend: their dry run only sizes the
+// rc_limit (BOT-CONF-RC), it is not the vault-op refusal gate, so the call is still
+// submitted with the configured limit and the node judges it.
+func TestVaultOpDryRun_RefusalDoesNotBlockOtherActions(t *testing.T) {
+	gql := &mockGraphQL{nonces: map[string]uint64{}, sim: &SimulatedCall{Success: false, Err: "transaction_error", ErrMsg: "would refuse"}}
 	bot, _ := buildBotForL2Test(t, gql)
-	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "confirmSpend"); err != nil && strings.Contains(err.Error(), "dry run") {
-		t.Fatalf("confirmSpend went through the vault-op dry run: %v", err)
+	if _, err := bot.callContractL2(context.Background(), []byte(`{}`), "confirmSpend"); err != nil {
+		t.Fatalf("confirmSpend was blocked by a refused dry run: %v", err)
 	}
-	if gql.simCalls != 0 {
-		t.Fatalf("simulate called %d times for a non-vault action", gql.simCalls)
+	if len(gql.submitted) != 1 {
+		t.Fatalf("confirmSpend not submitted after a refused dry run (%d txs)", len(gql.submitted))
 	}
 }
 
@@ -165,6 +168,38 @@ func TestVaultOpDryRun_RetireWithNoTransitionIsNotSubmitted(t *testing.T) {
 		if len(gql.submitted) != 1 {
 			t.Fatalf("%q: expected one submission, got %d", ret, len(gql.submitted))
 		}
+	}
+}
+
+// F8 (cold-scan): a migrateVault whose dry run SUCCEEDS but would sweep nothing this
+// cycle (every remaining input already in flight) returns "nothing to migrate for
+// generation <n>" with no error. Before the fix it passed the success filter and a
+// do-nothing migrateVault went on chain every cycle, burning RC. It must not be
+// submitted; a migrateVault that builds a real sweep still is.
+func TestVaultOpDryRun_MigrateNoopIsNotSubmitted(t *testing.T) {
+	gql := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: "nothing to migrate for generation 3", RcUsed: 900}}
+	bot, did := buildBotForL2Test(t, gql)
+	gql.accountRC = map[string]int64{did.String(): 465785}
+	_, err := bot.callContractL2(context.Background(), []byte(`{}`), "migrateVault")
+	if !errors.Is(err, errMigrateNoop) {
+		t.Fatalf("a no-op migrate returned %v, want errMigrateNoop", err)
+	}
+	if !isNothingToMigrate(err) {
+		t.Fatal("the rotation driver must recognise a no-op migrate as nothing-to-migrate")
+	}
+	if len(gql.submitted) != 0 {
+		t.Fatalf("a no-op migrate was submitted (%d txs)", len(gql.submitted))
+	}
+
+	// A migrate that builds a real sweep (the dry run returns a txid) still goes out.
+	gql2 := &mockGraphQL{sim: &SimulatedCall{Success: true, Ret: "a1b2c3d4", RcUsed: 10678}}
+	bot2, did2 := buildBotForL2Test(t, gql2)
+	gql2.accountRC = map[string]int64{did2.String(): 465785}
+	if _, err := bot2.callContractL2(context.Background(), []byte(`{}`), "migrateVault"); err != nil {
+		t.Fatalf("a real migrate was refused: %v", err)
+	}
+	if len(gql2.submitted) != 1 {
+		t.Fatalf("a real migrate was not submitted (%d txs)", len(gql2.submitted))
 	}
 }
 

@@ -8,10 +8,28 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
 )
+
+// pausedSeen latches the paused state the map loop last reported, so a pause is
+// logged once, not every block.
+var (
+	pausedMu   sync.Mutex
+	pausedSeen bool
+)
+
+// notePaused records the contract's pause flag and reports whether it just became
+// paused (true only on the transition, for a single warning).
+func notePaused(paused bool) bool {
+	pausedMu.Lock()
+	defer pausedMu.Unlock()
+	was := pausedSeen
+	pausedSeen = paused
+	return paused && !was
+}
 
 // dropHeightDiff is set per-chain via ChainConfig.DropHeightDiff
 
@@ -40,6 +58,23 @@ func (b *Bot) HandleMap(
 			"confirmationsRequired", b.Chain.ConfirmationsRequired)
 		return false
 	}
+
+	// BOT-PAUSE-1: while the owner has paused the contract, every map is refused on
+	// chain, and a map refused on chain is final for its proof (recorded for /retry,
+	// block advanced below), so a deposit seen during a pause would stay uncredited
+	// until an operator retried it by hand. Hold the block instead and map it after
+	// the unpause. A flag that cannot be read holds the block too, like the height
+	// read above.
+	if paused, err := b.gql().FetchPaused(ctx); err != nil {
+		b.L.Error("cannot read the contract's pause flag; block kept for retry", "err", err, "blockHeight", blockHeight)
+		return false
+	} else if paused {
+		if notePaused(true) {
+			b.L.Warn("contract is paused: deposits are held and mapped after the unpause", "blockHeight", blockHeight)
+		}
+		return false
+	}
+	notePaused(false)
 
 	foundTxs, err := b.ParseBlock(ctx, blockBytes, blockHeight)
 	if err != nil {
@@ -203,10 +238,14 @@ func txIDFromRawTxHex(rawTxHex string) string {
 	return tx.TxID()
 }
 
-// isTooBigForPool reports the node's refusal of an L2 tx above its size limit
-// (transaction-pool.go: "transaction size too big N > MAX_TX_SIZE").
+// isTooBigForPool reports an L2 tx above the transaction-pool size limit, from EITHER
+// source (P2): the bot's own pre-flight (errTxTooLarge, caught before submit) or the
+// node's refusal (transaction-pool.go: "transaction size too big N > MAX_TX_SIZE").
+// An oversize map deposit (e.g. inside an exchange's batched withdrawal) can never be
+// credited, so the map handler must recognise both and record it for the operator rather
+// than hold the deposit's block forever.
 func isTooBigForPool(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "transaction size too big")
+	return err != nil && (errors.Is(err, errTxTooLarge) || strings.Contains(err.Error(), "transaction size too big"))
 }
 
 // contractHeightNeededFor is the contract header height at which a deposit or

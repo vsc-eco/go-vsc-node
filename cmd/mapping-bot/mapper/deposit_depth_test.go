@@ -212,3 +212,69 @@ func TestHandleMap_TooLargeForThePoolDoesNotHoldTheBlock(t *testing.T) {
 	assert.True(t, strings.HasPrefix(all[0].TxId, "map-too-large-"), all[0].TxId)
 	assert.Equal(t, "map", all[0].Action)
 }
+
+// BOT-PAUSE-1: a paused contract refuses every map on chain, and an on-chain
+// refusal is final for that proof. So while paused the block is held (no map
+// sent, cursor unchanged) and mapped after the unpause; an unreadable pause flag
+// holds it too.
+func TestHandleMap_HoldsTheBlockWhilePaused(t *testing.T) {
+	bot, gql, caller, state, addr, _ := newTestBotWithMocks()
+	depositAddr := "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+	addr.instructions[depositAddr] = "deposit_to=hive:testuser"
+	blockBytes := buildTestBlock(t, depositAddr, &chaincfg.TestNet4Params)
+	require.NoError(t, state.SetBlockHeight(context.Background(), 100))
+	gql.lastHeight = "200"
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+
+	gql.paused = true
+	assert.False(t, bot.HandleMap(blockBytes, 100))
+	assert.Empty(t, caller.getCalls(), "no map is sent while the contract is paused")
+	h, _ := state.GetBlockHeight(context.Background())
+	assert.Equal(t, uint64(100), h, "the deposit's block must wait for the unpause")
+
+	gql.paused = false
+	gql.readErr = map[string]error{"FetchPaused": errors.New("node unreachable")}
+	assert.False(t, bot.HandleMap(blockBytes, 100))
+	assert.Empty(t, caller.getCalls(), "an unreadable pause flag holds the block too")
+
+	gql.readErr = nil
+	assert.True(t, bot.HandleMap(blockBytes, 100))
+	calls := caller.getCalls()
+	require.NotEmpty(t, calls)
+	assert.Equal(t, "map", calls[0].Action)
+	h, _ = state.GetBlockHeight(context.Background())
+	assert.Equal(t, uint64(101), h)
+}
+
+// BOT-ABANDON-2: a sweep the contract wrote off with abandonSweep is no longer a
+// pending spend, but if it confirms after all, confirmSpend settles it. Only a
+// spend with no abandoned-sweep record is taken as already settled; an
+// unreadable record waits for the next pass.
+func TestHandleConfirmations_SettlesALateAbandonedSweep(t *testing.T) {
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	bot.Chain.ConfirmationsRequired = 2
+	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+	gql.txSpends = map[string]*contractinterface.SigningData{}
+	sentTxConfirmedAt(t, state, chainClient, "txAbandoned", 500)
+	sentTxConfirmedAt(t, state, chainClient, "txSettled", 500)
+	gql.lastHeight = "502"
+
+	gql.readErr = map[string]error{"FetchAbandonedSweep": errors.New("node unreachable")}
+	bot.HandleConfirmations()
+	assert.Empty(t, caller.getCalls(), "nothing is decided on an unreadable record")
+	state.mu.Lock()
+	assert.Equal(t, database.TxStateSent, state.txs["txAbandoned"].State)
+	assert.Equal(t, database.TxStateSent, state.txs["txSettled"].State)
+	state.mu.Unlock()
+
+	gql.readErr = nil
+	gql.abandoned = map[string]bool{"txAbandoned": true}
+	bot.HandleConfirmations()
+	calls := caller.getCalls()
+	require.Len(t, calls, 1, "only the abandoned sweep is settled")
+	assert.Equal(t, "confirmSpend", calls[0].Action)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	assert.Equal(t, database.TxStateConfirmed, state.txs["txAbandoned"].State)
+	assert.Equal(t, database.TxStateConfirmed, state.txs["txSettled"].State, "a spend with no abandoned record is taken as settled")
+}

@@ -94,3 +94,43 @@ func TestGetAccountRc_UnchangedPaths(t *testing.T) {
 		t.Errorf("with an RC record spent at this height: %+v %v (want 49900/50000)", got, err)
 	}
 }
+
+// nilNilBalances reproduces the REAL BalanceDb contract: an account with no balance
+// record returns (nil, nil) — NOT mongo.ErrNoDocuments (see ledger_state.go GV-H1).
+type nilNilBalances struct {
+	ledgerDb.Balances
+}
+
+func (nilNilBalances) GetBalanceRecord(string, uint64) (*ledgerDb.BalanceRecord, error) {
+	return nil, nil
+}
+
+// NC-4: a fresh account whose balance record is (nil, nil) must report the free allowance,
+// not nil-panic on balRecord.HBD. Before the fix the ErrNoDocuments-only guard fell through
+// and the resolver dereferenced a nil *BalanceRecord.
+func TestGetAccountRc_NilRecordNoErrorDoesNotPanic(t *testing.T) {
+	const hive = "hive:fresh-nilnil"
+	const did = "did:pkh:eip155:1:0x00000000000000000000000000000000000000FF"
+	r := &queryResolver{&Resolver{
+		Balances: nilNilBalances{},
+		Rc:       fakeRcs{recs: map[string]rcDb.RcRecord{}},
+	}}
+	h := model.Uint64(1000)
+
+	got, err := r.GetAccountRc(context.Background(), hive, &h)
+	if err != nil {
+		t.Fatalf("hive fresh account: unexpected error %v", err)
+	}
+	if got.Amount != params.RC_HIVE_FREE_AMOUNT || got.MaxRcs != params.RC_HIVE_FREE_AMOUNT {
+		t.Errorf("hive fresh account (nil,nil record): amount %d max %d, want %d (NC-4)",
+			got.Amount, got.MaxRcs, params.RC_HIVE_FREE_AMOUNT)
+	}
+
+	got, err = r.GetAccountRc(context.Background(), did, &h)
+	if err != nil {
+		t.Fatalf("did fresh account: unexpected error %v", err)
+	}
+	if got.Amount != 0 || got.MaxRcs != 0 {
+		t.Errorf("did fresh account (nil,nil record): amount %d max %d, want 0/0 (NC-4)", got.Amount, got.MaxRcs)
+	}
+}

@@ -25,6 +25,8 @@ type mockGraphQL struct {
 	signatures map[string]database.SignatureUpdate
 	lastHeight string
 	pruneFloor string           // "" = not set
+	paused     bool             // the contract's pause flag
+	abandoned  map[string]bool  // txid -> the contract holds an "sa-" record
 	readErr    map[string]error // method name -> error, a read the node could not answer
 	sim        *SimulatedCall   // nil = simulateContractCalls unavailable
 	simErr     error
@@ -33,6 +35,8 @@ type mockGraphQL struct {
 	backupKey  []byte
 	observedTx map[string]bool   // key: "txid:vout" (display/reversed hex)
 	txStatuses map[string]string // key: tx ID, value: status
+	// keyCommitment: TSS key id -> type of its newest keygen/reshare commitment.
+	keyCommitment map[string]string
 
 	// L2 submission mocks.
 	nonces    map[string]uint64 // account -> next nonce
@@ -99,6 +103,22 @@ func (m *mockGraphQL) FetchPruneFloor(ctx context.Context) (uint64, bool, error)
 	return v, err == nil, err
 }
 
+func (m *mockGraphQL) FetchPaused(ctx context.Context) (bool, error) {
+	m.recordCall("FetchPaused")
+	if err := m.readErr["FetchPaused"]; err != nil {
+		return false, err
+	}
+	return m.paused, nil
+}
+
+func (m *mockGraphQL) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error) {
+	m.recordCall("FetchAbandonedSweep", txId)
+	if err := m.readErr["FetchAbandonedSweep"]; err != nil {
+		return false, err
+	}
+	return m.abandoned[txId], nil
+}
+
 func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, error) {
 	m.recordCall("FetchPublicKeys")
 	return m.primaryKey, m.backupKey, nil
@@ -139,6 +159,17 @@ func (m *mockGraphQL) FetchAccountNonce(ctx context.Context, account string) (ui
 // FetchAccountRC backs the VR2-04 RC pre-flight. Default is "unknown", which the
 // pre-flight treats as fail-open, so every existing test keeps its behaviour
 // without opting in; set accountRC to exercise the refusal.
+func (m *mockGraphQL) FetchLatestKeyCommitmentType(ctx context.Context, keyId string) (string, bool, error) {
+	m.recordCall("FetchLatestKeyCommitmentType", keyId)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.readErr["FetchLatestKeyCommitmentType"]; err != nil {
+		return "", false, err
+	}
+	typ, ok := m.keyCommitment[keyId]
+	return typ, ok, nil
+}
+
 func (m *mockGraphQL) FetchAccountRC(ctx context.Context, account string) (int64, bool, error) {
 	m.recordCall("FetchAccountRC", account)
 	m.mu.Lock()

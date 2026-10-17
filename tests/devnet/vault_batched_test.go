@@ -232,7 +232,41 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 func vstatus(t *testing.T, d *Devnet, ctx context.Context, node int, cid, action, payload string) string {
 	t.Helper()
 	s, _ := vstatusTx(t, d, ctx, node, cid, action, payload)
+	if action == "migrateVault" && s == "FAILED" {
+		s = vfRetryMigrateAfterReshare(t, d, ctx, node, cid, s)
+	}
 	return s
+}
+
+// vfRetryMigrateAfterReshare: from consensus 0.11.0 the vault contract refuses
+// migrateVault until the active generation's key has been reshared since its
+// keygen (TssGetKey fifth field). The suite's scenarios call migrateVault right
+// after a rotation, which used to move funds into a key that had never been
+// handed on. When the refusal is that one (read back with a dry run), wait for
+// the reshare and retry once, so each scenario still tests what it was written
+// for. Any other refusal is returned unchanged.
+func vfRetryMigrateAfterReshare(t *testing.T, d *Devnet, ctx context.Context, node int, cid, status string) string {
+	t.Helper()
+	caller := "hive:" + d.witnessAccount(1)
+	ok, msg := vfSimulate(d, ctx, node, cid, caller, "migrateVault", "")
+	if ok || !strings.Contains(msg, "has not been reshared") {
+		return status
+	}
+	t.Logf("migrateVault waits for the active key's first reshare (%s); retrying once it has", msg)
+	deadline := time.Now().Add(time.Duration(float64(15*time.Minute) * vfTimeoutScale()))
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return status
+		case <-time.After(20 * time.Second):
+		}
+		if ok, msg = vfSimulate(d, ctx, node, cid, caller, "migrateVault", ""); ok || !strings.Contains(msg, "has not been reshared") {
+			s, _ := vstatusTx(t, d, ctx, node, cid, "migrateVault", "")
+			return s
+		}
+	}
+	t.Logf("the active key was not reshared within the wait; migrateVault stays refused")
+	return status
 }
 
 // vstatusTx is vstatus that also returns the transaction id ("" when the submit failed).

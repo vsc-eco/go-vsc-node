@@ -49,6 +49,10 @@ type btcScopeDeps struct {
 	// that one databin). Resolving once — rather than re-running GetLastOutput per
 	// key — keeps the gate cheap under the global TSS lock (methodology F-1).
 	readKey func(key string) ([]byte, bool)
+	// readKeyStrict reads the SAME one databin as readKey but distinguishes a read ERROR
+	// from a genuine ABSENT key (NT-6). resolveVaultView uses it for the "v" registry so an
+	// unreadable "v" fails closed (vaultUnresolvable), never falls open to legacy signing.
+	readKeyStrict func(key string) ([]byte, bool, error)
 	// findKey returns a keyId's COMMITTED tss_keys entry (production:
 	// TssManager.tssKeys.FindKey — BLS-threshold-verified write path).
 	findKey func(id string) (tss_db.TssKey, error)
@@ -94,7 +98,15 @@ func (d btcScopeDeps) resolveVaultView() (*btcVaultView, vaultResolveResult) {
 	if d.contractId == "" {
 		return nil, vaultAbsent
 	}
-	rawV, ok := d.readKey("v")
+	rawV, ok, readErr := d.readKeyStrict("v")
+	if readErr != nil {
+		// NT-6: an UNREADABLE "v" is NOT an absent "v". Falling through to vaultAbsent would let
+		// the caller sign with the legacy gen-0 key — for a rotated vault, the WRONG key. Refuse
+		// ALL BTC-vault keysigns this tick (vaultUnresolvable); the node retries next tick, when
+		// the local read of the committed state at this height has almost certainly recovered.
+		log.Warn("output-scoping: vault registry \"v\" unreadable, refusing BTC-vault keysigns this tick (fail closed)", "err", readErr, "contract", d.contractId)
+		return nil, vaultUnresolvable
+	}
 	if !ok || len(rawV) == 0 {
 		return nil, vaultAbsent
 	}
@@ -263,14 +275,20 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 	verdict := scopeAllow
 	if tssMgr.vaultRotationV2InForce(bh) {
 		btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
+		// Resolve the contract's committed output at bh ONCE; every "v"/"va"/"p"/"d-<txid>"
+		// read reuses that one databin (F-1: no per-key GetLastOutput, bounded work under the
+		// TSS lock). The strict reader is the single resolve; readKey wraps it, dropping the
+		// error, for the callers that cannot act on one.
+		strictRead := tssMgr.contractStateReaderAtStrict(btcContract, bh)
 		deps := btcScopeDeps{
 			contractId: btcContract,
-			// Resolve the contract's committed output at bh ONCE; every "v"/"va"/
-			// "p"/"d-<txid>" read reuses that one databin (F-1: no per-key
-			// GetLastOutput, bounded work under the TSS lock).
-			readKey: tssMgr.contractStateReaderAt(btcContract, bh),
-			findKey: tssMgr.tssKeys.FindKey,
-			mainnet: tssMgr.sconf.OnMainnet(),
+			readKey: func(key string) ([]byte, bool) {
+				raw, ok, _ := strictRead(key)
+				return raw, ok
+			},
+			readKeyStrict: strictRead,
+			findKey:       tssMgr.tssKeys.FindKey,
+			mainnet:       tssMgr.sconf.OnMainnet(),
 		}
 		verdict = deps.evaluateScope(keyId, sighash)
 	}

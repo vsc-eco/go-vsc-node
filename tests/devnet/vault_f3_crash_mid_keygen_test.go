@@ -129,10 +129,19 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		return
 	}
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
+	// The contract holds migrateVault until gen-1's key has been reshared once since its
+	// keygen, so the first try straight after activation can be refused by design and a
+	// later try goes through. The drain is this step's precondition, not its subject: the
+	// loop retries and the gen0Left check below is the assertion. Log the dry run so a
+	// refusal names its reason.
+	simOK, simMsg := vfSimulate(d, ctx, 1, cid, "hive:"+d.witnessAccount(1), "migrateVault", "")
+	t.Logf("gen-0 drain: migrateVault dry run before the first try: ok=%v msg=%q", simOK, simMsg)
+	vfSettleBestEffort = true
 	for i := 0; i < 6 && genUtxoCount(t, d, ctx, cid, 0) != 0; i++ {
 		migrateAndSettle(t, d, ctx, cid, mainv0, primary1, backupPubKeyG)
 		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 	}
+	vfSettleBestEffort = false
 	gen0Left := genUtxoCount(t, d, ctx, cid, 0)
 	if gen0Left != 0 {
 		t.Errorf("gen-0 still holds %d UTXO(s) after the drain loop; NN#3 refuses createKey while a superseded gen holds funds, so the gen-2 keygen below cannot start", gen0Left)
@@ -237,11 +246,9 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	gen1Left := -1
 	if activated2 {
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
-		// This loop is INFORMATIONAL (see the note below F3-SIGN): the drain is signed by
-		// gen-1's key, not the gen-2 share this case is about, and on a second back-to-back
-		// rotation the sweep's sign is timing-flaky. Say so to the helper as well, or its
-		// t.Errorf fails the run while F3's own ledger reads 6 PASS 0 FAIL — which is what
-		// the campaign recorded as F3's "flaky-drain FAIL".
+		// The loop retries because a single tranche may be refused: migrateVault waits for
+		// gen-2's first reshare, and the canary tranche takes only part of gen-1. A failed
+		// try is reported, not asserted; F3-GEN1-DRAINED below asserts the outcome.
 		vfSettleBestEffort = true
 		for i := 0; i < 6 && genUtxoCount(t, d, ctx, cid, 1) != 0; i++ {
 			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("before gen-1 drain tranche %d", i+1))
@@ -253,14 +260,21 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	}
 	// The functional share proof is the ACTIVATION: gen-2 activating requires the BRK-2
 	// check-signature, produced with the crashed node's gen-2 share, and F3-SHARE already
-	// showed that share is byte-identical fleet-wide. The gen-1->gen-2 drain is a
-	// best-effort add-on: it is signed by gen-1's key (not gen-2's), and on a second
-	// back-to-back rotation the migration sweep's sign is timing-flaky (VR2-09-adjacent),
-	// so it is reported for info, not asserted. gen-1-key signing is already proven by the
-	// gen-0->gen-1 drain above and by F1/F5/F20.
+	// showed that share is byte-identical fleet-wide.
 	c.rec("F3-SIGN", "the crashed node's gen-2 share is USABLE: gen-2 activates with the BRK-2 check-signature (produced with that share), byte-identical fleet-wide",
 		activated2,
-		fmt.Sprintf("activated=%v (the share signed the check-sig); gen-1->gen-2 drain best-effort: gen-1 UTXOs left=%d |%s", activated2, gen1Left, rows))
+		fmt.Sprintf("activated=%v (the share signed the check-sig) |%s", activated2, rows))
+
+	// F3-GEN1-DRAINED: gen-0 was drained but never retired, so it sits ahead of gen-1 as an
+	// empty Draining generation. Before the SHADOW fix migrateVault targeted it on every
+	// tranche after gen-1's first ("nothing to migrate for generation 0") and gen-1 never
+	// drained (the gen-1 drain once recorded here as timing-flaky). migrateVault now targets
+	// the first FUNDED superseded generation, so gen-1 must drain completely.
+	if activated2 {
+		c.rec("F3-GEN1-DRAINED", "gen-1 drains completely past the empty, never-retired Draining gen-0 (SHADOW fix)",
+			gen1Left == 0,
+			fmt.Sprintf("gen-1 UTXOs left=%d; gen-0 status=%s", gen1Left, statusStr(vfVaultStatusOn(d, ctx, 2, cid, 0))))
+	}
 
 	// -----------------------------------------------------------------
 	// Step 5: F3-IDENT across all 5 nodes, all of them up.
