@@ -32,8 +32,38 @@ type SystemConfig interface {
 	RcHiveFreeAmount() int64
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
-	PendulumPoolWhitelist() []string
+	PendulumPoolWhitelistAt(blockHeight uint64) []string
+	PendulumCollateralPoolsAt(blockHeight uint64) []string
 	LoadOverrides(path string) error
+}
+
+// PendulumPoolAddition stages one pool into the pendulum at a coordinated
+// height. Append-only: entries are never edited or removed, so replay at any
+// past height reproduces the list that was in force then.
+//
+// Collateral is the important field, and it defaults to the safe value. Two
+// separate privileges hide behind "whitelisted":
+//
+//   - the SWAP gate — may this pool call pendulum_apply_swap_fees at all.
+//     Without it every swap through the pool aborts.
+//   - COLLATERAL — does the pool's HBD reserve enter P (V = 2P, s = V/E),
+//     which sets the LP/node fee split on EVERY pool.
+//
+// A community pool needs the first to trade and must not get the second:
+// P reads the pool's own self-reported `r0`, so a pool whose owner can ship a
+// code update (after the contract-update timelock) could report an inflated
+// reserve, drive s toward the cliff, and move fees away from LPs on the DAO
+// pools. docs/incentive-pendulum.md ("Pool eligibility policy") already limits
+// V/P/s to `hive:vsc.dao`-owned pools for exactly this reason; the planned
+// relaxation is a DAO-voted (runtime, code_hash) allowlist, not a bare ID.
+type PendulumPoolAddition struct {
+	ID string
+	// FromHeight is the Hive L1 block at which the addition takes effect.
+	// Zero means immediately (testnet/devnet).
+	FromHeight uint64
+	// Collateral admits the pool into the geometry as well as the swap gate.
+	// Leave false unless the pool is DAO-owned and its code is trusted.
+	Collateral bool
 }
 
 type config struct {
@@ -49,10 +79,20 @@ type config struct {
 	contractUpdateTimelockBlocks uint64
 	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-	rcHiveFreeAmount      int64
-	oracleParams          params.OracleParams
-	tssParams             params.TssParams
+	rcHiveFreeAmount int64
+	oracleParams     params.OracleParams
+	tssParams        params.TssParams
+	// pendulumPoolWhitelist is the base list: pools that both swap AND count
+	// as collateral. Today that means the DAO-owned pools only.
 	pendulumPoolWhitelist []string
+	// pendulumPoolAdditions stages further pools in at a height, each choosing
+	// whether it also counts as collateral. Append-only.
+	pendulumPoolAdditions []PendulumPoolAddition
+	// pendulumWhitelistOverridden records that an operator supplied the list
+	// via -sysconfig. An explicit override is honoured at every height: the
+	// staged rollout exists to keep default-configured nodes in step, not to
+	// second-guess an operator who set the value deliberately.
+	pendulumWhitelistOverridden bool
 }
 
 func (c *config) OnMainnet() bool {
@@ -110,16 +150,81 @@ func (c *config) TssParams() params.TssParams {
 	return c.tssParams
 }
 
-// PendulumPoolWhitelist returns the per-network list of pool contract IDs that
-// are eligible to participate in the Magi pendulum (CLP fee accrual + LP rewards),
-// in addition to any DAO-owned pools matched by PendulumBolt.EnforceDAOOwnedPools.
-func (c *config) PendulumPoolWhitelist() []string {
-	if len(c.pendulumPoolWhitelist) == 0 {
+// poolsAt builds the base list plus every addition active at blockHeight,
+// keeping only those matching `want` (all, or collateral-bearing). Deduped so
+// a pool listed twice cannot be counted twice in P.
+//
+// An explicit operator override replaces the whole thing at every height: the
+// staged rollout exists to keep default-configured nodes in step, not to
+// second-guess an operator who set the value deliberately. An override grants
+// both privileges, matching the pre-split behaviour devnet harnesses rely on.
+func (c *config) poolsAt(blockHeight uint64, collateralOnly bool) []string {
+	if c.pendulumWhitelistOverridden {
+		if len(c.pendulumPoolWhitelist) == 0 {
+			return nil
+		}
+		out := make([]string, len(c.pendulumPoolWhitelist))
+		copy(out, c.pendulumPoolWhitelist)
+		return out
+	}
+
+	size := len(c.pendulumPoolWhitelist) + len(c.pendulumPoolAdditions)
+	seen := make(map[string]struct{}, size)
+	out := make([]string, 0, size)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	// The base list is DAO-owned and carries both privileges.
+	for _, id := range c.pendulumPoolWhitelist {
+		add(id)
+	}
+	for _, a := range c.pendulumPoolAdditions {
+		if a.FromHeight != 0 && blockHeight < a.FromHeight {
+			continue
+		}
+		if collateralOnly && !a.Collateral {
+			continue
+		}
+		add(a.ID)
+	}
+	if len(out) == 0 {
 		return nil
 	}
-	out := make([]string, len(c.pendulumPoolWhitelist))
-	copy(out, c.pendulumPoolWhitelist)
 	return out
+}
+
+// PendulumPoolWhitelistAt returns the pools allowed to CALL the pendulum at a
+// given Hive L1 height — the swap gate. A pool missing from this list aborts
+// every swap through it with "contract not whitelisted".
+//
+// Height-parameterised on purpose: this is consensus input, so every node must
+// agree on which list applies to a given block and additions land at a
+// coordinated height rather than whenever each operator upgrades. Taking the
+// height as an argument means a caller cannot accidentally read an ungated
+// list — there is no height-less accessor to reach for.
+func (c *config) PendulumPoolWhitelistAt(blockHeight uint64) []string {
+	return c.poolsAt(blockHeight, false)
+}
+
+// PendulumCollateralPoolsAt returns the pools whose HBD reserve enters the
+// pendulum GEOMETRY at a given height — P, and thus V = 2P and s = V/E, which
+// set the LP/node fee split across every pool.
+//
+// Always a subset of PendulumPoolWhitelistAt. Deliberately narrower: P reads a
+// pool's self-reported `r0`, so admitting a pool here trusts its code not to
+// lie about its reserve. That is safe for DAO-owned pools running reviewed
+// code and not for a community pool whose owner can ship an update — see
+// docs/incentive-pendulum.md ("Pool eligibility policy"), which restricts
+// V/P/s to `hive:vsc.dao` pools until a DAO-voted code-hash allowlist exists.
+func (c *config) PendulumCollateralPoolsAt(blockHeight uint64) []string {
+	return c.poolsAt(blockHeight, true)
 }
 
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
@@ -191,6 +296,10 @@ func (c *config) LoadOverrides(path string) error {
 	}
 	if raw.PendulumPoolWhitelist != nil {
 		c.pendulumPoolWhitelist = append([]string(nil), (*raw.PendulumPoolWhitelist)...)
+		// Deliberate operator choice — drop any staged expansion so the value
+		// applies as written at every height, rather than being replaced by V2
+		// once the activation height passes.
+		c.pendulumWhitelistOverridden = true
 	}
 	return nil
 }
@@ -311,9 +420,39 @@ func MainnetConfig() SystemConfig {
 		// Seeded with the deployed pool contract IDs; operators can override via
 		// -sysconfig pendulumPoolWhitelist. Listed pools bypass the DAO-owner
 		// check in PendulumBolt.
+		//
+		// A pool missing from this list aborts EVERY swap through it with
+		// "contract not whitelisted": the pendulum runs on each swap and checks
+		// the calling pool contract against it. Registering a pool with the DEX
+		// router (register_token / register_pool) is a separate gate and does
+		// not imply this one, so an onboarded pool has to be added here too.
+		// Labelled by pair — the bare IDs are unreadable.
+		//
+		// NEVER edit this slice in place to onboard a pool. It is summed into the
+		// pendulum geometry, so a change applies the moment each operator
+		// upgrades and diverges the chain across the rollout window. Append to
+		// pendulumPoolAdditions with a FromHeight instead.
+		//
+		// Both entries are `hive:vsc.dao`-owned and run the same reviewed pool
+		// code, which is what makes them safe as COLLATERAL: P trusts a pool's
+		// self-reported reserve.
 		pendulumPoolWhitelist: []string{
-			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp",
-			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM",
+			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE   (vsc.dao)
+			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD    (vsc.dao)
+		},
+		// Append-only. Collateral stays false for community pools: they may
+		// trade, but their reserve must not enter P.
+		pendulumPoolAdditions: []PendulumPoolAddition{
+			{
+				// HBD:LASSECASH — owner hive:lassecashdapps, own code
+				// bafkreiezp5u…, token issuer hive:lassecashmagi. Swap-only:
+				// admitting it as collateral would let an owner-shipped code
+				// update report an inflated r0, push s toward the cliff and
+				// move fees away from LPs on the two DAO pools.
+				ID:         "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr",
+				FromHeight: params.PENDULUM_WHITELIST_V2_HEIGHT,
+				Collateral: false,
+			},
 		},
 	}
 	return conf

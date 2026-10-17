@@ -30,10 +30,16 @@ type GeometryReader interface {
 	GeometryAt(blockHeight uint64) (pendulumoracle.GeometryOutputs, bool)
 }
 
-// WhitelistGetter returns the current pool whitelist (returned slice may be a
-// fresh copy; the applier reads it through this hook so live config changes
-// are picked up without re-construction).
-type WhitelistGetter func() []string
+// WhitelistGetter returns the pool whitelist that applies AT blockHeight
+// (returned slice may be a fresh copy; the applier reads it through this hook
+// so live config changes are picked up without re-construction).
+//
+// Height-parameterised because the list is consensus input — it is summed into
+// the pendulum geometry — so expansions land at a coordinated height instead of
+// whenever each operator upgrades. The geometry reader must be handed the same
+// height for the same swap, or the gate and the geometry would disagree about
+// which pools exist.
+type WhitelistGetter func(blockHeight uint64) []string
 
 // ConsensusVersionAt resolves the chain-active consensus version at a block
 // height — StateEngine.ActiveConsensusVersion in production, sourced purely
@@ -151,8 +157,8 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errors.New("pendulum applier not configured"))
 	}
 
-	// 1. Whitelist check.
-	if !contractWhitelisted(contractID, a.whitelist()) {
+	// 1. Whitelist check, against the list in force at this block.
+	if !contractWhitelisted(contractID, a.whitelist(blockHeight)) {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errNotWhitelisted)
 	}
 
