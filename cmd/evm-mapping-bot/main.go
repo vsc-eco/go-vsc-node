@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1231,15 +1232,15 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 // entirely absent from the bot struct (the contract ecrecovers confirmSpend
 // against it). Both are now present.
 type PendingSpend struct {
-	Nonce         uint64 `json:"nonce"`
-	Amount        int64  `json:"amount"`
-	From          string `json:"from"`
-	To            string `json:"to"`
-	Asset         string `json:"asset"`
-	UnsignedTxHex string `json:"unsigned_tx_hex"`
-	BlockHeight   uint64 `json:"block_height"`
-	VaultAtQueue  string `json:"vault_at_queue"`
-	TokenAddress  string `json:"token_address,omitempty"`
+	Nonce         uint64   `json:"nonce"`
+	Amount        *big.Int `json:"amount"` // wei; the contract stores a big.Int
+	From          string   `json:"from"`
+	To            string   `json:"to"`
+	Asset         string   `json:"asset"`
+	UnsignedTxHex string   `json:"unsigned_tx_hex"`
+	BlockHeight   uint64   `json:"block_height"`
+	VaultAtQueue  string   `json:"vault_at_queue"`
+	TokenAddress  string   `json:"token_address,omitempty"`
 }
 
 // parsePendingSpend decodes the contract's JSON-encoded PendingSpend (H-F1).
@@ -1254,7 +1255,7 @@ func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
 	// The contract keys the entry by nonce; trust the caller's nonce over any
 	// in-band value (mirrors contract GetPendingSpend which sets ps.Nonce=nonce).
 	ps.Nonce = nonce
-	if ps.Amount <= 0 {
+	if ps.Amount == nil || ps.Amount.Sign() <= 0 {
 		return nil
 	}
 	if ps.UnsignedTxHex == "" {
@@ -1661,7 +1662,7 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		ReceiptProofHex: rcptProofHex,
 		IntentNonce:     ps.Nonce,
 		IntentTo:        ps.To,
-		IntentAmount:    strconv.FormatInt(ps.Amount, 10),
+		IntentAmount:    ps.Amount.String(),
 		IntentAsset:     ps.Asset,
 	}
 
