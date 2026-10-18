@@ -5,6 +5,7 @@ package main
 // bot builds is checked against go-ethereum's own trie roots, not the bot's.
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
@@ -266,4 +267,93 @@ func TestE3_ParsePendingSpend_RefusesNonPositiveAmount(t *testing.T) {
 	if ps := parsePendingSpend(0, raw); ps != nil {
 		t.Fatalf("missing amount accepted: %+v", ps)
 	}
+}
+
+// erc20DepositFixture returns a block whose tx 1 is an ERC-20 transfer of
+// amount to vault (tx 0 is an unrelated ETH transfer), plus the deposit the
+// scanner would report for it.
+func erc20DepositFixture(t *testing.T, vault common.Address, amount *big.Int) (*fakeChain, detectedDeposit) {
+	t.Helper()
+	userKey, _ := ethCrypto.GenerateKey()
+	user := ethCrypto.PubkeyToAddress(userKey.PublicKey)
+	token := common.HexToAddress("0x1c7d4b196cb0c7b01d743fbc6116a902379c7238")
+	other := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	c := &fakeChain{}
+	c.addTx(t, userKey, &types.DynamicFeeTx{
+		Nonce: 0, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &other, Value: big.NewInt(1),
+	})
+	transferSig := ethCrypto.Keccak256Hash([]byte("Transfer(address,address,uint256)"))
+	tx := c.addTx(t, userKey, &types.DynamicFeeTx{
+		Nonce: 1, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 60000, To: &token,
+		Data: append(append(common.FromHex("a9059cbb"), common.LeftPadBytes(vault.Bytes(), 32)...), common.LeftPadBytes(amount.Bytes(), 32)...),
+	}, &types.Log{
+		Address: token,
+		Topics:  []common.Hash{transferSig, common.BytesToHash(user.Bytes()), common.BytesToHash(vault.Bytes())},
+		Data:    common.LeftPadBytes(amount.Bytes(), 32),
+	})
+	return c, detectedDeposit{
+		BlockHeight: 101, TxIndex: 1, LogIndex: 0, TxHash: tx.Hash().Hex(),
+		DepositType: "erc20", TokenAddress: token.Hex(),
+	}
+}
+
+type contractMapParams struct {
+	TxData struct {
+		BlockHeight    uint64 `json:"block_height"`
+		TxIndex        uint64 `json:"tx_index"`
+		RawHex         string `json:"raw_hex"`
+		MerkleProofHex string `json:"merkle_proof_hex"`
+		LogIndex       uint64 `json:"log_index"`
+		TokenAddress   string `json:"token_address"`
+		DepositType    string `json:"deposit_type"`
+	} `json:"tx_data"`
+	Instructions []string `json:"instructions"`
+}
+
+// E4: the contract verifies an ERC-20 deposit as a RECEIPT against
+// header.ReceiptsRoot (VerifyERC20Deposit) and reads the Transfer log from
+// it. The bot always sent the transaction and a transactions-trie proof, so
+// every ERC-20 deposit failed the proof check.
+func TestE4_ERC20MapPayloadIsReceiptProof(t *testing.T) {
+	vault := common.HexToAddress("0x00000000000000000000000000000000000000fa")
+	c, dep := erc20DepositFixture(t, vault, big.NewInt(25_000_000)) // 25 USDC
+	payload := buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight)
+	if payload == nil {
+		t.Fatal("no map payload")
+	}
+	var p contractMapParams
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("the contract cannot decode the bot's map payload: %v", err)
+	}
+	want, _ := c.receipts[dep.TxIndex].MarshalBinary()
+	if p.TxData.RawHex != hex.EncodeToString(want) {
+		t.Fatalf("raw_hex is not the receipt at tx %d:\n got %s\nwant %x", dep.TxIndex, p.TxData.RawHex, want)
+	}
+	verifyLeaf(t, "erc20 receipt", c.receiptRoot(), dep.TxIndex, p.TxData.RawHex, p.TxData.MerkleProofHex)
+	if p.TxData.DepositType != "erc20" || p.TxData.LogIndex != 0 || p.TxData.TokenAddress != dep.TokenAddress {
+		t.Fatalf("erc20 fields: %+v", p.TxData)
+	}
+}
+
+// Native ETH deposits stay transaction proofs (VerifyETHDeposit checks
+// header.TransactionsRoot).
+func TestE4_ETHMapPayloadIsTransactionProof(t *testing.T) {
+	vaultKey, _ := ethCrypto.GenerateKey()
+	vault := ethCrypto.PubkeyToAddress(vaultKey.PublicKey)
+	userKey, _ := ethCrypto.GenerateKey()
+	c := &fakeChain{}
+	tx := c.addTx(t, userKey, &types.DynamicFeeTx{
+		Nonce: 0, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: big.NewInt(5e17),
+	})
+	dep := detectedDeposit{BlockHeight: 101, TxIndex: 0, LogIndex: -1, TxHash: tx.Hash().Hex(), DepositType: "eth"}
+	payload := buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight)
+	var p contractMapParams
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	raw, _ := tx.MarshalBinary()
+	if p.TxData.RawHex != hex.EncodeToString(raw) {
+		t.Fatalf("raw_hex is not the transaction")
+	}
+	verifyLeaf(t, "eth tx", c.txRoot(), 0, p.TxData.RawHex, p.TxData.MerkleProofHex)
 }
