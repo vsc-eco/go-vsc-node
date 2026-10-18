@@ -1558,7 +1558,7 @@ type confirmSpendRequest struct {
 	ReceiptProofHex string `json:"receipt_proof_hex"`
 	IntentNonce     uint64 `json:"intent_nonce"`
 	IntentTo        string `json:"intent_to"`
-	IntentAmount    int64  `json:"intent_amount"`
+	IntentAmount    string `json:"intent_amount"` // decimal wei; the contract decodes it as a string
 	IntentAsset     string `json:"intent_asset"`
 }
 
@@ -1661,7 +1661,7 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		ReceiptProofHex: rcptProofHex,
 		IntentNonce:     ps.Nonce,
 		IntentTo:        ps.To,
-		IntentAmount:    ps.Amount,
+		IntentAmount:    strconv.FormatInt(ps.Amount, 10),
 		IntentAsset:     ps.Asset,
 	}
 
