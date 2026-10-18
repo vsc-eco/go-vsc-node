@@ -1027,6 +1027,26 @@ var DefaultTssParams = TssParams{
 	SolvencyGapSats: 100_000,
 }
 
+// DevnetTssParams (RV re-verify): devnet is an isolated, ephemeral network
+// (fresh per run, all nodes share this exact config), so the wall-clock cost of
+// a devnet run is dominated by TSS timeouts, NOT by CPU — a reshare that fails
+// or stalls waits out the full 2-minute ReshareTimeout before the retry. These
+// slashed timeouts make devnet/regression runs converge in seconds instead of
+// minutes. Safe because every devnet node reads the same values (deterministic),
+// and mainnet/testnet keep DefaultTssParams untouched. WaitForSigsTimeout stays
+// at 6s so BLS signature collection is not starved on a slow local node.
+var DevnetTssParams = TssParams{
+	ReshareSyncDelay:      1 * time.Second,
+	ReshareTimeout:        20 * time.Second,
+	DefaultTimeout:        15 * time.Second,
+	MessageRetryDelay:     500 * time.Millisecond,
+	BufferedMessageMaxAge: 30 * time.Second,
+	RpcTimeout:            10 * time.Second,
+	CommitDelay:           1 * time.Second,
+	WaitForSigsTimeout:    6 * time.Second,
+	SolvencyGapSats:       100_000,
+}
+
 var MocknetTssParams = TssParams{
 	ReshareSyncDelay:      1 * time.Second,
 	ReshareTimeout:        2 * time.Minute,

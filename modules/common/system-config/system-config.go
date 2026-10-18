@@ -496,7 +496,7 @@ func DevnetConfig() SystemConfig {
 			PoaExitHaltBlocks:           120,
 			PoaMaxNewMembersPerElection: 1,
 		},
-		tssParams: params.DefaultTssParams,
+		tssParams: params.DevnetTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
 		pendulumPoolWhitelist: nil,
 	}
