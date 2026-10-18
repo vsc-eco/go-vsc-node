@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -40,10 +41,14 @@ func (c *fakeChain) addTx(t *testing.T, key *ecdsa.PrivateKey, inner *types.Dyna
 		t.Fatal(err)
 	}
 	cum := uint64(21000 * (len(c.receipts) + 1))
+	prior := 0 // logs in earlier receipts: RPC log indexes are block-level
+	for _, rc := range c.receipts {
+		prior += len(rc.Logs)
+	}
 	for i, l := range logs {
 		l.TxHash = tx.Hash()
 		l.TxIndex = uint(len(c.txs))
-		l.Index = uint(i)
+		l.Index = uint(prior + i)
 	}
 	rc := &types.Receipt{
 		Type:              types.DynamicFeeTxType,
@@ -106,7 +111,41 @@ func (c *fakeChain) rpc(t *testing.T) *ethRPC {
 			}
 			result = map[string]any{"number": "0x65", "transactions": txs}
 		case "eth_getLogs":
-			result = []any{}
+			// block-level log indexes across the block, filtered by address
+			var f struct {
+				Address string    `json:"address"`
+				Topics  []*string `json:"topics"`
+			}
+			if len(req.Params) > 0 {
+				_ = json.Unmarshal(req.Params[0], &f)
+			}
+			logs := []map[string]any{}
+			match := func(l *types.Log) bool {
+				if f.Address != "" && !strings.EqualFold(f.Address, l.Address.Hex()) {
+					return false
+				}
+				for i, want := range f.Topics {
+					if want != nil && (i >= len(l.Topics) || !strings.EqualFold(*want, l.Topics[i].Hex())) {
+						return false
+					}
+				}
+				return true
+			}
+			bi := 0
+			for _, rc := range c.receipts {
+				for _, l := range rc.Logs {
+					if match(l) {
+						topics := make([]string, len(l.Topics))
+						for i, tp := range l.Topics {
+							topics[i] = tp.Hex()
+						}
+						logs = append(logs, map[string]any{"address": l.Address.Hex(), "topics": topics, "data": hexutil.Encode(l.Data),
+							"logIndex": hexutil.EncodeUint64(uint64(bi)), "transactionIndex": hexutil.EncodeUint64(uint64(l.TxIndex)), "transactionHash": l.TxHash.Hex()})
+					}
+					bi++
+				}
+			}
+			result = logs
 		case "eth_getRawTransactionByHash":
 			for _, tx := range c.txs {
 				if tx.Hash().Hex() == hash {
