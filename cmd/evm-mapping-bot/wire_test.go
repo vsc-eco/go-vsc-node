@@ -87,11 +87,26 @@ func (c *fakeChain) rpc(t *testing.T) *ethRPC {
 		var result any
 		switch req.Method {
 		case "eth_getBlockByNumber":
-			hashes := make([]string, len(c.txs))
-			for i, tx := range c.txs {
-				hashes[i] = tx.Hash().Hex()
+			var full bool
+			if len(req.Params) > 1 {
+				_ = json.Unmarshal(req.Params[1], &full)
 			}
-			result = map[string]any{"transactions": hashes}
+			if !full {
+				hashes := make([]string, len(c.txs))
+				for i, tx := range c.txs {
+					hashes[i] = tx.Hash().Hex()
+				}
+				result = map[string]any{"transactions": hashes}
+				break
+			}
+			txs := make([]map[string]string, len(c.txs))
+			for i, tx := range c.txs {
+				from, _ := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
+				txs[i] = map[string]string{"hash": tx.Hash().Hex(), "from": from.Hex(), "to": tx.To().Hex(), "value": hexutil.EncodeBig(tx.Value())}
+			}
+			result = map[string]any{"number": "0x65", "transactions": txs}
+		case "eth_getLogs":
+			result = []any{}
 		case "eth_getRawTransactionByHash":
 			for _, tx := range c.txs {
 				if tx.Hash().Hex() == hash {
@@ -356,4 +371,30 @@ func TestE4_ETHMapPayloadIsTransactionProof(t *testing.T) {
 		t.Fatalf("raw_hex is not the transaction")
 	}
 	verifyLeaf(t, "eth tx", c.txRoot(), 0, p.TxData.RawHex, p.TxData.MerkleProofHex)
+}
+
+// A tx value is a uint256. The scanner read it with hexToUint64, which keeps
+// only the low 64 bits, so an ETH deposit of an exact multiple of 2^64 wei
+// (e.g. exactly 18.446744073709551616 ETH) read as 0 and was never mapped.
+func TestScanBlock_DetectsETHDepositAtMultipleOf2To64Wei(t *testing.T) {
+	vault := common.HexToAddress("0x00000000000000000000000000000000000000fa")
+	userKey, _ := ethCrypto.GenerateKey()
+	twoTo64 := new(big.Int).Lsh(big.NewInt(1), 64)
+	c := &fakeChain{}
+	for i, v := range []*big.Int{twoTo64, big.NewInt(1), big.NewInt(0)} {
+		c.addTx(t, userKey, &types.DynamicFeeTx{
+			Nonce: uint64(i), GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: v,
+		})
+	}
+	res, err := scanBlock(c.rpc(t), 101, vault.Hex(), map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []int
+	for _, d := range res.Deposits {
+		got = append(got, d.TxIndex)
+	}
+	if fmt.Sprint(got) != "[0 1]" {
+		t.Fatalf("deposits detected at tx %v, want [0 1] (2^64 wei and 1 wei; not the 0-value tx)", got)
+	}
 }

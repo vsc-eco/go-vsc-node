@@ -1073,7 +1073,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 
 	// Detect ETH deposits: direct transfers to vault
 	for i, tx := range block.Transactions {
-		if strings.ToLower(tx.To) == vaultLower && hexToUint64(tx.Value) > 0 {
+		if strings.ToLower(tx.To) == vaultLower && hexNonZero(tx.Value) {
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight: height,
 				TxIndex:     i,
@@ -2752,6 +2752,12 @@ func hexToUint64(s string) uint64 {
 		}
 	}
 	return v
+}
+
+// hexNonZero reports whether a hex quantity is non-zero at full width. A tx
+// value is a uint256; hexToUint64 keeps only the low 64 bits.
+func hexNonZero(s string) bool {
+	return strings.Trim(strings.TrimPrefix(s, "0x"), "0") != ""
 }
 
 func hexToBytes(s string) []byte {
