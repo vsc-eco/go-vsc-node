@@ -8,6 +8,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -226,4 +227,43 @@ func checkConfirmSpendWire(t *testing.T, amount *big.Int) {
 // made every bot confirmSpend fail at decode.
 func TestE2_ConfirmSpendIntentAmountIsDecimalString(t *testing.T) {
 	checkConfirmSpendWire(t, big.NewInt(1_000_000_000_000_000_000)) // 1 ETH
+}
+
+// E3: the contract stores PendingSpend.Amount as a big.Int, written as a
+// bare JSON number. A withdrawal of 2^63 wei (about 9.22 ETH, or 9.22 of any
+// 18-decimal token) or more did not fit the bot's int64, so the bot refused
+// the entry and the withdrawal was never broadcast.
+func TestE3_WithdrawalAboveInt64IsCarriedExactly(t *testing.T) {
+	for _, s := range []string{
+		"9223372036854775808",        // 2^63 wei
+		"10000000000000000000",       // 10 ETH
+		"99999999999999999999999999", // 1e26 wei
+	} {
+		amt, _ := new(big.Int).SetString(s, 10)
+		_, stored := withdrawalFixture(t, amt)
+		ps := parsePendingSpend(0, stored)
+		if ps == nil {
+			t.Fatalf("%s wei: bot refused the contract's PendingSpend", s)
+		}
+		if got := fmt.Sprint(ps.Amount); got != s {
+			t.Fatalf("%s wei: parsed amount %s", s, got)
+		}
+		checkConfirmSpendWire(t, amt)
+	}
+}
+
+// A zero, negative or missing amount in the contract's JSON format is still
+// refused. (The older negative/empty tests use the pipe format, which fails
+// to decode for an unrelated reason.)
+func TestE3_ParsePendingSpend_RefusesNonPositiveAmount(t *testing.T) {
+	for _, amount := range []string{`0`, `-1`, `null`} {
+		raw := `{"nonce":0,"amount":` + amount + `,"from":"hive:alice","to":"0x00000000000000000000000000000000000000e2","asset":"eth","unsigned_tx_hex":"02ee","block_height":100,"vault_at_queue":"0x1"}`
+		if ps := parsePendingSpend(0, raw); ps != nil {
+			t.Fatalf("amount %s accepted: %+v", amount, ps)
+		}
+	}
+	raw := `{"nonce":0,"from":"hive:alice","to":"0x00000000000000000000000000000000000000e2","asset":"eth","unsigned_tx_hex":"02ee","block_height":100}`
+	if ps := parsePendingSpend(0, raw); ps != nil {
+		t.Fatalf("missing amount accepted: %+v", ps)
+	}
 }
