@@ -1187,8 +1187,10 @@ func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic s
 	return -1, fmt.Errorf("log with block-level index %d not found in receipt %s for token %s", blockLogIndex, txHash, tokenAddr)
 }
 
-// buildMapPayload constructs the JSON for a "map" contract call.
-func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]byte) json.RawMessage {
+// buildMapPayload constructs the JSON for a "map" contract call from a
+// proven trie leaf (the transaction for an ETH deposit, the receipt for an
+// ERC-20 deposit) and its proof nodes.
+func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes [][]byte) json.RawMessage {
 	proofHex := ""
 	for _, node := range proofNodes {
 		proofHex += hex.EncodeToString(node)
@@ -1197,7 +1199,7 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 	txData := map[string]interface{}{
 		"block_height":     deposit.BlockHeight,
 		"tx_index":         deposit.TxIndex,
-		"raw_hex":          hex.EncodeToString(receiptRLP),
+		"raw_hex":          hex.EncodeToString(leaf),
 		"merkle_proof_hex": proofHex,
 		"deposit_type":     deposit.DepositType,
 	}
@@ -1621,27 +1623,9 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 	}
 
 	// --- Receipts-trie leg: receipt_hex (RLP receipt) + receipt_proof_hex.
-	allReceipts := make([]receiptForProof, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.getReceipt(hash)
-		if err != nil {
-			return nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(block.Transactions), err)
-		}
-		if err := json.Unmarshal(rData, &allReceipts[i]); err != nil {
-			return nil, fmt.Errorf("parse receipt %d: %w", i, err)
-		}
-	}
-	encodedReceipts := make([][]byte, len(allReceipts))
-	for i := range allReceipts {
-		encodedReceipts[i] = encodeReceiptRLP(&allReceipts[i])
-	}
-	rcptKeys := make([][]byte, len(encodedReceipts))
-	for i := range rcptKeys {
-		rcptKeys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, rcptProofNodes, rcptTargetRLP := buildMPTProof(rcptKeys, encodedReceipts, txIndex)
-	if rcptProofNodes == nil {
-		return nil, fmt.Errorf("confirmSpend receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(encodedReceipts))
+	rcptTargetRLP, rcptProofNodes, err := receiptTrieProof(rpc, block.Transactions, txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
 
 	txProofHex := ""
@@ -1671,6 +1655,36 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		return nil, fmt.Errorf("confirmSpend marshal: %w", err)
 	}
 	return data, nil
+}
+
+// receiptTrieProof returns the consensus-encoded receipt of the tx at
+// txIndex and its proof against header.ReceiptsRoot, built from the receipts
+// of every tx in the block (txHashes, in block order).
+func receiptTrieProof(rpc *ethRPC, txHashes []string, txIndex int) ([]byte, [][]byte, error) {
+	if txIndex < 0 || txIndex >= len(txHashes) {
+		return nil, nil, fmt.Errorf("txIndex %d out of range (block has %d txs)", txIndex, len(txHashes))
+	}
+	receipts := make([][]byte, len(txHashes))
+	for i, hash := range txHashes {
+		rData, err := rpc.getReceipt(hash)
+		if err != nil {
+			return nil, nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(txHashes), err)
+		}
+		var r receiptForProof
+		if err := json.Unmarshal(rData, &r); err != nil {
+			return nil, nil, fmt.Errorf("parse receipt %d: %w", i, err)
+		}
+		receipts[i] = encodeReceiptRLP(&r)
+	}
+	keys := make([][]byte, len(receipts))
+	for i := range keys {
+		keys[i] = rlpEncodeUint64(uint64(i))
+	}
+	_, nodes, target := buildMPTProof(keys, receipts, txIndex)
+	if nodes == nil {
+		return nil, nil, fmt.Errorf("receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(receipts))
+	}
+	return target, nodes, nil
 }
 
 func encodeReceiptRLP(r *receiptForProof) []byte {
@@ -2683,6 +2697,18 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 	if err := json.Unmarshal(blockData, &block); err != nil {
 		slog.Error("parse block for proof", "block", blockHeight, "err", err)
 		return nil
+	}
+
+	// An ERC-20 deposit is proven by its receipt (the Transfer log) against
+	// header.ReceiptsRoot (contract VerifyERC20Deposit); a native ETH deposit
+	// by the transaction against header.TransactionsRoot.
+	if dep.DepositType == "erc20" {
+		receipt, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+		if err != nil {
+			slog.Error("erc20 deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+			return nil
+		}
+		return buildMapPayload(dep, receipt, proofNodes)
 	}
 
 	rawTxs := make([][]byte, len(block.Transactions))
