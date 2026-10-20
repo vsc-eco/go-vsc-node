@@ -74,11 +74,6 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	log.Printf("[devnet] deploying contract %q (stopping %s, using node %d for GQL)...",
 		opts.Name, nodeName, opts.GQLNode)
 
-	// Stop the deployer node to release the badger lock.
-	if err := d.compose(ctx, "stop", nodeName); err != nil {
-		return "", fmt.Errorf("stopping %s: %w", nodeName, err)
-	}
-
 	deployCmd := []string{
 		"./contract-deployer",
 		"-network=devnet",
@@ -98,14 +93,31 @@ func (d *Devnet) DeployContract(ctx context.Context, opts ContractDeployOpts) (s
 	}
 	args = append(args, deployCmd...)
 
-	out, err := d.composeOutput(ctx, args...)
+	// The deployer has a fixed 15s of wall clock to collect storage-proof
+	// signatures over P2P (data-availability client). When it gets too few it
+	// prints "failed to request storage proof" and broadcasts nothing, so another
+	// attempt cannot deploy the contract twice. FDV10 FullNetworkRegression hit
+	// this deploying 4s after a partition heal (FD-27); its rerun deployed first try.
+	var out string
+	for attempt := 1; ; attempt++ {
+		// Stop the deployer node to release the badger lock.
+		if err := d.compose(ctx, "stop", nodeName); err != nil {
+			return "", fmt.Errorf("stopping %s: %w", nodeName, err)
+		}
+		out, err = d.composeOutput(ctx, args...)
 
-	// Always restart the node, even if deploy failed.
-	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
-		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
+		// Always restart the node, even if deploy failed.
+		if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
+			log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
+		}
+		// Give the restarted node time to reconnect to peers.
+		devnetSleep(5 * time.Second)
+
+		if err != nil || attempt == deployAttempts || !storageProofFailed(out) {
+			break
+		}
+		log.Printf("[devnet] deploy %q: the deployer collected too few storage-proof signatures and broadcast nothing; retrying (attempt %d of %d)", opts.Name, attempt+1, deployAttempts)
 	}
-	// Give the restarted node time to reconnect to peers.
-	time.Sleep(5 * time.Second)
 
 	if err != nil {
 		return "", fmt.Errorf("contract deployment failed: %w\noutput: %s", err, out)
@@ -246,4 +258,14 @@ func parseContractId(output string) string {
 		}
 	}
 	return ""
+}
+
+// deployAttempts bounds DeployContract's retries of a deploy that never got its
+// storage proof.
+const deployAttempts = 3
+
+// storageProofFailed reports a contract-deployer run that ended without a
+// storage proof, and therefore without broadcasting anything.
+func storageProofFailed(out string) bool {
+	return strings.Contains(out, "failed to request storage proof") && parseContractId(out) == ""
 }

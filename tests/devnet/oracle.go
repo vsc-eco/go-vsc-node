@@ -155,6 +155,6 @@ func (d *Devnet) RestartAllMagiNodes(ctx context.Context) error {
 	}
 
 	// Give nodes a moment to reconnect to peers.
-	time.Sleep(8 * time.Second)
+	devnetSleep(8 * time.Second)
 	return nil
 }

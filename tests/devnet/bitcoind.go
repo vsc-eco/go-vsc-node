@@ -85,19 +85,19 @@ func (d *Devnet) BitcoinHeight(ctx context.Context) (uint64, error) {
 // WaitForBitcoinHeight blocks until the bitcoind regtest tip is at least
 // `target` blocks tall, or the timeout expires.
 func (d *Devnet) WaitForBitcoinHeight(ctx context.Context, target uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // wall: external bitcoind chain
 	for {
 		h, err := d.BitcoinHeight(ctx)
 		if err == nil && h >= target {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // wall: external bitcoind chain
 			return fmt.Errorf("bitcoind never reached height %d (last err: %v)", target, err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond): // wall: external bitcoind chain
 		}
 	}
 }
@@ -141,19 +141,19 @@ func (d *Devnet) BitcoinPrunedHeight(ctx context.Context) (uint64, error) {
 
 // WaitForBitcoinPrunedSync waits until the pruned node's tip reaches target.
 func (d *Devnet) WaitForBitcoinPrunedSync(ctx context.Context, target uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // wall: external bitcoind chain
 	for {
 		h, err := d.BitcoinPrunedHeight(ctx)
 		if err == nil && h >= target {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // wall: external bitcoind chain
 			return fmt.Errorf("bitcoind-pruned never reached height %d (last err: %v)", target, err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond): // wall: external bitcoind chain
 		}
 	}
 }
@@ -227,7 +227,7 @@ func (d *Devnet) BitcoindMainnetPrunedRPCHostPort() string {
 // until pruneheight > 0 (meaning auto-pruning has kicked in and early blocks
 // are no longer available). Returns the prune height.
 func (d *Devnet) WaitForMainnetPruning(ctx context.Context, timeout time.Duration) (uint64, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // wall: external bitcoind chain
 	for {
 		out, err := d.bitcoinCliMainnet(ctx, "getblockchaininfo")
 		if err == nil {
@@ -239,13 +239,13 @@ func (d *Devnet) WaitForMainnetPruning(ctx context.Context, timeout time.Duratio
 				return info.PruneHeight, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // wall: external bitcoind chain
 			return 0, fmt.Errorf("mainnet pruning never started within %v", timeout)
 		}
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(15 * time.Second):
+		case <-time.After(15 * time.Second): // wall: external bitcoind chain
 		}
 	}
 }

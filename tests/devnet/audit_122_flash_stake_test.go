@@ -33,6 +33,9 @@ import (
 // guarantee that the schema matches what production writes). No
 // settlement is exercised — the bond_reader semantics are isolated.
 func TestAuditFix_122_FlashStakeFilteredByTWAB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping devnet integration test in short mode")
+	}
 	requireDocker(t)
 
 	cfg := DefaultConfig()

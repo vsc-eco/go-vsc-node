@@ -67,7 +67,7 @@ func (d *Devnet) Deposit(ctx context.Context, fromWitness int, amount, asset str
 	hiveClient := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
 	hiveClient.ChainID = devnetChainID
 	wif := d.cfg.InitminerWIF
-	txId, err := hiveClient.Broadcast([]hivego.HiveOperation{op}, &wif)
+	txId, err := broadcastRetryingStale(hiveClient, []hivego.HiveOperation{op}, &wif, "deposit")
 	if err != nil {
 		return "", fmt.Errorf("deposit %s %s from %s: %w", amount, asset, from, err)
 	}
