@@ -447,6 +447,10 @@ type TssManager struct {
 	preParamsBatch atomic.Bool
 	// genPreParams replaces ecKeyGen.GeneratePreParams in tests; nil in production.
 	genPreParams func(timeout time.Duration) (*ecKeyGen.LocalPreParams, error)
+	// background counts TSS work that outlives the session's actionMap entry:
+	// the Done/Await + commit goroutine, sign-result broadcasts and pre-params
+	// generation. Read-only bookkeeping for the devnet block pacemaker.
+	background atomic.Int64
 
 	witnessDb  witnesses.Witnesses
 	electionDb elections.Elections
@@ -739,6 +743,34 @@ func (tssMgr *TssManager) inFlightSessions() (ceremony map[string]bool, signing 
 	return ceremony, signing
 }
 
+// HeldAttestations lists, per readiness target block, the accounts whose signed
+// attestations this node holds (sorted). Read-only; the devnet block pacemaker
+// compares it across nodes so a readiness window never closes on fast blocks
+// before its gossip has converged.
+func (tssMgr *TssManager) HeldAttestations() map[string][]string {
+	tssMgr.gossipLock.RLock()
+	defer tssMgr.gossipLock.RUnlock()
+	out := make(map[string][]string, len(tssMgr.gossipAttestations))
+	for target, atts := range tssMgr.gossipAttestations {
+		accounts := make([]string, 0, len(atts))
+		for account := range atts {
+			accounts = append(accounts, account)
+		}
+		sort.Strings(accounts)
+		out[target] = accounts
+	}
+	return out
+}
+
+// InFlightCounts reports how many keygen/reshare ceremonies and signing sessions
+// are still running on this node, and how much TSS work is still running after
+// its session left actionMap (commit, broadcast, pre-params generation).
+// Read-only; used by the devnet block pacemaker.
+func (tssMgr *TssManager) InFlightCounts() (ceremony int, signing int, background int64) {
+	c, s := tssMgr.inFlightSessions()
+	return len(c), len(s), tssMgr.background.Load()
+}
+
 func (tssMgr *TssManager) preParamsTimeout() time.Duration {
 	if tssMgr.sconf == nil {
 		return time.Minute
@@ -816,6 +848,8 @@ func (tssMgr *TssManager) GeneratePreParams() {
 		return
 	}
 	defer tssMgr.preParamsLock.Unlock()
+	tssMgr.background.Add(1)
+	defer tssMgr.background.Add(-1)
 
 	gen := tssMgr.genPreParams
 	if gen == nil {
@@ -2519,7 +2553,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	// the next sign interval.
 	tssMgr.lock.Unlock()
 
+	tssMgr.background.Add(1)
 	go func() {
+		defer tssMgr.background.Add(-1)
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("panic recovered in Done/Await goroutine", "panic", r)
@@ -2753,7 +2789,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 		if len(toBroadcast) > 0 {
 			// Fire-and-forget but bounded: the Hive RPC client has its own
 			// HTTP timeout so Broadcast won't block forever.
-			go tssMgr.broadcastSignResults(toBroadcast)
+			tssMgr.background.Add(1)
+			go func() {
+				defer tssMgr.background.Add(-1)
+				tssMgr.broadcastSignResults(toBroadcast)
+			}()
 		}
 
 		if isLeader {
@@ -3294,6 +3334,9 @@ func New(
 		preParams:  preParams,
 		p2p:        p2p,
 		hiveClient: hiveClient,
+
+		// nil (live generation) unless vsc-devnet with a pre-params pool configured.
+		genPreParams: devnetPreParamsSource(sconf),
 
 		contractState: contractState,
 		da:            da,

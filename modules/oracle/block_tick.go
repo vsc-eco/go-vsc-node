@@ -79,6 +79,10 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 	// }
 
 	if isChainRelayTick {
-		go o.chainOracle.HandleBlockTick(signal, o)
+		o.chainRelays.Add(1)
+		go func() {
+			defer o.chainRelays.Add(-1)
+			o.chainOracle.HandleBlockTick(signal, o)
+		}()
 	}
 }
