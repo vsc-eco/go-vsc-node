@@ -38,7 +38,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 		t.Skip("set VAULT_DRAIN_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(43*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(43*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -69,7 +69,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -104,10 +104,10 @@ func TestVaultDrainToPurge(t *testing.T) {
 	// magi-2 for the second deposit to register (read-lag, H-03 class), dumping the
 	// registry on each miss so a genuinely lost deposit is still visible.
 	n0 := genUtxoCount(t, d, ctx, cid, 0)
-	d00Deadline := time.Now().Add(3 * time.Minute)
-	for n0 < 2 && time.Now().Before(d00Deadline) {
+	d00Deadline := devnetNow().Add(3 * time.Minute)
+	for n0 < 2 && devnetNow().Before(d00Deadline) {
 		vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("DRAIN-00 waiting for the 2nd deposit to register on magi-2 (have %d)", n0))
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		n0 = genUtxoCount(t, d, ctx, cid, 0)
 	}
 	rec("DRAIN-00", "gen-0 funded with multiple UTXOs", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXOs (after polling magi-2 up to 3m for the 2nd deposit)", n0))
@@ -136,7 +136,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		t.Fatal("gen-1 never activated")
@@ -150,7 +150,7 @@ func TestVaultDrainToPurge(t *testing.T) {
 		if gen0Status >= 2 { // Retiring/Draining/...
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	rec("DRAIN-01", "gen-1 active, gen-0 retiring", gen0Status >= 2, "gen-0 status="+statusStr(gen0Status))
 
@@ -229,7 +229,7 @@ func statusStr(s int) string {
 // "I could not read the registry" as different sentences.
 func waitVaultStatus(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, want int, within time.Duration) (int, bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	last, readOK := -1, false
 	for {
 		st, err := getStateHex(d, ctx, 2, cid, []string{"v"})
@@ -251,10 +251,10 @@ func waitVaultStatus(t *testing.T, d *Devnet, ctx context.Context, cid string, g
 		} else {
 			t.Logf("waitVaultStatus: read failed: %v", err)
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return last, readOK
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 }
 

@@ -58,7 +58,7 @@ func TestPoaActivationViaProposal(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 1, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -108,12 +108,12 @@ func TestPoaActivationViaProposal(t *testing.T) {
 	// ---- the floor must rise and POA must come up ----
 	// Flat weight lands one epoch after the floor is active (see the two-epoch
 	// note in poa_bootstrap_test.go), so allow through target+2.
-	deadline := time.Now().Add(20 * time.Minute)
+	deadline := devnetNow().Add(20 * time.Minute)
 	activated := false
 	var seenEpoch uint64
 	var seenWeights []uint64
-	for time.Now().Before(deadline) && !activated {
-		time.Sleep(20 * time.Second)
+	for devnetNow().Before(deadline) && !activated {
+		devnetSleep(20 * time.Second)
 		for e := target; e <= target+3; e++ {
 			el, err := d.GetElectionGQL(ctx, 1, e)
 			if err != nil {

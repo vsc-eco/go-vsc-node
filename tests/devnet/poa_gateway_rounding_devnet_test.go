@@ -47,7 +47,7 @@ func TestPoaGatewayRoundingDecidesWhichTwoThirdsCanSign(t *testing.T) {
 	cfg.MagiEnv["VSC_GATEWAY_ROTATION_INTERVAL"] = "20"
 	cfg.MagiEnv["VSC_GATEWAY_ACTION_INTERVAL"] = "20"
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(80*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(80*time.Minute))
 	t.Cleanup(cancel)
 	d, err := New(cfg)
 	if err != nil {
@@ -69,7 +69,7 @@ func TestPoaGatewayRoundingDecidesWhichTwoThirdsCanSign(t *testing.T) {
 			select {
 			case <-ctx.Done():
 				t.Fatalf("ctx done reading vsc.gateway: %v", ctx.Err())
-			case <-time.After(3 * time.Second):
+			case <-devnetAfter(3 * time.Second):
 			}
 		}
 	}
@@ -87,13 +87,13 @@ func TestPoaGatewayRoundingDecidesWhichTwoThirdsCanSign(t *testing.T) {
 	}
 	// waitRotation waits for last_block_rotation to move past after.
 	waitRotation := func(after uint64, timeout time.Duration) (hivego.AccountData, bool) {
-		deadline := time.Now().Add(timeout)
-		for time.Now().Before(deadline) {
+		deadline := devnetNow().Add(timeout)
+		for devnetNow().Before(deadline) {
 			a := account()
 			if lastRotation(a) > after {
 				return a, true
 			}
-			time.Sleep(5 * time.Second)
+			devnetSleep(5 * time.Second)
 		}
 		return account(), false
 	}

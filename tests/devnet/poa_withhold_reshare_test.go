@@ -53,7 +53,7 @@ func TestPoaSeatAttestsAndWithholdsEverySession(t *testing.T) {
 	silentAcct := fmt.Sprintf("%s%d", cfg.WitnessPrefix, silent)
 	var cycles []int
 	t.Cleanup(func() {
-		dctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		dctx, cancel := devnetWithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		all, _ := d.GetCommitments(dctx, 1, bson.M{})
 		for i := len(all) - 1; i >= 0; i-- {
@@ -92,7 +92,7 @@ func TestPoaSeatAttestsAndWithholdsEverySession(t *testing.T) {
 			first = b
 			t.Logf("election epoch %d > key epoch %d at head %d; adversary starts at boundary %d", ep, base.Epoch, head, b)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	for b := first; b < first+8*testRotateInterval; b += testRotateInterval {
 		if b != first {

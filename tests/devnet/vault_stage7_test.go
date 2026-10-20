@@ -31,7 +31,7 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 		t.Skip("set VAULT_STAGE7_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(33*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(33*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -57,7 +57,7 @@ func TestVaultStage7MoneyEdges(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -162,7 +162,7 @@ func stage7SpendLeftVault(t *testing.T, d *Devnet, ctx context.Context, cid stri
 			}
 		}
 		if txid == "" {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	if txid == "" {

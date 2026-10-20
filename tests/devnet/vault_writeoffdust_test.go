@@ -46,7 +46,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 		t.Skip("set VAULT_WOD_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(40*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(40*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -77,7 +77,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -111,7 +111,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, residualSats, seedH)
 	n0 := 0
 	for i := 0; i < 12 && n0 == 0; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		n0 = genUtxoCount(t, d, ctx, cid, 0)
 	}
 	rec("WOD-00", "the 1,000-sat deposit is credited pre-rotation (min-deposit floor is inert until the first rotation)", n0 == 1,
@@ -142,7 +142,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		t.Fatal("gen-1 never activated")
@@ -157,7 +157,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	// skipped per-output: the map op succeeds but credits nothing.
 	subBefore := genUtxoCount(t, d, ctx, cid, 1)
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, owner, 700, contractLastHeight(t, d, ctx, cid))
-	time.Sleep(20 * time.Second)
+	devnetSleep(20 * time.Second)
 	subAfter := genUtxoCount(t, d, ctx, cid, 1)
 	rec("WOD-00b", "post-rotation the min-deposit floor engages: a 700-sat deposit to the active gen-1 is skipped (hasSupersededGen)", subAfter == subBefore,
 		fmt.Sprintf("gen-1 UTXO count %d -> %d after a 700-sat deposit (want unchanged)", subBefore, subAfter))
@@ -167,7 +167,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	// DEFERRED: fee ~1,410 sats > 500 (half the value).
 	sweepsBefore := txSpendIds(t, d, ctx, cid)
 	mig := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	stillThere := genUtxoCount(t, d, ctx, cid, 0)
 	// Capture the sweep this call built. WOD-04 must SETTLE this one; it cannot build a
 	// second, because this sweep already owns the only input.
@@ -180,7 +180,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 			}
 		}
 		if sweepTxid == "" {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	// INVERTED BY VR2-11. This case used to assert the DEADLOCK: at latest_fee 10 the
@@ -204,7 +204,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	// qualifies, so the earlier !isOK(wod) assertion was wrong (run 4: status CONFIRMED,
 	// residual correctly left in place).
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	afterWod := genUtxoCount(t, d, ctx, cid, 0)
 	rec("WOD-02", "writeOffDust does NOT clear the 1,000-sat residual (sweepable at the minimum rate, so write-off leaves it): the residual stays on gen-0 and the deadlock persists", afterWod == 1,
 		fmt.Sprintf("writeOffDust status=%s (a no-op: nothing to write off at the minimum rate), gen-0 holds %d UTXO(s) (want 1, still stuck)", wod, afterWod))
@@ -212,7 +212,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 	// WOD-03: nothing else can move it either: the deadlock.
 	rv := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 	ck := vstatus(t, d, ctx, 1, cid, "createKey", "")
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	st := vaultStatusOf(t, d, ctx, cid, 0)
 	gen2 := vaultStatusOf(t, d, ctx, cid, 2)
 	// INVERTED BY VR2-11, but only partly. NN#3 still correctly refuses a new
@@ -263,7 +263,7 @@ func TestVaultWriteOffDust(t *testing.T) {
 			if st2 == 4 {
 				break
 			}
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		rec("WOD-05", "gen-0 retires (Inactive) once the residual is gone", st2 == 4, "gen-0 status="+statusStr(st2))
 	}

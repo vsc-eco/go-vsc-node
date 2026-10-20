@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -66,7 +65,7 @@ func TestPoaLateJoinerDerivesSameRegistry(t *testing.T) {
 
 	// Let the remaining nodes cross the floor and reach flat weight (epoch 2).
 	for n := 1; n < late; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -119,11 +118,11 @@ func TestPoaLateJoinerDerivesSameRegistry(t *testing.T) {
 	}
 	t.Logf("restarted magi-%d; it must REPLAY to the same registry, not re-seed", late)
 
-	deadline := time.Now().Add(15 * time.Minute)
+	deadline := devnetNow().Add(15 * time.Minute)
 	var lateFp string
 	var lateSeats []poaSeatDoc
-	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Second)
+	for devnetNow().Before(deadline) {
+		devnetSleep(20 * time.Second)
 		s, err := d.poaSeats(ctx, late)
 		if err != nil {
 			continue

@@ -61,7 +61,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -131,7 +131,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	for i := 0; i < 12 && !present; i++ {
 		present = f10HeaderPresent(d, ctx, 2, cid, hMined)
 		if !present {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 	}
 	c.rec("F10-HDR-PRESENT", "control: the header at the sweep height is in contract state before the retention window passes",
@@ -160,7 +160,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	if _, err := d.MineBlocks(ctx, int(target-hMined)); err != nil {
 		t.Fatalf("PRECONDITION FAILED: mining %d regtest blocks: %v", target-hMined, err)
 	}
-	relayStart := time.Now()
+	relayStart := devnetNow()
 	ip := vstatus(t, d, ctx, 1, cid, "initPruning", fmt.Sprintf("%d", hMined))
 	hdrT, herr := btcBlockHeaderHex(ctx, d, target)
 	if herr != nil {
@@ -170,13 +170,13 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	calls := 2
 	lastH := uint64(0)
 	for i := 0; i < 12 && lastH < target; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		lastH = contractLastHeight(t, d, ctx, cid)
 	}
 	reached := lastH >= target
 	c.rec("F10-RELAY", "instrument: the contract's last height passed the sweep height by more than the retention window",
 		reached && lastH >= hMined+retention+margin,
-		fmt.Sprintf("route=initPruning(%d)=%s + owner re-seed at %d=%s; contract_last=%d target=%d (mined %d + retention %d + margin %d) calls=%d time=%s", hMined, ip, target, rs, lastH, target, hMined, retention, margin, calls, time.Since(relayStart).Round(time.Second)))
+		fmt.Sprintf("route=initPruning(%d)=%s + owner re-seed at %d=%s; contract_last=%d target=%d (mined %d + retention %d + margin %d) calls=%d time=%s", hMined, ip, target, rs, lastH, target, hMined, retention, margin, calls, devnetSince(relayStart).Round(time.Second)))
 	if !reached {
 		t.Errorf("the re-seed never landed (contract last=%d, target %d); the retention window was not crossed so nothing below proves pruning", lastH, target)
 		finish()
@@ -190,14 +190,14 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	for i := 0; i < 8 && f10HeaderPresent(d, ctx, 2, cid, hMined); i++ {
 		pruneStatus = vstatus(t, d, ctx, 1, cid, "prune", "")
 		pruneCalls++
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	goneOn2, goneOn1 := false, false
 	for i := 0; i < 18 && !(goneOn2 && goneOn1); i++ {
 		goneOn2 = !f10HeaderPresent(d, ctx, 2, cid, hMined)
 		goneOn1 = !f10HeaderPresent(d, ctx, 1, cid, hMined)
 		if !(goneOn2 && goneOn1) {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 	}
 	tipPresent := f10HeaderPresent(d, ctx, 2, cid, lastH)
@@ -218,7 +218,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	// drove the contract far past hMined, so the VR2-06 depth gate is satisfied
 	// many times over and is not in play here.)
 	cs := vfConfirmSpendOnly(t, d, ctx, 1, cid, bcTxid, hMined, 0)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 	msLive := vfSweepRecordOn(d, ctx, 2, cid, txid)
 	gen0After := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 	gen1After := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
@@ -260,7 +260,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	// the same defect that made DRAIN-04 fail on a GQL timeout; not repeating it here.
 	gen0Stat, gen2Stat, gen0Final := -1, -1, gen0Before
 	for i := 0; i < 24; i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 		gen0Stat = vfVaultStatusOn(d, ctx, 2, cid, 0)
 		gen2Stat = vfVaultStatusOn(d, ctx, 2, cid, 2)
 		gen0Final = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
@@ -290,7 +290,7 @@ func TestVaultF10RetentionPrunedSweep(t *testing.T) {
 	if _, err := d.ConsensusUnstake(unstakeNode, "1.000"); err != nil {
 		bondDetail = fmt.Sprintf("consensus_unstake broadcast error: %v", err)
 	} else {
-		time.Sleep(60 * time.Second)
+		devnetSleep(60 * time.Second)
 		pending := pendingConsensusUnstake(t, d, ctx, 2, member)
 		bondLocked = pending == 0
 		bondDetail = fmt.Sprintf("member=%s pending consensus_unstake amount=%d (want 0 = refused)", member, pending)
@@ -345,7 +345,7 @@ func f10HeaderHexRange(ctx context.Context, d *Devnet, from, to uint64) (string,
 // up; a wave with no progress halves the batch. Returns calls made, elapsed, reached.
 func f10RelayTo(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid string, target uint64, batch int) (int, time.Duration, bool) {
 	t.Helper()
-	start := time.Now()
+	start := devnetNow()
 	calls := 0
 	if batch < 1 {
 		batch = 1
@@ -353,7 +353,7 @@ func f10RelayTo(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid 
 	for wave := 1; wave <= 8; wave++ {
 		last := contractLastHeight(t, d, ctx, cid)
 		if last >= target {
-			return calls, time.Since(start), true
+			return calls, devnetSince(start), true
 		}
 		submitted := 0
 		for from := last + 1; from <= target; from += uint64(batch) {
@@ -369,7 +369,7 @@ func f10RelayTo(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid 
 			payload := fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)
 			if _, err := d.CallContractWithIntents(ctx, callNode, cid, "addBlocks", payload, nil, 8_000_000); err != nil {
 				t.Logf("relay wave %d: submit %d..%d: %v (retrying after a block)", wave, from, to, err)
-				time.Sleep(3500 * time.Millisecond)
+				devnetSleep(3500 * time.Millisecond)
 				if _, err2 := d.CallContractWithIntents(ctx, callNode, cid, "addBlocks", payload, nil, 8_000_000); err2 != nil {
 					t.Logf("relay wave %d: submit %d..%d failed twice: %v", wave, from, to, err2)
 					break
@@ -377,16 +377,16 @@ func f10RelayTo(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid 
 			}
 			calls++
 			submitted++
-			time.Sleep(1500 * time.Millisecond)
+			devnetSleep(1500 * time.Millisecond)
 		}
 		// Wait for the contract to catch up with the wave (stall-bounded).
 		prev := last
 		stall := 0
 		for stall < 12 {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 			now := contractLastHeight(t, d, ctx, cid)
 			if now >= target {
-				return calls, time.Since(start), true
+				return calls, devnetSince(start), true
 			}
 			if now > prev {
 				prev = now
@@ -401,7 +401,7 @@ func f10RelayTo(t *testing.T, d *Devnet, ctx context.Context, callNode int, cid 
 			t.Logf("relay wave %d made no progress; halving the batch to %d", wave, batch)
 		}
 	}
-	return calls, time.Since(start), contractLastHeight(t, d, ctx, cid) >= target
+	return calls, devnetSince(start), contractLastHeight(t, d, ctx, cid) >= target
 }
 
 // vfConfirmSpendOnly issues confirmSpend for bcTxid mined at h WITHOUT relaying any

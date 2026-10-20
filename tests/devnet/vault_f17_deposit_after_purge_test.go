@@ -102,7 +102,7 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -145,7 +145,7 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 		if gen0Status >= 2 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if gen0Status < 2 {
 		t.Fatalf("PRECONDITION FAILED: gen-0 is %s after activateKey, it never entered the retiring path", statusStr(gen0Status))
@@ -193,7 +193,7 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 	// applied it yet. Poll before judging.
 	purgedStatus := vaultStatusOf(t, d, ctx, cid, 0)
 	for i := 0; i < 12 && purgedStatus != 5; i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 		purgedStatus = vaultStatusOf(t, d, ctx, cid, 0)
 	}
 	c.rec("F17-PURGED", "gen-0 reached Purged in the committed vault registry", purgedStatus == 5,
@@ -216,7 +216,7 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 	// asserting on a single immediate read would understate the crediting path.
 	balAfter := balBefore
 	for i := 0; i < 6; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		balAfter = balanceSats(t, d, ctx, cid, owner2)
 		if balAfter != balBefore {
 			break
@@ -239,7 +239,7 @@ func TestVaultF17DepositAfterPurge(t *testing.T) {
 	ctlAddr, ctlStatus := f17DepositAndMap(t, d, ctx, cid, primary1, backupPubKeyG, ctlAcct, ctlSats)
 	ctlAfter := ctlBefore
 	for i := 0; i < 6; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		ctlAfter = balanceSats(t, d, ctx, cid, ctlAcct)
 		if ctlAfter > ctlBefore {
 			break

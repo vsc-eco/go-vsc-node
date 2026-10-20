@@ -66,7 +66,7 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -133,7 +133,7 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	ckStatus := vstatus(t, d, ctx, 1, cid, "createKey", "")
 	keyId1, gen1 := pendingKeyId()
 	for i := 0; i < 24 && keyId1 == ""; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		keyId1, gen1 = pendingKeyId()
 	}
 	if keyId1 == "" {
@@ -161,7 +161,7 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 	// Active), proving it had activated. Poll up to 3 min.
 	gen1Stat := vfVaultStatusOn(d, ctx, 2, cid, gen1)
 	for i := 0; i < 18 && gen1Stat != 1; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		gen1Stat = vfVaultStatusOn(d, ctx, 2, cid, gen1)
 	}
 	c.rec("F26-ACTIVATES", "the key generated with one witness down is USABLE: it activates (BRK-2 check-signature signed by the 4 live parties)",
@@ -214,9 +214,9 @@ func TestVaultF26DeadWitnessKeygenLiveness(t *testing.T) {
 // f26WaitKeyActive polls tss_keys on node n for keyId to reach status active, returning
 // (reached, last status seen).
 func f26WaitKeyActive(d *Devnet, ctx context.Context, node int, keyId string, within time.Duration) (bool, string) {
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	last := "absent"
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		docs, err := d.GetTssKeys(ctx, node, bson.M{"id": keyId})
 		if err == nil && len(docs) > 0 {
 			last = docs[0].Status
@@ -224,7 +224,7 @@ func f26WaitKeyActive(d *Devnet, ctx context.Context, node int, keyId string, wi
 				return true, last
 			}
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	return false, last
 }

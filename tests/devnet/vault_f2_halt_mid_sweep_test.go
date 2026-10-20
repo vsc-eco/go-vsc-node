@@ -51,7 +51,7 @@ func TestVaultF2HaltMidSweep(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -127,7 +127,7 @@ func TestVaultF2HaltMidSweep(t *testing.T) {
 	// status string is logged, not asserted. State on a live node is the truth.
 	st := vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, h)
 	t.Logf("confirmSpend during halt returned status=%s (non-terminal is expected while quorum is lost)", st)
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 
 	// ---- 4. what did the 3 live nodes do on their own? ----
 	// CORRECTED EXPECTATION (first run, 2026-09-05): contract calls are NOT executed
@@ -161,7 +161,7 @@ func TestVaultF2HaltMidSweep(t *testing.T) {
 		fmt.Sprintf("magi-1 slot_height %d -> %d, grew=%v", resFrom, resTo, resumed))
 
 	// ---- 6. every node agrees the sweep settled ----
-	settleDeadline := time.Now().Add(6 * time.Minute)
+	settleDeadline := devnetNow().Add(6 * time.Minute)
 	settled := false
 	settleDetail := ""
 	for {
@@ -180,10 +180,10 @@ func TestVaultF2HaltMidSweep(t *testing.T) {
 			settled = true
 			break
 		}
-		if time.Now().After(settleDeadline) {
+		if devnetNow().After(settleDeadline) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	c.rec("F2-SETTLED", "all 5 nodes show the sweep settled (ms record absent, gen-0 at 0 UTXOs, gen-1 at 1 or more)", settled,
 		"want msRecord=false gen0Utxos=0 gen1Utxos>=1;"+settleDetail)

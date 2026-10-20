@@ -115,7 +115,7 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 	// we know the pre-election window has definitively closed.
 	t.Log("waiting for first running election (epoch >= 1) on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -124,7 +124,7 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 	}
 
 	// Give magid extra blocks to process the early unstake.
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	// Under the genesis election the early unstake is accepted (see above).
 	for n := 1; n <= cfg.Nodes; n++ {
@@ -151,7 +151,7 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 	// Wait for the verdict rather than a fixed time: the action record is only
 	// written when the L2 block closes, which under load took longer than 30 s.
 	status := ""
-	for deadline := time.Now().Add(3 * time.Minute); time.Now().Before(deadline); time.Sleep(3 * time.Second) {
+	for deadline := devnetNow().Add(3 * time.Minute); devnetNow().Before(deadline); devnetSleep(3 * time.Second) {
 		status, _ = d.FindTransactionStatus(ctx, 1, txL)
 		if status == "CONFIRMED" || status == "PROCESSED" || status == "FAILED" {
 			break
@@ -169,12 +169,12 @@ func TestPR181ConsensusUnstakeRejectedBeforeFirstElection(t *testing.T) {
 	}
 	for n := 1; n <= cfg.Nodes; n++ {
 		var acts []unstakeAction
-		for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(3 * time.Second) {
+		for deadline := devnetNow().Add(2 * time.Minute); ; devnetSleep(3 * time.Second) {
 			acts, err = unstakeActions(ctx, d, n, targetAccount)
 			if err != nil {
 				t.Fatalf("reading unstake actions on magi-%d: %v", n, err)
 			}
-			if len(acts) >= want || time.Now().After(deadline) {
+			if len(acts) >= want || devnetNow().After(deadline) {
 				break
 			}
 		}

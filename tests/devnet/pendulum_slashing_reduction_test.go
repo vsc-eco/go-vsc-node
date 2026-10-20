@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -82,7 +81,7 @@ func TestPendulumSlashingReductionApplied(t *testing.T) {
 	// becomes possible.
 	t.Log("waiting for first running election on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -113,7 +112,7 @@ func TestPendulumSlashingReductionApplied(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		t.Fatalf("ctx cancelled while stopped: %v", ctx.Err())
-	case <-time.After(3 * time.Minute):
+	case <-devnetAfter(3 * time.Minute):
 	}
 	t.Logf("restarting magi-%d...", stopNode)
 	if err := d.StartNode(ctx, stopNode); err != nil {
@@ -123,7 +122,7 @@ func TestPendulumSlashingReductionApplied(t *testing.T) {
 	// Give the restarted node a chance to catch up, then wait for the
 	// next settlement (epoch > baselineEpoch).
 	t.Log("waiting for restart catchup and next settlement...")
-	time.Sleep(30 * time.Second)
+	devnetSleep(30 * time.Second)
 	postStop, err := waitForSettlementEpoch(ctx, d, 1, baselineEpoch+1, 12*time.Minute)
 	if err != nil {
 		t.Fatalf("never landed a post-stop settlement marker on magi-1: %v", err)
@@ -136,7 +135,7 @@ func TestPendulumSlashingReductionApplied(t *testing.T) {
 	markers := make([]*settlementMarkerDoc, cfg.Nodes)
 	markers[0] = postStop
 	for n := 2; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 5*time.Minute)
 		m, err := waitForSpecificSettlementEpoch(nodeCtx, d, n, postStop.Epoch, 5*time.Minute)
 		cancel()
 		if err != nil {

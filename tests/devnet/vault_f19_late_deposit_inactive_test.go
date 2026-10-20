@@ -104,7 +104,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -150,7 +150,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 		if gen0Status >= 2 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if gen0Status < 2 {
 		t.Fatalf("PRECONDITION FAILED: gen-0 is %s after activateKey, it never entered the retiring path", statusStr(gen0Status))
@@ -209,7 +209,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 		if balAfter > balBefore && gen0Utxos == 1 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	c.rec("F19-LATE-CREDIT", "a deposit to an EMPTIED, INACTIVE generation is still matched and credited (match-until-purged)",
 		balAfter > balBefore && gen0Utxos == 1,
@@ -227,7 +227,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 		if revertSt == 3 && revertFound && revertAnchor == 0 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	c.rec("F19-REVERT", "retireVault reverts the re-funded generation Inactive to Draining and resets the purge-grace anchor to 0",
 		revertSt == 3 && revertFound && revertAnchor == 0,
@@ -287,7 +287,7 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 		purgedAddr, purgedMapStatus := f19DepositAndMap(t, d, ctx, cid, env.primary0, backupPubKeyG, owner3, lateSats)
 		purgedAfter := purgedBefore
 		for i := 0; i < 6; i++ {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 			purgedAfter = balanceSats(t, d, ctx, cid, owner3)
 			if purgedAfter != purgedBefore {
 				break

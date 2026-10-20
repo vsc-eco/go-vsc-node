@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func TestPoaDuplicateUboRefused(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 10*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 10*time.Minute)
 		cancel()
 		if err != nil {
@@ -56,7 +55,7 @@ func TestPoaDuplicateUboRefused(t *testing.T) {
 				t.Fatalf("admit_vote magi-%d for %s: %v", v, cand, err)
 			}
 		}
-		time.Sleep(60 * time.Second)
+		devnetSleep(60 * time.Second)
 	}
 
 	// positive control: first holder of the UBO is admitted

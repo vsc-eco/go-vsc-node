@@ -56,7 +56,7 @@ func TestTssSignTrancheLoad(t *testing.T) {
 	}
 	requireDocker(t)
 	budget := 140 * time.Minute
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(budget))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(budget))
 	t.Cleanup(cancel)
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
 	if _, err := os.Stat(wasm); wasm == "" || err != nil {
@@ -116,7 +116,7 @@ func TestTssSignTrancheLoad(t *testing.T) {
 		if n0 = vfGenUtxoCountOn(d, ctx, 2, cid, 0); n0 >= want {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if n0 < want {
 		t.Fatalf("PRECONDITION FAILED: gen 0 holds %d utxos, want %d", n0, want)
@@ -131,7 +131,7 @@ func TestTssSignTrancheLoad(t *testing.T) {
 	// reshare; wait for it here so the build is one call.
 	key1 := cid + "-" + btcvault.VaultKeyName(1)
 	reshared := false
-	for end := time.Now().Add(vfTestBudget(25 * time.Minute)); time.Now().Before(end) && !reshared; time.Sleep(20 * time.Second) {
+	for end := devnetNow().Add(vfTestBudget(25 * time.Minute)); devnetNow().Before(end) && !reshared; devnetSleep(20 * time.Second) {
 		e, kg, ok := custodyEpochs(d, ctx, 2, key1)
 		reshared = ok && e > kg
 	}
@@ -156,29 +156,29 @@ func TestTssSignTrancheLoad(t *testing.T) {
 	cpuDone := make(chan map[string]float64)
 	go func() { cpuDone <- trancheSampleCPU(ctx, d.ProjectName(), stopCPU) }()
 
-	start := time.Now()
+	start := devnetNow()
 	pending := make(map[string]bool, n)
 	for _, uh := range sd.UnsignedSigHashes {
 		pending[fmt.Sprintf("%x", uh.SigHash)] = true
 	}
 	var firstAt, allAt time.Duration
 	deadline := start.Add(vfTestBudget(45 * time.Minute))
-	for len(pending) > 0 && time.Now().Before(deadline) && ctx.Err() == nil {
+	for len(pending) > 0 && devnetNow().Before(deadline) && ctx.Err() == nil {
 		if reqs, err := d.GetTssRequests(ctx, 2, key0); err == nil {
 			for _, r := range reqs {
 				if r.Sig != "" && pending[r.Msg] {
 					delete(pending, r.Msg)
 					if firstAt == 0 {
-						firstAt = time.Since(start)
+						firstAt = devnetSince(start)
 					}
 				}
 			}
 		}
 		if len(pending) == 0 {
-			allAt = time.Since(start)
+			allAt = devnetSince(start)
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	close(stopCPU)
 	peakCPU := <-cpuDone
@@ -456,7 +456,7 @@ func trancheSampleCPU(ctx context.Context, project string, stop <-chan struct{})
 			return peak
 		case <-ctx.Done():
 			return peak
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
 }

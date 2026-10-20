@@ -67,14 +67,14 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 	t.Logf("[restore-vote] head=%d baseline(stable honest)=%d", head, baseH)
 
 	// 1) Wait for the double-sign incident to slash node-3's bond below baseline.
-	slashDeadline := time.Now().Add(10 * time.Minute)
+	slashDeadline := devnetNow().Add(10 * time.Minute)
 	var cur3 int64 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
-	for time.Now().Before(slashDeadline) {
+	for devnetNow().Before(slashDeadline) {
 		cur3 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if cur3 >= 0 && cur3 < baseH {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !(cur3 >= 0 && cur3 < baseH) {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -93,8 +93,8 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 	// multiple detectors with DIFFERENT triggering txs, so we choose one row and
 	// the handler will cancel+reverse exactly that (tx_id, kind).
 	var slashRow ledgerRecord
-	rowDeadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(rowDeadline) {
+	rowDeadline := devnetNow().Add(2 * time.Minute)
+	for devnetNow().Before(rowDeadline) {
 		rows := findLedgerTXs(t, d.GQLEndpoint(1), "hive:"+attacker, []string{"safety_slash_consensus"})
 		var best ledgerRecord
 		for _, r := range rows {
@@ -114,7 +114,7 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 			slashRow = best
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if slashRow.TxId == "" {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -150,22 +150,22 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 		}
 		voteCount++
 		t.Logf("[restore-vote] vote %d/%d from %s tx=%s", voteCount, cfg.Nodes-1, voter, txID)
-		time.Sleep(1 * time.Second) // small spacing so votes land in distinct/ordered blocks
+		devnetSleep(1 * time.Second) // small spacing so votes land in distinct/ordered blocks
 	}
 
 	// 4) Poll node-3's bond on ALL nodes until it RISES by the restored incident's
 	// amount. The votes must be observed on L1, tallied during block replay, and
 	// on crossing 2/3 applySafetySlashReverse re-credits the bond. Allow several
 	// leader rotations.
-	restoreDeadline := time.Now().Add(8 * time.Minute)
+	restoreDeadline := devnetNow().Add(8 * time.Minute)
 	restored := false
-	for time.Now().Before(restoreDeadline) {
+	for devnetNow().Before(restoreDeadline) {
 		b := gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if b >= wantBond {
 			restored = true
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !restored {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -180,7 +180,7 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 	// convergence rather than reading a single instant. A genuine divergence still
 	// fails at the deadline. Then a safety_slash_consensus_reverse credit row must
 	// exist for the account.
-	crossDeadline := time.Now().Add(2 * time.Minute)
+	crossDeadline := devnetNow().Add(2 * time.Minute)
 	for {
 		laggard, laggardV := 0, int64(0)
 		for n := 1; n <= cfg.Nodes; n++ {
@@ -192,11 +192,11 @@ func TestGovernanceSlashRestoreVote(t *testing.T) {
 		if laggard == 0 {
 			break // every node agrees
 		}
-		if time.Now().After(crossDeadline) {
+		if devnetNow().After(crossDeadline) {
 			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
 			t.Fatalf("[restore-vote] node-%d disagrees: bond=%d < want=%d (restoration not consistent across nodes)", laggard, laggardV, wantBond)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	reverseRows := findLedgerTXs(t, d.GQLEndpoint(1), "hive:"+attacker, []string{"safety_slash_consensus_reverse"})
 	var reverseTotal int64

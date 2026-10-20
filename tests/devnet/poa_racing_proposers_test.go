@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -53,7 +52,7 @@ func TestPoaRacingProposers(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 1, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -102,8 +101,8 @@ func TestPoaRacingProposers(t *testing.T) {
 	activated := false
 	var seenEpoch uint64
 	var seenWeights []uint64
-	deadline := time.Now().Add(18 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(18 * time.Minute)
+	for devnetNow().Before(deadline) {
 		cur, err := d.currentEpoch(ctx, 1)
 		if err == nil && cur > epoch {
 			elec, err := d.GetElectionGQL(ctx, 1, cur)
@@ -118,7 +117,7 @@ func TestPoaRacingProposers(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context ended while waiting for activation: %v", ctx.Err())
-		case <-time.After(20 * time.Second):
+		case <-devnetAfter(20 * time.Second):
 		}
 	}
 
@@ -142,7 +141,7 @@ func TestPoaRacingProposers(t *testing.T) {
 	}
 	var wantMembers, wantWeights string
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 6*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, target, 6*time.Minute)
 		cancel()
 		if err != nil {

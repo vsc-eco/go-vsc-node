@@ -27,7 +27,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 		t.Skip("set VAULT_STAGE5_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -61,7 +61,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -110,7 +110,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 	// realistic "spend my exact allowance" flow. It also zeroes the allowance so PEN-06 rejects.
 	spender := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 2)
 	vstatus(t, d, ctx, 1, cid, "approve", fmt.Sprintf(`{"spender":"%s","amount":"%d"}`, spender, 5_000_000))
-	time.Sleep(6 * time.Second)
+	devnetSleep(6 * time.Second)
 	spendsBefore := txSpendIds(t, d, ctx, cid)
 	sUF := vstatus(t, d, ctx, 2, cid, "unmapFrom",
 		fmt.Sprintf(`{"amount":"%d","to":"%s","from":"%s","deduct_fee":true}`, 5_000_000, mustNewBtcAddr(t, d, ctx), owner))
@@ -133,7 +133,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 			}
 		}
 		if ufTxid == "" {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	sSettle := "NO_PENDING_SPEND"
@@ -164,7 +164,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	rec("VL-GP-11/BRK-2", "gen-1 activated after check-sig (v2)", activated, "")
 	if !activated {
@@ -185,7 +185,7 @@ func TestVaultStage5Lifecycle(t *testing.T) {
 		if !isOK(vstatus(t, d, ctx, 1, cid, "migrateVault", "")) {
 			break // nothing left to migrate
 		}
-		time.Sleep(4 * time.Second)
+		devnetSleep(4 * time.Second)
 	}
 	sRet1 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 	rec("VL-GP-10a", "retireVault draining→inactive", isOK(sRet1), "status="+sRet1)

@@ -37,7 +37,7 @@ func TestPendulumLPFloorDevnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(50*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(50*time.Minute))
 	t.Cleanup(cancel)
 
 	wasm, err := BuildAmmPoolContract(ctx)
@@ -74,7 +74,7 @@ func TestPendulumLPFloorDevnet(t *testing.T) {
 		t.Fatalf("network never reached block 30: %v", err)
 	}
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, c := context.WithTimeout(ctx, 10*time.Minute)
+		nctx, c := devnetWithTimeout(ctx, 10*time.Minute)
 		if err := d.waitForElectionEpoch(nctx, n, 1, 10*time.Minute); err != nil {
 			c()
 			dumpDiagnostics(t, d, ctx)
@@ -256,9 +256,9 @@ func TestPendulumLPFloorDevnet(t *testing.T) {
 // settled before the swap's credit reached the bucket.
 func waitForPaidSettlement(t *testing.T, d *Devnet, ctx context.Context, after uint64, timeout time.Duration) *settlementMarkerDoc {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	next := after + 1
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		latest, err := readLatestSettlementMarker(ctx, d, 1)
 		if err != nil {
 			t.Fatalf("magi-1 read settlement marker: %v", err)
@@ -279,7 +279,7 @@ func waitForPaidSettlement(t *testing.T, d *Devnet, ctx context.Context, after u
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context cancelled waiting for a paid settlement: %v", ctx.Err())
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	dumpDiagnostics(t, d, ctx)
@@ -323,8 +323,8 @@ func witnessHive(d *Devnet, node int) string {
 // period for the moving-average window to populate.
 func waitForFeedWarmup(t *testing.T, d *Devnet, ctx context.Context) {
 	t.Helper()
-	deadline := time.Now().Add(6 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(6 * time.Minute)
+	for devnetNow().Before(deadline) {
 		head := nodeBlock(t, d, ctx, 1)
 		from := uint64(1)
 		if head > 40 {
@@ -333,14 +333,14 @@ func waitForFeedWarmup(t *testing.T, d *Devnet, ctx context.Context) {
 		c, err := countHiveBlocksWithFeedPublishOps(ctx, d, 1, from, head)
 		if err == nil && c > 0 {
 			// Let a few more feeds land so the moving-average window is fresh.
-			time.Sleep(45 * time.Second)
+			devnetSleep(45 * time.Second)
 			t.Logf("oracle feed warm (%d recent feed_publish blocks)", c)
 			return
 		}
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context cancelled during feed warmup: %v", ctx.Err())
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
 	t.Log("warning: proceeding without confirmed feed warmup")
@@ -350,8 +350,8 @@ func waitForFeedWarmup(t *testing.T, d *Devnet, ctx context.Context) {
 // minBaseUnits (base units, precision 3) on the given node.
 func waitForL2Balance(t *testing.T, d *Devnet, ctx context.Context, node int, account, asset string, minBaseUnits int64, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		bal, err := d.GetAccountBalance(ctx, node, account)
 		if err == nil && bal != nil {
 			got := bal.Hive
@@ -365,7 +365,7 @@ func waitForL2Balance(t *testing.T, d *Devnet, ctx context.Context, node int, ac
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	return false
@@ -374,8 +374,8 @@ func waitForL2Balance(t *testing.T, d *Devnet, ctx context.Context, node int, ac
 // waitForStateKeyAtLeast polls until a contract state key parses to an int >= min.
 func waitForStateKeyAtLeast(t *testing.T, d *Devnet, ctx context.Context, node int, contractID, key string, min int64, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		st, err := d.GetStateByKeys(ctx, node, contractID, []string{key})
 		if err == nil && st[key] != nil {
 			if v, perr := strconv.ParseInt(fmt.Sprintf("%v", st[key]), 10, 64); perr == nil && v >= min {
@@ -385,7 +385,7 @@ func waitForStateKeyAtLeast(t *testing.T, d *Devnet, ctx context.Context, node i
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	return false
@@ -394,8 +394,8 @@ func waitForStateKeyAtLeast(t *testing.T, d *Devnet, ctx context.Context, node i
 // waitStateKeyPresent polls until a contract state key has any non-nil value.
 func waitStateKeyPresent(t *testing.T, d *Devnet, ctx context.Context, node int, contractID, key string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		st, err := d.GetStateByKeys(ctx, node, contractID, []string{key})
 		if err == nil && st[key] != nil && fmt.Sprintf("%v", st[key]) != "" {
 			return true
@@ -403,7 +403,7 @@ func waitStateKeyPresent(t *testing.T, d *Devnet, ctx context.Context, node int,
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	return false

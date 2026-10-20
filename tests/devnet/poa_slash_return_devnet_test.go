@@ -51,7 +51,7 @@ func TestPoaSlashedSeatReturnsAfterTopUp(t *testing.T) {
 	cfg.MagiEnv["VSC_DOUBLE_SIGN_ACCOUNT"] = dipper
 	cfg.MagiEnv["VSC_DOUBLE_SIGN_ONCE"] = "1"
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(90*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(90*time.Minute))
 	t.Cleanup(cancel)
 	d, err := New(cfg)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestPoaSlashedSeatReturnsAfterTopUp(t *testing.T) {
 
 	// 1. The slash.
 	var slashed int64
-	for end := time.Now().Add(15 * time.Minute); time.Now().Before(end); time.Sleep(5 * time.Second) {
+	for end := devnetNow().Add(15 * time.Minute); devnetNow().Before(end); devnetSleep(5 * time.Second) {
 		if v := gqlConsensus(t, d.GQLEndpoint(1), "hive:"+dipper); v > 0 && v < cp.MinStake {
 			slashed = v
 			break
@@ -100,11 +100,11 @@ func TestPoaSlashedSeatReturnsAfterTopUp(t *testing.T) {
 	if _, err := d.Deposit(ctx, d.cfg.Nodes, "2000.000", "hive"); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	for end := time.Now().Add(5 * time.Minute); ; time.Sleep(5 * time.Second) {
+	for end := devnetNow().Add(5 * time.Minute); ; devnetSleep(5 * time.Second) {
 		if bal, err := d.GetAccountBalance(ctx, 1, "hive:"+dipper); err == nil && bal.Hive >= 2_000_000 {
 			break
 		}
-		if time.Now().After(end) {
+		if devnetNow().After(end) {
 			t.Fatalf("deposit never credited")
 		}
 	}
@@ -112,12 +112,12 @@ func TestPoaSlashedSeatReturnsAfterTopUp(t *testing.T) {
 	if _, err := d.ConsensusStake(d.cfg.Nodes, d.cfg.Nodes, "2000.000"); err != nil {
 		t.Fatalf("consensus_stake: %v", err)
 	}
-	for end := time.Now().Add(5 * time.Minute); ; time.Sleep(5 * time.Second) {
+	for end := devnetNow().Add(5 * time.Minute); ; devnetSleep(5 * time.Second) {
 		if v := gqlConsensus(t, d.GQLEndpoint(1), "hive:"+dipper); v >= cp.MinStake {
 			t.Logf("3. %s topped up to %d at ~block %d (epoch %d)", dipper, v, bhTop, epTop)
 			break
 		}
-		if time.Now().After(end) {
+		if devnetNow().After(end) {
 			t.Fatalf("top-up never landed")
 		}
 	}

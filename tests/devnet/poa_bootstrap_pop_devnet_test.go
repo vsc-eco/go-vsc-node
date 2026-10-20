@@ -92,14 +92,14 @@ func TestPoaBootstrapProvesKeys(t *testing.T) {
 			select {
 			case <-breakCtx.Done():
 				return
-			case <-time.After(3 * time.Second):
+			case <-devnetAfter(3 * time.Second):
 			}
 		}
 	}()
 	select {
 	case n := <-broken:
 		t.Logf("broke the gateway proof of %s on %d witness row(s), re-breaking every 3 s", victim, n)
-	case <-time.After(2 * time.Minute):
+	case <-devnetAfter(2 * time.Minute):
 		stopBreaking()
 		t.Fatalf("PRECONDITION FAILED: no witness rows for %s to break", victim)
 	}

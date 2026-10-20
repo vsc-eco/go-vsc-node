@@ -47,7 +47,7 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 		t.Skip("set VAULT_SHADOW_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(120*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(120*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -76,7 +76,7 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 	}
 	statusOn := func(gen uint32, want int, within time.Duration) int {
 		st := vfVaultStatusOn(d, ctx, 2, cid, gen)
-		for end := time.Now().Add(within); st != want && time.Now().Before(end); time.Sleep(10 * time.Second) {
+		for end := devnetNow().Add(within); st != want && devnetNow().Before(end); devnetSleep(10 * time.Second) {
 			st = vfVaultStatusOn(d, ctx, 2, cid, gen)
 		}
 		return st
@@ -97,7 +97,7 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 60_000_000, contractLastHeight(t, d, ctx, cid))
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 40_000_000, contractLastHeight(t, d, ctx, cid))
 	g1 := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
-	for end := time.Now().Add(3 * time.Minute); g1 < 2 && time.Now().Before(end); time.Sleep(10 * time.Second) {
+	for end := devnetNow().Add(3 * time.Minute); g1 < 2 && devnetNow().Before(end); devnetSleep(10 * time.Second) {
 		g1 = vfGenUtxoCountOn(d, ctx, 2, cid, 1)
 	}
 	if g1 < 2 {
@@ -119,7 +119,7 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 	// drain below measures the selection, not the reshare gate.
 	key2 := cid + "-mainv2"
 	reshared := false
-	for end := time.Now().Add(vfTestBudget(20 * time.Minute)); time.Now().Before(end); time.Sleep(20 * time.Second) {
+	for end := devnetNow().Add(vfTestBudget(20 * time.Minute)); devnetNow().Before(end); devnetSleep(20 * time.Second) {
 		if e, kg, found := custodyEpochs(d, ctx, 2, key2); found && e > kg {
 			reshared = true
 			t.Logf("generation 2 reshared: epoch %d > keygen %d", e, kg)
@@ -168,7 +168,7 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 	// 6. Failure state: a late deposit to generation 0's old address.
 	fundVaultViaSPV(t, d, ctx, cid, env.primary0, backupPubKeyG, env.owner, 10_000_000, contractLastHeight(t, d, ctx, cid))
 	g0 = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
-	for end := time.Now().Add(3 * time.Minute); g0 < 1 && time.Now().Before(end); time.Sleep(10 * time.Second) {
+	for end := devnetNow().Add(3 * time.Minute); g0 < 1 && devnetNow().Before(end); devnetSleep(10 * time.Second) {
 		g0 = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 	}
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")

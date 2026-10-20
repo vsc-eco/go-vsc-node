@@ -92,7 +92,7 @@ func TestVaultF23PauseMidSweep(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -218,7 +218,7 @@ func TestVaultF23PauseMidSweep(t *testing.T) {
 	confirmStatus := vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, sweepH)
 	hAfterRelay := contractLastHeight(t, d, ctx, cid)
 
-	settleDeadline := time.Now().Add(5 * time.Minute)
+	settleDeadline := devnetNow().Add(5 * time.Minute)
 	postConfirm := preConfirm
 	drained := false
 	for {
@@ -227,10 +227,10 @@ func TestVaultF23PauseMidSweep(t *testing.T) {
 			drained = true
 			break
 		}
-		if time.Now().After(settleDeadline) {
+		if devnetNow().After(settleDeadline) {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	msGone := !vfSweepRecordOn(d, ctx, 2, cid, txid)
 	spendGone := !contains(postConfirm.spends, txid)
@@ -394,13 +394,13 @@ func vf23PausedOn(d *Devnet, ctx context.Context, node int, cid string) (string,
 // vf23WaitPaused polls a node until the paused flag reaches `want`, and returns the
 // last value seen plus whether the contract is paused at that moment.
 func vf23WaitPaused(d *Devnet, ctx context.Context, node int, cid string, want bool, within time.Duration) (string, bool) {
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	val, on := vf23PausedOn(d, ctx, node, cid)
 	for on != want {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 		val, on = vf23PausedOn(d, ctx, node, cid)
 	}
 	return val, on

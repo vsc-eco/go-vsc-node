@@ -53,7 +53,7 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 
 	// Wait for the first running election (epoch >= 1) on every node.
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 1, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -87,13 +87,13 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 
 	// Poll until the per-edge delegation appears (stake processed AND 0.5.0 active).
 	var edgeOK bool
-	deadline := time.Now().Add(3 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(3 * time.Minute)
+	for devnetNow().Before(deadline) {
 		if del, _ := d.consensusDelegation(ctx, 1, userAFull, operatorBFull); del == 5000 {
 			edgeOK = true
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	if !edgeOK {
 		hc := int64(-1)
@@ -122,13 +122,13 @@ func TestConsensusDelegatedStakeDevnet(t *testing.T) {
 	}
 	// Poll until the edge drains to 0.
 	var drained bool
-	deadline = time.Now().Add(3 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline = devnetNow().Add(3 * time.Minute)
+	for devnetNow().Before(deadline) {
 		if del, _ := d.consensusDelegation(ctx, 1, userAFull, operatorBFull); del == 0 {
 			drained = true
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	if !drained {
 		t.Fatal("edge never drained to 0 after undelegate")

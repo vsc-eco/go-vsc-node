@@ -69,7 +69,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -133,19 +133,19 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 	regBogus := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, bogus, backupPubKeyG))
 	stored := ""
-	regDeadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(regDeadline) {
+	regDeadline := devnetNow().Add(2 * time.Minute)
+	for devnetNow().Before(regDeadline) {
 		stored = f15PrimaryHexOn(d, ctx, 1, cid, 1)
 		if stored == bogus {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	registered := stored == bogus
 	t.Logf("registered a WRONG primary for gen-1 first: status=%s stored=%q bogus=%v", regBogus, stored, registered)
 	regReal := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
 		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG))
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	stillBogus := f15PrimaryHexOn(d, ctx, 1, cid, 1) == bogus
 	c.rec("F15-SETONCE", "the pending generation's primary is set-once: registering the real key after a different one is refused (RegisterVaultKeys, every network)",
 		!isOK(regReal) && stillBogus,
@@ -170,7 +170,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 			break
 		}
 		if i < 2 {
-			time.Sleep(20 * time.Second)
+			devnetSleep(20 * time.Second)
 		}
 	}
 	gen1Status := vfVaultStatusOn(d, ctx, 1, cid, 1)
@@ -207,13 +207,13 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 		// ---- step 3: F15-DISCARD, the never-brick escape hatch during the halt ----
 		discardStatus := vstatus(t, d, ctx, 1, cid, "discardPendingKey", "")
 		discarded := false
-		discardDeadline := time.Now().Add(2 * time.Minute)
-		for time.Now().Before(discardDeadline) {
+		discardDeadline := devnetNow().Add(2 * time.Minute)
+		for devnetNow().Before(discardDeadline) {
 			if vfVaultStatusOn(d, ctx, 1, cid, 1) == -1 {
 				discarded = true
 				break
 			}
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		c.rec("F15-DISCARD", "discardPendingKey removes the stalled gen-1 (its registered key can never activate)",
 			discarded, fmt.Sprintf("tx status=%s (non-terminal is expected during a halt, the verdict is contract STATE); gen-1 status on magi-1=%d (want -1 absent); gen-0 status=%d (want 1 Active, the live vault is never touched)",
@@ -241,7 +241,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 		// both immediately and false-failed while the drain step below then passed.
 		gen1After, gen2After := vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 2)
 		for i := 0; i < 12 && (gen1After != -1 || gen2After != int(btcvault.VaultStatusActive)); i++ {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 			gen1After, gen2After = vfVaultStatusOn(d, ctx, 2, cid, 1), vfVaultStatusOn(d, ctx, 2, cid, 2)
 		}
 		c.rec("F15-REMINT-GEN", "the re-mint gets a FRESH generation number (gen-2), the discarded gen-1 is never reused",
@@ -285,7 +285,7 @@ func TestVaultF15CheckSigNeverLands(t *testing.T) {
 // before that. WaitForTssKey polls every 5 seconds, which can burn most of the
 // window on its own.
 func f15WaitKeyActive(ctx context.Context, d *Devnet, node int, keyId string, timeout time.Duration) (*TssKeyDoc, string, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	last := "absent"
 	for {
 		docs, err := d.GetTssKeys(ctx, node, bson.M{"id": keyId})
@@ -296,13 +296,13 @@ func f15WaitKeyActive(ctx context.Context, d *Devnet, node int, keyId string, ti
 				return &doc, last, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, last, fmt.Errorf("timeout after %v waiting for tss_key %s to reach active on magi-%d", timeout, keyId, node)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, last, ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-devnetAfter(2 * time.Second):
 		}
 	}
 }
@@ -313,7 +313,7 @@ func f15WaitKeyActive(ctx context.Context, d *Devnet, node int, keyId string, ti
 // check-signature must be prevented, so the two stops overlap here instead.
 func f15StopFast(t *testing.T, d *Devnet, ctx context.Context, nodes []int) time.Duration {
 	t.Helper()
-	start := time.Now()
+	start := devnetNow()
 	errs := make([]error, len(nodes))
 	var wg sync.WaitGroup
 	for i, n := range nodes {
@@ -324,7 +324,7 @@ func f15StopFast(t *testing.T, d *Devnet, ctx context.Context, nodes []int) time
 		}(i, n)
 	}
 	wg.Wait()
-	elapsed := time.Since(start)
+	elapsed := devnetSince(start)
 	for i, n := range nodes {
 		if errs[i] != nil {
 			t.Fatalf("stopping magi-%d: %v", n, errs[i])

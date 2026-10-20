@@ -79,7 +79,7 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 	cfg.MagiEnv["VSC_GATEWAY_ROTATION_INTERVAL"] = "20"
 	cfg.MagiEnv["VSC_GATEWAY_ACTION_INTERVAL"] = "20"
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(55*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(55*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)
@@ -135,10 +135,10 @@ func TestGatewayDecentralization_Version020Gate(t *testing.T) {
 // presence matches wantPresent, or the timeout elapses.
 func pollGatewayDao(t *testing.T, ctx context.Context, hc *hivego.HiveRpcNode, account string, wantPresent bool, timeout time.Duration) error {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var lastSeen string
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return &pollTimeout{last: lastSeen}
 		}
 		accs, err := hc.GetAccount([]string{account})
@@ -152,7 +152,7 @@ func pollGatewayDao(t *testing.T, ctx context.Context, hc *hivego.HiveRpcNode, a
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }

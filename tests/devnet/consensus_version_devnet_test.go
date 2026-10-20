@@ -63,15 +63,15 @@ func TestConsensusVersionDevnetManual(t *testing.T) {
 	// 1) Wait until the floor has settled at 0.2 and the nodes run a build that
 	// supports the 0.3 line being proposed (0.3 or later: the build moves on, this
 	// scenario does not).
-	deadline := time.Now().Add(8 * time.Minute)
+	deadline := devnetNow().Add(8 * time.Minute)
 	var line, running string
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		var err error
 		line, running, _, err = d.ConsensusInfo(ctx, 1)
 		if err == nil && line == "0.2" && cvRunsAtLeast(running, 3) {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if line != "0.2" || !cvRunsAtLeast(running, 3) {
 		t.Fatalf("[cv] expected active line 0.2 with nodes running 0.3 or later, got line=%q running=%q", line, running)
@@ -149,7 +149,7 @@ func containsStr(xs []string, want string) bool {
 
 // pollAllNodes returns nil once pred holds for every node within timeout.
 func pollAllNodes(nodes int, timeout time.Duration, pred func(node int) bool) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		all := true
 		var pending int
@@ -163,24 +163,24 @@ func pollAllNodes(nodes int, timeout time.Duration, pred func(node int) bool) er
 		if all {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return fmt.Errorf("node-%d did not reach the expected state within %v", pending, timeout)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
 // pollNode returns nil once pred holds within timeout (single-node variant).
 func pollNode(node int, timeout time.Duration, pred func() bool) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		if pred() {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return fmt.Errorf("node-%d did not reach the expected state within %v", node, timeout)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
@@ -239,15 +239,15 @@ func TestConsensusVersionLateAdoptionReindexDevnet(t *testing.T) {
 	const downNode = 5 // magi.test5 — its announced 0.3 version stays counted while offline
 
 	// 1) Floor settled at 0.2 with nodes running 0.3 or later.
-	deadline := time.Now().Add(8 * time.Minute)
+	deadline := devnetNow().Add(8 * time.Minute)
 	var line, running string
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		var err error
 		line, running, _, err = d.ConsensusInfo(ctx, 1)
 		if err == nil && line == "0.2" && cvRunsAtLeast(running, 3) {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if line != "0.2" || !cvRunsAtLeast(running, 3) {
 		t.Fatalf("[cv] expected active line 0.2 with nodes running 0.3 or later, got line=%q running=%q", line, running)

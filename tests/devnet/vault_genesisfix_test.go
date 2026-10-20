@@ -25,7 +25,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 		t.Skip("set VAULT_GENESISFIX_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(28*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(28*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -51,7 +51,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 8*time.Minute)
@@ -68,7 +68,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 			break
 		}
 		t.Logf("register not yet activated (awaiting genesis check-sig)... retry %d", i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !ok {
 		// try explicit activateKey path too
@@ -77,7 +77,7 @@ func TestVaultGenesisV2Fix(t *testing.T) {
 				ok = true
 				break
 			}
-			time.Sleep(15 * time.Second)
+			devnetSleep(15 * time.Second)
 		}
 	}
 	if ok {

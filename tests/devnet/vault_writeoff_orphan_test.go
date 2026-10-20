@@ -61,7 +61,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 		t.Skip("set VAULT_WOD_ORPHAN_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(40*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(40*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -92,7 +92,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -125,7 +125,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 600, seedH)
 	n0 := 0
 	for i := 0; i < 12 && n0 == 0; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		n0 = genUtxoCount(t, d, ctx, cid, 0)
 	}
 	bal0 := balanceSats(t, d, ctx, cid, owner)
@@ -154,7 +154,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		t.Fatal("gen-1 never activated")
@@ -169,7 +169,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 	hx, _ := btcBlockHeaderHex(ctx, d, h)
 	vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":1}`, hx))
 	mig := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 	afterMig := genUtxoCount(t, d, ctx, cid, 0)
 	rec("ORPH-01", "the lone 600-sat residual cannot be swept even at latest_fee 1 (below dust after fee)", afterMig == 1,
 		fmt.Sprintf("migrateVault status=%s, gen-0 holds %d UTXO(s) (want 1, still stuck)", mig, afterMig))
@@ -179,7 +179,7 @@ func TestVaultWriteOffDustOrphansBalance(t *testing.T) {
 	wod := vstatus(t, d, ctx, 1, cid, "writeOffDust", "")
 	afterWod := 1
 	for i := 0; i < 12 && afterWod != 0; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		afterWod = genUtxoCount(t, d, ctx, cid, 0)
 	}
 	rec("ORPH-02", "writeOffDust force-retires the lone sub-min residual (write-off positive path is REACHABLE)", isOK(wod) && afterWod == 0,

@@ -49,7 +49,7 @@ func custodyDevnet(t *testing.T, budget time.Duration, desc string, fundSats int
 		t.Skip("set VAULT_CUSTODY_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(budget))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(budget))
 	t.Cleanup(cancel)
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
 	if _, err := os.Stat(wasm); wasm == "" || err != nil {
@@ -82,7 +82,7 @@ func vfSimulate(d *Devnet, ctx context.Context, node int, cid, caller, action, p
 	}
 	err := d.gqlQuery(ctx, node, `query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success err err_msg } }`,
 		map[string]any{"i": map[string]any{
-			"tx_id":          fmt.Sprintf("devnet-dryrun-%d", time.Now().UnixNano()),
+			"tx_id":          fmt.Sprintf("devnet-dryrun-%d", time.Now().UnixNano()), // wall: unique id
 			"required_auths": []string{caller},
 			"calls": []map[string]any{{
 				"contract_id": cid, "action": action, "payload": payload, "rc_limit": 100000,
@@ -206,7 +206,7 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 		simOK, simMsg := vfSimulate(d, ctx, 1, cid, caller, "migrateVault", "")
 		before := txSpendIds(t, d, ctx, cid)
 		status, _ := vstatusTx(t, d, ctx, 1, cid, "migrateVault", "")
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 		after := txSpendIds(t, d, ctx, cid)
 		g0 := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 		refused := gateNamed && !simOK && strings.Contains(simMsg, "has not been reshared") && status != "CONFIRMED" && len(after) == len(before) && g0 == g0Before
@@ -217,14 +217,14 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 
 	// 2. The first reshare lands.
 	reshared := false
-	deadline := time.Now().Add(vfTestBudget(20 * time.Minute))
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(vfTestBudget(20 * time.Minute))
+	for devnetNow().Before(deadline) {
 		if e, kg, ok := custodyEpochs(d, ctx, 2, key1); ok && e > kg {
 			reshared = true
 			t.Logf("gen-1 reshared: epoch %d > keygen %d", e, kg)
 			break
 		}
-		time.Sleep(20 * time.Second)
+		devnetSleep(20 * time.Second)
 	}
 	c.rec("CUST-RESHARE", "the new key is reshared to the committee within the wait", reshared, "")
 	if !reshared {
@@ -235,7 +235,7 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 	// 2b. A dry run sees the reshare too. The mapping bot dry-runs migrateVault
 	// before sending it, so a preview stuck on "not reshared" stalls every rotation.
 	simOK, simMsg := false, ""
-	for end := time.Now().Add(2 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+	for end := devnetNow().Add(2 * time.Minute); devnetNow().Before(end); devnetSleep(10 * time.Second) {
 		if simOK, simMsg = vfSimulate(d, ctx, 1, cid, caller, "migrateVault", ""); simOK {
 			break
 		}
@@ -253,7 +253,7 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 		if signed {
 			if bcTxid, h, err := vfBroadcastAndMine(t, d, ctx, raw); err == nil {
 				vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, h)
-				for end := time.Now().Add(6 * time.Minute); time.Now().Before(end) && !settled; time.Sleep(15 * time.Second) {
+				for end := devnetNow().Add(6 * time.Minute); devnetNow().Before(end) && !settled; devnetSleep(15 * time.Second) {
 					settled = vfGenUtxoCountOn(d, ctx, 2, cid, 0) < g0Before && vfGenUtxoCountOn(d, ctx, 2, cid, 1) >= 1
 				}
 			} else {
@@ -301,7 +301,7 @@ func TestVaultCustodyShareSaveFailure(t *testing.T) {
 
 	// The missing-share check runs every rotate interval (60 blocks here).
 	alarm := false
-	for end := time.Now().Add(vfTestBudget(10 * time.Minute)); time.Now().Before(end) && !alarm; time.Sleep(20 * time.Second) {
+	for end := devnetNow().Add(vfTestBudget(10 * time.Minute)); devnetNow().Before(end) && !alarm; devnetSleep(20 * time.Second) {
 		alarm = custodyLogLineHas(d, ctx, bad, "cannot load its share", key1)
 	}
 	quiet := true
@@ -315,11 +315,11 @@ func TestVaultCustodyShareSaveFailure(t *testing.T) {
 
 	// Still broken? A listed holder without its share is in every signing party
 	// until blame leaves it out. Measure whether the check-signature still lands.
-	start := time.Now()
+	start := devnetNow()
 	vfWaitPreparams(t, d, ctx, time.Duration(float64(12*time.Minute)*vfTimeoutScale()))
 	activated := vfRegisterAndActivate(t, d, ctx, cid, primary1, 60)
 	c.rec("CUST-SAVE-ACTIVATE", "the vault still activates on the four saved shares", activated,
-		fmt.Sprintf("after %s", time.Since(start).Round(time.Second)))
+		fmt.Sprintf("after %s", devnetSince(start).Round(time.Second)))
 	c.summary("TestVaultCustodyShareSaveFailure")
 }
 
@@ -341,7 +341,7 @@ func custodyWithdrawSigned(t *testing.T, d *Devnet, ctx context.Context, cid, ke
 	}
 	txid := ""
 	for i := 0; i < 20 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id
@@ -357,8 +357,8 @@ func custodyWithdrawSigned(t *testing.T, d *Devnet, ctx context.Context, cid, ke
 	}
 	var mtx wire.MsgTx
 	_ = mtx.Deserialize(bytes.NewReader(sd.Tx))
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(within)
+	for devnetNow().Before(deadline) {
 		all := true
 		for _, uh := range sd.UnsignedSigHashes {
 			if !vfSignatureLanded(d, ctx, 2, keyId, uh.SigHash) {
@@ -368,7 +368,7 @@ func custodyWithdrawSigned(t *testing.T, d *Devnet, ctx context.Context, cid, ke
 		if all {
 			return true, fmt.Sprintf("txid=%s inputs=%d signed", txid, len(sd.UnsignedSigHashes))
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	return false, fmt.Sprintf("txid=%s inputs=%d not signed within %s (first sighash %s)", txid, len(sd.UnsignedSigHashes), within,
 		hex.EncodeToString(sd.UnsignedSigHashes[0].SigHash))
@@ -386,7 +386,7 @@ func TestVaultCustodyActiveHoldersOutsideElection(t *testing.T) {
 	// Money in the active vault to withdraw.
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 30_000_000, contractLastHeight(t, d, ctx, cid))
 	for i := 0; i < 12 && !balanceCredited(t, d, ctx, cid, env.owner); i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if !balanceCredited(t, d, ctx, cid, env.owner) {
 		t.Fatalf("PRECONDITION FAILED: the deposit into gen 1 was not credited")
@@ -395,7 +395,7 @@ func TestVaultCustodyActiveHoldersOutsideElection(t *testing.T) {
 	// (an unmap's change is not spendable until its spend confirms).
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 20_000_000, contractLastHeight(t, d, ctx, cid))
 	for i := 0; i < 18 && vfGenUtxoCountOn(d, ctx, 2, cid, 1) < 2; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if n := vfGenUtxoCountOn(d, ctx, 2, cid, 1); n < 2 {
 		t.Fatalf("PRECONDITION FAILED: gen 1 holds %d utxo(s) after two deposits", n)
@@ -420,7 +420,7 @@ func TestVaultCustodyHoldersOutsideElectionNoOlderCommittee(t *testing.T) {
 
 	fundVaultViaSPV(t, d, ctx, cid, env.primary0, backupPubKeyG, env.owner, 20_000_000, contractLastHeight(t, d, ctx, cid))
 	for i := 0; i < 18 && vfGenUtxoCountOn(d, ctx, 2, cid, 0) < 2; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if n := vfGenUtxoCountOn(d, ctx, 2, cid, 0); n < 2 {
 		t.Fatalf("PRECONDITION FAILED: gen 0 holds %d utxo(s) after two deposits", n)
@@ -449,7 +449,7 @@ func custodyHoldersLeave(t *testing.T, d *Devnet, ctx context.Context, c *vfCase
 	}
 	out := false
 	var members []string
-	for end := time.Now().Add(vfTestBudget(15 * time.Minute)); time.Now().Before(end) && !out; time.Sleep(20 * time.Second) {
+	for end := devnetNow().Add(vfTestBudget(15 * time.Minute)); devnetNow().Before(end) && !out; devnetSleep(20 * time.Second) {
 		ep := custodyCurrentEpoch(d, ctx, 2)
 		if ep <= e0 {
 			continue
@@ -475,7 +475,7 @@ func custodyHoldersLeave(t *testing.T, d *Devnet, ctx context.Context, c *vfCase
 	// And it is handed to the members who replaced them.
 	handed := false
 	handDetail := ""
-	for end := time.Now().Add(vfTestBudget(20 * time.Minute)); time.Now().Before(end) && !handed; time.Sleep(20 * time.Second) {
+	for end := devnetNow().Add(vfTestBudget(20 * time.Minute)); devnetNow().Before(end) && !handed; devnetSleep(20 * time.Second) {
 		cs, _ := d.GetCommitments(ctx, 2, bson.M{"key_id": keyId, "type": "reshare", "epoch": bson.M{"$gt": e0}})
 		for _, cm := range cs {
 			if names, err := d.GetElectionMembers(ctx, 2, cm.Epoch); err == nil && len(names) == 3 {

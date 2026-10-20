@@ -70,7 +70,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		t.Fatalf("wasm: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	const hpin = 400
@@ -133,14 +133,14 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 	// only proof VSC accepted the op.
 	f16HaltUntil := func(active bool, wantCount int, budget time.Duration) int {
 		payload, _ := json.Marshal(map[string]any{"active": active, "keyId": cid + "-main"})
-		deadline := time.Now().Add(budget)
+		deadline := devnetNow().Add(budget)
 		got := -1
-		for time.Now().Before(deadline) {
+		for devnetNow().Before(deadline) {
 			if _, err := broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), f16SignWith); err != nil {
 				t.Logf("  tss_halt(active=%v) broadcast err (%v), retrying", active, firstLine(err.Error()))
 			}
 			for i := 0; i < 6; i++ {
-				time.Sleep(10 * time.Second)
+				devnetSleep(10 * time.Second)
 				if got = countHaltFlag(t, ctx, d, allNodes); got == wantCount {
 					return got
 				}
@@ -178,7 +178,7 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		}
 		var txid string
 		for i := 0; i < 20 && txid == ""; i++ {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 			for _, id := range txSpendIds(t, d, ctx, cid) {
 				if !contains(before, id) {
 					txid = id
@@ -251,10 +251,10 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		c.rec("F16-WITHDRAW-FROZEN", "ordinary withdrawal from the ACTIVE generation does not sign while halted", false,
 			fmt.Sprintf("unmap produced no pending spend (status=%s txid=%q), so the freeze could not be observed", unmapStatus, unmapTxid))
 	} else {
-		frozenDeadline := time.Now().Add(2 * time.Minute)
+		frozenDeadline := devnetNow().Add(2 * time.Minute)
 		signedWhileHalted := 0
-		for time.Now().Before(frozenDeadline) {
-			time.Sleep(10 * time.Second)
+		for devnetNow().Before(frozenDeadline) {
+			devnetSleep(10 * time.Second)
 			if signedWhileHalted = f16SignedInputs(cid+"-mainv1", usd); signedWhileHalted > 0 {
 				break // a leak: stop early and report it
 			}
@@ -275,14 +275,14 @@ func TestVaultF16HaltWithPendingSweep(t *testing.T) {
 		t.Errorf("vsc.tss_halt(false) did not clear everywhere: %d/%d nodes still report btc_keysign_halted", clearedCount, len(allNodes))
 	}
 	if usd != nil {
-		unfrozenDeadline := time.Now().Add(3 * time.Minute)
+		unfrozenDeadline := devnetNow().Add(3 * time.Minute)
 		signedAfterClear := 0
 		for {
 			signedAfterClear = f16SignedInputs(cid+"-mainv1", usd)
-			if signedAfterClear == len(usd.UnsignedSigHashes) || time.Now().After(unfrozenDeadline) {
+			if signedAfterClear == len(usd.UnsignedSigHashes) || devnetNow().After(unfrozenDeadline) {
 				break
 			}
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		if signedAfterClear > 0 && signedAfterClear < len(usd.UnsignedSigHashes) {
 			t.Logf("note: only %d of %d withdrawal inputs signed within 3 minutes of the clear (the freeze is lifted, the remainder is a sign interval timing tail)",

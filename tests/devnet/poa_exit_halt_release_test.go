@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +43,7 @@ func TestPoaExitHaltReleases(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 55*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -79,7 +78,7 @@ func TestPoaExitHaltReleases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("broadcasting first consensus_unstake: %v", err)
 	}
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 	st1, _ := d.FindTransactionStatus(ctx, 1, tx1)
 	t.Logf("unstake while still seated+electable: tx=%s status=%s", tx1, st1)
 	if !strings.EqualFold(st1, "FAILED") {
@@ -101,17 +100,17 @@ func TestPoaExitHaltReleases(t *testing.T) {
 
 	var released bool
 	var lastStatus string
-	deadline := time.Now().Add(window)
+	deadline := devnetNow().Add(window)
 	attempt := 0
-	for time.Now().Before(deadline) && !released {
-		time.Sleep(90 * time.Second)
+	for devnetNow().Before(deadline) && !released {
+		devnetSleep(90 * time.Second)
 		attempt++
 		txN, err := d.ConsensusUnstake(leaver, "1.000")
 		if err != nil {
 			t.Logf("attempt %d: broadcast error %v", attempt, err)
 			continue
 		}
-		time.Sleep(45 * time.Second)
+		devnetSleep(45 * time.Second)
 		st, _ := d.FindTransactionStatus(ctx, 1, txN)
 		lastStatus = st
 		t.Logf("attempt %d: unstake tx=%s status=%s", attempt, txN, st)

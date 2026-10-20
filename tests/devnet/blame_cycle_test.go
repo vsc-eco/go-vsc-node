@@ -38,7 +38,7 @@ func TestTSSBlameExcludesNodeNextCycle(t *testing.T) {
 	target := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for reshare+blame at block ~%d", target)
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 2*time.Minute)
-	time.Sleep(40 * time.Second)
+	devnetSleep(40 * time.Second)
 
 	// Check blame landed
 	blameCount := countCommitments(t, d.MongoURI(), bson.M{
@@ -59,7 +59,7 @@ func TestTSSBlameExcludesNodeNextCycle(t *testing.T) {
 	cycle2Target := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for cycle 2 reshare at block ~%d (node 2 should be excluded)", cycle2Target)
 	waitForBlock(t, d.HiveRPCEndpoint(), cycle2Target+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	// SSID mismatches are expected here: the disconnected node (magi-2)
 	// may still attempt to participate with a different party list.
@@ -140,7 +140,7 @@ func TestTSSBlameEpochDecode(t *testing.T) {
 
 	// Wait for reshare timeout + BLS collection
 	t.Log("waiting for timeout + blame to land...")
-	time.Sleep(45 * time.Second)
+	devnetSleep(45 * time.Second)
 
 	blameCount := countCommitments(t, d.MongoURI(), bson.M{
 		"type":         "blame",
@@ -218,7 +218,7 @@ func TestTSSBlameEpochDecode(t *testing.T) {
 	reshareTarget := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("step 6: waiting for reshare at block ~%d with different election...", reshareTarget)
 	waitForBlock(t, d.HiveRPCEndpoint(), reshareTarget+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 
@@ -295,7 +295,7 @@ func TestTSSBlameAccumulation(t *testing.T) {
 	}
 
 	waitForBlock(t, d.HiveRPCEndpoint(), target1+5, 1*time.Minute)
-	time.Sleep(40 * time.Second)
+	devnetSleep(40 * time.Second)
 
 	blame1Count := countCommitments(t, d.MongoURI(), bson.M{
 		"type":         "blame",
@@ -306,7 +306,7 @@ func TestTSSBlameAccumulation(t *testing.T) {
 	if err := d.Reconnect(ctx, 3); err != nil {
 		t.Logf("warning: reconnect magi-3: %v", err)
 	}
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 
 	// --- Cycle 2: blame node 4 ---
 	t.Log("cycle 2: causing blame against magi-4...")
@@ -323,7 +323,7 @@ func TestTSSBlameAccumulation(t *testing.T) {
 	}
 
 	waitForBlock(t, d.HiveRPCEndpoint(), target2+5, 1*time.Minute)
-	time.Sleep(40 * time.Second)
+	devnetSleep(40 * time.Second)
 
 	blame2Count := countCommitments(t, d.MongoURI(), bson.M{
 		"type":         "blame",
@@ -341,7 +341,7 @@ func TestTSSBlameAccumulation(t *testing.T) {
 	target3 := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for reshare at block ~%d", target3)
 	waitForBlock(t, d.HiveRPCEndpoint(), target3+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 

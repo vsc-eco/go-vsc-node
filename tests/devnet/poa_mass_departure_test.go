@@ -114,7 +114,7 @@ func TestPoaMassDeparture(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -153,7 +153,7 @@ func TestPoaMassDeparture(t *testing.T) {
 		len(disabled), cfg.Nodes, keep, minMembers)
 
 	// Give the network several election intervals to try (and refuse) to form one.
-	time.Sleep(5 * time.Minute)
+	devnetSleep(5 * time.Minute)
 
 	// ---- 1. no node may crash or panic ----
 	for node := 1; node <= cfg.Nodes; node++ {

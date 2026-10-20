@@ -40,13 +40,13 @@ func TestReview2KeystoreEncryptedAtRest(t *testing.T) {
 
 	// The share may take a moment to flush after the commitment lands.
 	var shareFiles []string
-	deadline := time.Now().Add(90 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(90 * time.Second)
+	for devnetNow().Before(deadline) {
 		shareFiles = findTSSShareFiles(t, keystoreRoot)
 		if len(shareFiles) > 0 {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if len(shareFiles) == 0 {
 		t.Fatalf("no TSS keystore share files (*.data under data-*/tss-keys) found below %s — keygen did not persist a share", keystoreRoot)

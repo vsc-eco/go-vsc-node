@@ -55,7 +55,7 @@ func TestVaultBondLock(t *testing.T) {
 		t.Skip("set VAULT_BONDLOCK_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(60*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(60*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -91,7 +91,7 @@ func TestVaultBondLock(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -138,7 +138,7 @@ func TestVaultBondLock(t *testing.T) {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	// gen-0 is now retiring and still funded → member's bond is locked.
 
@@ -197,7 +197,7 @@ func TestVaultBondLock(t *testing.T) {
 	for i := 0; i < 12 && stPurged != 5; i++ {
 		stPurged = vaultStatusOf(t, d, ctx, cid, 0)
 		if stPurged != 5 {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 	}
 	releasedStatus, releasedPending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)

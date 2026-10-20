@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +48,7 @@ func TestPoaLifecycle(t *testing.T) {
 	// but flat weight is gated on the PRIOR election's version, so it lands at
 	// epoch 2. See poa_bootstrap_test.go for the full explanation.
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 10*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 10*time.Minute)
 		cancel()
 		if err != nil {
@@ -98,7 +97,7 @@ func TestPoaLifecycle(t *testing.T) {
 		// dup-seat sentinels guard blockingRetry, so this test must not be cited as
 		// covering those. What it does cover: duplicate votes neither grow the
 		// registry, nor re-stamp an existing seat, nor stall the chain.
-		time.Sleep(45 * time.Second)
+		devnetSleep(45 * time.Second)
 		after, err := d.poaSeats(ctx, 1)
 		if err != nil {
 			t.Fatalf("re-reading poa_seats: %v", err)
@@ -139,7 +138,7 @@ func TestPoaLifecycle(t *testing.T) {
 				t.Fatalf("admit_vote from magi-%d: %v", v, err)
 			}
 		}
-		time.Sleep(45 * time.Second)
+		devnetSleep(45 * time.Second)
 		after, err := d.poaSeats(ctx, 1)
 		if err != nil {
 			t.Fatalf("poa_seats: %v", err)
@@ -183,7 +182,7 @@ func TestPoaLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatalf("broadcasting consensus_unstake: %v", err)
 		}
-		time.Sleep(60 * time.Second)
+		devnetSleep(60 * time.Second)
 
 		// ★ ASSERT THE REASON, NOT JUST THE ABSENCE OF AN EFFECT.
 		// "hive_consensus did not move" is equally consistent with the tx simply

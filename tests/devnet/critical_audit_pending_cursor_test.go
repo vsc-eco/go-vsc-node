@@ -75,7 +75,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	// want a clean post-election baseline anyway.
 	t.Log("waiting for first running election (epoch >= 1) on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -98,7 +98,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	if err := d.Unstake(ctx, targetAccount, "1.000"); err != nil {
 		t.Fatalf("broadcasting unstake A: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	devnetSleep(500 * time.Millisecond)
 	t.Logf("submitting unstake B for %s", targetAccount)
 	// A different amount: the same op half a second later is the same Hive
 	// transaction, which hived refuses as a duplicate.
@@ -139,7 +139,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	// The release runs in the next L2 slots (UpdateBalances). A fixed 45 s was
 	// shorter than two slots under load (10-07: epoch 6 arrived, both actions
 	// still pending). Wait, bounded, until every node has completed both.
-	for deadline := time.Now().Add(time.Duration(float64(4*time.Minute) * vfTimeoutScale())); ; time.Sleep(10 * time.Second) {
+	for deadline := devnetNow().Add(time.Duration(float64(4*time.Minute) * vfTimeoutScale())); ; devnetSleep(10 * time.Second) {
 		done := 0
 		for n := 1; n <= cfg.Nodes; n++ {
 			for _, sib := range siblings {
@@ -148,7 +148,7 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 				}
 			}
 		}
-		if done == cfg.Nodes*len(siblings) || time.Now().After(deadline) {
+		if done == cfg.Nodes*len(siblings) || devnetNow().After(deadline) {
 			break
 		}
 	}
@@ -197,8 +197,8 @@ type pendingUnstakeRecord struct {
 // account. Returns when at least 2 are found (the most recent two by
 // block_height ascending).
 func waitForTwoPendingUnstakes(ctx context.Context, d *Devnet, node int, hiveTarget string, timeout time.Duration) ([]pendingUnstakeRecord, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		recs, err := findPendingUnstakes(ctx, d, node, hiveTarget)
 		if err == nil && len(recs) >= 2 {
 			return recs[:2], nil
@@ -206,7 +206,7 @@ func waitForTwoPendingUnstakes(ctx context.Context, d *Devnet, node int, hiveTar
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 	return nil, fmt.Errorf("timed out waiting for two pending unstakes on magi-%d for %s", node, hiveTarget)

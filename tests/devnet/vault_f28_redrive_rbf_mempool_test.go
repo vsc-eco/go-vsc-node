@@ -33,7 +33,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -136,7 +136,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 	}
 	txR := ""
 	for i := 0; i < 20 && isOK(rd) && txR == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txR = id
@@ -162,7 +162,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 
 	// ---- 4. BIP-125 replacement in the real mempool ----
 	bcR, rerr := d.bitcoinCli(ctx, "sendrawtransaction", rawR)
-	time.Sleep(3 * time.Second)
+	devnetSleep(3 * time.Second)
 	rIn, oIn := f28InMempool(d, ctx, txR), f28InMempool(d, ctx, txO)
 	c.rec("F28-RBF-REPLACED", "the replacement is signed and REPLACES the original in the mempool (BIP-125)",
 		rerr == nil && rIn && !oIn,
@@ -176,7 +176,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 	h, _ := d.MineBlocks(ctx, 1)
 	_, rMined := f9TxConfirmed(d, ctx, txR)
 	cs := vfRelayAndConfirmIndex(t, d, ctx, 1, cid, txR, h, 0)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 	msO, msR := vfSweepRecordOn(d, ctx, 2, cid, txO), vfSweepRecordOn(d, ctx, 2, cid, txR)
 	gen0 := vfWaitGenBelow(t, d, ctx, cid, 0, 1, 3*time.Minute)
 	c.rec("F28-CONFIRM-SETTLES-GROUP", "confirming the replacement settles the whole spend group (both records gone) and drains gen-0",
@@ -184,7 +184,7 @@ func TestVaultF28RedriveRBFMempool(t *testing.T) {
 		fmt.Sprintf("R mined=%v confirmSpend=%s ms_O=%v ms_R=%v gen-0 utxos=%d", rMined, cs, msO, msR, gen0))
 
 	ck := vstatus(t, d, ctx, 1, cid, "createKey", "")
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	gen2 := vfVaultStatusOn(d, ctx, 2, cid, 2)
 	c.rec("F28-NN3-UNWEDGED", "with gen-0 drained the next createKey is admitted (NN#3 unwedged) and mints gen-2 as Pending",
 		isOK(ck) && gen2 == 0, fmt.Sprintf("createKey=%s gen-2 status=%d (0=Pending)", ck, gen2))

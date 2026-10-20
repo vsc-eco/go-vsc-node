@@ -145,7 +145,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 		t.Skip("set VAULT_STAGE4_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -183,7 +183,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// ── gen-0 genesis (v2 still off, block < hpin) ──
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
@@ -241,7 +241,7 @@ func TestVaultStage4Rotation(t *testing.T) {
 			break
 		}
 		t.Logf("activateKey not yet (awaiting BRK-2 check-sig)... retry %d", i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if activated {
 		t.Logf("CASE VL-GP-11/BRK-2 PASS — gen-1 activated after check-sig (v2 ON); CASE VL-GP-01 rotation gen-0→retiring")
@@ -312,7 +312,7 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 	// reading node) has applied it, and under two-lane load that lag exceeded the old
 	// 60 s window (F3 run 1 recorded a false "no sweep appeared").
 	for i := 0; i < 60 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id

@@ -58,7 +58,7 @@ func TestVaultF6EpochBoundaryKeygen(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -183,7 +183,7 @@ func TestVaultF6EpochBoundaryKeygen(t *testing.T) {
 			note   string
 		}
 		obs := map[int]commitObs{}
-		commitDeadline := time.Now().Add(4 * time.Minute)
+		commitDeadline := devnetNow().Add(4 * time.Minute)
 		for {
 			allSeen := true
 			for _, n := range vfAllNodes(5) {
@@ -195,10 +195,10 @@ func TestVaultF6EpochBoundaryKeygen(t *testing.T) {
 				}
 				obs[n] = commitObs{ok: true, epoch: docs[0].Epoch, height: docs[0].BlockHeight, count: len(docs)}
 			}
-			if allSeen || time.Now().After(commitDeadline) {
+			if allSeen || devnetNow().After(commitDeadline) {
 				break
 			}
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		var ref commitObs
 		haveRef := false

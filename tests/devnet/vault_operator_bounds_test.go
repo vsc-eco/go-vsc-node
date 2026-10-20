@@ -31,7 +31,7 @@ func TestVaultOperatorBounds(t *testing.T) {
 		t.Skip("set VAULT_OPBOUNDS_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -64,7 +64,7 @@ func TestVaultOperatorBounds(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -112,7 +112,7 @@ func TestVaultOperatorBounds(t *testing.T) {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 
 	// appoint node 2 as operator

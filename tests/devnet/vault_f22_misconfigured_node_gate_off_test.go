@@ -110,7 +110,7 @@ func TestVaultF22MisconfiguredNodeGateOff(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -324,7 +324,7 @@ func TestVaultF22MisconfiguredNodeGateOff(t *testing.T) {
 		if gen0After == 0 {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	c.rec("F22-CONTROL", "positive control: with the configuration restored, a legitimate successor sweep for the same retiring key signs and settles",
 		gen0After == 0,
@@ -442,7 +442,7 @@ func vfF22ProcessedHeights(t *testing.T, d *Devnet, ctx context.Context, nodes [
 // it booted.
 func vfF22WaitAlive(t *testing.T, d *Devnet, ctx context.Context, nodes []int, from map[int]uint64, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		allUp := true
 		detail := ""
@@ -457,7 +457,7 @@ func vfF22WaitAlive(t *testing.T, d *Devnet, ctx context.Context, nodes []int, f
 			t.Logf("F22: restarted nodes are processing again:%s", detail)
 			return true
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Logf("F22: WARNING restarted nodes did not resume within %v:%s", timeout, detail)
 			return false
 		}
@@ -465,7 +465,7 @@ func vfF22WaitAlive(t *testing.T, d *Devnet, ctx context.Context, nodes []int, f
 		case <-ctx.Done():
 			t.Logf("F22: context done while waiting for the restarted nodes")
 			return false
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
 }

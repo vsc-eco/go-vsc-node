@@ -52,7 +52,7 @@ func TestVaultRedriveSweep(t *testing.T) {
 		t.Skip("set VAULT_REDRIVE_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(40*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(40*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -86,7 +86,7 @@ func TestVaultRedriveSweep(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -134,7 +134,7 @@ func TestVaultRedriveSweep(t *testing.T) {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	vstatus(t, d, ctx, 1, cid, "setVaultOperator", operator)
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
@@ -146,7 +146,7 @@ func TestVaultRedriveSweep(t *testing.T) {
 	}
 	var txA string
 	for i := 0; i < 20 && txA == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txA = id
@@ -185,7 +185,7 @@ func TestVaultRedriveSweep(t *testing.T) {
 	rec("RD-03", "operator re-drove the stale sweep", isOK(opRD), "status="+opRD)
 	var txB string
 	for i := 0; i < 20 && txB == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if id != txA && !contains(beforeRD, id) {
 				txB = id

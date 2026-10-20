@@ -75,7 +75,7 @@ func TestVaultF13LiveRefuse(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -195,7 +195,7 @@ func TestVaultF13LiveRefuse(t *testing.T) {
 		if gen0After == 0 {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	c.rec("F13-CONTROL", "positive control: a legitimate successor sweep for the SAME retiring key signs and settles",
 		gen0After == 0,
@@ -315,12 +315,12 @@ func vfF13WaitSignTicks(t *testing.T, d *Devnet, ctx context.Context, signInterv
 	start, err := getHeadBlock(d.HiveRPCEndpoint())
 	if err != nil {
 		t.Logf("F13: could not read the Hive head (%v), falling back to a 2 minute wall-clock wait", err)
-		time.Sleep(2 * time.Minute)
+		devnetSleep(2 * time.Minute)
 		return
 	}
 	target := start + int(signInterval)*(ticks+1)
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(maxWait)
+	for devnetNow().Before(deadline) {
 		h, herr := getHeadBlock(d.HiveRPCEndpoint())
 		if herr == nil && h >= target {
 			t.Logf("F13: Hive head %d reached target %d (%d sign ticks of %d blocks past %d)", h, target, ticks, signInterval, start)
@@ -330,7 +330,7 @@ func vfF13WaitSignTicks(t *testing.T, d *Devnet, ctx context.Context, signInterv
 		case <-ctx.Done():
 			t.Logf("F13: context done while waiting for sign ticks")
 			return
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	h, _ := getHeadBlock(d.HiveRPCEndpoint())

@@ -40,7 +40,7 @@ func TestTSSPartitionAndRecovery(t *testing.T) {
 	target := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for reshare at ~%d during partition", target)
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 
@@ -55,7 +55,7 @@ func TestTSSPartitionAndRecovery(t *testing.T) {
 	recoveryTarget := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for recovery reshare at ~%d", recoveryTarget)
 	waitForBlock(t, d.HiveRPCEndpoint(), recoveryTarget+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	postRecovery := countCommitments(t, d.MongoURI(), bson.M{
 		"type":         "reshare",

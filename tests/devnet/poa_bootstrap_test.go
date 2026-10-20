@@ -106,7 +106,7 @@ func TestPoaBootstrapDeterminism(t *testing.T) {
 
 	// Every node must ingest a real election before anything is asserted.
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 1, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -125,7 +125,7 @@ func TestPoaBootstrapDeterminism(t *testing.T) {
 		len(activation.Members), activation.Weights)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -194,7 +194,7 @@ func TestPoaBootstrapDeterminism(t *testing.T) {
 	// refuses to retry, so any growth here means a second seed fired.
 	base := len(activation.Members)
 	for _, targetEpoch := range []uint64{3, 4} {
-		nctx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 6*time.Minute)
 		err := d.waitForElectionEpoch(nctx, 1, targetEpoch, 6*time.Minute)
 		cancel()
 		if err != nil {

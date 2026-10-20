@@ -148,8 +148,8 @@ func readSettlementMarkerForEpoch(ctx context.Context, d *Devnet, node int, epoc
 // marker with Epoch >= minEpoch has been written, or timeout
 // elapses. Returns the marker found.
 func waitForSettlementEpoch(ctx context.Context, d *Devnet, node int, minEpoch uint64, timeout time.Duration) (*settlementMarkerDoc, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		rec, err := readLatestSettlementMarker(ctx, d, node)
 		if err != nil {
 			return nil, err
@@ -160,7 +160,7 @@ func waitForSettlementEpoch(ctx context.Context, d *Devnet, node int, minEpoch u
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	return nil, fmt.Errorf("magi-%d: no settlement marker with epoch >= %d within %s", node, minEpoch, timeout)

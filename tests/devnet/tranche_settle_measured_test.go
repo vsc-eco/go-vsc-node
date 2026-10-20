@@ -29,7 +29,7 @@ func simulateRcUsed(d *Devnet, ctx context.Context, node int, cid, caller, actio
 	}
 	err := d.gqlQuery(ctx, node, `query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success err err_msg rc_used gas_used } }`,
 		map[string]any{"i": map[string]any{
-			"tx_id":          fmt.Sprintf("devnet-dryrun-%d", time.Now().UnixNano()),
+			"tx_id":          fmt.Sprintf("devnet-dryrun-%d", time.Now().UnixNano()), // wall: unique id
 			"required_auths": []string{caller},
 			"calls": []map[string]any{{
 				"contract_id": cid, "action": action, "payload": payload, "rc_limit": rcCap,

@@ -30,7 +30,7 @@ func TestVaultOperatorDrivenDrain(t *testing.T) {
 		t.Skip("set VAULT_OPDRAIN_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(46*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(46*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -64,7 +64,7 @@ func TestVaultOperatorDrivenDrain(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	rec := func(id, desc string, ok bool, detail string) {
@@ -122,7 +122,7 @@ func TestVaultOperatorDrivenDrain(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		t.Fatal("gen-1 never activated")

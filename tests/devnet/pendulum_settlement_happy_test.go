@@ -72,7 +72,7 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	// no settlement can land before epoch >= 1.
 	t.Log("waiting for first running election (epoch >= 1) on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -107,7 +107,7 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	markers := make([]*settlementMarkerDoc, cfg.Nodes)
 	markers[0] = first
 	for n := 2; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 3*time.Minute)
 		m, err := waitForSpecificSettlementEpoch(nodeCtx, d, n, targetEpoch, 3*time.Minute)
 		cancel()
 		if err != nil {
@@ -183,8 +183,8 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 // waits for exactly `epoch`, not "epoch >= minEpoch". Used by M3 to
 // fetch the same epoch's marker from every node.
 func waitForSpecificSettlementEpoch(ctx context.Context, d *Devnet, node int, epoch uint64, timeout time.Duration) (*settlementMarkerDoc, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		m, err := readSettlementMarkerForEpoch(ctx, d, node, epoch)
 		if err != nil {
 			return nil, err
@@ -195,7 +195,7 @@ func waitForSpecificSettlementEpoch(ctx context.Context, d *Devnet, node int, ep
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 	return nil, fmt.Errorf("magi-%d: no settlement marker for epoch %d within %s", node, epoch, timeout)
