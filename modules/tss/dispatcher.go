@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "github.com/btcsuite/btcd/btcec"
@@ -868,7 +869,9 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 
 	if cmt == "both" || cmt == "old" {
 		if dispatcher.party != nil {
+			dispatcher.processing.Add(1)
 			go func() {
+				defer dispatcher.processing.Add(-1)
 				defer func() {
 					if r := recover(); r != nil {
 						// N-L4: a panic here is consensus-unsafe to turn
@@ -896,7 +899,9 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 	if cmt == "both" || cmt == "new" {
 		if dispatcher.newParty != nil {
+			dispatcher.processing.Add(1)
 			go func() {
+				defer dispatcher.processing.Add(-1)
 				defer func() {
 					if r := recover(); r != nil {
 						// N-L4: deliberately NOT routed to recordTssError.
@@ -1457,6 +1462,14 @@ type BaseDispatcher struct {
 	lastMsg   time.Time
 	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
 
+	// processing counts UpdateFromBytes calls in progress. tss-lib runs the next
+	// round's Start (the heavy proofs) inside the Update that completes a round,
+	// holding the party lock, so while this node computes no other message is
+	// processed and lastMsg stands still. Off mainnet the timeout monitor counts a
+	// call in progress as activity (timeoutDecision), so a slow but working node
+	// does not time itself out of a session its peers would finish.
+	processing atomic.Int64
+
 	failedMsgs     []failedMsg
 	failedMsgsLock sync.Mutex
 
@@ -1788,7 +1801,9 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		return
 	}
 
+	dispatcher.processing.Add(1)
 	go func() {
+		defer dispatcher.processing.Add(-1)
 		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 
 		log.Trace("update party", "ok", ok, "inputLen", len(input), "from", from.Id)
@@ -1840,6 +1855,7 @@ func (dispatcher *BaseDispatcher) baseStart() {
 	go dispatcher.retryFailedMsgs()
 
 	dispatcher.lastMsg = time.Now()
+	extend := extendTimeoutWhileProcessing(dispatcher.tssMgr.sconf.OnMainnet())
 	log.Trace("starting timeout monitor", "sessionId", dispatcher.sessionId, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
 	go func() {
 		timer := time.NewTimer(timeout)
@@ -1854,9 +1870,14 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				lastMsg := dispatcher.lastMsg
 				dispatcher.p2pMu.Unlock()
 				elapsed := time.Since(lastMsg)
-				if elapsed < timeout {
-					// Activity happened since the timer started; reset for remaining time
-					timer.Reset(timeout - elapsed)
+				processing := extend && dispatcher.processing.Load() > 0
+				if fire, wait := timeoutDecision(elapsed, timeout, processing); !fire {
+					// Activity since the timer started, or this node is still
+					// processing a message: look again later.
+					if processing && elapsed >= timeout {
+						log.Debug("session quiet but still processing a message; not timing out yet", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout)
+					}
+					timer.Reset(wait)
 					continue
 				}
 
@@ -1881,6 +1902,38 @@ func (dispatcher *BaseDispatcher) baseStart() {
 
 	dispatcher.started = true
 	dispatcher.startLock.Unlock()
+}
+
+// timeoutRecheck is how often the timeout monitor looks again while the session
+// is quiet but this node is still processing a message.
+const timeoutRecheck = time.Second
+
+// maxComputeHold bounds how long past the timeout a message in progress holds
+// the session open. A round's computation takes what the hardware needs, not a
+// share of the configured timeout: on a 5-node devnet one update ran 24-33s
+// against a 20s timeout. The bound only matters for a call that never returns.
+var maxComputeHold = 2 * time.Minute
+
+// timeoutDecision says whether the session monitor times the session out now,
+// or how long to wait before looking again. The session times out once no
+// message has been processed for timeout. A message still being processed
+// (processing) counts as activity too, for up to maxComputeHold past the
+// timeout, so a call that never returns still times out.
+func timeoutDecision(sinceLastMsg, timeout time.Duration, processing bool) (fire bool, wait time.Duration) {
+	if sinceLastMsg < timeout {
+		return false, timeout - sinceLastMsg
+	}
+	limit := timeout + maxComputeHold
+	if processing && sinceLastMsg < limit {
+		return false, min(timeoutRecheck, limit-sinceLastMsg)
+	}
+	return true, 0
+}
+
+// extendTimeoutWhileProcessing reports whether a message in progress holds the
+// session timeout off. Off on mainnet, which keeps its timeout as it is.
+func extendTimeoutWhileProcessing(onMainnet bool) bool {
+	return !onMainnet
 }
 
 func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID, *btss.PeerContext) {
