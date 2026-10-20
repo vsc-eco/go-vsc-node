@@ -52,6 +52,11 @@ type Config struct {
 	// SysConfigOverrides, if non-nil, are written to a JSON file and
 	// passed to each magid node via -sysconfig flag.
 	SysConfigOverrides *systemconfig.SysConfigOverrides
+	// NodeSysConfigOverrides gives single nodes their own overrides, layered
+	// over SysConfigOverrides field by field (a set field replaces the shared
+	// one whole), so one node can run with different parameters, e.g. a
+	// shorter TSS timeout than its peers.
+	NodeSysConfigOverrides map[int]*systemconfig.SysConfigOverrides
 	// SkipFunding skips the price feed + TBD transfer step. Set to true
 	// for tests that don't need contract deployment funds (e.g., TSS tests).
 	SkipFunding bool
