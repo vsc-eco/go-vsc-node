@@ -383,15 +383,30 @@ func (d *Devnet) Stop() error {
 		os.RemoveAll(d.dataDir) // remove the now-empty dir itself
 	}
 
-	// Prune images and build cache from this project to prevent disk
-	// exhaustion across test runs.  The build cache is the main offender
-	// (~5-10 GB per full build).
+	// Reclaim THIS run's disk without evicting the build cache the next run
+	// reuses. The compose `down -v --remove-orphans` above already removed this
+	// project's containers, networks and volumes. Two things it does NOT remove,
+	// and that the old teardown handled wrongly:
+	//
+	//   1. The per-run <project>-magi image. It is built by `docker build -t`,
+	//      NOT by compose, so it carries no com.docker.compose.project label.
+	//      The old teardown's `docker system prune -af --filter label=<project>`
+	//      therefore never removed it — the images piled up at ~780 MB each.
+	//      Remove it explicitly by name.
+	//
+	//   2. Stale build cache. The old teardown reclaimed it with
+	//      `docker system prune -af` + `docker builder prune -af`, but BOTH wipe
+	//      ALL build cache — the `label` filter does NOT scope cache pruning, so
+	//      system prune alone cleared the whole cache every run (verified), base
+	//      images and the microdnf / go-mod-download / wasmedge RUN layers
+	//      included. So every run did a full rebuild that intermittently hit a
+	//      flaky distro mirror. Drop the system prune (redundant with compose
+	//      down, and the cache-killer) and prune only cache unused for >72h:
+	//      back-to-back runs keep the base layers hot (rebuild in seconds, never
+	//      re-hit the mirror) while genuinely stale cache is still reclaimed.
 	log.Printf("[devnet] pruning docker resources...")
-	pruneCmd := exec.Command("docker", "system", "prune", "-af",
-		"--filter", "label=com.docker.compose.project="+d.projectName)
-	pruneCmd.Run() // best-effort
-	// Also prune dangling build cache (not project-scoped).
-	exec.Command("docker", "builder", "prune", "-af", "--keep-storage=5gb").Run()
+	exec.Command("docker", "image", "rm", "-f", d.imageName).Run()                       // best-effort: unlabelled build output
+	exec.Command("docker", "builder", "prune", "-f", "--filter", "unused-for=72h").Run() // best-effort
 
 	d.started = false
 	log.Printf("[devnet] stopped")
