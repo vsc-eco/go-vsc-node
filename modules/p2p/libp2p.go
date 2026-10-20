@@ -683,9 +683,13 @@ func (p2p *P2PServer) advertiseSelf() {
 // ===== PubSub Implementation =====
 // =================================
 
-// Peers implements pubsub.PubSub.
+// Peers implements pubsub.PubSub: the peers this node is connected to, none
+// before Init has created the host.
 func (l *P2PServer) Peers() []peer.ID {
-	panic("Unimplemented")
+	if l.host == nil {
+		return nil
+	}
+	return l.host.Network().Peers()
 }
 
 // SendTo implements pubsub.PubSub.
