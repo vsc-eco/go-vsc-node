@@ -95,7 +95,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -146,7 +146,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	}
 	var unmapTxid string
 	for i := 0; i < 20 && unmapTxid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(spendsBefore, id) {
 				unmapTxid = id
@@ -241,8 +241,8 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	}
 	key1 := cid + "-" + btcvault.VaultKeyName(1)
 	checkSigLanded := false
-	checkSigDeadline := time.Now().Add(time.Duration(float64(10*time.Minute) * vfTimeoutScale()))
-	for !checkSigLanded && time.Now().Before(checkSigDeadline) {
+	checkSigDeadline := devnetNow().Add(time.Duration(float64(10*time.Minute) * vfTimeoutScale()))
+	for !checkSigLanded && devnetNow().Before(checkSigDeadline) {
 		landed := 0
 		for _, n := range []int{1, 2} {
 			if reqs, rerr := d.GetTssRequests(ctx, n, key1); rerr == nil {
@@ -256,7 +256,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		}
 		checkSigLanded = landed == 2
 		if !checkSigLanded {
-			time.Sleep(15 * time.Second)
+			devnetSleep(15 * time.Second)
 		}
 	}
 	if !checkSigLanded {
@@ -266,7 +266,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	gateDetail := ""
 	gateRefused := true
 	for i := 1; i <= 3; i++ {
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 		s := vstatus(t, d, ctx, 1, cid, "activateKey", "")
 		gateDetail += fmt.Sprintf(" try%d=%s", i, s)
 		if isOK(s) {
@@ -335,7 +335,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	// ---- F24-PROMOTED: the change is now a selectable generation 0 UTXO. ----
 	promoted := false
 	promotedDetail := ""
-	promoteDeadline := time.Now().Add(3 * time.Minute)
+	promoteDeadline := devnetNow().Add(3 * time.Minute)
 	for {
 		reg := vf24ReadRegistry(t, d, ctx, 2, cid)
 		entries := vf24EntriesOfGen(reg, 0)
@@ -354,10 +354,10 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			promoted = true
 			break
 		}
-		if time.Now().After(promoteDeadline) {
+		if devnetNow().After(promoteDeadline) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	c.rec("F24-PROMOTED", "the confirmed change becomes a migration-selectable generation 0 UTXO (confirmed pool id, no longer reserved) belonging to the unmap transaction",
 		promoted,
@@ -378,7 +378,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	gen0Stat := -1
 	for i := 0; i < 8 && activated; i++ {
@@ -386,7 +386,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		if gen0Stat >= int(btcvault.VaultStatusRetiring) {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	c.rec("F24-F1-RELEASED", "once the unmap is settled the same activateKey is admitted and generation 0 retires",
 		activated && gen0Stat == int(btcvault.VaultStatusRetiring),
@@ -440,7 +440,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		}
 		migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 		tranches++
-		settleDeadline := time.Now().Add(3 * time.Minute)
+		settleDeadline := devnetNow().Add(3 * time.Minute)
 		for {
 			g0 := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 			g1 := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
@@ -450,10 +450,10 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 				drained = true
 				break
 			}
-			if time.Now().After(settleDeadline) {
+			if devnetNow().After(settleDeadline) {
 				break
 			}
-			time.Sleep(15 * time.Second)
+			devnetSleep(15 * time.Second)
 		}
 		if !drained {
 			fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
@@ -471,7 +471,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 		if newGenStatus >= 0 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	c.rec("F24-NN3-RELEASED", "once the superseded generation really holds nothing, createKey is admitted again and mints generation 2 as Pending",
 		isOK(releaseStatus) && newGenStatus == int(btcvault.VaultStatusPending),
@@ -502,7 +502,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 	purgedStatus := -1
 	if releasedPending == 0 {
 		enough := true
-		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < 10*time.Minute {
+		if dl, ok := ctx.Deadline(); ok && devnetUntil(dl) < 10*time.Minute {
 			enough = false
 		}
 		if !enough {
@@ -528,7 +528,7 @@ func TestVaultF24UnconfirmedPoolDeadlock(t *testing.T) {
 			retire2 := vstatus(t, d, ctx, 1, cid, "retireVault", "")
 			statAfterPurge := vaultStatusOf(t, d, ctx, cid, 0)
 			for i := 0; i < 12 && statAfterPurge != 5; i++ { // magi-2 may lag magi-1's confirm
-				time.Sleep(5 * time.Second)
+				devnetSleep(5 * time.Second)
 				statAfterPurge = vaultStatusOf(t, d, ctx, cid, 0)
 			}
 			purgedStatus = statAfterPurge

@@ -107,7 +107,7 @@ func TestBlsProofOfPossessionPropagation(t *testing.T) {
 // trips through BSON intact.
 func assertAllWitnessesHaveValidBlsPoP(t *testing.T, mongoURI, dbName string, wantWitnesses int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // wall: single call
 	defer cancel()
 
 	client, _ := connectMongo(t, mongoURI)

@@ -56,7 +56,7 @@ func TestTSSMultiVersion(t *testing.T) {
 	target := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("head=%d, reshare at block ~%d", head, target)
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	// Step 3: check results.
 	// NOTE: SSID mismatches are EXPECTED in multi-version scenarios because
@@ -129,7 +129,7 @@ func TestTSSMultiVersion(t *testing.T) {
 	target2 := nextReshareBoundary(head) + testRotateInterval
 	t.Logf("waiting for second reshare cycle at block ~%d...", target2)
 	waitForBlock(t, d.HiveRPCEndpoint(), target2+5, 2*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	totalReshares := countCommitments(t, d.MongoURI(), bson.M{
 		"type":         "reshare",

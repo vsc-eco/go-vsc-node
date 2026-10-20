@@ -109,7 +109,7 @@ func rhIssueUnmap(t *testing.T, d *Devnet, ctx context.Context, cid, keyId strin
 		return "", dest, ""
 	}
 	for i := 0; i < 20 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id
@@ -194,7 +194,7 @@ func TestMainnetRehearsal(t *testing.T) {
 		}
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(220*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(220*time.Minute))
 	defer cancel()
 
 	cfg := vfSlowReshareConfig()
@@ -253,7 +253,7 @@ func TestMainnetRehearsal(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd0, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 12*time.Minute)
@@ -270,7 +270,7 @@ func TestMainnetRehearsal(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 30_000_000, seedH)
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner2, 20_000_000, contractLastHeight(t, d, ctx, cid))
 	for i := 0; i < 24 && (balanceSats(t, d, ctx, cid, owner2) <= 0 || f21GenUtxoCountOn(d, ctx, 2, cid, 0) < 2); i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	balOwnerFunded := balanceSats(t, d, ctx, cid, owner)
 	balOwner2Funded := balanceSats(t, d, ctx, cid, owner2)
@@ -303,7 +303,7 @@ func TestMainnetRehearsal(t *testing.T) {
 			t.Fatalf("upgrading magi-%d: %v", n, err)
 		}
 		// Let the mixed fleet run for a while: at least one TSS rotate interval.
-		time.Sleep(4 * time.Minute)
+		devnetSleep(4 * time.Minute)
 		h, _ := d.getLastProcessedBlock(ctx, ref)
 		if !vfWaitProcessed(t, d, ctx, n, h, 10*time.Minute) {
 			got, _ := d.getLastProcessedBlock(ctx, n)
@@ -315,7 +315,7 @@ func TestMainnetRehearsal(t *testing.T) {
 	if err := d.waitForElectionEpoch(ctx, 1, upEpoch+2, 30*time.Minute); err != nil {
 		t.Fatalf("no election after the upgrade: %v", err)
 	}
-	time.Sleep(4 * time.Minute)
+	devnetSleep(4 * time.Minute)
 	upEnd, _ := d.getLastProcessedBlock(ctx, 1)
 	reshares, _ := d.GetCommitments(ctx, 1, bson.M{"type": "reshare", "key_id": cid + "-main", "block_height": bson.M{"$gt": upStart}})
 	blames := rhBlamesSince(t, ctx, d, upStart)
@@ -349,11 +349,11 @@ func TestMainnetRehearsal(t *testing.T) {
 				queued = true
 				break
 			}
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 		if !queued {
 			t.Logf("no pending code update after attempt %d", attempt)
-			time.Sleep(30 * time.Second)
+			devnetSleep(30 * time.Second)
 		}
 	}
 	pending := f21WaitPendingUpdate(t, d, ctx, 2, cid, 2*time.Minute)
@@ -383,9 +383,9 @@ func TestMainnetRehearsal(t *testing.T) {
 		if migStatus = vstatus(t, d, ctx, 1, cid, "migrate", ""); isOK(migStatus) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	post, err := getStateHex(d, ctx, 2, cid, []string{"mv", "va", "vn"})
 	if err != nil {
 		t.Fatalf("cannot read contract state after migrate: %v", err)
@@ -424,9 +424,9 @@ func TestMainnetRehearsal(t *testing.T) {
 	}
 	t.Logf("proposed 0.9.0 at epoch %d (current %d)", target, cur)
 	var riseEpoch, riseHeight uint64
-	deadline := time.Now().Add(45 * time.Minute)
-	for riseEpoch == 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Second)
+	deadline := devnetNow().Add(45 * time.Minute)
+	for riseEpoch == 0 && devnetNow().Before(deadline) {
+		devnetSleep(20 * time.Second)
 		last, _, _ := rhLatestElection(ctx, d, 1)
 		for e := cur + 1; e <= last; e++ {
 			if v, bh, err := rhElection(ctx, d, 1, e); err == nil && v >= 9 {

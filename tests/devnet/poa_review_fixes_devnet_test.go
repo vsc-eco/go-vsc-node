@@ -67,7 +67,7 @@ func TestPoaCorruptSeatRowHoldsNotHalts(t *testing.T) {
 		if tries > 100 {
 			t.Fatalf("no election after %d", ep0)
 		}
-		time.Sleep(2 * time.Second)
+		devnetSleep(2 * time.Second)
 	}
 	setSeat := func(v any) {
 		for n := 1; n <= 5; n++ {
@@ -82,7 +82,7 @@ func TestPoaCorruptSeatRowHoldsNotHalts(t *testing.T) {
 		before[n], _ = d.pfMaxSlotHeight(ctx, n)
 	}
 	setSeat("not-a-height")
-	corruptedAt := time.Now()
+	corruptedAt := devnetNow()
 	txId, err := d.ledgerOp("vsc.consensus_unstake", acct, acct, "1.000", "hive", "")
 	if err != nil {
 		setSeat(orig.LastSeatedHeight)
@@ -94,8 +94,8 @@ func TestPoaCorruptSeatRowHoldsNotHalts(t *testing.T) {
 	// anchor (20 blocks after the last one).
 	status := ""
 	after := make([]int, 6)
-	for time.Since(corruptedAt) < 45*time.Second {
-		time.Sleep(2 * time.Second)
+	for devnetSince(corruptedAt) < 45*time.Second {
+		devnetSleep(2 * time.Second)
 		if s, err := d.FindTransactionStatus(ctx, 1, txId); err == nil && s != "" {
 			status = s
 		}
@@ -111,7 +111,7 @@ func TestPoaCorruptSeatRowHoldsNotHalts(t *testing.T) {
 		}
 	}
 	setSeat(orig.LastSeatedHeight)
-	t.Logf("row restored after %s; unstake status during the window: %q", time.Since(corruptedAt).Round(time.Second), status)
+	t.Logf("row restored after %s; unstake status during the window: %q", devnetSince(corruptedAt).Round(time.Second), status)
 
 	stalled, held := 0, 0
 	for n := 1; n <= 5; n++ {
@@ -222,7 +222,7 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// v2 first, then a genesis gen-0: the registry holds a single Active
 	// generation, so the retiring-member bond lock (#11) cannot apply and POA-1
@@ -242,7 +242,7 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 	st0 := -1
 	for i := 0; i < 12 && st0 != 1; i++ {
 		if st0 = vaultStatusOf(t, d, ctx, cid, 0); st0 != 1 {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 	}
 	t.Logf("registry: gen0 %s", statusStr(st0))
@@ -266,7 +266,7 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 	}
 	lockStatus := ""
 	for i := 0; i < 36 && lockStatus != "FAILED" && lockStatus != "CONFIRMED"; i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 		lockStatus, _ = d.FindTransactionStatus(ctx, 1, lockTx)
 	}
 	newText := logCount(ctx, d, 1, "not yet purged")
@@ -315,12 +315,12 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 
 	const window = 60 * time.Second
 	q0 := mongoQueryCount(t, d, ctx)
-	time.Sleep(window)
+	devnetSleep(window)
 	baseline := mongoQueryCount(t, d, ctx) - q0
 
 	const unstakes = 40
 	q1 := mongoQueryCount(t, d, ctx)
-	start := time.Now()
+	start := devnetNow()
 	var txs []string
 	// Signers hold no seat (a seat's own exit-halt would refuse first): initminer
 	// and x, five ops each per block (Hive's custom_json limit per account).
@@ -335,12 +335,12 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 		}
 		txs = append(txs, tx)
 		if i%(5*len(signers)) == 5*len(signers)-1 {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	done := 0
-	for time.Since(start) < window && done < len(txs) {
-		time.Sleep(3 * time.Second)
+	for devnetSince(start) < window && done < len(txs) {
+		devnetSleep(3 * time.Second)
 		done = 0
 		for _, tx := range txs {
 			if s, _ := d.FindTransactionStatus(ctx, 1, tx); s == "FAILED" || s == "CONFIRMED" {
@@ -348,8 +348,8 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 			}
 		}
 	}
-	for time.Since(start) < window {
-		time.Sleep(time.Second)
+	for devnetSince(start) < window {
+		devnetSleep(time.Second)
 	}
 	loaded := mongoQueryCount(t, d, ctx) - q1
 	extra := loaded - baseline
@@ -379,9 +379,9 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 		t.Fatalf("decode unstake: %v", err)
 	}
 	decStatus := ""
-	decStart := time.Now()
-	for time.Since(decStart) < 40*time.Second && decStatus != "FAILED" {
-		time.Sleep(2 * time.Second)
+	decStart := devnetNow()
+	for devnetSince(decStart) < 40*time.Second && decStatus != "FAILED" {
+		devnetSleep(2 * time.Second)
 		decStatus, _ = d.FindTransactionStatus(ctx, 1, decTx)
 	}
 	// Sample each node's stored L2 slot until it moves past `before`, for up to
@@ -390,7 +390,7 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 	// next slot (10-07: four nodes at 510, one still at 500). A node stuck
 	// retrying the row never stores another block, however long this waits.
 	after := make([]int, cfg.Nodes+1)
-	for waitStart := time.Now(); ; time.Sleep(2 * time.Second) {
+	for waitStart := devnetNow(); ; devnetSleep(2 * time.Second) {
 		moved := 0
 		for n := 1; n <= cfg.Nodes; n++ {
 			if after[n] <= before[n] {
@@ -400,7 +400,7 @@ func TestPoa1LockOnDevnet(t *testing.T) {
 				moved++
 			}
 		}
-		if moved == cfg.Nodes || time.Since(waitStart) > 60*time.Second {
+		if moved == cfg.Nodes || devnetSince(waitStart) > 60*time.Second {
 			break
 		}
 	}
@@ -471,7 +471,7 @@ func TestPoaFloorRiseCountsTopUps(t *testing.T) {
 			if ep := reviewLatestEpoch(ctx, d, 1); ep > after {
 				return ep
 			}
-			time.Sleep(2 * time.Second)
+			devnetSleep(2 * time.Second)
 		}
 		t.Fatalf("no election after epoch %d", after)
 		return 0
@@ -509,12 +509,12 @@ func TestPoaFloorRiseCountsTopUps(t *testing.T) {
 	t.Logf("seats back for %s and %s; proposed 0.10 for epoch %d", accts[4], accts[5], e1+1)
 
 	e2 := waitLanded(e1)
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 	m2, _ := d.GetElectionMembers(ctx, 1, e2)
 	l2 := line()
 	t.Logf("E2 = epoch %d members %v, active line %s", e2, bareAccounts(m2), l2)
 	e3 := waitLanded(e2)
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 	l3 := line()
 	t.Logf("E3 = epoch %d, active line %s", e3, l3)
 	if l2 != "0.10" {

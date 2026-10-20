@@ -45,7 +45,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 		t.Skip("set VAULT_F8_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -95,7 +95,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	finish := func() {
 		vfAssertContractIdentical(c, d, ctx, cid, vfAllNodes(5), 4*time.Minute, "F8-IDENT")
@@ -165,7 +165,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 			break
 		}
 		t.Logf("gen-0 not Active yet (awaiting the genesis check-sig under v2), registerPublicKey status=%s, retry %d", lastStatus, i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		// genesisfix's fallback: drive the explicit activateKey path too, so a FAIL
@@ -178,7 +178,7 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 				break
 			}
 			t.Logf("activateKey fallback, gen-0 still not Active, status=%s, retry %d", lastStatus, i)
-			time.Sleep(15 * time.Second)
+			devnetSleep(15 * time.Second)
 		}
 	}
 	c.rec("F8-GENESIS", "gen-0 reaches Active under v2 ON with a pre-fold (absent) registry", activated,
@@ -271,10 +271,10 @@ func f8SignedRequests(d *Devnet, ctx context.Context, node int, keyId string) in
 // no UTXOs, and returns the final count. Chain truth, not a tx status.
 func f8WaitGenDrained(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, within time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	n := genUtxoCount(t, d, ctx, cid, gen)
-	for n != 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+	for n != 0 && devnetNow().Before(deadline) {
+		devnetSleep(10 * time.Second)
 		n = genUtxoCount(t, d, ctx, cid, gen)
 	}
 	return n

@@ -1,7 +1,6 @@
 package devnet
 
 import (
-	"context"
 	"os"
 	"testing"
 	"time"
@@ -49,7 +48,7 @@ func TestPoaExitedSeatsStillDecideAdmission(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 75*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 10*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 10*time.Minute)
 		cancel()
 		if err != nil {
@@ -126,7 +125,7 @@ func TestPoaExitedSeatsStillDecideAdmission(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("waiting for head %d (exit %d + window %d): %v", target, maxExit, window, ctx.Err())
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
 
@@ -139,7 +138,7 @@ func TestPoaExitedSeatsStillDecideAdmission(t *testing.T) {
 			t.Fatalf("admit_vote from magi-%d: %v", v, err)
 		}
 	}
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 	seatedAfterLive := false
 	for _, s := range pfMustSeats(t, d, ctx, 1) {
 		if s.Account == candidate {
@@ -161,11 +160,11 @@ func TestPoaExitedSeatsStillDecideAdmission(t *testing.T) {
 		if _, err := d.pfAdmitVote(leavers[0], cand2, ubo2); err != nil {
 			t.Fatalf("admit_vote from exited magi-%d: %v", leavers[0], err)
 		}
-		time.Sleep(30 * time.Second)
+		devnetSleep(30 * time.Second)
 		if _, err := d.pfAdmitVote(1, cand2, ubo2); err != nil {
 			t.Fatalf("admit_vote from magi-1: %v", err)
 		}
-		time.Sleep(60 * time.Second)
+		devnetSleep(60 * time.Second)
 		for _, s := range pfMustSeats(t, d, ctx, 1) {
 			if s.Account == cand2 {
 				t.Errorf("the vote of EXITED seat %s (halt run out) was counted: %s admitted on 1 live + 1 exited vote",
@@ -181,7 +180,7 @@ func TestPoaExitedSeatsStillDecideAdmission(t *testing.T) {
 	if _, err := d.pfAdmitVote(leavers[0], candidate, ubo); err != nil {
 		t.Fatalf("admit_vote from exited magi-%d: %v", leavers[0], err)
 	}
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 	for _, s := range pfMustSeats(t, d, ctx, 1) {
 		if s.Account == candidate {
 			t.Errorf("POA-3 REPRODUCED: the vote of EXITED seat %s (exit recorded) was counted and crossed the bar; "+

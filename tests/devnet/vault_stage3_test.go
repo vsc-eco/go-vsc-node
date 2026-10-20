@@ -34,7 +34,7 @@ func TestVaultStage3Money(t *testing.T) {
 		t.Skip("set VAULT_STAGE3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(33*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(33*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -73,7 +73,7 @@ func TestVaultStage3Money(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// genesis
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
@@ -114,7 +114,7 @@ func TestVaultStage3Money(t *testing.T) {
 	// ---- MD03-GP-04 transfer owner -> hive:bob ----
 	const xfer = 10_000_000
 	vstatus(t, d, ctx, 1, cid, "transfer", fmt.Sprintf(`{"amount":"%d","to":"hive:bob"}`, xfer))
-	time.Sleep(6 * time.Second)
+	devnetSleep(6 * time.Second)
 	rec("MD03-GP-04", "transfer to hive:bob",
 		balanceCredited(t, d, ctx, cid, "hive:bob"), "bob credited (presence)")
 
@@ -122,9 +122,9 @@ func TestVaultStage3Money(t *testing.T) {
 	spender := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 2) // hive:magi.test2
 	const allow = 5_000_000
 	vstatus(t, d, ctx, 1, cid, "approve", fmt.Sprintf(`{"spender":"%s","amount":"%d"}`, spender, allow))
-	time.Sleep(6 * time.Second)
+	devnetSleep(6 * time.Second)
 	vstatus(t, d, ctx, 2, cid, "transferFrom", fmt.Sprintf(`{"amount":"%d","to":"hive:carol","from":"%s"}`, allow, owner))
-	time.Sleep(6 * time.Second)
+	devnetSleep(6 * time.Second)
 	rec("MD03-GP-05", "approve+transferFrom",
 		balanceCredited(t, d, ctx, cid, "hive:carol"), "carol credited (presence)")
 
@@ -157,7 +157,7 @@ func unmapAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, owner str
 	// find the new pending-spend txid
 	var txid string
 	for i := 0; i < 20 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id
@@ -266,7 +266,7 @@ func waitSigningData(t *testing.T, d *Devnet, ctx context.Context, cid, txid str
 				}
 			}
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	return nil
 }
@@ -286,7 +286,7 @@ func waitSignature(t *testing.T, d *Devnet, ctx context.Context, keyId string, s
 				}
 			}
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	return nil
 }

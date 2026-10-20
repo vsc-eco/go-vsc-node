@@ -36,7 +36,7 @@ func TestVaultTssHalt(t *testing.T) {
 		t.Skip("set VAULT_TSSHALT_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(38*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(38*time.Minute))
 	defer cancel()
 
 	cfg := DefaultConfig()
@@ -87,15 +87,15 @@ func TestVaultTssHalt(t *testing.T) {
 	// the op — a Hive-broadcast success alone does not.
 	haltUntil := func(active bool, wantCount int) int {
 		payload, _ := json.Marshal(map[string]any{"active": active, "keyId": "btc"})
-		deadline := time.Now().Add(15 * time.Minute)
+		deadline := devnetNow().Add(15 * time.Minute)
 		got := -1
-		for time.Now().Before(deadline) {
+		for devnetNow().Before(deadline) {
 			if _, err := broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), signWith); err != nil {
 				t.Logf("  tss_halt(active=%v) broadcast err (%v) — retrying", active, firstLine(err.Error()))
 			}
 			// give the op time to be included + processed on every node
 			for i := 0; i < 6; i++ {
-				time.Sleep(10 * time.Second)
+				devnetSleep(10 * time.Second)
 				if got = countHaltFlag(t, ctx, d, allNodes); got == wantCount {
 					return got
 				}

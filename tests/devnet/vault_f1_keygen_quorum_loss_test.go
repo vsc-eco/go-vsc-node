@@ -57,7 +57,7 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -111,8 +111,8 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 	// ---- step 3: F1-NOKEY, the key must not reach active under threshold ----
 	statusSeen := "absent"
 	becameActive := false
-	nokeyDeadline := time.Now().Add(4 * time.Minute)
-	for time.Now().Before(nokeyDeadline) {
+	nokeyDeadline := devnetNow().Add(4 * time.Minute)
+	for devnetNow().Before(nokeyDeadline) {
 		docs, err := d.GetTssKeys(ctx, 1, bson.M{"id": keyId1})
 		if err == nil && len(docs) > 0 {
 			statusSeen = docs[0].Status
@@ -121,14 +121,15 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 				break
 			}
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
-	timeouts := vfCountLogs(d, ctx, 1, "timeout result")
-	retries := vfCountLogs(d, ctx, 1, "will retry at next rotate interval")
-	t.Logf("magi-1 keygen log counts while under quorum: \"timeout result\"=%d, \"will retry at next rotate interval\"=%d (retry expected yes)", timeouts, retries)
+	// Under quorum the node never starts a session: it aborts at its readiness
+	// check and tries again every rotation, so the attempts show as aborts.
+	aborts := vfCountLogs(d, ctx, 1, "keygen aborted: too few participants reachable")
+	t.Logf("magi-1 keygen aborts while under quorum: %d (retry expected yes)", aborts)
 	c.rec("F1-NOKEY", "gen-1 key never reaches active with 3 parties (TSS threshold needs 4)",
-		!becameActive, fmt.Sprintf("last tss_keys status on magi-1=%q after 4m; log counts: timeout result=%d, will retry at next rotate interval=%d",
-			statusSeen, timeouts, retries))
+		!becameActive, fmt.Sprintf("last tss_keys status on magi-1=%q after 4m; keygen aborted (too few participants reachable) %d times",
+			statusSeen, aborts))
 
 	// ---- step 4: F1-RESUME, restore the committee ----
 	vfStartNodes(t, d, ctx, []int{4, 5})
@@ -186,7 +187,7 @@ func TestVaultF1KeygenQuorumLoss(t *testing.T) {
 				}
 			}
 			if !identical {
-				time.Sleep(10 * time.Second)
+				devnetSleep(10 * time.Second)
 			}
 		}
 		c.rec("F1-KEY", "gen-1 commitment is byte-identical on all 5 nodes (same PublicKey and Epoch)",

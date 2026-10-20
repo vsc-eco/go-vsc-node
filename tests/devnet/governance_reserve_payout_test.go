@@ -95,14 +95,14 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 	t.Logf("[reserve-pay] head=%d baseline(stable honest)=%d", head, baseH)
 
 	// 1) Wait for the double-sign to slash node-3.
-	slashDeadline := time.Now().Add(10 * time.Minute)
+	slashDeadline := devnetNow().Add(10 * time.Minute)
 	var cur3 int64 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
-	for time.Now().Before(slashDeadline) {
+	for devnetNow().Before(slashDeadline) {
 		cur3 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if cur3 >= 0 && cur3 < baseH {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !(cur3 >= 0 && cur3 < baseH) {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -114,16 +114,16 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 	// incident can trip two detectors → two reserve credits arriving slightly
 	// apart). The stable total is the amount we will disburse in full.
 	var reserveAmt int64
-	reserveDeadline := time.Now().Add(5 * time.Minute)
+	reserveDeadline := devnetNow().Add(5 * time.Minute)
 	var lastReserve int64 = -1
-	for time.Now().Before(reserveDeadline) {
+	for devnetNow().Before(reserveDeadline) {
 		v := sumReserveCredits(t, d)
 		if v > 0 && v == lastReserve {
 			reserveAmt = v
 			break
 		}
 		lastReserve = v
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if reserveAmt <= 0 {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -157,7 +157,7 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 
 	// Let the create land + be processed so the proposal exists on every node
 	// before the votes reference it (a vote for an unknown proposal is dropped).
-	time.Sleep(18 * time.Second)
+	devnetSleep(18 * time.Second)
 
 	// 4) Sign with EXACTLY the threshold: 3 more votes (test2, test4, test5) →
 	// create + 3 = 4 = ceil(2*5/3). test6 ABSTAINS (recipient test3 is excluded).
@@ -169,19 +169,19 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 			t.Fatalf("[reserve-pay] broadcasting vsc.reserve_vote from %s: %v", voter, err)
 		}
 		t.Logf("[reserve-pay] vote from %s tx=%s", voter, txID)
-		time.Sleep(1 * time.Second)
+		devnetSleep(1 * time.Second)
 	}
 	t.Logf("[reserve-pay] 4 of 5 effective witnesses signed (test6 abstains) — minimum quorum")
 
 	// 5) Poll until the recipient's spendable hive rises by the disbursed amount.
-	payDeadline := time.Now().Add(8 * time.Minute)
+	payDeadline := devnetNow().Add(8 * time.Minute)
 	paid := false
-	for time.Now().Before(payDeadline) {
+	for devnetNow().Before(payDeadline) {
 		if gqlHiveSpendable(t, d.GQLEndpoint(1), "hive:"+attacker) >= wantHive {
 			paid = true
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !paid {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -196,7 +196,7 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 	// deterministic function of L1-ordered votes), but a non-leader may process
 	// that block a beat after node-1, so poll each node to convergence rather than
 	// reading a single instant. A genuine divergence still fails at the deadline.
-	crossDeadline := time.Now().Add(2 * time.Minute)
+	crossDeadline := devnetNow().Add(2 * time.Minute)
 	for {
 		laggard, laggardV := 0, int64(0)
 		for n := 1; n <= cfg.Nodes; n++ {
@@ -208,11 +208,11 @@ func TestGovernanceReservePayoutVote(t *testing.T) {
 		if laggard == 0 {
 			break // every node agrees
 		}
-		if time.Now().After(crossDeadline) {
+		if devnetNow().After(crossDeadline) {
 			dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
 			t.Fatalf("[reserve-pay] node-%d disagrees: recipient spendable hive=%d < want=%d", laggard, laggardV, wantHive)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if debits := sumReservePayoutDebits(t, d); debits > -reserveAmt {
 		t.Fatalf("[reserve-pay] expected a reserve debit of <= %d, got %d", -reserveAmt, debits)

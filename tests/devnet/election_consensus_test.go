@@ -73,7 +73,7 @@ func TestElectionConsensusDeterminism(t *testing.T) {
 	const minEpoch = uint64(1)
 	t.Logf("waiting for every node to ingest at least one post-genesis election (epoch >= %d)...", minEpoch)
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, minEpoch, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= %d: %v", n, minEpoch, err)

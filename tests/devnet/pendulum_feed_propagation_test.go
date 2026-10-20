@@ -62,7 +62,7 @@ func TestPendulumFeedPropagation(t *testing.T) {
 	select {
 	case <-ctx.Done():
 		t.Fatalf("ctx cancelled while waiting for feeds: %v", ctx.Err())
-	case <-time.After(waitDuration):
+	case <-devnetAfter(waitDuration):
 	}
 
 	// Pick the L1 block range to count over. We scan from block 10

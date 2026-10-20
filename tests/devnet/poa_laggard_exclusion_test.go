@@ -78,7 +78,7 @@ func TestPoaLaggardExcludedFromFoundingCohort(t *testing.T) {
 
 	// Only the UPGRADED nodes will form a committee; poll one of them.
 	for n := 1; n < laggard; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {

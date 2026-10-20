@@ -99,7 +99,7 @@ func TestRegressionBringup(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)
@@ -132,7 +132,7 @@ func TestFullNetworkRegression(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(120*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(120*time.Minute))
 	t.Cleanup(cancel)
 
 	// Build the call-tss contract up front so the TSS stage doesn't pay the
@@ -543,13 +543,13 @@ func TestFullNetworkRegression(t *testing.T) {
 				if _, err := d.Transfer((i%5)+1, ((i+2)%5)+1, "0.500", "hive", "chaos"); err != nil {
 					atomic.AddInt64(&opErrs, 1)
 				}
-				time.Sleep(2 * time.Second)
+				devnetSleep(2 * time.Second)
 			}
 		}()
 
 		// fault 1: transient latency
 		_ = d.AddLatency(ctx, 1, 2, 800, 200)
-		time.Sleep(30 * time.Second)
+		devnetSleep(30 * time.Second)
 		_ = d.RemoveLatency(ctx, 1)
 		_ = d.RemoveLatency(ctx, 2)
 
@@ -557,7 +557,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		fs.requireReachable(t, cfg.Nodes, 5)
 		fs.markDown(2)
 		_ = d.StopNode(ctx, 2)
-		time.Sleep(75 * time.Second)
+		devnetSleep(75 * time.Second)
 		_ = d.StartNode(ctx, 2)
 		fs.markUp(2)
 		if err := d.WaitForBlockProcessing(ctx, 2, nodeBlock(t, d, ctx, 1), 5*time.Minute); err != nil {
@@ -568,7 +568,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		fs.requireReachable(t, cfg.Nodes, 5)
 		fs.markDown(7)
 		_ = d.Disconnect(ctx, 7)
-		time.Sleep(75 * time.Second)
+		devnetSleep(75 * time.Second)
 		_ = d.Reconnect(ctx, 7)
 		fs.markUp(7)
 		if err := d.WaitForBlockProcessing(ctx, 7, nodeBlock(t, d, ctx, 1), 5*time.Minute); err != nil {
@@ -625,23 +625,23 @@ func TestFullNetworkRegression(t *testing.T) {
 // waitBalancePositive polls until an account's asset balance is > 0.
 func waitBalancePositive(t *testing.T, d *Devnet, ctx context.Context, node int, account, asset string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		bal, err := d.GetAccountBalance(ctx, node, account)
 		if err == nil && balanceField(bal, asset) > 0 {
 			return true
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
 // waitStateKey polls contract state until key == want.
 func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, key, want string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		st, err := d.GetStateByKeys(ctx, node, cid, []string{key})
 		if err == nil {
@@ -649,10 +649,10 @@ func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, k
 				return true
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
@@ -660,7 +660,7 @@ func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, k
 // complete with a non-empty signature.
 func waitTssRequestComplete(t *testing.T, d *Devnet, ctx context.Context, node int, keyId string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		reqs, err := d.GetTssRequests(ctx, node, keyId)
 		if err == nil {
@@ -670,10 +670,10 @@ func waitTssRequestComplete(t *testing.T, d *Devnet, ctx context.Context, node i
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 }
 
@@ -747,7 +747,7 @@ func msg32hex(seed int) string {
 func regRetryOpLimit(f func() error) error {
 	err := f()
 	for i := 0; i < 3 && err != nil && strings.Contains(err.Error(), "HIVE_CUSTOM_OP_BLOCK_LIMIT"); i++ {
-		time.Sleep(4 * time.Second)
+		devnetSleep(4 * time.Second)
 		err = f()
 	}
 	return err

@@ -58,7 +58,7 @@ func TestPoaLostRegistryFailsClosed(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 50*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -96,7 +96,7 @@ func TestPoaLostRegistryFailsClosed(t *testing.T) {
 
 	// Let it catch up and process several elections. If it is going to re-seed
 	// incorrectly, this is when it happens.
-	time.Sleep(6 * time.Minute)
+	devnetSleep(6 * time.Minute)
 
 	after, err := d.poaSeats(ctx, victim)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestPoaCrashDuringActivation(t *testing.T) {
 
 	// Wait for the activation election to exist, then SIGKILL immediately — the
 	// transition is being processed right around here.
-	nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 	if err := d.waitForElectionEpoch(nctx, 1, 1, 12*time.Minute); err != nil {
 		cancel()
 		t.Fatalf("magi-1 never ingested epoch 1: %v", err)
@@ -179,7 +179,7 @@ func TestPoaCrashDuringActivation(t *testing.T) {
 	}
 	t.Logf("SIGKILLed magi-%d at the activation transition (ungraceful, no shutdown hooks)", victim)
 
-	time.Sleep(90 * time.Second)
+	devnetSleep(90 * time.Second)
 	if err := d.StartNode(ctx, victim); err != nil {
 		t.Fatalf("restarting magi-%d: %v", victim, err)
 	}
@@ -187,7 +187,7 @@ func TestPoaCrashDuringActivation(t *testing.T) {
 
 	// Peers must reach flat weight and a seeded registry.
 	for n := 1; n < victim; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		_ = d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 	}
@@ -210,9 +210,9 @@ func TestPoaCrashDuringActivation(t *testing.T) {
 	// Give the crashed node time to catch up.
 	var gotFp string
 	var got []poaSeatDoc
-	deadline := time.Now().Add(12 * time.Minute)
-	for time.Now().Before(deadline) {
-		time.Sleep(30 * time.Second)
+	deadline := devnetNow().Add(12 * time.Minute)
+	for devnetNow().Before(deadline) {
+		devnetSleep(30 * time.Second)
 		got, err = d.poaSeats(ctx, victim)
 		if err != nil {
 			continue

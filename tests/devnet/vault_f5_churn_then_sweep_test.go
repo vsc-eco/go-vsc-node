@@ -63,7 +63,7 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 		t.Skip("set VAULT_F5_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -116,7 +116,7 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 		if gen0Status >= 2 { // Retiring or later
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	funded := genUtxoCount(t, d, ctx, cid, 0)
 	if gen0Status < 2 || funded <= 0 {
@@ -136,7 +136,7 @@ func TestVaultF5ChurnThenSweep(t *testing.T) {
 	if _, err := d.ConsensusUnstake(churnNode, "1999.000"); err != nil {
 		t.Fatalf("consensus_unstake 1999.000 (locked) broadcast: %v", err)
 	}
-	time.Sleep(3 * time.Second)
+	devnetSleep(3 * time.Second)
 	// Same-amount control for F5-RELEASE: the small amount that IS accepted after the
 	// generation is finished must be refused now, so the pair isolates the bond lock
 	// from any amount-dependent refusal.

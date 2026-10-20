@@ -29,7 +29,7 @@ func TestVaultStage1StateMachine(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(28*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(28*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -86,7 +86,7 @@ func TestVaultStage1StateMachine(t *testing.T) {
 	if err := d.RestartAllMagiNodes(ctx); err != nil {
 		t.Logf("restart: %v", err)
 	}
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// ---- createKey -> does it trigger node keygen? ----
 	logCall(t, d, ctx, 1, cid, "createKey", "")
@@ -120,7 +120,7 @@ func TestVaultStage1StateMachine(t *testing.T) {
 
 	// ---- activateKey (BRK-2 check-sig gated under v2) ----
 	logCall(t, d, ctx, 1, cid, "activateKey", "")
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 	st2, _ := d.GetStateByKeys(ctx, 2, cid, []string{"pubkey", "backupkey", "v", "nextGen", "activeGen"})
 	for k, v := range st2 {
 		t.Logf("POST-ACTIVATE STATE[%s] = %v", k, v)

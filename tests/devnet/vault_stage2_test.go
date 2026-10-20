@@ -33,7 +33,7 @@ func TestVaultStage2Funding(t *testing.T) {
 		t.Skip("set VAULT_STAGE2_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -75,7 +75,7 @@ func TestVaultStage2Funding(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// ---- genesis: createKey -> keygen -> register(primary=keygen, backup=G) -> activate ----
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
@@ -218,7 +218,7 @@ func fundVaultViaSPV(t *testing.T, d *Devnet, ctx context.Context, cid, primaryH
 	// that legitimately credits nothing (e.g. a sub-floor deposit after a rotation)
 	// only costs that minute; the caller's own check still decides the verdict.
 	for i := 0; i < 12 && balanceSats(t, d, ctx, cid, recipient) == balBefore; i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	return addr
 }
@@ -255,7 +255,7 @@ func getStateHex(d *Devnet, ctx context.Context, node int, cid string, keys []st
 		}
 		lastErr = err
 		if i < attempts-1 {
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	return nil, fmt.Errorf("getStateByKeys(node %d) failed after %d attempts: %w", node, attempts, lastErr)

@@ -78,7 +78,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 		t.Skip("set VAULT_NT3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(70*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(70*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -124,8 +124,8 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 			wantAccts[d.witnessAccount(n)] = true
 		}
 		var members []string
-		deadline := time.Now().Add(within)
-		for time.Now().Before(deadline) {
+		deadline := devnetNow().Add(within)
+		for devnetNow().Before(deadline) {
 			ep := custodyCurrentEpoch(d, ctx, 2)
 			members, _ = d.GetElectionMembers(ctx, 2, ep)
 			if len(members) == len(want) {
@@ -140,7 +140,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 					return members
 				}
 			}
-			time.Sleep(20 * time.Second)
+			devnetSleep(20 * time.Second)
 		}
 		t.Fatalf("PRECONDITION FAILED (%s): election never became %v (last=%v)", tag, want, members)
 		return members
@@ -161,7 +161,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx) // the ONLY restart; BEFORE any disable
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	// Wait for the post-restart enabled=true announces of all 8 to be indexed BEFORE
 	// disabling — otherwise a late announce overwrites the disable and 6-8 slip back in.
 	waitMembers("post-restart all 8 indexed", []int{1, 2, 3, 4, 5, 6, 7, 8}, vfTestBudget(10*time.Minute))
@@ -194,7 +194,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 40_000_000, contractLastHeight(t, d, ctx, cid))
 	n0 := genUtxoCount(t, d, ctx, cid, 0)
 	for i := 0; i < 18 && n0 < 2; i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		n0 = genUtxoCount(t, d, ctx, cid, 0)
 	}
 	rec("NT3-00", "gen-0 funded with multiple UTXOs on committee {1..5}", n0 >= 2, fmt.Sprintf("gen-0 holds %d UTXO(s)", n0))
@@ -221,7 +221,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 			activated = true
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !activated {
 		t.Fatal("gen-1 never activated")
@@ -229,7 +229,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 	g0 := -1
 	for i := 0; i < 8 && g0 < 2; i++ {
 		g0 = vaultStatusOf(t, d, ctx, cid, 0)
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	rec("NT3-01", "gen-0 RETIRED while election still {1..5} (will not reshare away)", g0 >= 2, "gen-0 status="+statusStr(g0))
 	if g0 < 2 {
@@ -274,7 +274,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 	gen1Before := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
 	for i, stable := 0, 0; i < 18 && stable < 2; i++ { // wait for the fee-reserve UTXO to land + settle
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		now := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
 		if now == gen1Before {
 			stable++
@@ -311,7 +311,7 @@ func TestVaultNT3CompleterPublish(t *testing.T) {
 	if !ok {
 		// Give the completer a few more sign intervals before declaring a strand, then
 		// re-check rather than assume the first per-input wait was enough.
-		time.Sleep(vfTestBudget(3 * time.Minute))
+		devnetSleep(vfTestBudget(3 * time.Minute))
 		stillUnsigned := false
 		for _, uh := range sd.UnsignedSigHashes {
 			if !vfSignatureLanded(d, ctx, 2, cid+"-main", uh.SigHash) {

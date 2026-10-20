@@ -44,7 +44,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 		t.Skip("set VAULT_F3_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(90*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(90*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -65,6 +65,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	cfg := vfSlowReshareConfig()
 	cfg.SkipFunding = false
 	cfg.EnableBitcoind = true
+	cfg.LivePreParams = true // step 1's subject is magi-3 generating safe primes cold
 	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
 	if os.Getenv("DEVNET_KEEP") != "" {
 		cfg.KeepRunning = true
@@ -152,9 +153,9 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 
 	ck2 := vstatus(t, d, ctx, 1, cid, "createKey", "")
 	t.Logf("gen-2 createKey status=%s", ck2)
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 	vfStopNodes(t, d, ctx, []int{3})
-	time.Sleep(20 * time.Second)
+	devnetSleep(20 * time.Second)
 	vfStartNodes(t, d, ctx, []int{3})
 
 	// -----------------------------------------------------------------
@@ -228,7 +229,7 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 			}
 		}
 		if !sameKey {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 	}
 

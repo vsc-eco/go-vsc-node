@@ -39,7 +39,7 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 	cfg.LogLevel = "error,bp=info" // keep the block producer's signature-count warnings
 	d, ctx := startDevnetNoKey(t, cfg, 60*time.Minute)
 
-	time.Sleep(90 * time.Second)
+	devnetSleep(90 * time.Second)
 	before, _, div0, rerr0 := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("L2 max slot per node before: %v (divergence=%q readErr=%q)", before, div0, rerr0)
 	if div0 != "" {
@@ -66,12 +66,12 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 				break
 			}
 			t.Logf("deploying the %s contract, attempt %d: %v", name, attempt, err)
-			time.Sleep(30 * time.Second)
+			devnetSleep(30 * time.Second)
 		}
 		if err != nil {
 			t.Fatalf("PRECONDITION FAILED: deploying the %s contract: %v", name, err)
 		}
-		time.Sleep(20 * time.Second)
+		devnetSleep(20 * time.Second)
 		tx, err := d.CallContractWithIntents(ctx, 1, cid, "run", "{}", nil, 10000)
 		if err != nil {
 			t.Fatalf("calling the %s contract: %v", name, err)
@@ -81,7 +81,7 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 	}
 	callSlots, _, _, _ := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("L2 max slot per node right after the calls: %v", callSlots)
-	time.Sleep(90 * time.Second)
+	devnetSleep(90 * time.Second)
 
 	client, err := d.mongoClient(ctx)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestWasmLoadErrorMixedFleet(t *testing.T) {
 		t.Logf("RESULT magi-%d: %d 'not enough signatures' lines; last: %s", n, short, last)
 	}
 
-	time.Sleep(120 * time.Second)
+	devnetSleep(120 * time.Second)
 	after, compared, div, rerr := vfScanBlockHeaders(d, ctx, cfg.Nodes)
 	t.Logf("RESULT L2 max slot per node after: %v (compared %d slots, divergence=%q readErr=%q)", after, compared, div, rerr)
 	if div != "" {

@@ -85,7 +85,7 @@ func TestPoaReadinessGuardRefusesPrematureRise(t *testing.T) {
 
 	upgraded := cfg.Nodes - len(laggards)
 	for n := 1; n <= upgraded; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 1, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -144,9 +144,9 @@ func TestPoaReadinessGuardRefusesPrematureRise(t *testing.T) {
 
 	// ---- DEFENCE 2 (THE CONTROL): the proposal must actually be pending ----
 	var pending int
-	deadline := time.Now().Add(6 * time.Minute)
-	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Second)
+	deadline := devnetNow().Add(6 * time.Minute)
+	for devnetNow().Before(deadline) {
+		devnetSleep(20 * time.Second)
 		props, err := d.pendingVersionProposals(ctx, 1)
 		if err != nil {
 			continue
@@ -168,7 +168,7 @@ func TestPoaReadinessGuardRefusesPrematureRise(t *testing.T) {
 
 	// ---- DEFENCE 3: and yet POA must NOT activate ----
 	for e := target; e <= target+3; e++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		_ = d.waitForElectionEpoch(nctx, 1, e, 8*time.Minute)
 		cancel()
 		el, err := d.GetElectionGQL(ctx, 1, e)

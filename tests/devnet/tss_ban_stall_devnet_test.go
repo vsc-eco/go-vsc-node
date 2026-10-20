@@ -57,7 +57,7 @@ func TestTssBanOutlivesFaultStallsWithSilentPeer(t *testing.T) {
 	faultyAcct := fmt.Sprintf("%s%d", cfg.WitnessPrefix, faulty)
 	silentAcct := fmt.Sprintf("%s%d", cfg.WitnessPrefix, silent)
 	grepLogs := func(node int, pattern string) string {
-		gctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		gctx, cancel := devnetWithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		out, _ := exec.CommandContext(gctx, "bash", "-c",
 			fmt.Sprintf("docker logs %s 2>&1 | grep -E %q | tail -300", d.containerName(node), pattern)).CombinedOutput()
@@ -222,7 +222,7 @@ func TestTssBanOutlivesFaultStallsWithSilentPeer(t *testing.T) {
 		t.Logf("4. magi-%d completed %d reshare(s) in the silent window at the btss level (on chain: %d)", n, ok, res4)
 	}
 	var sess []string
-	sctx, scancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	sctx, scancel := devnetWithTimeout(context.Background(), 2*time.Minute)
 	sessOut, _ := exec.CommandContext(sctx, "bash", "-c", fmt.Sprintf(
 		"docker logs %s 2>&1 | grep -F 'sessionId=reshare-%d-' | grep -v -E 'type=ready|reconnect failed|received reshare message|SendMsg success|message processed successfully' | head -80",
 		d.containerName(1), firstSilent)).CombinedOutput()

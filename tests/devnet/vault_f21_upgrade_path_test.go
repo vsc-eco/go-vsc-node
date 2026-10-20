@@ -54,7 +54,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 		t.Skip("set VAULT_F21_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(70*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(70*time.Minute))
 	defer cancel()
 
 	// The V1 wasm has no default: rehearsing the upgrade against the v2 wasm twice
@@ -115,7 +115,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// v1 genesis: createKey mints the single legacy TSS key "main" (v1 has no vault
 	// registry at all), registerPublicKey stores it in the flat pubkey/backupkey slots.
@@ -143,7 +143,7 @@ func TestVaultF21UpgradePath(t *testing.T) {
 	// applied it; poll for the credit instead of reading once (first run recorded
 	// owner2=0 sats and utxos=1 from a read that raced the settle).
 	for i := 0; i < 24 && (balanceSats(t, d, ctx, cid, owner2) <= 0 || f21GenUtxoCountOn(d, ctx, 2, cid, 0) < 2); i++ {
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	balOwnerFunded := balanceSats(t, d, ctx, cid, owner)
 	balOwner2Funded := balanceSats(t, d, ctx, cid, owner2)
@@ -225,9 +225,9 @@ func TestVaultF21UpgradePath(t *testing.T) {
 			break
 		}
 		t.Logf("migrate not accepted yet (status=%s), retry %d", migStatus, i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	post, err := getStateHex(d, ctx, 2, cid, []string{"mv", "va", "vn"})
 	if err != nil {
 		t.Fatalf("cannot read contract state after migrate: %v", err)
@@ -376,7 +376,7 @@ func f21IssueLegacyUnmap(t *testing.T, d *Devnet, ctx context.Context, cid strin
 		t.Fatalf("PRECONDITION FAILED: the v1 unmap was rejected (status=%s), there is no legacy withdrawal to carry across the upgrade", s)
 	}
 	for i := 0; i < 20 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id
@@ -419,17 +419,17 @@ func f21IssueLegacyUnmap(t *testing.T, d *Devnet, ctx context.Context, cid strin
 // actually put on chain, not one recomputed by the test.
 func f21WaitPendingUpdate(t *testing.T, d *Devnet, ctx context.Context, node int, cid string, within time.Duration) ContractGQL {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	for {
 		rows, err := d.PendingUpdates(ctx, node, cid)
 		if err == nil && len(rows) > 0 {
 			return rows[0]
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			d.dumpContracts(ctx, t, node)
 			t.Fatalf("PRECONDITION FAILED: no pending code update appeared for %s (err=%v)", cid, err)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
@@ -500,10 +500,10 @@ func f21GenUtxoCountOn(d *Devnet, ctx context.Context, node int, cid string, gen
 // f21WaitGenDrained polls the committed UTXO registry until a generation holds nothing,
 // and returns the final count. Chain state, never a transaction status.
 func f21WaitGenDrained(d *Devnet, ctx context.Context, node int, cid string, gen uint32, within time.Duration) int {
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	n := f21GenUtxoCountOn(d, ctx, node, cid, gen)
-	for n != 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+	for n != 0 && devnetNow().Before(deadline) {
+		devnetSleep(10 * time.Second)
 		n = f21GenUtxoCountOn(d, ctx, node, cid, gen)
 	}
 	return n
@@ -513,14 +513,14 @@ func f21WaitGenDrained(d *Devnet, ctx context.Context, node int, cid string, gen
 // how a settled withdrawal is recognised from chain state.
 func f21WaitSpendGone(t *testing.T, d *Devnet, ctx context.Context, cid, txid string, within time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	for {
 		if !contains(txSpendIds(t, d, ctx, cid), txid) {
 			return true
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 }

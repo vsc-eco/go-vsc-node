@@ -35,7 +35,7 @@ func TestPoaAdmissionRoundTrip(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -77,14 +77,14 @@ func TestPoaAdmissionRoundTrip(t *testing.T) {
 		if _, err := d.admitVote(v, candidate, uboId); err != nil {
 			t.Fatalf("admit_vote from magi-%d: %v", v, err)
 		}
-		time.Sleep(2 * time.Second)
+		devnetSleep(2 * time.Second)
 	}
 
 	// ---- the seat must actually appear, on EVERY node ----
 	var seated bool
-	deadline := time.Now().Add(6 * time.Minute)
-	for time.Now().Before(deadline) && !seated {
-		time.Sleep(15 * time.Second)
+	deadline := devnetNow().Add(6 * time.Minute)
+	for devnetNow().Before(deadline) && !seated {
+		devnetSleep(15 * time.Second)
 		after, err := d.poaSeats(ctx, 1)
 		if err != nil {
 			continue

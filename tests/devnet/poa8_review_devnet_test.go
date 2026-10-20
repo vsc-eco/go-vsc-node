@@ -36,7 +36,7 @@ func tssLeaderAt(t *testing.T, d *Devnet, ctx context.Context, bh int) string {
 		if tries > 10 {
 			t.Fatalf("witnessSchedule(%d): %v (%d slots)", bh, err, len(out.WitnessSchedule))
 		}
-		time.Sleep(2 * time.Second)
+		devnetSleep(2 * time.Second)
 	}
 	leader, best := "", uint64(0)
 	for _, s := range out.WitnessSchedule {
@@ -159,7 +159,7 @@ func assertAccusationsInOwnTx(t *testing.T, docs []TssCommitmentDoc) int {
 }
 
 func tssDumpLogs(t *testing.T, d *Devnet, nodes int, pattern string) {
-	dctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	dctx, cancel := devnetWithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	for n := 1; n <= nodes; n++ {
 		out, _ := exec.CommandContext(dctx, "bash", "-c", fmt.Sprintf("docker logs %s 2>&1 | grep -E '%s' | tail -60", d.containerName(n), pattern)).CombinedOutput()
@@ -194,7 +194,7 @@ func TestPoaWithholderFeedsOnlyTheLeader(t *testing.T) {
 	wAcct := d.witnessAccount(w)
 	t.Cleanup(func() {
 		_ = d.Reconnect(context.Background(), w)
-		dctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		dctx, cancel := context.WithTimeout(context.Background(), time.Minute) // wall: single query
 		defer cancel()
 		all, _ := d.GetCommitments(dctx, 1, bson.M{})
 		for _, c := range all {
@@ -227,7 +227,7 @@ func TestPoaWithholderFeedsOnlyTheLeader(t *testing.T) {
 		if ep > base.Epoch && b-head >= 8 && eh <= uint64(head) {
 			first = b
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 
 	type cycle struct {
@@ -365,8 +365,8 @@ func TestPoaAccusedOldMemberAtMinimumExcludesNobody(t *testing.T) {
 	}
 	head, _ := getHeadBlock(d.HiveRPCEndpoint())
 	var r1 *TssCommitmentDoc
-	deadline := time.Now().Add(15 * time.Minute)
-	for r1 == nil && time.Now().Before(deadline) {
+	deadline := devnetNow().Add(15 * time.Minute)
+	for r1 == nil && devnetNow().Before(deadline) {
 		c, err := d.WaitForCommitment(ctx, 1, bson.M{"type": "reshare", "block_height": bson.M{"$gt": uint64(head + 8)}}, 5*time.Minute)
 		if err != nil {
 			continue

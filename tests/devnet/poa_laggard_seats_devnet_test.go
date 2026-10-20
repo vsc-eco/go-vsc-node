@@ -111,7 +111,7 @@ func TestPoaLaggardIncumbentsLoseSeatsAtTheRise(t *testing.T) {
 	}
 	defer client.Disconnect(ctx)
 	for _, n := range laggards {
-		deadline := time.Now().Add(10 * time.Minute)
+		deadline := devnetNow().Add(10 * time.Minute)
 		for {
 			var w struct {
 				Height          uint64 `bson:"height"`
@@ -123,10 +123,10 @@ func TestPoaLaggardIncumbentsLoseSeatsAtTheRise(t *testing.T) {
 				t.Logf("3. %s now announces consensus %d (record at height %d)", acct(n), w.ProtocolVersion, w.Height)
 				break
 			}
-			if time.Now().After(deadline) {
+			if devnetNow().After(deadline) {
 				t.Fatalf("PRECONDITION FAILED: %s never announced consensus >= %d after the upgrade (last: %d, err %v)", acct(n), poaDevnetFloor(), w.ProtocolVersion, err)
 			}
-			time.Sleep(5 * time.Second)
+			devnetSleep(5 * time.Second)
 		}
 	}
 	upgradedAt, _ := latestElection(t, d, ctx, 1)

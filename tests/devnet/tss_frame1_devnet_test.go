@@ -51,7 +51,7 @@ func TestTssFrame1SsidLiarFramesNobody(t *testing.T) {
 	liarAcct := fmt.Sprintf("%s%d", cfg.WitnessPrefix, liar)
 	framedAcct := fmt.Sprintf("%s%d", cfg.WitnessPrefix, 2)
 	grepLogs := func(node int, pattern string) string {
-		gctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		gctx, cancel := devnetWithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		out, _ := exec.CommandContext(gctx, "bash", "-c",
 			fmt.Sprintf("docker logs %s 2>&1 | grep -E %q | tail -200", d.containerName(node), pattern)).CombinedOutput()

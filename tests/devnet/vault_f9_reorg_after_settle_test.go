@@ -168,7 +168,7 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -241,7 +241,7 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	settled := false
 	var g0Before, g1Before int
 	var msBefore bool
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := devnetNow().Add(4 * time.Minute)
 	for {
 		g0Before = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 		g1Before = vfGenUtxoCountOn(d, ctx, 2, cid, 1)
@@ -250,10 +250,10 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 			settled = true
 			break
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	if !settled {
 		t.Fatalf("PRECONDITION FAILED: the migration sweep never settled on magi-2 within 4m (confirmSpend status=%s, gen0Utxos=%d want 0, gen1Utxos=%d want >=1, msRecord=%v want false). F9 only means something once the sweep IS settled",
@@ -374,18 +374,18 @@ func TestVaultF9ReorgAfterSettle(t *testing.T) {
 	}
 
 	// Give the fleet time to execute the relay ops and settle on the new tip.
-	relayDeadline := time.Now().Add(3 * time.Minute)
+	relayDeadline := devnetNow().Add(3 * time.Minute)
 	postLast := last
 	for {
 		postLast = contractLastHeight(t, d, ctx, cid)
 		if postLast >= newTip {
 			break
 		}
-		if time.Now().After(relayDeadline) {
+		if devnetNow().After(relayDeadline) {
 			t.Errorf("the contract's last BTC height is %d after 3m, expected %d; the post-reorg relay did not fully land", postLast, newTip)
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	t.Logf("contract last BTC height after the reorg relay: %d (was %d, regtest tip %d)", postLast, preLast, newTip)
 

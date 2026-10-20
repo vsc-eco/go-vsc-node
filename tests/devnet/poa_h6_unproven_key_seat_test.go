@@ -110,12 +110,12 @@ func TestPoaH6DisabledSeatsUnprovenKey(t *testing.T) {
 	// Break the PoP BEFORE the activation election is generated. Witness rows
 	// appear during setup, so poll briefly for them.
 	broke := 0
-	deadline := time.Now().Add(4 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(4 * time.Minute)
+	for devnetNow().Before(deadline) {
 		if broke = breakGatewayPoPEverywhere(t, d, ctx, victim, cfg.Nodes); broke > 0 {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if broke == 0 {
 		t.Fatalf("no witness rows for %s to break — cannot establish the premise", victim)
@@ -124,7 +124,7 @@ func TestPoaH6DisabledSeatsUnprovenKey(t *testing.T) {
 		broke, victim, cfg.Nodes)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {

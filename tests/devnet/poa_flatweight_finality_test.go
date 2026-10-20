@@ -43,10 +43,10 @@ func (d *Devnet) grewWithin(ctx context.Context, t *testing.T, node int, window 
 	if err != nil {
 		t.Fatalf("baseline slot height on magi-%d: %v", node, err)
 	}
-	deadline := time.Now().Add(window)
+	deadline := devnetNow().Add(window)
 	last := start
-	for time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+	for devnetNow().Before(deadline) {
+		devnetSleep(10 * time.Second)
 		h, err := d.maxSlotHeight(ctx, node)
 		if err != nil {
 			continue
@@ -116,7 +116,7 @@ func TestPoaFlatWeightFinalityThreshold(t *testing.T) {
 	// stake weights. This test originally polled epoch 1 and failed its own
 	// precondition (weight=2000000) against a perfectly healthy chain.
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 12*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 12*time.Minute)
 		cancel()
 		if err != nil {
@@ -191,7 +191,7 @@ func TestPoaFlatWeightFinalityThreshold(t *testing.T) {
 
 	// ---- assert the chain HALTS ----
 	// Give the network a slot or two to settle, then require NO growth.
-	time.Sleep(30 * time.Second)
+	devnetSleep(30 * time.Second)
 	grew, from, to = d.grewWithin(ctx, t, 1, 3*time.Minute)
 	if grew {
 		t.Errorf("EXPECTED HALT BUT CHAIN ADVANCED %d -> %d with %d of %d nodes stopped. "+

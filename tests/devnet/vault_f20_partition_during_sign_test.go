@@ -91,7 +91,7 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -121,7 +121,7 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 	// up. Reconnect is a plain iptables flush and is safe to call when nothing is
 	// partitioned, so registering it this early costs nothing.
 	defer func() {
-		rctx, rcancel := context.WithTimeout(context.Background(), vfTestBudget(2*time.Minute))
+		rctx, rcancel := devnetWithTimeout(context.Background(), vfTestBudget(2*time.Minute))
 		defer rcancel()
 		if err := d.Reconnect(rctx, 3); err != nil {
 			t.Logf("WARNING: deferred reconnect of magi-3 failed, iptables DROP rules may survive in the container: %v", err)
@@ -201,7 +201,7 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 			st := vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, h)
 			t.Logf("confirmSpend returned status=%s", st)
 
-			deadline := time.Now().Add(4 * time.Minute)
+			deadline := devnetNow().Add(4 * time.Minute)
 			for {
 				g0 := vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 				g1 := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
@@ -210,10 +210,10 @@ func TestVaultF20PartitionDuringSign(t *testing.T) {
 					settled = true
 					break
 				}
-				if time.Now().After(deadline) {
+				if devnetNow().After(deadline) {
 					break
 				}
-				time.Sleep(15 * time.Second)
+				devnetSleep(15 * time.Second)
 			}
 		}
 	}

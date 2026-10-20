@@ -114,7 +114,7 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 	// Scaled like the other vault tests: at a 0.9 floor the run first waits for the
 	// version to activate and retries the genesis registration (about 54 min in all).
 	runTimeout := vfTestBudget(50 * time.Minute)
-	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	ctx, cancel := devnetWithTimeout(context.Background(), runTimeout)
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -345,17 +345,17 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 		thSet := false
 		flagged := 0
 		flagDetail := ""
-		deadline := time.Now().Add(3 * time.Minute)
+		deadline := devnetNow().Add(3 * time.Minute)
 		for {
 			thSet = len(vfF18TheftKey(d, ctx, 2, cid)) > 0
 			flagged, flagDetail = vfF18TheftFlagCount(t, d, ctx, nodes)
 			if thSet && flagged == len(nodes) {
 				break
 			}
-			if time.Now().After(deadline) {
+			if devnetNow().After(deadline) {
 				break
 			}
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		tripped = thSet && flagged == len(nodes)
 		c.rec("F18-THEFT-TRIP", "an SPV-proven unauthorised spend of a registered vault UTXO sets the theft halt", tripped,
@@ -411,7 +411,7 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 	thCleared := false
 	cleared := 0
 	clearDetail := ""
-	clearDeadline := time.Now().Add(3 * time.Minute)
+	clearDeadline := devnetNow().Add(3 * time.Minute)
 	for {
 		thCleared = len(vfF18TheftKey(d, ctx, 2, cid)) == 0
 		flagged, detail := vfF18TheftFlagCount(t, d, ctx, nodes)
@@ -420,10 +420,10 @@ func TestVaultF18ShareLossBackupRecovery(t *testing.T) {
 		if thCleared && flagged == 0 {
 			break
 		}
-		if time.Now().After(clearDeadline) {
+		if devnetNow().After(clearDeadline) {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	// Gated on `tripped`: clearing a halt that was never up would pass while proving
 	// nothing, so an untripped run must FAIL this case rather than sail through it.
@@ -782,12 +782,12 @@ func vfF18WaitSignTicks(t *testing.T, d *Devnet, ctx context.Context, signInterv
 	start, err := getHeadBlock(d.HiveRPCEndpoint())
 	if err != nil {
 		t.Logf("F18: could not read the Hive head (%v), falling back to a 2 minute wall-clock wait", err)
-		time.Sleep(2 * time.Minute)
+		devnetSleep(2 * time.Minute)
 		return
 	}
 	target := start + int(signInterval)*(ticks+1)
-	deadline := time.Now().Add(maxWait)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(maxWait)
+	for devnetNow().Before(deadline) {
 		h, herr := getHeadBlock(d.HiveRPCEndpoint())
 		if herr == nil && h >= target {
 			t.Logf("F18: Hive head %d reached target %d (%d sign ticks of %d blocks past %d)", h, target, ticks, signInterval, start)
@@ -797,7 +797,7 @@ func vfF18WaitSignTicks(t *testing.T, d *Devnet, ctx context.Context, signInterv
 		case <-ctx.Done():
 			t.Logf("F18: context done while waiting for sign ticks")
 			return
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	h, _ := getHeadBlock(d.HiveRPCEndpoint())

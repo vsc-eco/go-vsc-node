@@ -34,7 +34,7 @@ func poaFixDevnet(t *testing.T, window uint64, fund bool, timeout time.Duration)
 	}
 	d, ctx := startDevnetNoKey(t, cfg, timeout)
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 10*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 10*time.Minute)
 		cancel()
 		if err != nil {
@@ -86,7 +86,7 @@ func TestPoaFixExpiredAdmissionReopens(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("waiting past the window: %v", ctx.Err())
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
 	// A vote after the window: the old rules mark the proposal expired and drop
@@ -94,7 +94,7 @@ func TestPoaFixExpiredAdmissionReopens(t *testing.T) {
 	if _, err := d.pfAdmitVote(2, candidate, ubo); err != nil {
 		t.Fatalf("expiring vote: %v", err)
 	}
-	time.Sleep(30 * time.Second)
+	devnetSleep(30 * time.Second)
 	if seated(t, d, ctx, candidate) {
 		t.Fatalf("PRECONDITION FAILED: %s admitted before the second round", candidate)
 	}
@@ -105,7 +105,7 @@ func TestPoaFixExpiredAdmissionReopens(t *testing.T) {
 			t.Fatalf("round-2 vote from magi-%d: %v", v, err)
 		}
 	}
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 	if !seated(t, d, ctx, candidate) {
 		t.Errorf("POA-7 REPRODUCED (floor %d): 4 of 5 seats voted for %s after its first proposal expired and it was NOT admitted; the pair is barred forever",
 			floor, candidate)
@@ -148,15 +148,15 @@ func TestPoaFixDelegatorCannotUnlockASeatsBond(t *testing.T) {
 	if _, err := d.ConsensusStake(A, B, "5.000"); err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := devnetNow().Add(3 * time.Minute)
 	for {
 		if del, _ := d.consensusDelegation(ctx, 1, delegatorFull, nodeFull); del == 5000 {
 			break
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Fatal("PRECONDITION FAILED: delegation edge never reached 5000")
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 
 	// The node is an active, electable seat: its collateral is locked.
@@ -168,12 +168,12 @@ func TestPoaFixDelegatorCannotUnlockASeatsBond(t *testing.T) {
 			break
 		}
 		t.Logf("unstake broadcast attempt %d: %v", i+1, uerr)
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	if uerr != nil {
 		t.Fatalf("unstake broadcast: %v", uerr)
 	}
-	time.Sleep(60 * time.Second)
+	devnetSleep(60 * time.Second)
 	del, err := d.consensusDelegation(ctx, 1, delegatorFull, nodeFull)
 	if err != nil {
 		t.Fatalf("reading the edge: %v", err)

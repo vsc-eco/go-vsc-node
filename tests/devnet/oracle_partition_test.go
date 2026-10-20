@@ -60,7 +60,7 @@ func TestOracleChainRelayPartition(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	defer cancel()
 
 	// ── Build the stub BTC mapping contract before starting the devnet ──
@@ -280,20 +280,20 @@ func TestOracleChainRelayPartition(t *testing.T) {
 // Returns 0 if the timeout expires without a match.
 func waitForLogAnyNode(t *testing.T, d *Devnet, ctx context.Context, substr string, timeout time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		for i := 1; i <= d.cfg.Nodes; i++ {
 			if nodeLogsContain(d, ctx, i, substr) {
 				return i
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return 0
 		}
 		select {
 		case <-ctx.Done():
 			return 0
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }

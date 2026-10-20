@@ -74,7 +74,7 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -136,7 +136,7 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 	// the fatal below reports it.
 	base := vf11Snap(t, d, ctx, cid)
 	for i := 0; i < 18 && base.gen0Stat != int(btcvault.VaultStatusRetiring); i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		base = vf11Snap(t, d, ctx, cid)
 	}
 	if base.gen0Stat != int(btcvault.VaultStatusRetiring) {
@@ -171,7 +171,7 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 	driverDetail := ""
 	for i := 1; i <= 3; i++ {
 		if i > 1 {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 		}
 		s := vstatus(t, d, ctx, 1, cid, "migrateVault", "")
 		snap := vf11Snap(t, d, ctx, cid)
@@ -196,7 +196,7 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 	// proved the top-up had landed). Poll magi-2 for up to 2 minutes.
 	supFunded := vf11ReadSupply(d, ctx, 2, cid)
 	for i := 0; i < 12 && (!supFunded.readable || supFunded.fee <= 0); i++ {
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 		supFunded = vf11ReadSupply(d, ctx, 2, cid)
 	}
 	if !supFunded.readable || supFunded.fee <= 0 {
@@ -208,7 +208,7 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 
 	migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
 
-	drainDeadline := time.Now().Add(5 * time.Minute)
+	drainDeadline := devnetNow().Add(5 * time.Minute)
 	drained := false
 	drainDetail := ""
 	for {
@@ -220,10 +220,10 @@ func TestVaultF11EmptyFeeReserve(t *testing.T) {
 			drained = true
 			break
 		}
-		if time.Now().After(drainDeadline) {
+		if devnetNow().After(drainDeadline) {
 			break
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	supAfter := vf11ReadSupply(d, ctx, 2, cid)
 	c.rec("F11-RESUME", "funding the fee reserve resumes the stalled rotation and gen-0 drains to 0 UTXOs",

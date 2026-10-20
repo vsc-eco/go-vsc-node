@@ -73,7 +73,7 @@ func TestPoaChurnCapGraduatedEntry(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 45*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -213,7 +213,7 @@ func ccAllFlat(weights []uint64) bool {
 func ccWaitElections(t *testing.T, d *Devnet, ctx context.Context, from uint64, n uint64, timeout time.Duration) *ElectionInfo {
 	t.Helper()
 	target := from + n
-	wctx, cancel := context.WithTimeout(ctx, timeout)
+	wctx, cancel := devnetWithTimeout(ctx, timeout)
 	defer cancel()
 	if err := d.waitForElectionEpoch(wctx, 1, target, timeout); err != nil {
 		t.Fatalf("magi-1 never reached election epoch %d: %v", target, err)

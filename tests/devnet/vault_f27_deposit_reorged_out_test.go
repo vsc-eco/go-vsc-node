@@ -69,7 +69,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -121,7 +121,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 		t.Fatalf("PRECONDITION FAILED: deposit block %d has %d txs (want coinbase + deposit)", hD, len(blk.Tx))
 	}
 	txD := blk.Tx[1]
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	balDep0 := balanceSats(t, d, ctx, cid, depositor)
 	hasD, idD, amtD := f25RegistryEntryForTxid(d, ctx, 2, cid, txD)
 	c.rec("F27-CREDIT", "the second deposit is credited once it clears the contract maturity gate (MinConfirmationDepth=2 on regtest)",
@@ -257,7 +257,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	}
 
 	// ---- 3. the credit survives without backing ----
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	balDep1 := balanceSats(t, d, ctx, cid, depositor)
 	hasD1, _, _ := f25RegistryEntryForTxid(d, ctx, 2, cid, txD)
 	dUnspent := f25TxOutExists(d, ctx, txD, 0)
@@ -273,7 +273,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 	um := vstatus(t, d, ctx, 2, cid, "unmap", fmt.Sprintf(`{"amount":"%d","to":"%s"}`, withdrawSats, dest))
 	txU := ""
 	for i := 0; i < 20 && isOK(um) && txU == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(spendsBefore, id) {
 				txU = id
@@ -328,7 +328,7 @@ func TestVaultF27DepositReorgedOut(t *testing.T) {
 		theft, theftDetail)
 
 	// ---- 5. the books no longer balance ----
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	balOwner1 := balanceSats(t, d, ctx, cid, owner)
 	balDep2 := balanceSats(t, d, ctx, cid, depositor)
 	regSum := f25RegistrySum(d, ctx, 2, cid)

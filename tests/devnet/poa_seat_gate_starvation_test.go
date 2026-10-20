@@ -64,7 +64,7 @@ func allFlat(weights []uint64) bool {
 func waitElections(t *testing.T, d *Devnet, ctx context.Context, from uint64, n uint64, timeout time.Duration) *ElectionInfo {
 	t.Helper()
 	target := from + n
-	wctx, cancel := context.WithTimeout(ctx, timeout)
+	wctx, cancel := devnetWithTimeout(ctx, timeout)
 	defer cancel()
 	if err := d.waitForElectionEpoch(wctx, 1, target, timeout); err != nil {
 		t.Fatalf("magi-1 never reached election epoch %d: %v", target, err)
@@ -117,7 +117,7 @@ func TestPoaSeatGateStarvation(t *testing.T) {
 	d, ctx := startDevnetNoKey(t, cfg, 40*time.Minute)
 
 	for n := 1; n <= cfg.Nodes; n++ {
-		nctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nctx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		err := d.waitForElectionEpoch(nctx, n, 2, 8*time.Minute)
 		cancel()
 		if err != nil {
@@ -311,10 +311,10 @@ func waitSlotsAdvance(t *testing.T, d *Devnet, ctx context.Context, nodes int, a
 		}
 		start[n] = max(h, int(after))
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	pending := nodes
 	advanced := make([]bool, nodes+1)
-	for pending > 0 && time.Now().Before(deadline) {
+	for pending > 0 && devnetNow().Before(deadline) {
 		for n := 1; n <= nodes; n++ {
 			if advanced[n] {
 				continue
@@ -325,7 +325,7 @@ func waitSlotsAdvance(t *testing.T, d *Devnet, ctx context.Context, nodes int, a
 			}
 		}
 		if pending > 0 {
-			time.Sleep(5 * time.Second)
+			devnetSleep(5 * time.Second)
 		}
 	}
 	for n := 1; n <= nodes; n++ {

@@ -35,7 +35,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 		t.Skip("set VAULT_BATCH_RUN=1")
 	}
 	requireDocker(t)
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(30*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -77,7 +77,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	pass, fail := 0, 0
 	record := func(caseId, desc string, ok bool, detail string) {
@@ -118,7 +118,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 			break
 		}
 		t.Logf("register not yet admitted (awaiting genesis check-sig)... retry %d", i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	record("VL-GP-02b", "registerPublicKey(primary) accepted", isOK(s1), "status="+s1)
 	// a different key (flip last hex char)
@@ -152,7 +152,7 @@ func TestVaultBatchedStateMachine(t *testing.T) {
 		if preErr == nil && len(preKey["pubkey"]) == 33 {
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	if preErr != nil || len(preKey["pubkey"]) != 33 {
 		record("VL-PEN-15", "set-once: PRECONDITION NOT ESTABLISHED (the first register never became readable on the query node)",
@@ -253,12 +253,12 @@ func vfRetryMigrateAfterReshare(t *testing.T, d *Devnet, ctx context.Context, no
 		return status
 	}
 	t.Logf("migrateVault waits for the active key's first reshare (%s); retrying once it has", msg)
-	deadline := time.Now().Add(time.Duration(float64(15*time.Minute) * vfTimeoutScale()))
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(time.Duration(float64(15*time.Minute) * vfTimeoutScale()))
+	for devnetNow().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return status
-		case <-time.After(20 * time.Second):
+		case <-devnetAfter(20 * time.Second):
 		}
 		if ok, msg = vfSimulate(d, ctx, node, cid, caller, "migrateVault", ""); ok || !strings.Contains(msg, "has not been reshared") {
 			s, _ := vstatusTx(t, d, ctx, node, cid, "migrateVault", "")
@@ -280,9 +280,9 @@ func vstatusTx(t *testing.T, d *Devnet, ctx context.Context, node int, cid, acti
 		t.Logf("CALL %s -> submit err: %v", action, err)
 		return "SUBMIT_ERR", ""
 	}
-	deadline := time.Now().Add(90 * time.Second)
+	deadline := devnetNow().Add(90 * time.Second)
 	last := ""
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		s, _ := d.FindTransactionStatus(ctx, node, txid)
 		if s != "" {
 			last = s
@@ -299,7 +299,7 @@ func vstatusTx(t *testing.T, d *Devnet, ctx context.Context, node int, cid, acti
 		select {
 		case <-ctx.Done():
 			return last, txid
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 	t.Logf("CALL %s -> last=%s (tx=%s, no terminal)", action, last, txid[:12])
@@ -316,7 +316,7 @@ func vfAwaitNode2(t *testing.T, d *Devnet, ctx context.Context, node int, txid, 
 	if node == 2 {
 		return
 	}
-	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); {
+	for end := devnetNow().Add(30 * time.Second); devnetNow().Before(end); {
 		s, err := d.FindTransactionStatus(ctx, 2, txid)
 		if err != nil || strings.ToUpper(s) == want {
 			return
@@ -324,7 +324,7 @@ func vfAwaitNode2(t *testing.T, d *Devnet, ctx context.Context, node int, txid, 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(2 * time.Second):
+		case <-devnetAfter(2 * time.Second):
 		}
 	}
 	t.Logf("  magi-2 had not applied tx %s (%s on magi-%d) after 30s", txid[:12], want, node)

@@ -67,7 +67,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -145,7 +145,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	}
 	txR := ""
 	for i := 0; i < 20 && txR == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txR = id
@@ -193,7 +193,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 		t.Fatalf("PRECONDITION FAILED: confirmSpend(O) status=%s (VR2-06 needs %d confirmations on O's block %d, contract last=%d); the settled-then-dropped state cannot be built",
 			csO, vfDepositMaturityBlocks, hA, contractLastHeight(t, d, ctx, cid))
 	}
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	gen1Settled := vfGenUtxoCountOn(d, ctx, 2, cid, 1)
 	hasO, idO, amtO := f25RegistryEntryForTxid(d, ctx, 2, cid, txO)
 	msOGone := !vfSweepRecordOn(d, ctx, 2, cid, txO)
@@ -266,7 +266,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 		fmt.Sprintf("method=%s O_confirmed=%v R_confirmed=%v R_height=%d (O was %d) replaceBlocks=%s depth=%d contract_header_canonical=%v", how, oInChain, rInChain, rHeight, hA, replStatus, len(repl), strings.EqualFold(canonA, storedA)))
 
 	// ---- 5. measure the damage ----
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	hasO2, idO2, amtO2 := f25RegistryEntryForTxid(d, ctx, 2, cid, txO)
 	hasR, _, _ := f25RegistryEntryForTxid(d, ctx, 2, cid, txR)
 	oUnspent := f25TxOutExists(d, ctx, txO, 0)
@@ -289,7 +289,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	phantomBefore := f25PhantomSats(t, d, ctx, 2, cid)
 	regSumBefore := f25RegistrySum(d, ctx, 2, cid)
 	tu := f25TopUpWithProof(t, d, ctx, 1, cid, txR, rHeight)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 	hasRAfter, _, _ := f25RegistryEntryForTxid(d, ctx, 2, cid, txR)
 	regSumAfter := f25RegistrySum(d, ctx, 2, cid)
 	phantomAfter := f25PhantomSats(t, d, ctx, 2, cid)
@@ -312,7 +312,7 @@ func TestVaultF25ReorgSwapsRedrivenSweep(t *testing.T) {
 	um := vstatus(t, d, ctx, 1, cid, "unmap", fmt.Sprintf(`{"amount":"%d","to":"%s"}`, withdrawSats, dest))
 	txU := ""
 	for i := 0; i < 20 && isOK(um) && txU == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(spendsBefore, id) {
 				txU = id

@@ -62,7 +62,7 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 		t.Fatal("BTC_MAPPING_WASM_PATH must point at the btc-mapping-contract regtest wasm")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(42*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(42*time.Minute))
 	defer cancel()
 
 	newNodes := []int{1, 2, 3}
@@ -144,14 +144,14 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 	// Retry briefly in case the first broadcast races the chain.
 	payload, _ := json.Marshal(map[string]any{"active": true, "keyId": cid + "-main"})
 	var haltTx string
-	deadline := time.Now().Add(25 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(25 * time.Minute)
+	for devnetNow().Before(deadline) {
 		haltTx, err = broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), signWith)
 		if err == nil {
 			break
 		}
 		t.Logf("  vsc.gateway authority not live yet (%v) — retrying", firstLine(err.Error()))
-		time.Sleep(20 * time.Second)
+		devnetSleep(20 * time.Second)
 	}
 	if err != nil {
 		// Withdrawals through the gateway multisig work on a mixed fleet
@@ -202,9 +202,9 @@ func TestVaultRotationV2MixedVersionUpgrade(t *testing.T) {
 func requireConverged(t *testing.T, ctx context.Context, d *Devnet, nodes int, minBlock uint64, timeout time.Duration) uint64 {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var common uint64
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		lowest := ^uint64(0)
 		ok := true
 		for n := 1; n <= nodes; n++ {
@@ -221,7 +221,7 @@ func requireConverged(t *testing.T, ctx context.Context, d *Devnet, nodes int, m
 			common = lowest
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	if common == 0 {
 		// Not all nodes advanced past minBlock — a STALL, which is itself a

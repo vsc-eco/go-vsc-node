@@ -71,11 +71,11 @@ func TestGatewayMixedFleet(t *testing.T) {
 	if _, err := d.Deposit(ctx, payer, "10.000", "hbd"); err != nil {
 		t.Fatalf("PRECONDITION FAILED: deposit: %v", err)
 	}
-	for end := time.Now().Add(5 * time.Minute); ; time.Sleep(5 * time.Second) {
+	for end := devnetNow().Add(5 * time.Minute); ; devnetSleep(5 * time.Second) {
 		if b, err := d.GetAccountBalance(ctx, 1, "hive:"+d.witnessAccount(payer)); err == nil && b.Hbd >= 10_000 {
 			break
 		}
-		if time.Now().After(end) {
+		if devnetNow().After(end) {
 			t.Fatalf("PRECONDITION FAILED: the HBD deposit was never credited on L2")
 		}
 	}
@@ -86,10 +86,10 @@ func TestGatewayMixedFleet(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: withdraw: %v", label, err)
 		}
-		start := time.Now()
-		for end := time.Now().Add(15 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+		start := devnetNow()
+		for end := devnetNow().Add(15 * time.Minute); devnetNow().Before(end); devnetSleep(10 * time.Second) {
 			if now := gwL1Hbd(t, d, payeeAcct); now >= before+milli {
-				t.Logf("RESULT %s: %s HBD paid out on L1 to %s after %s (withdraw tx %s)", label, amount, payeeAcct, time.Since(start).Round(time.Second), tx)
+				t.Logf("RESULT %s: %s HBD paid out on L1 to %s after %s (withdraw tx %s)", label, amount, payeeAcct, devnetSince(start).Round(time.Second), tx)
 				return true
 			}
 		}
@@ -101,7 +101,7 @@ func TestGatewayMixedFleet(t *testing.T) {
 	// Key rotation runs every 20 blocks. Wait for two: the second one is signed
 	// under the authority the first one installed.
 	waitRotation := func(label string, after uint64) uint64 {
-		for end := time.Now().Add(15 * time.Minute); time.Now().Before(end); time.Sleep(10 * time.Second) {
+		for end := devnetNow().Add(15 * time.Minute); devnetNow().Before(end); devnetSleep(10 * time.Second) {
 			if m := gwRotationMark(t, d); m > after {
 				t.Logf("RESULT %s: rotation landed (mark %d > %d), authority %s", label, m, after, gwAuthority(t, d))
 				return m

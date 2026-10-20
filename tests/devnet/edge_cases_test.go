@@ -57,7 +57,7 @@ func edgeCaseSetup(t *testing.T, cfg *Config) (*Devnet, context.Context, string,
 	t.Helper()
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	t.Cleanup(cancel)
 
 	wasmPath, err := BuildCallTssContract(ctx)
@@ -209,7 +209,7 @@ func TestEdgeLeaderCrashDuringBLS(t *testing.T) {
 	// Restart the leader for the subsequent cycle
 	t.Logf("restarting leader node %d...", leaderNode)
 	d.StartNode(ctx, leaderNode)
-	time.Sleep(10 * time.Second) // let it sync
+	devnetSleep(10 * time.Second) // let it sync
 
 	// Wait one more cycle for full recovery
 	finalTarget := targetBlock + rotateInterval + 30
@@ -483,6 +483,7 @@ func TestEdgePreparamsExhaustion(t *testing.T) {
 	}
 
 	cfg := edgeCaseConfig()
+	cfg.LivePreParams = true // the subject is the pool draining under repeated blame
 	d, ctx, _, fullKeyId, keygenCommit := edgeCaseSetup(t, cfg)
 
 	t.Log("Phase 2: adding latency to node 6 to cause repeated blame...")
@@ -589,7 +590,7 @@ func TestEdgeKeygenBlameCrossEpoch(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(25*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(25*time.Minute))
 	defer cancel()
 
 	wasmPath, err := BuildCallTssContract(ctx)
@@ -902,6 +903,7 @@ func TestEdgeSimultaneousRestart(t *testing.T) {
 	}
 
 	cfg := edgeCaseConfig()
+	cfg.LivePreParams = true // the subject is every node generating primes at once
 	d, ctx, _, fullKeyId, keygenCommit := edgeCaseSetup(t, cfg)
 
 	// Verify we have at least one reshare before the restart, to prove
@@ -929,7 +931,7 @@ func TestEdgeSimultaneousRestart(t *testing.T) {
 	t.Log("all nodes stopped")
 
 	// Brief pause — in production, a deployment might take 5-10 seconds
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 
 	// Start all nodes at once
 	for i := 1; i <= cfg.Nodes; i++ {
@@ -942,7 +944,7 @@ func TestEdgeSimultaneousRestart(t *testing.T) {
 	// Wait for nodes to regenerate preparams and catch up on blocks.
 	// This is the critical window: all 7 nodes generating Paillier
 	// primes simultaneously on a loaded server.
-	time.Sleep(30 * time.Second) // let P2P settle
+	devnetSleep(30 * time.Second) // let P2P settle
 
 	// Check that nodes are processing blocks again
 	if err := d.WaitForBlockProcessing(ctx, 2, 10, 5*time.Minute); err != nil {
@@ -954,8 +956,8 @@ func TestEdgeSimultaneousRestart(t *testing.T) {
 
 	// Wait for preparams on at least a few nodes
 	preparamsReady := 0
-	deadline := time.Now().Add(3 * time.Minute)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(3 * time.Minute)
+	for devnetNow().Before(deadline) {
 		preparamsReady = 0
 		for i := 1; i <= cfg.Nodes; i++ {
 			logs, err := d.Logs(ctx, d.containerName(i))
@@ -971,7 +973,7 @@ func TestEdgeSimultaneousRestart(t *testing.T) {
 		if preparamsReady >= 5 { // threshold+1
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	t.Logf("%d/%d nodes have preparams after restart", preparamsReady, cfg.Nodes)
 

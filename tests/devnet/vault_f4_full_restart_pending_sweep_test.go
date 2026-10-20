@@ -43,7 +43,7 @@ func TestVaultF4FullRestartPendingSweep(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(85*time.Minute))
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(85*time.Minute))
 	defer cancel()
 
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
@@ -109,7 +109,7 @@ func TestVaultF4FullRestartPendingSweep(t *testing.T) {
 	nodes := vfAllNodes(cfg.Nodes)
 	recOK := false
 	recDetail := ""
-	recDeadline := time.Now().Add(3 * time.Minute)
+	recDeadline := devnetNow().Add(3 * time.Minute)
 	for {
 		allOK := true
 		recDetail = ""
@@ -135,10 +135,10 @@ func TestVaultF4FullRestartPendingSweep(t *testing.T) {
 			recOK = true
 			break
 		}
-		if time.Now().After(recDeadline) {
+		if devnetNow().After(recDeadline) {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	sdAfter := waitSigningData(t, d, ctx, cid, txid)
 	if sdAfter == nil {
@@ -173,17 +173,17 @@ func TestVaultF4FullRestartPendingSweep(t *testing.T) {
 			cs := vfRelayAndConfirm(t, d, ctx, 1, cid, bcTxid, h)
 			gen0After := -1
 			msGone := false
-			settleDeadline := time.Now().Add(3 * time.Minute)
+			settleDeadline := devnetNow().Add(3 * time.Minute)
 			for {
 				gen0After = vfGenUtxoCountOn(d, ctx, 2, cid, 0)
 				msGone = !vfSweepRecordOn(d, ctx, 2, cid, txid)
 				if gen0After == 0 {
 					break
 				}
-				if time.Now().After(settleDeadline) {
+				if devnetNow().After(settleDeadline) {
 					break
 				}
-				time.Sleep(10 * time.Second)
+				devnetSleep(10 * time.Second)
 			}
 			c.rec("F4-SETTLE", "restart-surviving sweep confirms on chain and drains gen-0", isOK(cs) && gen0After == 0,
 				fmt.Sprintf("confirmSpend=%s gen0_utxos=%d (was %d) ms_record_cleared=%v bcTxid=%s height=%d",
