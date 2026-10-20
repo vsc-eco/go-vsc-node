@@ -59,6 +59,17 @@ var (
 	// even if all predicate funcs say we should keep pulling the next batch of
 	// blocks, this is how long we should wait between fetches
 	MinTimeBetweenBlockBatchFetches = time.Millisecond * 1
+	// how long the stream loop waits before re-checking when it has caught up
+	// with the head, is paused, or cannot store yet
+	StreamIdleSleep = time.Millisecond * 100
+	// how long the stream loop waits when its cursor is past the head it knows
+	// (the head guess below ran ahead of the last poll)
+	StreamAheadSleep = time.Second
+	// between head polls the streamer assumes one new block per this interval
+	HeadGuessInterval = 3 * time.Second
+	// how often the stream reader persists its last processed block (the
+	// restart point readers see in hive_blocks metadata)
+	CheckpointInterval = time.Second
 	// where the hive block streamer starts from by default if nothing
 	// has been persisted yet or overridden as a starting point
 	DefaultBlockStart = uint64(81614028)
@@ -185,7 +196,7 @@ func (s *StreamReader) pollDb(fail func(error)) {
 	// goroutine, i.e. after the in-flight block fully finished processing.
 	// Stop() waits on it.
 	defer close(s.stopped)
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(CheckpointInterval)
 	quit := make(chan struct{})
 	// lastSavedMtx guards lastSaved: the ticker goroutine below persists it
 	// every second while the block listener updates it after each processed
@@ -457,7 +468,7 @@ func (s *Streamer) trackHeadHeight() {
 	var updateLock sync.Mutex
 	backoff := HeadBlockCheckPollIntervalBeforeFirstUpdate
 
-	threeSecTicker := time.NewTicker(3 * time.Second)
+	threeSecTicker := time.NewTicker(HeadGuessInterval)
 
 	for {
 		select {
@@ -527,19 +538,19 @@ func (s *Streamer) streamBlocks() {
 			s.mtx.Unlock()
 
 			if s.IsPaused() || !hasFetchedHead {
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(StreamIdleSleep)
 
 				continue
 			}
 
 			if max(headHeight, startBlock)-min(headHeight, startBlock) <= AcceptableBlockLag {
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(StreamIdleSleep)
 
 				continue
 			}
 
 			if startBlock >= headHeight {
-				time.Sleep(time.Second)
+				time.Sleep(StreamAheadSleep)
 				continue
 			}
 
@@ -560,7 +571,7 @@ func (s *Streamer) streamBlocks() {
 
 			// if not can store, across this async gap, we should skip processing
 			if !s.canStore() || len(blocks) == 0 {
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(StreamIdleSleep)
 
 				continue
 			}

@@ -839,6 +839,15 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	return sigStr, nil
 }
 
+// Busy reports whether this node is collecting signatures for, or broadcasting,
+// an L2 block. blockSigning is cleared by the producer's deferred cleanup, after
+// the broadcast. Read-only; used by the devnet block pacemaker.
+func (bp *BlockProducer) Busy() bool {
+	bp.sigMu.RLock()
+	defer bp.sigMu.RUnlock()
+	return bp.blockSigning != nil
+}
+
 func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
 	bp.sigMu.RLock()
 	signing := bp.blockSigning

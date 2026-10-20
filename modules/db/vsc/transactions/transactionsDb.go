@@ -296,6 +296,14 @@ func (e *transactions) HasUnconfirmedWithNonce(requiredAuths []string, nonce uin
 	return count > 0, nil
 }
 
+// CountVscTransactions counts every VSC transaction this node has stored,
+// whatever its status. Every node stores every gossiped transaction, so equal
+// counts across nodes mean propagation is complete; the devnet block pacemaker
+// reads it (not part of the Transactions interface).
+func (e *transactions) CountVscTransactions() (int64, error) {
+	return e.CountDocuments(context.Background(), bson.M{"type": "vsc"})
+}
+
 // Searches for unconfirmed VSC transactions with no verification
 // Provide height for expiration filtering
 func (e *transactions) FindUnconfirmedTransactions(height uint64) ([]TransactionRecord, error) {

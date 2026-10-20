@@ -198,6 +198,51 @@ func main() {
 		streamerPlugin = hafSource
 		log.Info("block source", "source", "haf")
 	} else {
+		// Devnet block pacemaker (tests/devnet FastBlocks): the streamer otherwise
+		// refreshes the real head once a minute and assumes one block per 3s in
+		// between, so a node could never see blocks produced faster than that.
+		// Against the local devnet hived there is no rate limit to respect.
+		if sysConfig.NetId() == "vsc-devnet" {
+			if v := os.Getenv("VSC_DEVNET_HEAD_POLL"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = every
+					streamer.HeadBlockCheckPollIntervalOnceUpdated = every
+					log.Info("devnet head poll interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_HEAD_POLL", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_STREAM_SLEEP"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.StreamIdleSleep = every
+					streamer.StreamAheadSleep = every
+					// Polled heads make the one-block-per-3s guess redundant, and its
+					// overshoot is what sends the loop into StreamAheadSleep.
+					streamer.HeadGuessInterval = 24 * time.Hour
+					log.Info("devnet stream loop sleep", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_STREAM_SLEEP", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_CHECKPOINT"); v != "" {
+				// The persisted last-processed block is what the devnet harness
+				// waits on; once a second is a third of a 3s block but ten fast ones.
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.CheckpointInterval = every
+					log.Info("devnet last-processed checkpoint interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_CHECKPOINT", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_BLOCK_POLL"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					hive_blocks.ListenPollInterval = every
+					log.Info("devnet stored-block poll interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_BLOCK_POLL", "value", v, "err", err)
+				}
+			}
+		}
 		streamerPlugin = streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
 		log.Info("block source", "source", "hive_api")
 	}
@@ -357,6 +402,48 @@ func main() {
 		InterestClaims: interestClaims,
 		ChainOracle:    oracle.ChainOracle(),
 	}}), gqlConf)
+
+	if sysConfig.NetId() == "vsc-devnet" {
+		// Quiescence probe for the devnet block pacemaker (tests/devnet FastBlocks):
+		// the harness produces the next Hive block only once every node reports
+		// nothing in flight. Read-only, and never registered off devnet.
+		gqlManager.SetDevnetStatus(func() any {
+			ceremony, signing, background := tssMgr.InFlightCounts()
+			// How promptly this node learns of new Hive blocks: the pacemaker
+			// refuses to speed up a node that would not see the blocks in time.
+			headPoll := streamer.HeadBlockCheckPollIntervalOnceUpdated
+			if hafSource != nil {
+				headPoll = haf.PollInterval
+			}
+			// Connected libp2p peers: a node still (re)connecting after a restart
+			// reports idle but would miss gossip a live chain gives it time for.
+			// Gossip convergence: transactions stored and readiness attestations held.
+			var txSeen int64 = -1
+			if c, ok := txDb.(interface{ CountVscTransactions() (int64, error) }); ok {
+				if n, err := c.CountVscTransactions(); err == nil {
+					txSeen = n
+				}
+			}
+			return map[string]any{
+				"tx_seen":          txSeen,
+				"tss_attestations": tssMgr.HeldAttestations(),
+				"peers":            len(p2p.Peers()),
+				"head_poll_ms":     headPoll.Milliseconds(),
+				"block_poll_ms":    hive_blocks.ListenPollInterval.Milliseconds(),
+				"stream_sleep_ms":  streamer.StreamIdleSleep.Milliseconds(),
+				"checkpoint_ms":    streamer.CheckpointInterval.Milliseconds(),
+				"processed":        blockConsumer.ProcessedHeight(),
+				"async_ticks":      blockConsumer.AsyncTicksInFlight(),
+				"tss_ceremony":     ceremony,
+				"tss_signing":      signing,
+				"tss_background":   background,
+				"bp_busy":          bp.Busy(),
+				"ep_busy":          ep.Busy(),
+				"gateway_bg":       multisig.InFlight(),
+				"oracle_bg":        oracle.ChainRelaysInFlight(),
+			}
+		})
+	}
 
 	plugins := make([]aggregate.Plugin, 0)
 

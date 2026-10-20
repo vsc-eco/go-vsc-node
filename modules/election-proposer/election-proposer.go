@@ -2173,6 +2173,15 @@ func (ep *electionProposer) makeElection(epoch uint64) (elections.ElectionHeader
 	return ep.GenerateElectionAtBlock(anchorBh)
 }
 
+// Busy reports whether this node is collecting election signatures. The
+// broadcast that follows runs inside the async election tick, which the block
+// consumer counts separately. Read-only; used by the devnet block pacemaker.
+func (ep *electionProposer) Busy() bool {
+	ep.sigMu.Lock()
+	defer ep.sigMu.Unlock()
+	return ep.sigRunning
+}
+
 func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")

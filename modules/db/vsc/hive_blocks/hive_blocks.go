@@ -229,6 +229,12 @@ func (h *hiveBlocks) GetHighestBlock() (uint64, error) {
 	return result.Block.BlockNumber, nil
 }
 
+// ListenPollInterval is how often ListenToBlockUpdates re-polls for newly stored
+// blocks once it has fed every stored one. Each block waits up to this long
+// before its node processes it; the devnet lowers it (VSC_DEVNET_BLOCK_POLL)
+// so harness-paced blocks are not held to one a second.
+var ListenPollInterval = time.Second
+
 // ListenToBlockUpdates feeds stored Hive blocks above startBlock to the
 // listener in ascending order, re-polling for new blocks.
 //
@@ -338,7 +344,7 @@ func (h *hiveBlocks) ListenToBlockUpdates(ctx context.Context, startBlock uint64
 					return
 				}
 			}
-			time.Sleep(1 * time.Second)
+			time.Sleep(ListenPollInterval)
 		}
 	}()
 	// cancel-drain: after canceling the feed, wait for the goroutine (and

@@ -73,6 +73,27 @@ type MultiSig struct {
 
 	electionPeerIDs   atomic.Pointer[map[string]bool]
 	lastElectionEpoch uint64
+
+	// leading counts the rotation / actions / fr-sync rounds this node is leading
+	// (signature collection, then broadcast). It backs the devnet block
+	// pacemaker's quiescence probe (InFlight) and carries no consensus state.
+	leading atomic.Int64
+}
+
+// goLeading runs a leader round on its own goroutine, counted in InFlight until
+// it returns.
+func (ms *MultiSig) goLeading(round func()) {
+	ms.leading.Add(1)
+	go func() {
+		defer ms.leading.Add(-1)
+		round()
+	}()
+}
+
+// InFlight is how many rounds this node is leading. Read-only; used by the
+// devnet block pacemaker.
+func (ms *MultiSig) InFlight() int64 {
+	return ms.leading.Load()
 }
 
 func (ms *MultiSig) Init() error {
@@ -232,14 +253,14 @@ func (ms *MultiSig) BlockTick(bh uint64, headHeight *uint64) {
 
 		if bh%ROTATION_INTERVAL == 0 {
 			log.Debug("running key rotation", "bh", bh)
-			go ms.TickKeyRotation(bh)
+			ms.goLeading(func() { ms.TickKeyRotation(bh) })
 		}
 		if bh%ACTION_INTERVAL == 0 {
 			log.Debug("running actions", "bh", bh)
-			go ms.TickActions(bh)
+			ms.goLeading(func() { ms.TickActions(bh) })
 		}
 		if bh%SYNC_INTERVAL == 0 {
-			go ms.TickSyncFr(bh)
+			ms.goLeading(func() { ms.TickSyncFr(bh) })
 		}
 	}
 }
