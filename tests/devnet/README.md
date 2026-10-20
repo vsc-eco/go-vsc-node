@@ -217,6 +217,13 @@ node eventually dial from the node's own port and connect to themselves; the
 socket's TIME_WAIT then blocks the node's restart. With `DEVNET_PORT_OFFSET`,
 that means an offset of at most 12000 (the highest base port is 19898).
 
+### Running the whole list
+
+`suite/run.sh` runs a list of tests one at a time, records each result and
+resumes where it stopped; `suite/watch.sh` alerts on a stalled or held test and
+`suite/summary.py` compares a run with a real-cadence baseline. See
+`suite/README.md`.
+
 ### How it works
 
 - `FastBlocks` adds `debug_node` and `debug_node_api` to hived's plugins. The
@@ -424,6 +431,7 @@ tests/devnet/
   devnet.go               Devnet lifecycle (Start, Stop, compose helpers)
   runowner.go             Teardown on Ctrl-C/kill, reaping runs whose process died
   hostports.go            Refuses host ports inside the ephemeral port range
+  suite/                  Runs a list of tests resumably; watchdog; run comparison
   compose.go              .env + nodes override generation
   hive.go                 HAF data directory setup, embedded config files
   contract.go             Contract build + deploy
