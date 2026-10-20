@@ -199,6 +199,10 @@ services:
     command:
       - ./feed-publisher
       - -data-dir=/data/devnet/feed-publisher
+    environment:
+      # 80 blocks = the default 240 s at 3 s/block, kept in blocks so the feed's
+      # age is the same under FastBlocks.
+      FEED_PUBLISHER_INTERVAL_BLOCKS: "80"
     volumes:
       - ${DEVNET_DATA_DIR}:/data/devnet
     depends_on:

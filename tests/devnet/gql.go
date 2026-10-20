@@ -23,7 +23,7 @@ func (d *Devnet) gqlQuery(ctx context.Context, node int, query string, vars map[
 	if err != nil {
 		return fmt.Errorf("marshaling gql request: %w", err)
 	}
-	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // wall: single request
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, d.GQLEndpoint(node),
 		bytes.NewReader(body))

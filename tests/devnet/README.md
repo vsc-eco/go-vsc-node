@@ -48,7 +48,10 @@ cleaned up on `Stop()` via `sudo rm -rf` (HAF creates postgres-owned files).
 1. Create HAF data directories, write `config.ini` and `pgtune.conf`
 2. Write `.env` and `docker-compose.nodes.yml`
 3. Build devnet Docker image (parallel with HAF startup)
-4. Start HAF + MongoDB, wait for healthy
+4. Start HAF + MongoDB, wait for healthy; start the hafah API stack and check
+   that drone returns a real block for `block_api.get_block_range` (a
+   hafah-postgrest whose schema cache missed `hafah_endpoints.home` answers
+   every range with null and no node ever processes a block; it is restarted)
 5. `docker compose run --rm devnet-setup` (Hive accounts, node configs, staking)
 6. Start all magi nodes
 7. Stop genesis node, run `genesis-elector`, restart it
@@ -170,6 +173,157 @@ func TestReshareWithPartition(t *testing.T) {
 }
 ```
 
+## Fast blocks
+
+A Hive block every 3 seconds is the floor under every devnet test, yet for most
+of those seconds no node is doing anything. With fast blocks the harness
+produces each Hive block itself, as soon as every magi node reports that it has
+processed the head and finished the work that block started, and never later
+than 3 seconds after the previous block. Idle stretches run at up to 4 blocks a
+second; anything that is busy (a TSS ceremony, a block or election signature
+round, a gateway or chain-relay round, a node restarting, a network fault the
+test injected) gets real 3s blocks, so it spans the same number of blocks it
+would on a live chain. A fast run is meant to be faster, never different.
+
+<!-- FASTBLOCKS-NUMBERS -->
+
+### Running fast
+
+```bash
+# Any selection of tests, or the whole package, on fast blocks:
+DEVNET_FASTBLOCKS=1 go test -v -run TestReshareHappyPath -timeout 60m ./tests/devnet/
+
+# Optional, one time (CPU heavy, run it alone): pre-generate TSS pre-parameter
+# sets so nodes stop spending minutes of CPU on safe primes. Resumable.
+GEN_PREPARAMS=120 DEVNET_PREPARAMS_DIR=$HOME/.cache/magi-devnet-preparams \
+  go test -run TestGeneratePreParamsFixture -v -timeout 120m ./tests/devnet/
+
+# Then use them (at either cadence):
+DEVNET_PREPARAMS_DIR=$HOME/.cache/magi-devnet-preparams DEVNET_FASTBLOCKS=1 \
+  go test -v -run TestReshareHappyPath -timeout 60m ./tests/devnet/
+```
+
+In code, `cfg.FastBlocks = true` turns it on for one devnet and
+`cfg.RealCadence = true` keeps a test at 3s blocks under `DEVNET_FASTBLOCKS=1`.
+Devnets with `OldCodeNodes` always run at real cadence (old images have no
+quiescence probe). A test whose subject is live pre-parameter generation (a
+cold or exhausted pool, `PreParamsTimeout`) sets `cfg.LivePreParams = true`, so
+a fixture set never stands in for the stall it exists to provoke.
+
+Every host port must stay below the kernel's ephemeral port range (Linux
+default 32768-60999); `Start` refuses a config that puts one inside it. While a
+node is stopped nothing listens on its ports, and the pacemaker's probes of that
+node eventually dial from the node's own port and connect to themselves; the
+socket's TIME_WAIT then blocks the node's restart. With `DEVNET_PORT_OFFSET`,
+that means an offset of at most 12000 (the highest base port is 19898).
+
+### How it works
+
+- `FastBlocks` adds `debug_node` and `debug_node_api` to hived's plugins. The
+  pacemaker (`pacemaker.go`) produces blocks with
+  `debug_node_api.debug_generate_blocks` (`edit_if_needed` false, so it can never
+  rewrite chain state) once a node answers its probe. Until then hived's witness
+  produces as usual. Blocks stay at real cadence until the genesis node is
+  restarted after the genesis election: boot up to there waits on wall clock
+  (node start-up, witness registration), so fast blocks would move the genesis
+  height. Funding and the floor-pin election wait after it run fast.
+- Each node serves `GET /devnet/quiescence` (devnet only): the last Hive block it
+  processed, async block ticks in flight, TSS ceremonies, signings and background
+  work (commit delay, BLS collection, broadcast, pre-parameter generation), the
+  block producer and election proposer signature rounds, gateway leader rounds,
+  chain-relay rounds, its connected peers and its Hive head poll interval. Under
+  `FastBlocks` nodes poll the Hive head every 25ms and persist their last
+  processed block (what `WaitForBlockProcessing` and the vault preconditions
+  read) every 25ms instead of once a second (`VSC_DEVNET_CHECKPOINT`); once a
+  second is a third of a 3s block but ten fast ones, so every such wait would
+  act ten blocks late.
+- The next block comes at `max(last + 100ms, min(last + 3s, all nodes quiescent))`.
+  A node counts as quiescent when it is at most one block behind the head (the
+  streamer processes block N once N+1 exists), nothing is in flight, and it is
+  connected to every other node. A live chain behaves the same way: at real
+  cadence nodes process each block 2.9 to 4.3s after it is produced (median about
+  3s, measured by the trace's `READLAG` line), that is, about when the next one
+  appears. While the chain is held, nodes are probed every 100ms instead of
+  every 15ms. The harness also holds real cadence while the test runs its own
+  code (see "Test think time" below). A node that is down or
+  restarting, and any iptables or tc fault the harness has in effect
+  (`netfaults.go`, which sees every rule through `iptables`/`tcExec`), hold real
+  cadence.
+
+### Keeping tests honest
+
+- **Test clock.** A wait bounded by wall clock ("the vault drains within 3
+  minutes") would cover up to twelve times as many blocks under fast blocks, so
+  a liveness regression could pass. Every wait, deadline and phase budget in this
+  package runs on the test clock instead (`devclock.go`: `devnetNow`,
+  `devnetSince`, `devnetSleep`, `devnetAfter`, `devnetWithTimeout`): wall clock
+  plus a lead that every block faster than 3s raises by the difference, so each
+  fast block moves the test clock one whole block (3s) and a 3s wait spans one
+  block, as on a live chain. A block that took 3s or longer (held, or after a
+  stall) moves nothing: it is wall clock already. The lead only grows, so the
+  clock never runs slower than wall clock and a stalled chain still times out; at
+  real cadence it is the wall clock. A line that really needs wall clock (one RPC or
+  docker call, a poll interval, an id, timing a run) says why in a `// wall:`
+  comment. `TestDevnetCodeUsesTheTestClock` fails on any other `time.Now`,
+  `time.Sleep`, `time.After`, `time.Since`, `time.Until` or
+  `context.WithTimeout` in the package.
+- **Test think time.** The chain only fast-forwards while the test is blocked on
+  the test clock (`devnetSleep`, `devnetAfter`, and every helper that polls with
+  them): while the test runs its own code, reading the chain and deciding what to
+  send, blocks come at real cadence (the pacemaker logs `harness{test running}`),
+  as they would on a live chain, where a second of test code is a third of a
+  block. Without this a test that read a height and acted a second later acted
+  some ten fast blocks later; ShadowEmptyGen's createKey then missed a rotation
+  and its keygen ran 60 blocks later than at real cadence. A test that waits
+  on something other than the test clock (a channel, a wall-clock sleep) simply
+  runs at real cadence while it does.
+- **Block-paced feeds.** The feed-publisher publishes every 80 blocks
+  (`FEED_PUBLISHER_INTERVAL_BLOCKS`, the old 240s at 3s per block), so a price
+  feed is as many blocks old at either cadence.
+- **Integrity failures are loud.** A probe that answers without a complete
+  report, three failed generations in a row, a witness signing key that changed,
+  or a pacemaker that never took over puts the pacemaker in safe mode (real
+  cadence) for the rest of the run and is recorded. `Stop` returns it as an
+  `*IntegrityError`, the start helpers fail the test on it, and `TestMain` fails
+  the package run if any was recorded. Every capped block logs, at most every
+  10s, which node and what held it. With `DEVNET_LOG_DIR` set the pacemaker also
+  writes `pacemaker-blocks.tsv` there: one line per block (wall time, height,
+  early or capped, the lowest height every node had processed, what held it, and
+  the call sites of the test-clock waits in progress).
+- **Pre-parameter fixtures** are claimed by atomic rename on the shared data
+  volume (no set is used twice) and validated against how tss-lib builds them
+  (N = P*Q, PhiN, LambdaN, NTilde = (2p+1)(2q+1), Alpha*Beta = 1 mod p*q,
+  H2 = H1^Alpha, primality). A bad set is renamed `invalid-*` and fails the run;
+  an empty pool falls back to live generation.
+
+### Known limits
+
+- Wall-clock timers in the node that the probe does not see still fire on wall
+  clock: the chain oracle retries a relay 2 minutes after a failed submission,
+  witnesses re-announce every 24 hours (an announcement stays valid for 86,400
+  blocks, about 6 hours of nonstop fast blocks), and a 1-minute ticker backs up
+  pre-parameter refills. A test that runs into the first sees more blocks pass
+  before the retry and times out on the test clock; it fails visibly, it cannot
+  pass by accident.
+- Nodes read a new block at the same moment on fast blocks (within 0-100ms of
+  each other); at real cadence they read it up to 1.6s apart (median spread; the
+  genesis node, restarted after the genesis election, trails the others by about
+  1.3s). Work that waits for the slowest node therefore runs a little faster and
+  races less on fast blocks: the election proposer racing L2 block production
+  lost an election in 2 of 5 real-cadence traces and in none of 10 fast ones.
+  Hunt such races at real cadence (`cfg.RealCadence = true`).
+- After a fast run chain time is ahead of wall clock, so with `DEVNET_KEEP=1`
+  hived's witness produces nothing until wall clock catches up.
+- `TestFastBlocksTrace` is the A/B check for the whole mechanism: it runs the
+  same TSS network to a target head (`TRACE_HEAD`, default 200) and prints every
+  election (members), TSS commitment (party bitset) and L2 block slot. Run it
+  with `FASTBLOCKS=0` and `FASTBLOCKS=1` and compare the `TRACE` lines. Real
+  cadence itself varies between runs (keygen and reshare land on either of two
+  rotation slots), so compare against more than one real run. Its `READLAG` line
+  samples, every 50ms, when hived first reports each block and when each node has
+  processed it: per-node read lag and the spread between nodes (real cadence:
+  about 3s, spread 1.6s; fast blocks: one fast block, spread under 50ms).
+
 ## Config reference
 
 | Field              | Default                 | Description                                        |
@@ -187,6 +341,11 @@ func TestReshareWithPartition(t *testing.T) {
 | `ProjectName`      | auto                    | Docker compose project name                        |
 | `OldCodeSourceDir` | `""`                    | Path to old version repo for multi-version tests   |
 | `OldCodeNodes`     | `[]`                    | Which nodes (1-indexed) run old code               |
+| `FastBlocks`       | `$DEVNET_FASTBLOCKS=1`  | Harness-paced Hive blocks (see Fast blocks)        |
+| `FastBlockMinInterval` | 100ms               | Shortest gap between fast blocks                   |
+| `RealCadence`      | false                   | Keep 3s blocks under `DEVNET_FASTBLOCKS=1`         |
+| `PreParamsFixtureDir` | `$DEVNET_PREPARAMS_DIR` | Pre-generated TSS pre-parameter sets           |
+| `LivePreParams`    | false                   | Ignore the fixture: nodes generate safe primes live |
 
 ## Devnet API
 
@@ -198,6 +357,27 @@ func TestReshareWithPartition(t *testing.T) {
 | `Start(ctx) error`           | Full startup sequence (build, HAF, nodes, etc) |
 | `Stop() error`               | Tear down everything + clean data directory    |
 | `StartNode(ctx, node) error` | Start a single stopped node                    |
+
+### Interrupted and killed runs
+
+A run that never reaches `Stop()` would leave its containers, volumes, network,
+the ~780 MB `<project>-magi` image and its data dir behind, and a container that
+is still up keeps the host ports the next run at the same `DEVNET_PORT_OFFSET`
+needs. The harness covers both ways a run ends early:
+
+- **Ctrl-C or kill (SIGINT, SIGTERM, SIGHUP):** every live devnet is torn down
+  before the test binary exits, the same as `Stop()`. `go test` waits for it,
+  and it still finishes when the signal also killed `go test` itself.
+  Press Ctrl-C again to exit at once; the next run cleans up what is left.
+- **Killed outright (SIGKILL, OOM, reboot, WSL restart):** each run writes its
+  owner (pid, process start time, boot id) to `<data dir>/owner`. `Start()`
+  first removes every run under `.devnet/` whose owner is gone: containers,
+  volumes and networks by their compose project label, then the image and the
+  data dir. A run whose process is still alive is left alone, so parallel runs
+  from the same tree are safe. Runs with a custom `DataDir` are not scanned.
+
+A `KeepRunning` devnet is kept for inspection, so neither path touches it;
+remove it with `docker compose -p <project> down -v`.
 
 ### Endpoints
 
@@ -242,12 +422,19 @@ which is set automatically in the generated compose file).
 tests/devnet/
   config.go               Config struct, defaults, validation
   devnet.go               Devnet lifecycle (Start, Stop, compose helpers)
+  runowner.go             Teardown on Ctrl-C/kill, reaping runs whose process died
+  hostports.go            Refuses host ports inside the ephemeral port range
   compose.go              .env + nodes override generation
   hive.go                 HAF data directory setup, embedded config files
   contract.go             Contract build + deploy
   funding.go              Account funding (price feed + TBD transfer)
   partition.go            Network partition (iptables/tc-based)
   mongo.go                MongoDB query helpers (commitments, elections, keys)
+  pacemaker.go            FastBlocks block production + quiescence probe client
+  devclock.go             Test clock for waits, deadlines and phase budgets
+  netfaults.go            Network faults in effect (holds fast blocks to real cadence)
+  preparams_pool.go       Pre-parameter fixture seeding and checks
+  block_api.go            Boot check that drone serves block ranges end to end
   tss_helpers_test.go     Shared test helpers (startDevnet, insertTssKey, etc)
   devnet_test.go          Infrastructure smoke tests
   docker-compose.yml      Static compose (HAF, Mongo, setup services)

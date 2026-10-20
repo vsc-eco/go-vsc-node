@@ -43,6 +43,9 @@ import (
 // tick after the Mongo poke, and the test would fail at the rotation-
 // tick observation step. Post-fix the warning fires and the test passes.
 func TestAuditFix_FUZZ1_PoisonedGatewayKeyDoesNotCrashRotation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping devnet integration test in short mode")
+	}
 	requireDocker(t)
 
 	// rotationInterval == 20 blocks ≈ 60s on Hive devnet (3s blocks). Three
@@ -88,7 +91,7 @@ func TestAuditFix_FUZZ1_PoisonedGatewayKeyDoesNotCrashRotation(t *testing.T) {
 	head, _ := getHeadBlock(d.HiveRPCEndpoint())
 	target := ((head / rotationInterval) + 3) * rotationInterval
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 5*time.Minute)
-	time.Sleep(15 * time.Second) // small drain window for async TickKeyRotation goroutines
+	devnetSleep(15 * time.Second) // small drain window for async TickKeyRotation goroutines
 
 	// Post-fix expectation #1: every container is still up.
 	assertAllNodesAlive(t, d, ctx, cfg.Nodes)

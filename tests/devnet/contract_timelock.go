@@ -54,7 +54,7 @@ func (d *Devnet) runDeployer(ctx context.Context, deployerNode int, wasmDir stri
 	if startErr := d.compose(ctx, "start", nodeName); startErr != nil {
 		log.Printf("[devnet] warning: failed to restart %s: %v", nodeName, startErr)
 	}
-	time.Sleep(5 * time.Second)
+	devnetSleep(5 * time.Second)
 
 	if err != nil {
 		return "", fmt.Errorf("deployer run failed: %w\noutput: %s", err, out)
@@ -230,7 +230,7 @@ func (d *Devnet) PendingUpdates(ctx context.Context, node int, id string) ([]Con
 // WaitForActiveCode polls until the active version of a contract has the given
 // code CID, or the timeout expires.
 func (d *Devnet) WaitForActiveCode(ctx context.Context, node int, id, code string, timeout time.Duration) (*ContractGQL, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var last *ContractGQL
 	for {
 		c, err := d.ActiveContract(ctx, node, id)
@@ -240,13 +240,13 @@ func (d *Devnet) WaitForActiveCode(ctx context.Context, node int, id, code strin
 				return c, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return last, fmt.Errorf("timeout: active code for %s is %v, want %s", id, last, code)
 		}
 		select {
 		case <-ctx.Done():
 			return last, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }
@@ -254,7 +254,7 @@ func (d *Devnet) WaitForActiveCode(ctx context.Context, node int, id, code strin
 // WaitForPendingUpdate polls until a pending update with the given code appears
 // for a contract, returning it.
 func (d *Devnet) WaitForPendingUpdate(ctx context.Context, node int, id, code string, timeout time.Duration) (*ContractGQL, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		rows, err := d.PendingUpdates(ctx, node, id)
 		if err == nil {
@@ -264,13 +264,13 @@ func (d *Devnet) WaitForPendingUpdate(ctx context.Context, node int, id, code st
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for pending update %s with code %s (err=%v)", id, code, err)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }

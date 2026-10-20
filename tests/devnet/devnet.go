@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +28,21 @@ type Devnet struct {
 	projectName  string
 	imageName    string
 	started      bool
+
+	// stopMu serializes Stop: a signal can tear the devnet down while the test's
+	// own cleanup calls Stop too (runowner.go). The second caller waits and gets
+	// the first one's result.
+	stopMu  sync.Mutex
+	stopped bool
+	stopErr error
+
+	// Block pacemaker (Config.FastBlocks); see pacemaker.go.
+	pm *pacemaker
+	// pmBlockLog is the pacemaker's per-block log (DEVNET_LOG_DIR), closed after it halts.
+	pmBlockLog *os.File
+	// netFaults holds the pacemaker at real cadence while a network fault is in
+	// effect (netfaults.go).
+	netFaults netFaultTracker
 }
 
 // New creates a new Devnet instance. If cfg is nil, DefaultConfig() is used.
@@ -38,6 +54,7 @@ func New(cfg *Config) (*Devnet, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	applyFloorPinFromEnv(cfg)
+	applyFastModeEnv(cfg)
 
 	d := &Devnet{cfg: cfg}
 
@@ -83,6 +100,19 @@ func (d *Devnet) Start(ctx context.Context) error {
 	if d.started {
 		return fmt.Errorf("devnet already started")
 	}
+	if err := checkHostPorts(d.cfg.hostPorts(), ephemeralPortRangeFile); err != nil {
+		return err
+	}
+	reapStaleRuns(d.cfg.SourceDir)
+	if o, err := currentRunOwner(d.projectName, d.projectName+"-magi", d.cfg.KeepRunning); err != nil {
+		log.Printf("[devnet] warning: no owner record, a killed run will not be reaped: %v", err)
+	} else if err := writeRunOwner(d.dataDir, o); err != nil {
+		log.Printf("[devnet] warning: no owner record, a killed run will not be reaped: %v", err)
+	}
+	d.stopMu.Lock()
+	d.stopped = false
+	d.stopMu.Unlock()
+	trackRun(d)
 
 	log.Printf("[devnet] project=%s dir=%s", d.projectName, d.dataDir)
 
@@ -90,6 +120,11 @@ func (d *Devnet) Start(ctx context.Context) error {
 	log.Printf("[devnet] creating HAF data directories...")
 	if err := createHAFDataDirs(d.hafDataDir); err != nil {
 		return fmt.Errorf("creating HAF data dirs: %w", err)
+	}
+	if d.cfg.FastBlocks {
+		if err := enableHivedDebugPlugins(d.hafDataDir); err != nil {
+			return fmt.Errorf("enabling hived debug plugins: %w", err)
+		}
 	}
 	if err := os.MkdirAll(d.devnetDir, 0o777); err != nil {
 		return fmt.Errorf("creating devnet dir: %w", err)
@@ -111,6 +146,27 @@ func (d *Devnet) Start(ctx context.Context) error {
 	}
 	if err := writeSysConfigOverrides(d.cfg, d.devnetDir); err != nil {
 		return fmt.Errorf("writing sysconfig overrides: %w", err)
+	}
+	if d.cfg.FastBlocks {
+		// The node's Hive streamer must learn the real head promptly or it never
+		// sees blocks faster than one per 3s (see cmd/vsc-node/main.go).
+		if d.cfg.MagiEnv == nil {
+			d.cfg.MagiEnv = map[string]string{}
+		}
+		d.cfg.MagiEnv["VSC_DEVNET_HEAD_POLL"] = "25ms"
+		d.cfg.MagiEnv["VSC_DEVNET_BLOCK_POLL"] = "10ms"
+		d.cfg.MagiEnv["VSC_DEVNET_STREAM_SLEEP"] = "10ms"
+		// The harness waits on the persisted last-processed block
+		// (getLastProcessedBlock); written once a second it would trail fast
+		// blocks by ten, so every such wait would act ten blocks late (FD-24).
+		d.cfg.MagiEnv["VSC_DEVNET_CHECKPOINT"] = "25ms"
+	}
+	if d.cfg.PreParamsFixtureDir != "" {
+		n, err := seedPreParamsPool(d.cfg, d.devnetDir)
+		if err != nil {
+			return fmt.Errorf("seeding TSS pre-params pool: %w", err)
+		}
+		log.Printf("[devnet] seeded %d pre-generated TSS pre-params sets", n)
 	}
 	log.Printf("[devnet] writing %s", d.overrideFile)
 	if err := writeNodesOverride(d.cfg, d.devnetDir, d.projectName, d.imageName, d.overrideFile); err != nil {
@@ -164,6 +220,8 @@ func (d *Devnet) Start(ctx context.Context) error {
 		return fmt.Errorf("HAF health check: %w", err)
 	}
 	log.Printf("[devnet] HAF is healthy")
+	// No-op unless FastBlocks; it stays idle until a node answers its probe.
+	d.startPacemaker()
 
 	// Start hafah API stack (hafah-install → pgbouncer → hafah-postgrest → drone).
 	// Drone must be running before devnet-setup, which uses it as the Hive API.
@@ -174,6 +232,9 @@ func (d *Devnet) Start(ctx context.Context) error {
 	log.Printf("[devnet] waiting for drone API router...")
 	if err := d.waitForService(ctx, "drone", 5*time.Minute); err != nil {
 		return fmt.Errorf("drone health check: %w", err)
+	}
+	if err := d.waitForBlockAPI(ctx); err != nil {
+		return err
 	}
 	log.Printf("[devnet] hafah API stack is ready")
 
@@ -212,7 +273,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 
 	// Give nodes time to initialize and connect to each other
 	log.Printf("[devnet] waiting for nodes to initialize...")
-	time.Sleep(10 * time.Second)
+	time.Sleep(10 * time.Second) // wall: boot, nodes starting
 
 	// Wait for witnesses to self-announce AND for the genesis node to process
 	// past the announcement cluster before forming the genesis election.
@@ -245,7 +306,7 @@ func (d *Devnet) Start(ctx context.Context) error {
 		if rerr := d.compose(ctx, append([]string{"restart"}, restartNames...)...); rerr != nil {
 			log.Printf("[devnet] H-37 restart failed: %v (falling through to abort)", rerr)
 		} else {
-			time.Sleep(10 * time.Second)
+			time.Sleep(10 * time.Second) // wall: boot, H-37 restart
 			got, bh, werr = d.waitForWitnessRegistrations(ctx, d.cfg.GenesisNode, want, genesisMinHeight, 8*time.Minute)
 			if werr == nil {
 				log.Printf("[devnet] H-37 recovered after magi restart: %d witnesses, highest stored block %d", got, bh)
@@ -278,6 +339,12 @@ func (d *Devnet) Start(ctx context.Context) error {
 	if err := d.compose(ctx, "start", genesisName); err != nil {
 		return fmt.Errorf("restarting genesis node: %w", err)
 	}
+	// Fast blocks from here: what follows (funding, RC backfill, the floor-pin
+	// election) waits on chain progress through the test clock, and the restarting
+	// genesis node holds real cadence until it is back. Everything above waited on
+	// wall clock (node start-up, witness registration, the genesis election), so it
+	// ran at real cadence.
+	d.armPacemaker()
 
 	// Step 8: fund accounts for contract deployment (optional)
 	if !d.cfg.SkipFunding {
@@ -330,10 +397,52 @@ func (d *Devnet) Start(ctx context.Context) error {
 	return nil
 }
 
+// saveNodeLogs writes every magi node's log (with timestamps) to dir before
+// teardown, so a run can be diagnosed after its containers are gone.
+func (d *Devnet) saveNodeLogs(dir string) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[devnet] DEVNET_LOG_DIR: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute) // wall: docker logs
+	defer cancel()
+	for n := 1; n <= d.cfg.Nodes; n++ {
+		out, err := d.composeOutput(ctx, "logs", "--no-color", "--timestamps", fmt.Sprintf("magi-%d", n))
+		if err != nil {
+			log.Printf("[devnet] magi-%d logs: %v", n, err)
+		}
+		if werr := os.WriteFile(filepath.Join(dir, fmt.Sprintf("magi-%d.log", n)), []byte(out), 0o644); werr != nil {
+			log.Printf("[devnet] magi-%d logs: %v", n, werr)
+		}
+	}
+	log.Printf("[devnet] node logs saved to %s", dir)
+}
+
 // Stop tears down the devnet environment. If KeepRunning is true,
 // it pauses for user input before tearing down, allowing inspection
-// of the running containers.
+// of the running containers. Calls after the first return its result.
 func (d *Devnet) Stop() error {
+	d.stopMu.Lock()
+	defer d.stopMu.Unlock()
+	if !d.stopped {
+		d.stopErr = d.stop()
+		d.stopped = true
+		untrackRun(d)
+	}
+	return d.stopErr
+}
+
+func (d *Devnet) stop() error {
+	// Fast-mode integrity checks run first: they need hived up and the data dir
+	// intact. Their result is returned after teardown, so nothing is left behind.
+	failures := d.stopPacemaker() // the pacemaker records its own
+	for _, f := range d.checkPreParamsPool() {
+		recordIntegrityFailure(d.projectName, f)
+		failures = append(failures, f)
+	}
+	if dir := os.Getenv("DEVNET_LOG_DIR"); dir != "" {
+		d.saveNodeLogs(dir)
+	}
 	if d.cfg.KeepRunning {
 		log.Printf("[devnet] containers still running — inspect with:")
 		log.Printf("[devnet]   project: %s", d.projectName)
@@ -352,13 +461,13 @@ func (d *Devnet) Stop() error {
 			if _, err := os.Stat(holdFile); os.IsNotExist(err) {
 				break
 			}
-			time.Sleep(2 * time.Second)
+			time.Sleep(2 * time.Second) // wall: HOLD file poll
 		}
 		log.Printf("[devnet] HOLD file removed, continuing with teardown")
 	}
 
 	log.Printf("[devnet] tearing down...")
-	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(2*time.Minute))
+	ctx, cancel := context.WithTimeout(context.Background(), vfTestBudget(2*time.Minute)) // wall: teardown
 	defer cancel()
 
 	// Include all profiles so compose down also tears down profile-gated
@@ -377,10 +486,7 @@ func (d *Devnet) Stop() error {
 	// Use a throwaway container to rm as root instead of requiring
 	// sudo on the host.
 	if d.cfg.DataDir == "" {
-		exec.Command("docker", "run", "--rm",
-			"-v", d.dataDir+":/cleanup",
-			"alpine", "rm", "-rf", "/cleanup").Run()
-		os.RemoveAll(d.dataDir) // remove the now-empty dir itself
+		removeRunDataDir(d.dataDir)
 	}
 
 	// Reclaim THIS run's disk without evicting the build cache the next run
@@ -410,6 +516,11 @@ func (d *Devnet) Stop() error {
 
 	d.started = false
 	log.Printf("[devnet] stopped")
+	if len(failures) > 0 {
+		err := &IntegrityError{Project: d.projectName, Failures: failures}
+		log.Printf("[devnet] %v", err)
+		return err
+	}
 	return nil
 }
 
@@ -566,7 +677,7 @@ func (d *Devnet) dumpBootAbortDiagnostics(ctx context.Context) {
 		log.Printf("[devnet] boot-abort diagnostics: SIGQUIT %s failed: %v", svc, err)
 		return
 	}
-	time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second) // wall: boot-abort diagnostics
 	if gl, err := d.composeOutput(ctx, "logs", "--no-color", "--tail", "600", svc); err == nil {
 		log.Printf("[devnet] boot-abort diagnostics: %s goroutine dump after SIGQUIT (last 600 lines):\n%s", svc, gl)
 	} else {
@@ -606,9 +717,9 @@ func (d *Devnet) composeOutput(ctx context.Context, args ...string) (string, err
 // reports "healthy" or the timeout expires.  If the container exits
 // before becoming healthy, the wait fails immediately.
 func (d *Devnet) waitForService(ctx context.Context, service string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // wall: docker health
 	for {
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // wall: docker health
 			logs, _ := d.Logs(ctx, service)
 			return fmt.Errorf("service %q not healthy after %v\nlast logs:\n%s",
 				service, timeout, truncateLogs(logs, 50))
@@ -636,7 +747,7 @@ func (d *Devnet) waitForService(ctx context.Context, service string, timeout tim
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(5 * time.Second): // wall: docker health
 		}
 	}
 }

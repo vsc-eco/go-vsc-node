@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/vsc-eco/hivego"
@@ -60,7 +61,7 @@ func (d *Devnet) CallContractWithIntents(ctx context.Context, node int, contract
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			log.Printf("[devnet] retrying contract call (attempt %d)...", attempt+1)
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 		hiveClient := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
 		hiveClient.ChainID = "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e"
@@ -70,7 +71,13 @@ func (d *Devnet) CallContractWithIntents(ctx context.Context, node int, contract
 			log.Printf("[devnet] contract call tx=%s action=%s on %s", txId, action, contractId)
 			return txId, nil
 		}
+		log.Printf("[devnet] contract call action=%s attempt %d failed: %v", action, attempt+1, err)
 		lastErr = err
+		// Resend only what the server never read. Anything else may already be
+		// on chain, and a re-signed resend would apply the call twice (H-15).
+		if !broadcastNeverReachedServer(err) {
+			break
+		}
 	}
 	return "", fmt.Errorf("broadcasting contract call: %w", lastErr)
 }
@@ -93,7 +100,7 @@ func (d *Devnet) BroadcastCustomJSON(id string, requiredAuths []string, payload 
 		Json:                 string(jsonBytes),
 	}
 
-	txId, err := hiveClient.Broadcast([]hivego.HiveOperation{op}, &signerWIF)
+	txId, err := broadcastRetryingStale(hiveClient, []hivego.HiveOperation{op}, &signerWIF, id)
 	if err != nil {
 		return "", fmt.Errorf("broadcasting %s: %w", id, err)
 	}
@@ -126,4 +133,34 @@ func (d *Devnet) Unstake(ctx context.Context, accountName string, amount string)
 	// account named "hive:magi.test1" and refuses the whole transaction.
 	_, err := d.BroadcastCustomJSON("vsc.consensus_unstake", []string{accountName}, payload, wif)
 	return err
+}
+
+// broadcastRetryingStale broadcasts ops, retrying only a keep-alive connection
+// the server had already closed ("closed connection before returning the first
+// response byte"): that one fails before the request is read, so nothing reached
+// Hive. Any other failure may have, and a re-signed retry would broadcast the
+// operations twice. Every harness broadcast that has no retry of its own goes
+// through here (H-7: P11 and FDV10 lost TestConsensusDelegatedStakeDevnet to
+// this error on two different broadcasts).
+func broadcastRetryingStale(client *hivego.HiveRpcNode, ops []hivego.HiveOperation, wif *string, what string) (string, error) {
+	txId, err := client.Broadcast(ops, wif)
+	for attempt := 1; attempt <= 2 && staleKeepAlive(err); attempt++ {
+		log.Printf("[devnet] %s: stale keep-alive connection, rebroadcasting (retry %d)", what, attempt)
+		txId, err = client.Broadcast(ops, wif)
+	}
+	return txId, err
+}
+
+// staleKeepAlive reports a keep-alive connection the server had already closed:
+// the request failed before the server read it.
+func staleKeepAlive(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "closed connection before returning the first response byte")
+}
+
+// broadcastNeverReachedServer reports a broadcast failure from before the server
+// read the request, so a resend cannot apply it twice: a stale keep-alive, or no
+// connection at all. In 125 contract calls of FDV10R FullNetworkRegression both
+// failed first attempts were stale keep-alives.
+func broadcastNeverReachedServer(err error) bool {
+	return staleKeepAlive(err) || (err != nil && strings.Contains(err.Error(), "connect: connection refused"))
 }

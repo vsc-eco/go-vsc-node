@@ -25,7 +25,6 @@ package devnet
 //   go test -v -run TestF4DevnetNilOpHalt -timeout 20m ./tests/devnet/
 
 import (
-	"context"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -43,6 +42,9 @@ import (
 
 // TestF4DevnetNilOpHalt is the DEVNET-level proof-of-concept for finding F4.
 func TestF4DevnetNilOpHalt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping devnet integration test in short mode")
+	}
 	requireDocker(t)
 
 	// ── Phase 0: bring up a fast 4-node devnet ─────────────────────────────
@@ -64,13 +66,13 @@ func TestF4DevnetNilOpHalt(t *testing.T) {
 	// ── Phase 1: confirm blocks are advancing ──────────────────────────────
 	t.Log("F4: waiting for all nodes to advance (baseline)...")
 	{
-		poll, cancel := context.WithTimeout(ctx, 4*time.Minute)
+		poll, cancel := devnetWithTimeout(ctx, 4*time.Minute)
 		defer cancel()
 
 		// Poll until we see every node produce a new block three consecutive times.
 		var last [4]uint64
 		for attempt := 0; attempt < 3; attempt++ {
-			time.Sleep(15 * time.Second)
+			devnetSleep(15 * time.Second)
 			all := true
 			for n := 1; n <= cfg.Nodes; n++ {
 				h, _, err := d.LocalNodeInfo(poll, n)
@@ -118,7 +120,7 @@ func TestF4DevnetNilOpHalt(t *testing.T) {
 	// streamed and credited. The earlier 12s sleep raced the credit → the poison
 	// submit hit "not enough RCS" before the DID was funded (false KILL).
 	waitForHbd := func(account string, min int64, timeout time.Duration) int64 {
-		poll, cancel := context.WithTimeout(ctx, timeout)
+		poll, cancel := devnetWithTimeout(ctx, timeout)
 		defer cancel()
 		var last int64 = -1
 		for {
@@ -131,7 +133,7 @@ func TestF4DevnetNilOpHalt(t *testing.T) {
 			select {
 			case <-poll.Done():
 				return last
-			case <-time.After(5 * time.Second):
+			case <-devnetAfter(5 * time.Second):
 			}
 		}
 	}
@@ -285,13 +287,13 @@ func TestF4DevnetNilOpHalt(t *testing.T) {
 	const pollSec = 5
 	const haltThreshSec = 30 // 30s with zero progress → halt
 
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := devnetNow().Add(3 * time.Minute)
 	halted := false
 	var haltHeights [4]uint64
 	copy(haltHeights[:], preHeights[:])
 
-	for time.Now().Before(deadline) {
-		time.Sleep(pollSec * time.Second)
+	for devnetNow().Before(deadline) {
+		devnetSleep(pollSec * time.Second)
 		var cur [4]uint64
 		anyAdvanced := false
 		for n := 1; n <= cfg.Nodes; n++ {

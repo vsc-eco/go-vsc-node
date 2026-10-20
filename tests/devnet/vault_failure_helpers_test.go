@@ -97,10 +97,10 @@ func vfGrewWithin(d *Devnet, ctx context.Context, node int, window time.Duration
 	if err != nil {
 		start = 0
 	}
-	deadline := time.Now().Add(window)
+	deadline := devnetNow().Add(window)
 	last := start
-	for time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+	for devnetNow().Before(deadline) {
+		devnetSleep(10 * time.Second)
 		h, err := vfMaxSlotHeight(d, ctx, node)
 		if err != nil {
 			continue
@@ -151,7 +151,7 @@ func vfDiffKeys(a, b map[string][]byte) []string {
 // cannot be read at all (down) fail the case; call it only with live nodes.
 func vfAssertContractIdentical(c *vfCase, d *Devnet, ctx context.Context, cid string, nodes []int, within time.Duration, caseId string) bool {
 	c.t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	var states map[int]map[string][]byte
 	var fps map[int]string
 	for {
@@ -182,10 +182,10 @@ func vfAssertContractIdentical(c *vfCase, d *Devnet, ctx context.Context, cid st
 				return true
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			break
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	detail := ""
 	for _, n := range nodes {
@@ -330,7 +330,7 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	d.WriteOracleConfigs(ctx)
 	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	vstatus(t, d, ctx, 1, cid, "createKey", "")
 	kd0, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 8*time.Minute)
@@ -349,7 +349,7 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 		// applied it; F13 run 1 died here on a stale read. Poll for up to 2 minutes.
 		credited := balanceCredited(t, d, ctx, cid, owner)
 		for i := 0; i < 12 && !credited; i++ {
-			time.Sleep(10 * time.Second)
+			devnetSleep(10 * time.Second)
 			credited = balanceCredited(t, d, ctx, cid, owner)
 		}
 		if !credited {
@@ -415,7 +415,7 @@ func vfRegisterAndActivate(t *testing.T, d *Devnet, ctx context.Context, cid, pr
 			return true
 		}
 		t.Logf("activateKey not yet (awaiting BRK-2 check-sig)... retry %d", i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	vfDumpCheckSigDiagnostics(t, d, ctx, cid)
 	return false
@@ -497,7 +497,7 @@ func vfRotate(t *testing.T, d *Devnet, ctx context.Context, cid string, nextGen 
 // refilled), or after `within`. Logs how long it waited and the per-node counts.
 func vfWaitPreparams(t *testing.T, d *Devnet, ctx context.Context, within time.Duration) {
 	t.Helper()
-	start := time.Now()
+	start := devnetNow()
 	deadline := start.Add(within)
 	for {
 		pending := ""
@@ -509,14 +509,14 @@ func vfWaitPreparams(t *testing.T, d *Devnet, ctx context.Context, within time.D
 			}
 		}
 		if pending == "" {
-			t.Logf("preparams pool refilled on every node after %s", time.Since(start).Round(time.Second))
+			t.Logf("preparams pool refilled on every node after %s", devnetSince(start).Round(time.Second))
 			return
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Logf("preparams still regenerating after %s on:%s (continuing; the check-sig may time out under CPU starvation)", within, pending)
 			return
 		}
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 }
 
@@ -531,7 +531,7 @@ func vfBuildSweep(t *testing.T, d *Devnet, ctx context.Context, opNode int, cid 
 	}
 	var txid string
 	for i := 0; i < 20 && txid == ""; i++ {
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
 			if !contains(before, id) {
 				txid = id
@@ -740,13 +740,13 @@ func vfDropNodeDb(t *testing.T, d *Devnet, ctx context.Context, node int) {
 // vfWaitProcessed waits until `node` has processed at least minBlock.
 func vfWaitProcessed(t *testing.T, d *Devnet, ctx context.Context, node int, minBlock uint64, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		bh, err := d.getLastProcessedBlock(ctx, node)
 		if err == nil && bh >= minBlock {
 			return true
 		}
-		time.Sleep(10 * time.Second)
+		devnetSleep(10 * time.Second)
 	}
 	return false
 }
@@ -830,10 +830,10 @@ func vfUtxoGenLabel(raw []byte) string {
 // (DrainToPurge run 1: 2 -> 2 after a settled canary tranche).
 func vfWaitGenBelow(t *testing.T, d *Devnet, ctx context.Context, cid string, gen uint32, was int, within time.Duration) int {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := devnetNow().Add(within)
 	n := genUtxoCount(t, d, ctx, cid, gen)
-	for n >= was && n != 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Second)
+	for n >= was && n != 0 && devnetNow().Before(deadline) {
+		devnetSleep(10 * time.Second)
 		n = genUtxoCount(t, d, ctx, cid, gen)
 	}
 	return n
@@ -881,7 +881,7 @@ func vfWriteNodeFileAsRoot(dir, rel string, data []byte) error {
 	// retry.
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		cctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 90*time.Second) // wall: docker run
 		cmd := exec.CommandContext(cctx, "docker", "run", "--rm", "-i",
 			"-v", dir+":/d",
 			"alpine", "sh", "-c", "cat > /d/"+rel)
@@ -892,7 +892,7 @@ func vfWriteNodeFileAsRoot(dir, rel string, data []byte) error {
 			return nil
 		}
 		lastErr = fmt.Errorf("root write of %s (attempt %d): %v: %s", rel, attempt, err, string(out))
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	return lastErr
 }
@@ -911,14 +911,14 @@ func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, wi
 		return "BROADCAST_ERR", -1
 	}
 	status := ""
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(within)
+	for devnetNow().Before(deadline) {
 		s, _ := d.FindTransactionStatus(ctx, 2, txid)
 		status = strings.ToUpper(s)
 		if status == "CONFIRMED" || status == "FAILED" || status == "REVERTED" {
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	pending := int64(0)
 	for i := 0; i < 12; i++ {
@@ -926,7 +926,7 @@ func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, wi
 		if pending > 0 || status != "CONFIRMED" {
 			break
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 	short := txid
 	if len(short) > 12 {
@@ -934,44 +934,6 @@ func vfUnstakeVerdict(t *testing.T, d *Devnet, ctx context.Context, node int, wi
 	}
 	t.Logf("consensus_unstake %s for %s: status=%s pending=%d", short, member, status, pending)
 	return status, pending
-}
-
-// vfTestBudget scales a test's own context budget for the environment it runs in.
-//
-// These per-test budgets were tuned against a box running ONE devnet. The campaign runs
-// three at once, so everything takes longer, and a test that overruns its own context does
-// not fail on its subject - it fails on whatever call happened to be in flight, with an
-// EMPTY status that reads as a refusal. That is exactly how Stage-5's VL-GP-10b failed:
-// 38m0s budget, 2299.86s elapsed, and the final retireVault came back "".
-//
-// DEVNET_TIMEOUT_SCALE (default 1, so a solo run is byte-identical) multiplies the budget.
-// The result is capped at 60 minutes so the context still expires BEFORE `go test -timeout
-// 65m` kills the process: a context deadline unwinds cleanly and reports its cases, while a
-// go-test timeout panics the whole binary and loses them. Budgets already above the cap are
-// left alone - they never bind anyway.
-// vfDevnetBudgetCap is the ceiling on any single test's OWN context, and the one
-// number `go test -timeout` must stay above.
-//
-// A test whose context outlives its runner cannot produce a verdict. When the
-// runner's timeout fires first, Go panics with a goroutine dump instead of
-// cancelling the context, so the test's own summary never runs: no PASS, no FAIL,
-// no case list — just a stack trace the campaign has to score as NO-VERDICT. That
-// is strictly worse than a failure, because a failure names its cause.
-//
-// This used to be a `const cap = 60m` with an early `if base >= cap { return base }`,
-// which meant the cap applied to nobody who needed it: 26 of the 45 vault tests ask
-// for 70-120m, took the bypass, and ran with a context that could never expire
-// before a 65m runner. TestVaultF3CrashMidKeygen is what that looks like from the
-// outside — `panic: test timed out after 1h5m0s` with its last four cases passing.
-//
-// Raise it and the runner's -timeout TOGETHER, never one alone.
-func vfDevnetBudgetCap() time.Duration {
-	if v := os.Getenv("DEVNET_BUDGET_CAP"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			return d
-		}
-	}
-	return 75 * time.Minute
 }
 
 // vfRegisterGenesis registers the first generation's keys. Under vault v2 the
@@ -995,7 +957,7 @@ func vfRegisterGenesis(t *testing.T, d *Devnet, ctx context.Context, node int, c
 			return s
 		}
 		t.Logf("genesis registerPublicKey not yet (awaiting the BRK-2 check-sig under v2), status=%s, retry %d", s, i)
-		time.Sleep(15 * time.Second)
+		devnetSleep(15 * time.Second)
 	}
 	return s
 }
@@ -1022,29 +984,6 @@ func vfTimeoutScale() float64 {
 		}
 	}
 	return 1
-}
-
-func vfTestBudget(base time.Duration) time.Duration {
-	scale := 1.0
-	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
-			scale = f
-		}
-	}
-	cap := vfDevnetBudgetCap()
-	d := time.Duration(float64(base) * scale)
-	if d < base {
-		d = base
-	}
-	if d > cap {
-		// Loud, because a silently shortened budget looks like the subject failing
-		// late rather than the instrument stopping early.
-		log.Printf("[devnet] test budget %s (base %s x scale %.2f) truncated to the %s cap; "+
-			"raise DEVNET_BUDGET_CAP and `go test -timeout` together if this test needs longer",
-			d.Round(time.Minute), base, scale, cap)
-		d = cap
-	}
-	return d
 }
 
 // vfSlotRow is one block_headers row: the VSC slot and the block CID the node

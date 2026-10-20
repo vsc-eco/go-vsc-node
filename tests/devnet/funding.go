@@ -62,7 +62,7 @@ func (d *Devnet) fundAccounts() error {
 	}
 
 	log.Printf("[devnet] funding %d witness accounts from initminer...", d.cfg.Nodes)
-	_, err := hiveClient.Broadcast(ops, &wif)
+	_, err := broadcastRetryingStale(hiveClient, ops, &wif, "funding")
 	if err != nil {
 		return fmt.Errorf("funding accounts: %w", err)
 	}
@@ -77,7 +77,7 @@ func (d *Devnet) fundAccounts() error {
 func (d *Devnet) waitForRcBackfill(ctx context.Context) error {
 	target := int64(rcHbdBackfillUnits)
 
-	deadline := time.Now().Add(3 * time.Minute)
+	deadline := devnetNow().Add(3 * time.Minute)
 	var lastErr error
 	for {
 		missing := make([]string, 0, d.cfg.Nodes)
@@ -96,7 +96,7 @@ func (d *Devnet) waitForRcBackfill(ctx context.Context) error {
 			log.Printf("[devnet] RC backfill credited on L2 for all %d witnesses", d.cfg.Nodes)
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			if lastErr != nil {
 				return fmt.Errorf("RC backfill not credited after 3m (missing: %v, last error: %w)", missing, lastErr)
 			}
@@ -105,7 +105,7 @@ func (d *Devnet) waitForRcBackfill(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("RC backfill not credited, waiting canceled (missing: %v): %w", missing, ctx.Err())
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }

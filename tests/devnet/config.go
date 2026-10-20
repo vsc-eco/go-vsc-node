@@ -55,6 +55,31 @@ type Config struct {
 	// SkipFunding skips the price feed + TBD transfer step. Set to true
 	// for tests that don't need contract deployment funds (e.g., TSS tests).
 	SkipFunding bool
+	// FastBlocks hands Hive block production to the harness once the magi nodes
+	// are up (see pacemaker.go): each block is produced as soon as every node
+	// reports itself quiescent, and never later than one Hive block interval
+	// after the previous one, so the chain is never slower than real time.
+	// Enables hived's debug_node_api. DEVNET_FASTBLOCKS=1 turns it on for every
+	// devnet that allows it (applyFastModeEnv).
+	FastBlocks bool
+	// RealCadence keeps this devnet at the real 3s block cadence even under
+	// DEVNET_FASTBLOCKS=1, for a test that depends on wall-clock behavior the
+	// pacemaker cannot see.
+	RealCadence bool
+	// FastBlockMinInterval is the shortest gap between pacemaker blocks
+	// (default 100ms); gossip convergence itself is gated (gossipDiverged).
+	FastBlockMinInterval time.Duration
+	// PreParamsFixtureDir, if set, holds pre-generated TSS pre-parameter sets
+	// (*.json, see TestGeneratePreParamsFixture) that nodes use instead of
+	// generating safe primes live (preparams_pool.go). Defaults to
+	// $DEVNET_PREPARAMS_DIR.
+	PreParamsFixtureDir string
+	// LivePreParams keeps every node on live safe-prime generation even when
+	// DEVNET_PREPARAMS_DIR is set, for a test whose subject is that generation
+	// (a cold or exhausted pool, PreParamsTimeout under CPU contention): a
+	// fixture set is claimed in milliseconds, so the stall such a test exists to
+	// provoke would never happen and the test would pass without testing it.
+	LivePreParams bool
 	// OldCodeSourceDir is the path to an older version of the go-vsc-node
 	// repo. If set, nodes listed in OldCodeNodes are built from this source
 	// instead of SourceDir. Used for multi-version testing.
@@ -194,7 +219,37 @@ func (c *Config) Validate() error {
 	if _, err := os.Stat(filepath.Join(c.SourceDir, "go.mod")); err != nil {
 		return fmt.Errorf("source directory %q doesn't contain go.mod: %w", c.SourceDir, err)
 	}
+	if c.FastBlocks && len(c.OldCodeNodes) > 0 {
+		// Old-code images have no /devnet/quiescence probe, so the pacemaker could
+		// not gate on them.
+		return fmt.Errorf("FastBlocks cannot be combined with OldCodeNodes")
+	}
 	return nil
+}
+
+// applyFastModeEnv applies the suite-wide fast-mode switches. DEVNET_FASTBLOCKS=1
+// turns FastBlocks on unless the test set RealCadence or runs old-code nodes
+// (their images have no quiescence probe); it logs which. DEVNET_PREPARAMS_DIR
+// supplies the pre-params fixture to every devnet, at either cadence, so a fast
+// run and a real one differ only in block production, except to a test that sets
+// LivePreParams. A test's own settings win.
+func applyFastModeEnv(cfg *Config) {
+	if cfg.LivePreParams {
+		cfg.PreParamsFixtureDir = ""
+	} else if cfg.PreParamsFixtureDir == "" {
+		cfg.PreParamsFixtureDir = os.Getenv("DEVNET_PREPARAMS_DIR")
+	}
+	if os.Getenv("DEVNET_FASTBLOCKS") != "1" || cfg.FastBlocks {
+		return
+	}
+	switch {
+	case cfg.RealCadence:
+		log.Printf("[devnet] DEVNET_FASTBLOCKS=1, but this test sets RealCadence: real 3s blocks")
+	case len(cfg.OldCodeNodes) > 0:
+		log.Printf("[devnet] DEVNET_FASTBLOCKS=1, but old-code nodes have no quiescence probe: real 3s blocks")
+	default:
+		cfg.FastBlocks = true
+	}
 }
 
 // applyFloorPinFromEnv pins the network's consensus version floor from the
@@ -259,7 +314,68 @@ func (d *Devnet) waitForFloorPin(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("waiting for consensus version 0.%d: %w", want, ctx.Err())
-		case <-time.After(10 * time.Second):
+		case <-devnetAfter(10 * time.Second):
 		}
 	}
+}
+
+// vfTestBudget scales a test's own context budget for the environment it runs in.
+//
+// These per-test budgets were tuned against a box running ONE devnet. The campaign runs
+// three at once, so everything takes longer, and a test that overruns its own context does
+// not fail on its subject - it fails on whatever call happened to be in flight, with an
+// EMPTY status that reads as a refusal. That is exactly how Stage-5's VL-GP-10b failed:
+// 38m0s budget, 2299.86s elapsed, and the final retireVault came back "".
+//
+// DEVNET_TIMEOUT_SCALE (default 1, so a solo run is byte-identical) multiplies the budget.
+// The result is capped at 60 minutes so the context still expires BEFORE `go test -timeout
+// 65m` kills the process: a context deadline unwinds cleanly and reports its cases, while a
+// go-test timeout panics the whole binary and loses them. Budgets already above the cap are
+// left alone - they never bind anyway.
+// vfDevnetBudgetCap is the ceiling on any single test's OWN context, and the one
+// number `go test -timeout` must stay above.
+//
+// A test whose context outlives its runner cannot produce a verdict. When the
+// runner's timeout fires first, Go panics with a goroutine dump instead of
+// cancelling the context, so the test's own summary never runs: no PASS, no FAIL,
+// no case list — just a stack trace the campaign has to score as NO-VERDICT. That
+// is strictly worse than a failure, because a failure names its cause.
+//
+// This used to be a `const cap = 60m` with an early `if base >= cap { return base }`,
+// which meant the cap applied to nobody who needed it: 26 of the 45 vault tests ask
+// for 70-120m, took the bypass, and ran with a context that could never expire
+// before a 65m runner. TestVaultF3CrashMidKeygen is what that looks like from the
+// outside — `panic: test timed out after 1h5m0s` with its last four cases passing.
+//
+// Raise it and the runner's -timeout TOGETHER, never one alone.
+func vfDevnetBudgetCap() time.Duration {
+	if v := os.Getenv("DEVNET_BUDGET_CAP"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 75 * time.Minute
+}
+
+func vfTestBudget(base time.Duration) time.Duration {
+	scale := 1.0
+	if v := os.Getenv("DEVNET_TIMEOUT_SCALE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			scale = f
+		}
+	}
+	cap := vfDevnetBudgetCap()
+	d := time.Duration(float64(base) * scale)
+	if d < base {
+		d = base
+	}
+	if d > cap {
+		// Loud, because a silently shortened budget looks like the subject failing
+		// late rather than the instrument stopping early.
+		log.Printf("[devnet] test budget %s (base %s x scale %.2f) truncated to the %s cap; "+
+			"raise DEVNET_BUDGET_CAP and `go test -timeout` together if this test needs longer",
+			d.Round(time.Minute), base, scale, cap)
+		d = cap
+	}
+	return d
 }

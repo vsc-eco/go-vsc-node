@@ -91,19 +91,19 @@ func (d *Devnet) GetDashBlockHeaderHex(ctx context.Context, height uint64) (stri
 // WaitForDashHeight blocks until the dashd regtest tip is at least `target`
 // blocks tall, or the timeout expires.
 func (d *Devnet) WaitForDashHeight(ctx context.Context, target uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // wall: external dashd regtest chain
 	for {
 		h, err := d.DashHeight(ctx)
 		if err == nil && h >= target {
 			return nil
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // wall: external dashd regtest chain
 			return fmt.Errorf("dashd never reached height %d (last err: %v)", target, err)
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond): // wall: external dashd regtest chain
 		}
 	}
 }

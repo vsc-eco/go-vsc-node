@@ -110,9 +110,9 @@ func (d *Devnet) GetTssKeys(ctx context.Context, node int, filter bson.M) ([]Tss
 // WaitForCommitment polls until a tss_commitment matching the filter
 // appears in the given node's database, or the timeout expires.
 func (d *Devnet) WaitForCommitment(ctx context.Context, node int, filter bson.M, timeout time.Duration) (*TssCommitmentDoc, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for commitment (filter=%v)", filter)
 		}
 		docs, err := d.GetCommitments(ctx, node, filter)
@@ -125,7 +125,7 @@ func (d *Devnet) WaitForCommitment(ctx context.Context, node int, filter bson.M,
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
@@ -274,7 +274,7 @@ func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, e
 //
 // Returns the final (count, lastBlock) and an error on timeout.
 func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int, minHeight uint64, timeout time.Duration) (int, uint64, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var lastN int
 	var lastBh, lastReg uint64
 	var lastErrN, lastErrB, lastErrR error
@@ -295,7 +295,7 @@ func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int
 		if errN == nil && errB == nil && errR == nil && n >= want && bh >= minHeight && bh > reg {
 			return n, bh, nil
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			// The last read errors are part of the reading: a stuck count can be a
 			// stuck node OR a failing query, and the caller cannot tell them apart
 			// otherwise (H-32).
@@ -305,7 +305,7 @@ func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int
 		select {
 		case <-ctx.Done():
 			return lastN, lastBh, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }
@@ -323,9 +323,9 @@ func (d *Devnet) dumpBlockHeight(ctx context.Context, t interface{ Logf(string, 
 // WaitForBlockProcessing waits until a node has processed at least
 // the given block height.
 func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			bh, _ := d.getLastProcessedBlock(ctx, node)
 			return fmt.Errorf("node %d only at block %d after %v (need %d)", node, bh, timeout, minBlock)
 		}
@@ -336,7 +336,7 @@ func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }
@@ -344,10 +344,10 @@ func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock 
 // waitForElectionEpoch polls until the elections collection contains
 // an election with epoch >= minEpoch.
 func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	highest := int64(-1)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return fmt.Errorf("node %d: election epoch %d never arrived (timeout %v, highest epoch seen %d)", node, minEpoch, timeout, highest)
 		}
 		client, err := d.mongoClient(ctx)
@@ -368,7 +368,7 @@ func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch ui
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
@@ -446,9 +446,9 @@ func (d *Devnet) WaitForTssKey(ctx context.Context, node int, filter bson.M, tim
 	if f, err := strconv.ParseFloat(os.Getenv("DEVNET_TIMEOUT_SCALE"), 64); err == nil && f > 1 {
 		timeout = time.Duration(float64(timeout) * f)
 	}
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for tss_key (filter=%v)", filter)
 		}
 		docs, err := d.GetTssKeys(ctx, node, filter)
@@ -461,7 +461,7 @@ func (d *Devnet) WaitForTssKey(ctx context.Context, node int, filter bson.M, tim
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
