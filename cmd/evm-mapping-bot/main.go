@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -718,6 +720,10 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 // L2 contract call — mirrors mapper.Bot.callContractL2
 // ---------------------------------------------------------------------------
 
+// errPayloadTooLarge: callContractL2 refused a payload over the node's
+// contract-payload cap before submitting it.
+var errPayloadTooLarge = errors.New("contract call payload over the node's cap")
+
 // callContractL2 submits a vsc.call contract invocation through the VSC L2
 // transaction pool using the bot's did:pkh:eip155 identity.
 func (s *l2Submitter) callContractL2(
@@ -727,6 +733,19 @@ func (s *l2Submitter) callContractL2(
 	payload json.RawMessage,
 	rcOverride uint64,
 ) (string, error) {
+	// EVM-T1: every node fails a contract call whose payload is over
+	// MAX_CONTRACT_PAYLOAD_SIZE (state-processing, checked before execution),
+	// which is below the pool's MAX_TX_SIZE checked further down. Refuse it here
+	// and log it, rather than submit a call that cannot succeed.
+	if len(payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+		slog.Error("contract call payload exceeds the node's payload cap",
+			"action", action,
+			"payload_size", len(payload),
+			"limit", params.MAX_CONTRACT_PAYLOAD_SIZE,
+		)
+		return "", fmt.Errorf("%w: %s payload is %d bytes (limit %d)", errPayloadTooLarge, action, len(payload), params.MAX_CONTRACT_PAYLOAD_SIZE)
+	}
+
 	// Serialize concurrent L2 submissions for nonce ordering.
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1072,7 +1091,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 
 	// Detect ETH deposits: direct transfers to vault
 	for i, tx := range block.Transactions {
-		if strings.ToLower(tx.To) == vaultLower && hexToUint64(tx.Value) > 0 {
+		if strings.ToLower(tx.To) == vaultLower && hexNonZero(tx.Value) {
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight: height,
 				TxIndex:     i,
@@ -1186,8 +1205,10 @@ func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic s
 	return -1, fmt.Errorf("log with block-level index %d not found in receipt %s for token %s", blockLogIndex, txHash, tokenAddr)
 }
 
-// buildMapPayload constructs the JSON for a "map" contract call.
-func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]byte) json.RawMessage {
+// buildMapPayload constructs the JSON for a "map" contract call from a
+// proven trie leaf (the transaction for an ETH deposit, the receipt for an
+// ERC-20 deposit) and its proof nodes.
+func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes [][]byte) json.RawMessage {
 	proofHex := ""
 	for _, node := range proofNodes {
 		proofHex += hex.EncodeToString(node)
@@ -1196,7 +1217,7 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 	txData := map[string]interface{}{
 		"block_height":     deposit.BlockHeight,
 		"tx_index":         deposit.TxIndex,
-		"raw_hex":          hex.EncodeToString(receiptRLP),
+		"raw_hex":          hex.EncodeToString(leaf),
 		"merkle_proof_hex": proofHex,
 		"deposit_type":     deposit.DepositType,
 	}
@@ -1231,15 +1252,15 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 // entirely absent from the bot struct (the contract ecrecovers confirmSpend
 // against it). Both are now present.
 type PendingSpend struct {
-	Nonce         uint64 `json:"nonce"`
-	Amount        int64  `json:"amount"`
-	From          string `json:"from"`
-	To            string `json:"to"`
-	Asset         string `json:"asset"`
-	UnsignedTxHex string `json:"unsigned_tx_hex"`
-	BlockHeight   uint64 `json:"block_height"`
-	VaultAtQueue  string `json:"vault_at_queue"`
-	TokenAddress  string `json:"token_address,omitempty"`
+	Nonce         uint64   `json:"nonce"`
+	Amount        *big.Int `json:"amount"` // wei; the contract stores a big.Int
+	From          string   `json:"from"`
+	To            string   `json:"to"`
+	Asset         string   `json:"asset"`
+	UnsignedTxHex string   `json:"unsigned_tx_hex"`
+	BlockHeight   uint64   `json:"block_height"`
+	VaultAtQueue  string   `json:"vault_at_queue"`
+	TokenAddress  string   `json:"token_address,omitempty"`
 }
 
 // parsePendingSpend decodes the contract's JSON-encoded PendingSpend (H-F1).
@@ -1254,7 +1275,7 @@ func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
 	// The contract keys the entry by nonce; trust the caller's nonce over any
 	// in-band value (mirrors contract GetPendingSpend which sets ps.Nonce=nonce).
 	ps.Nonce = nonce
-	if ps.Amount <= 0 {
+	if ps.Amount == nil || ps.Amount.Sign() <= 0 {
 		return nil
 	}
 	if ps.UnsignedTxHex == "" {
@@ -1545,31 +1566,31 @@ type receiptForProof struct {
 // nested {tx_data:{block_height,tx_index,raw_hex,merkle_proof_hex}} (the DEPOSIT
 // envelope), which the flat intent-bound confirmSpend ABI ignores entirely —
 // every field decoded zero → confirmSpend ALWAYS reverted on the intent gate.
-// The contract verifies BOTH a transactions-trie proof (tx_hex + tx_proof_hex
-// against header.TransactionsRoot) AND a receipts-trie proof (receipt_hex +
-// receipt_proof_hex against header.ReceiptsRoot) for the SAME tx_index, plus the
-// 4 intent_* fields (verified == PendingSpend BEFORE any proof work, HIGH #13).
+// The contract verifies BOTH a transactions-trie proof (tx_proof against
+// header.TransactionsRoot) AND a receipts-trie proof (receipt_proof against
+// header.ReceiptsRoot) for the SAME tx_index, plus the 4 intent_* fields
+// (verified == PendingSpend BEFORE any proof work, HIGH #13).
+//
+// EVM-T1: the proofs are base64 and the tx and receipt are not sent on their
+// own (the contract takes them from the proven leaves). The hex payload with
+// both leaves repeated went over the node's 8,192-byte contract-payload cap for
+// a withdrawal mined late in a large block, and then no withdrawal could settle.
 type confirmSpendRequest struct {
-	BlockHeight     uint64 `json:"block_height"`
-	TxIndex         uint64 `json:"tx_index"`
-	TxHex           string `json:"tx_hex"`
-	TxProofHex      string `json:"tx_proof_hex"`
-	ReceiptHex      string `json:"receipt_hex"`
-	ReceiptProofHex string `json:"receipt_proof_hex"`
-	IntentNonce     uint64 `json:"intent_nonce"`
-	IntentTo        string `json:"intent_to"`
-	IntentAmount    int64  `json:"intent_amount"`
-	IntentAsset     string `json:"intent_asset"`
+	BlockHeight  uint64 `json:"block_height"`
+	TxIndex      uint64 `json:"tx_index"`
+	TxProof      string `json:"tx_proof"`      // base64 (standard, padded): concatenated tx-trie nodes
+	ReceiptProof string `json:"receipt_proof"` // base64 (standard, padded): concatenated receipt-trie nodes
+	IntentNonce  uint64 `json:"intent_nonce"`
+	IntentTo     string `json:"intent_to"`
+	IntentAmount string `json:"intent_amount"` // decimal wei; the contract decodes it as a string
+	IntentAsset  string `json:"intent_asset"`
 }
 
-// buildConfirmSpendPayload assembles the flat 10-field ConfirmSpendRequest
+// buildConfirmSpendPayload assembles the flat 8-field ConfirmSpendRequest
 // (H-F2). It builds a transactions-trie proof and a receipts-trie proof for the
 // withdrawal tx at txIndex, and carries the intent fields from the PendingSpend
 // the bot already parsed (ps). The contract uses the same tx_index as the trie
-// key for BOTH proofs (handlers.go:492,593), so a single index drives both legs.
-//
-// All proof hex is BARE (no 0x prefix): the contract decodes via Go's
-// encoding/hex which rejects a 0x prefix (proof.go / handlers.go hex.DecodeString).
+// key for BOTH proofs, so a single index drives both legs.
 func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
 	if ps == nil {
 		return nil, fmt.Errorf("confirmSpend: nil pending spend (intent fields unavailable)")
@@ -1590,11 +1611,11 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(block.Transactions))
 	}
 
-	// --- Transactions-trie leg: tx_hex (raw typed tx RLP) + tx_proof_hex.
+	// --- Transactions-trie leg: tx_proof (its leaf is the raw typed tx RLP).
 	// Mirrors the deposit path (buildMapPayloadFromRPC): the raw tx bytes
 	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
 	// so the reconstructed root matches header.TransactionsRoot. The contract
-	// compares the proven leaf byte-for-byte against tx_hex.
+	// parses the proven leaf as the withdrawal tx.
 	rawTxs := make([][]byte, len(block.Transactions))
 	for i, hash := range block.Transactions {
 		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
@@ -1614,55 +1635,31 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 	for i := range txKeys {
 		txKeys[i] = rlpEncodeUint64(uint64(i))
 	}
-	_, txProofNodes, txTargetRLP := buildMPTProof(txKeys, rawTxs, txIndex)
+	_, txProofNodes, _ := buildMPTProof(txKeys, rawTxs, txIndex)
 	if txProofNodes == nil {
 		return nil, fmt.Errorf("confirmSpend tx proof construction failed: txIndex %d / %d txs", txIndex, len(rawTxs))
 	}
 
-	// --- Receipts-trie leg: receipt_hex (RLP receipt) + receipt_proof_hex.
-	allReceipts := make([]receiptForProof, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.getReceipt(hash)
-		if err != nil {
-			return nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(block.Transactions), err)
-		}
-		if err := json.Unmarshal(rData, &allReceipts[i]); err != nil {
-			return nil, fmt.Errorf("parse receipt %d: %w", i, err)
-		}
-	}
-	encodedReceipts := make([][]byte, len(allReceipts))
-	for i := range allReceipts {
-		encodedReceipts[i] = encodeReceiptRLP(&allReceipts[i])
-	}
-	rcptKeys := make([][]byte, len(encodedReceipts))
-	for i := range rcptKeys {
-		rcptKeys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, rcptProofNodes, rcptTargetRLP := buildMPTProof(rcptKeys, encodedReceipts, txIndex)
-	if rcptProofNodes == nil {
-		return nil, fmt.Errorf("confirmSpend receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(encodedReceipts))
+	// --- Receipts-trie leg: receipt_proof (its leaf is the receipt).
+	_, rcptProofNodes, err := receiptTrieProof(rpc, block.Transactions, txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
 
-	txProofHex := ""
-	for _, node := range txProofNodes {
-		txProofHex += hex.EncodeToString(node)
-	}
-	rcptProofHex := ""
-	for _, node := range rcptProofNodes {
-		rcptProofHex += hex.EncodeToString(node)
-	}
+	return confirmSpendPayload(blockHeight, txIndex, txProofNodes, rcptProofNodes, ps)
+}
 
+// confirmSpendPayload encodes a ConfirmSpendRequest from the two proofs' nodes.
+func confirmSpendPayload(blockHeight uint64, txIndex int, txProofNodes, rcptProofNodes [][]byte, ps *PendingSpend) (json.RawMessage, error) {
 	req := confirmSpendRequest{
-		BlockHeight:     blockHeight,
-		TxIndex:         uint64(txIndex),
-		TxHex:           hex.EncodeToString(txTargetRLP),
-		TxProofHex:      txProofHex,
-		ReceiptHex:      hex.EncodeToString(rcptTargetRLP),
-		ReceiptProofHex: rcptProofHex,
-		IntentNonce:     ps.Nonce,
-		IntentTo:        ps.To,
-		IntentAmount:    ps.Amount,
-		IntentAsset:     ps.Asset,
+		BlockHeight:  blockHeight,
+		TxIndex:      uint64(txIndex),
+		TxProof:      base64.StdEncoding.EncodeToString(bytes.Join(txProofNodes, nil)),
+		ReceiptProof: base64.StdEncoding.EncodeToString(bytes.Join(rcptProofNodes, nil)),
+		IntentNonce:  ps.Nonce,
+		IntentTo:     ps.To,
+		IntentAmount: ps.Amount.String(),
+		IntentAsset:  ps.Asset,
 	}
 
 	data, err := json.Marshal(req)
@@ -1670,6 +1667,36 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		return nil, fmt.Errorf("confirmSpend marshal: %w", err)
 	}
 	return data, nil
+}
+
+// receiptTrieProof returns the consensus-encoded receipt of the tx at
+// txIndex and its proof against header.ReceiptsRoot, built from the receipts
+// of every tx in the block (txHashes, in block order).
+func receiptTrieProof(rpc *ethRPC, txHashes []string, txIndex int) ([]byte, [][]byte, error) {
+	if txIndex < 0 || txIndex >= len(txHashes) {
+		return nil, nil, fmt.Errorf("txIndex %d out of range (block has %d txs)", txIndex, len(txHashes))
+	}
+	receipts := make([][]byte, len(txHashes))
+	for i, hash := range txHashes {
+		rData, err := rpc.getReceipt(hash)
+		if err != nil {
+			return nil, nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(txHashes), err)
+		}
+		var r receiptForProof
+		if err := json.Unmarshal(rData, &r); err != nil {
+			return nil, nil, fmt.Errorf("parse receipt %d: %w", i, err)
+		}
+		receipts[i] = encodeReceiptRLP(&r)
+	}
+	keys := make([][]byte, len(receipts))
+	for i := range keys {
+		keys[i] = rlpEncodeUint64(uint64(i))
+	}
+	_, nodes, target := buildMPTProof(keys, receipts, txIndex)
+	if nodes == nil {
+		return nil, nil, fmt.Errorf("receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(receipts))
+	}
+	return target, nodes, nil
 }
 
 func encodeReceiptRLP(r *receiptForProof) []byte {
@@ -2684,6 +2711,18 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 		return nil
 	}
 
+	// An ERC-20 deposit is proven by its receipt (the Transfer log) against
+	// header.ReceiptsRoot (contract VerifyERC20Deposit); a native ETH deposit
+	// by the transaction against header.TransactionsRoot.
+	if dep.DepositType == "erc20" {
+		receipt, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+		if err != nil {
+			slog.Error("erc20 deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+			return nil
+		}
+		return buildMapPayload(dep, receipt, proofNodes)
+	}
+
 	rawTxs := make([][]byte, len(block.Transactions))
 	for i, hash := range block.Transactions {
 		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
@@ -2725,6 +2764,12 @@ func hexToUint64(s string) uint64 {
 		}
 	}
 	return v
+}
+
+// hexNonZero reports whether a hex quantity is non-zero at full width. A tx
+// value is a uint256; hexToUint64 keeps only the low 64 bits.
+func hexNonZero(s string) bool {
+	return strings.Trim(strings.TrimPrefix(s, "0x"), "0") != ""
 }
 
 func hexToBytes(s string) []byte {
