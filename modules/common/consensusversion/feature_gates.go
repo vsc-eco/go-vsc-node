@@ -810,6 +810,18 @@ func EvmVaultCustodyActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// KeygenOnceActive (0.12.0): a keygen commitment for a key that an earlier
+// keygen already activated is neither stored nor applied (TSS-KG-1), and a
+// node signs and reshares with the share of the keygen the chain activated.
+// Keygen re-runs while a key is still "created", so several keygens can
+// succeed before the first commitment lands; storing the later rows let a
+// later keygen's shares take over a key whose on-chain pubkey is the first's,
+// which can then never sign. Resolve `active` at the commitment's block (A)
+// and at the session height (B).
+func KeygenOnceActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
 // without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
 // ValidateDetailed within the slot window - only a byte-identical Hive tx is

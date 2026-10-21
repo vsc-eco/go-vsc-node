@@ -13,6 +13,9 @@ import (
 type MockTssKeysDb struct {
 	aggregate.Plugin
 	Keys map[string]tss.TssKey
+	// FindKeyErrs: the next FindKeyErrs FindKey calls fail with a transient
+	// (non-ErrNoDocuments) error, as a Mongo blip would.
+	FindKeyErrs int
 }
 
 func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) error {
@@ -28,6 +31,10 @@ func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) er
 }
 
 func (m *MockTssKeysDb) FindKey(id string) (tss.TssKey, error) {
+	if m.FindKeyErrs > 0 {
+		m.FindKeyErrs--
+		return tss.TssKey{}, fmt.Errorf("mock: server selection timeout")
+	}
 	key, exists := m.Keys[id]
 	if !exists {
 		// As the Mongo store answers (FindOne on no match); TssCreateKey

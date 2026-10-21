@@ -1364,6 +1364,13 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				} else {
 					log.Info("keystore deleted (retired)", "keyId", key.Id, "epoch", key.Epoch)
 				}
+				// The activating keygen's copy (TSS-KG-1) is the same share; flatfs
+				// returns nil for a key that is not there.
+				if key.PublicKey != "" {
+					if delErr := tssMgr.keyStore.Delete(context.Background(), keygenShareKey(key.PublicKey)); delErr != nil {
+						log.Error("keystore delete failed (keygen copy)", "keyId", key.Id, "err", delErr)
+					}
+				}
 			}
 		}
 	}
@@ -1918,6 +1925,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					blockHeight: bh,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
 				},
 			}
 			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
@@ -2166,6 +2174,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					epoch: keyInfo.Epoch,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minSignVer),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(minSignVer),
 				},
 				msg:                action.Args,
 				prevCommitmentType: prevCommitType,
@@ -2474,6 +2483,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					isReshare:   true,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minReshareVer),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(minReshareVer),
 				},
 				newParticipants:    newParticipants,
 				newEpoch:           currentElection.Epoch,

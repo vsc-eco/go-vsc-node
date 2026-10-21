@@ -1827,6 +1827,34 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						// TSS-KG-1 (0.12.0): a keygen for a key an earlier keygen
+						// already activated is dropped before it is stored. Its row
+						// would become the key's newest keygen commitment, and
+						// reshares and signs would then use that keygen's shares
+						// for a key whose on-chain pubkey is the first keygen's.
+						// The status read decides consensus state, so a read that
+						// failed on this node alone (a Mongo blip) blocks and
+						// retries instead of deciding differently from its peers;
+						// only a key that does not exist falls through.
+						if commitment.Type == "keygen" && consensusversion.KeygenOnceActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+							var k tss_db.TssKey
+							found := false
+							blockingRetry("TSS-KG-1 FindKey", func() error {
+								got, err := se.tssKeys.FindKey(commitment.KeyId)
+								if err != nil {
+									if isTransientReadErr(err) {
+										return err
+									}
+									return nil
+								}
+								k, found = got, true
+								return nil
+							})
+							if found && k.Status != tss_db.TssKeyCreated {
+								tssLog.Warn("dropping keygen commitment for a key already activated by an earlier keygen", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "epoch", commitment.Epoch, "keyEpoch", k.Epoch, "status", k.Status)
+								continue
+							}
+						}
 						se.tssLogSync(block.BlockNumber, "writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
