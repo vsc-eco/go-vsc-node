@@ -69,10 +69,11 @@ type RetiringSignerSet struct {
 	// generation is funded. Kept apart from SignerElection on purpose: SignerElection
 	// feeds the #11 retiring-member checks, which must not change here.
 	ActiveSignerElection map[string]elections.ElectionResult
-	// ReadinessWidened records that IncludeActiveHolders was set. The gossip
-	// receive path then also accepts a PENDING generation's keygen committee
-	// (PendingSignerElection), which until 0.11.0 could emit readiness from outside
-	// the election but was never accepted by any receiver.
+	// ReadinessWidened records that IncludeActiveHolders (or, from 0.12.0,
+	// IncludeEvmVaultHolders) was set. The gossip receive path then also accepts
+	// a PENDING generation's keygen committee (PendingSignerElection), which until
+	// 0.11.0 could emit readiness from outside the election but was never
+	// accepted by any receiver, and the ActiveSignerElection holders.
 	ReadinessWidened bool
 	// Unresolvable is true when "v" was PRESENT but failed to decode (corrupt committed
 	// state). The set is then empty and MUST NOT be read as "nobody retiring": the #11
@@ -162,6 +163,15 @@ type RetiringSignerDeps struct {
 	// earlier parties. A late deposit turns the generation back to Draining,
 	// which locks again. The tss caller leaves it false, so signing is unchanged.
 	ExcludeInactive bool
+	// EvmVaultKeyIds are the EVM bridges' vault keys
+	// (params.OracleParams.EvmVaultKeyIds). With IncludeEvmVaultHolders
+	// (consensus 0.12.0, consensusversion.EvmVaultCustodyActive) the holders
+	// named by each key's newest keygen/reshare commitment join
+	// ActiveSignerElection, as the active BTC generation's do (C1). An EVM
+	// bridge key is never rotated or drained, so it has no retiring committee:
+	// only its newest holders carry live shares the readiness set must reach.
+	EvmVaultKeyIds         []string
+	IncludeEvmVaultHolders bool
 }
 
 // ComputeRetiringSignerSet is the pure, deterministic core: it reads the BTC vault
@@ -177,7 +187,18 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		KeyIds:                map[string]bool{},
 		PendingKeyIds:         map[string]bool{},
 		ReshareSkipKeyIds:     map[string]bool{},
-		ReadinessWidened:      d.IncludeActiveHolders,
+		ReadinessWidened:      d.IncludeActiveHolders || d.IncludeEvmVaultHolders,
+	}
+	// C1 (0.12.0): before the BTC registry, which may be absent. Readiness only;
+	// none of this reaches SignerElection / KeyIds (the #11 retiring bond lock).
+	if d.IncludeEvmVaultHolders {
+		for _, keyId := range d.EvmVaultKeyIds {
+			if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
+				for _, account := range accounts {
+					out.ActiveSignerElection[account] = elec
+				}
+			}
+		}
 	}
 	if d.BtcContract == "" {
 		return out

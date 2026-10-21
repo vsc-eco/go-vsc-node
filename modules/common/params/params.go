@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -1113,6 +1114,13 @@ type OracleParams struct {
 	// is in this map, the oracle skips BLS relay for it.
 	ZKVerifierChains map[string]string `json:"zkVerifierChains,omitempty"`
 
+	// EvmBridgeContracts maps EVM chain symbols (e.g. "ETH") to the bridge
+	// (account-mapping evm-mapping-contract) contract IDs. Each bridge's vault
+	// is its "primary" TSS key, which the key-custody rules cover from 0.12.0
+	// (consensusversion.EvmVaultCustodyActive). Consensus input: every node of a
+	// network must carry the same map, as with ChainContracts["BTC"].
+	EvmBridgeContracts map[string]string `json:"evmBridgeContracts,omitempty"`
+
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
 
@@ -1142,6 +1150,19 @@ func (o OracleParams) HasZKVerifier(symbol string) bool {
 	}
 	_, ok := o.ZKVerifierChains[symbol]
 	return ok
+}
+
+// EvmVaultKeyIds returns the TSS key id of each EVM bridge's vault
+// (<contract id>-primary), sorted so every node iterates them in one order.
+func (o OracleParams) EvmVaultKeyIds() []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for _, c := range o.EvmBridgeContracts {
+		if c != "" {
+			ids = append(ids, c+"-primary")
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // ContractId returns the relay contract ID for the given chain symbol.

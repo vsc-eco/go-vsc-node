@@ -798,6 +798,18 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 	return Version0_11_0Active(active)
 }
 
+// EvmVaultCustodyActive reports whether the EVM bridge's vault key (the
+// "primary" TSS key of each OracleParams.EvmBridgeContracts contract) gets the
+// key-custody rules of the active BTC vault key: the holders named by its
+// newest keygen/reshare commitment stay readiness/signing-eligible after leaving
+// the election (C1, as ActiveKeyHoldersBoundActive), and while the key exists
+// those holders, the current committee and every electable or recently active
+// witness cannot unstake their bond (C2, as POA-1). Resolve `active` at the
+// decision height.
+func EvmVaultCustodyActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
 // without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
 // ValidateDetailed within the slot window - only a byte-identical Hive tx is

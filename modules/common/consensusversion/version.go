@@ -145,6 +145,10 @@ import (
 //     (TssAccuseStackActive), so testnet nodes take that build together: while
 //     an accusation is live the two builds can pick different parties, form
 //     different sessions and both fail until every node runs the same build.
+//   - 0.12.0 (consensusversion.V0_12_0): the key-custody rules cover the EVM
+//     bridge's vault key (OracleParams.EvmBridgeContracts): its holders stay
+//     able to sign and reshare it after they leave the election, and their bond
+//     stays locked while it holds funds. Inert until 0.12.0 is chain-active.
 const (
 	currentMajor        uint64 = 0
 	currentConsensus    uint64 = 12

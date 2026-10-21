@@ -59,24 +59,62 @@ func emptyRetiringSet() vaultrotation.RetiringSignerSet {
 // epoch, verification fails → the member is excluded → the migration retries /
 // falls back to the CSV backup. That is fail-and-retry, never corruption.
 func (tssMgr *TssManager) retiringGenSignerSet(bh uint64) vaultrotation.RetiringSignerSet {
-	if tssMgr.sconf == nil || !tssMgr.vaultRotationV2InForce(bh) {
+	if !tssMgr.retiringSetInForce(bh) {
 		return emptyRetiringSet()
 	}
-	btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
-	if btcContract == "" {
-		return emptyRetiringSet()
+	btcContract := ""
+	if tssMgr.vaultRotationV2InForce(bh) {
+		btcContract = tssMgr.sconf.OracleParams().ContractId("BTC")
 	}
+	// The reader reads the contract's last output as it is built, so build it
+	// only for a BTC contract (an EVM-only height never reads "v").
+	readKey := func(string) ([]byte, bool) { return nil, false }
+	if btcContract != "" {
+		readKey = tssMgr.contractStateReaderAt(btcContract, bh)
+	}
+	evmKeys := tssMgr.evmVaultKeysBound(bh)
 	return vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
 		BtcContract: btcContract,
-		ReadKey:     tssMgr.contractStateReaderAt(btcContract, bh),
+		ReadKey:     readKey,
 		GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
 			return tssMgr.tssCommitments.GetCommitmentByHeight(keyId, bh, "reshare", "keygen")
 		},
 		GetElection: func(epoch uint64) *elections.ElectionResult {
 			return tssMgr.electionDb.GetElection(epoch)
 		},
-		IncludeActiveHolders: tssMgr.activeKeyHoldersBound(bh),
+		IncludeActiveHolders:   tssMgr.activeKeyHoldersBound(bh),
+		EvmVaultKeyIds:         evmKeys,
+		IncludeEvmVaultHolders: len(evmKeys) > 0,
 	})
+}
+
+// retiringSetInForce reports whether retiringGenSignerSet can be non-empty at
+// bh: the BTC rules (vault-rotation-v2 in force and a BTC contract) or the EVM
+// vault rules (evmVaultKeysBound). Otherwise it is the inert empty set,
+// byte-identical to before.
+func (tssMgr *TssManager) retiringSetInForce(bh uint64) bool {
+	if tssMgr.sconf == nil {
+		return false
+	}
+	if tssMgr.vaultRotationV2InForce(bh) && tssMgr.sconf.OracleParams().ContractId("BTC") != "" {
+		return true
+	}
+	return len(tssMgr.evmVaultKeysBound(bh)) > 0
+}
+
+// evmVaultKeysBound returns the EVM bridges' vault keys when the 0.12.0
+// key-custody rules cover them at bh (consensusversion.EvmVaultCustodyActive
+// on the chain-active version), else nil. The key list is per-network config;
+// cheap and local, so it is checked before the version read.
+func (tssMgr *TssManager) evmVaultKeysBound(bh uint64) []string {
+	if tssMgr.sconf == nil || tssMgr.scheduler == nil {
+		return nil
+	}
+	keys := tssMgr.sconf.OracleParams().EvmVaultKeyIds()
+	if len(keys) == 0 || !consensusversion.EvmVaultCustodyActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
+		return nil
+	}
+	return keys
 }
 
 // activeKeyHoldersBound reports whether the 0.11.0 active-key-holder rules are in
@@ -107,7 +145,7 @@ func (tssMgr *TssManager) activeKeyHoldersBound(bh uint64) bool {
 // state at bh), so it never affects consensus; the mutex is never held across the
 // datalayer read.
 func (tssMgr *TssManager) retiringGenSignerSetCached(bh uint64) vaultrotation.RetiringSignerSet {
-	if tssMgr.sconf == nil || !tssMgr.vaultRotationV2InForce(bh) {
+	if !tssMgr.retiringSetInForce(bh) {
 		return emptyRetiringSet()
 	}
 	key := strconv.FormatUint(bh, 10)
