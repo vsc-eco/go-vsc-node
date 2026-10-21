@@ -5,6 +5,8 @@ import (
 	"slices"
 	"vsc-node/modules/aggregate"
 	tss "vsc-node/modules/db/vsc/tss"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // MockTssKeysDb implements tss.TssKeys interface for testing
@@ -28,7 +30,9 @@ func (m *MockTssKeysDb) InsertKey(id string, t tss.TssKeyAlgo, epochs uint64) er
 func (m *MockTssKeysDb) FindKey(id string) (tss.TssKey, error) {
 	key, exists := m.Keys[id]
 	if !exists {
-		return tss.TssKey{}, fmt.Errorf("key not found: %s", id)
+		// As the Mongo store answers (FindOne on no match); TssCreateKey
+		// creates the key only on this error.
+		return tss.TssKey{}, mongo.ErrNoDocuments
 	}
 	return key, nil
 }
