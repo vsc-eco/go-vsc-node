@@ -2997,11 +2997,18 @@ func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID st
 	if verifierID == "" {
 		return 0, nil // no verifier wired — contract refuses bridge ops anyway
 	}
-	vState, err := gql.fetchContractState(ctx, verifierID, []string{"h"})
+	vState, err := gql.fetchContractState(ctx, verifierID, []string{"h", "gapb"})
 	if err != nil {
 		return 0, err
 	}
 	h, _ := strconv.ParseUint(vState["h"], 10, 64)
+	// E5: while a header gap is open, "h" is the proven tip but the blocks
+	// between the stored chain's tip ("gapb") and the backfill have no header
+	// yet; a map or confirmSpend for one fails on chain (a failed map is
+	// dead-lettered). Every header up to gapb is stored.
+	if b, err := strconv.ParseUint(vState["gapb"], 10, 64); err == nil && b < h {
+		h = b
+	}
 	return h, nil
 }
 

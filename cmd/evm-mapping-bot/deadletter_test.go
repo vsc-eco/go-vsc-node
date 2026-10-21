@@ -117,3 +117,40 @@ func TestCheckpointVersion1Loads(t *testing.T) {
 		t.Fatalf("loaded %+v", cp)
 	}
 }
+
+// E5: while the verifier has a header gap open, "h" is the proven tip but the
+// blocks above the stored chain's tip ("gapb") have no header until the
+// backfill lands, so a map for a deposit there fails on chain and is
+// dead-lettered. The bot scans only to gapb; the deposit waits for the
+// backfill and is mapped once the gap closes.
+func TestE5_DepositInAnOpenHeaderGapWaitsForTheBackfill(t *testing.T) {
+	l1 := newFakeL1()
+	for n := uint64(101); n <= 140; n++ {
+		l1.block(n)
+	}
+	l2, gql, rpc, sub, cfg, vault := bridgeWorld(t, l1, 140)
+	l2.set("vsc1verifier", "gapb", "100")
+	l2.status = func(string) string { return "UNCONFIRMED" }
+	dep := ethDeposit(t, l1.block(110), vault, big.NewInt(1e18), nil)
+	cp := &Checkpoint{LastScannedBlock: 100, SentWithdrawals: map[string]SentTx{}, BlockRetries: map[uint64]int{}, PendingMaps: map[string]PendingMap{}}
+
+	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
+		t.Fatal(err)
+	}
+	if cp.LastScannedBlock != 100 || len(l2.submitted) != 0 {
+		t.Fatalf("gap open (stored to 100, proven 140): scanned to %d, submitted %d L2 txs; want neither", cp.LastScannedBlock, len(l2.submitted))
+	}
+
+	l2.set("vsc1verifier", "gapb", "") // the backfill met the stored chain
+	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
+		t.Fatal(err)
+	}
+	if cp.LastScannedBlock != 140 || len(l2.submitted) != 1 || len(cp.PendingMaps) != 1 || len(cp.DeadLetters) != 0 {
+		t.Fatalf("gap closed: scanned to %d, submitted %d, pending %+v, dead %+v; want the deposit in 110 mapped", cp.LastScannedBlock, len(l2.submitted), cp.PendingMaps, cp.DeadLetters)
+	}
+	for _, pm := range cp.PendingMaps {
+		if pm.DepositTx != dep.Hash().Hex() {
+			t.Fatalf("pending map for %s, want %s", pm.DepositTx, dep.Hash().Hex())
+		}
+	}
+}
