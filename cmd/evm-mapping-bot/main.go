@@ -116,8 +116,8 @@ func parseConfig() EVMBotConfig {
 		cfg.Tokens["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] = "usdc"
 	}
 
-	if cfg.VaultAddress == "" || cfg.ContractID == "" {
-		slog.Error("VAULT_ADDRESS and CONTRACT_ID must be set")
+	if cfg.ContractID == "" {
+		slog.Error("CONTRACT_ID must be set")
 		os.Exit(1)
 	}
 	// B17: the old default, api.vsc.eco, has been dead since 2026-09-17, so a
@@ -127,11 +127,14 @@ func parseConfig() EVMBotConfig {
 		os.Exit(1)
 	}
 
+	// A18: the vault is the bridge's TSS key address, which RunLoop reads from
+	// the node; VAULT_ADDRESS is optional and, when set, must match it.
+	//
 	// MED-44 (EVM-B-M4): validate the vault address FORMAT, not just non-empty.
 	// A zero address (0x000...0) or any non-20-byte / non-hex string previously
 	// passed the "!= \"\"" check, after which the bot would treat burns to
 	// address(0) as deposits and sign withdrawals the contract can never confirm.
-	if !isValidEthAddress(cfg.VaultAddress) {
+	if cfg.VaultAddress != "" && !isValidEthAddress(cfg.VaultAddress) {
 		slog.Error("VAULT_ADDRESS is not a valid 20-byte hex Ethereum address (or is the zero address)",
 			"vault", cfg.VaultAddress)
 		os.Exit(1)
@@ -2189,13 +2192,15 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 	checkRelayerRegistered(ctx, gql, cfg.ContractID, did.String())
 
-	// MED-4 (CHAIN-V2-14): cross-validate that the TSS key's derived ETH
-	// address matches the configured vault. A mismatch means every withdrawal
-	// would be signed by a key the vault does not recognize → confirmSpend
-	// rejects it → funds stuck. This is a non-fatal startup WARN: the pubkey
-	// encoding is not guaranteed, so we never brick a working bot on a parse
-	// failure — we only alarm on a confidently-derived mismatch.
-	validateTssVaultBinding(ctx, gql, tssKeyID, cfg.VaultAddress)
+	// A18: the contract credits only deposits to its TSS key's address, so that
+	// address is the vault. MED-4 used to only log a mismatch with
+	// VAULT_ADDRESS, and the bot then scanned for deposits the contract
+	// refuses. Wait for keygen, and refuse a VAULT_ADDRESS that differs.
+	vault, err := waitForTssVault(ctx, gql, tssKeyID, cfg.VaultAddress, cfg.PollInterval)
+	if err != nil {
+		return err
+	}
+	cfg.VaultAddress = vault
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
 
@@ -2276,43 +2281,60 @@ func runOnceSafe(
 	return runOnce(ctx, rpc, gql, submitter, cp, cfg, tssKeyID)
 }
 
-// validateTssVaultBinding fetches the TSS key's aggregated public key and
-// checks that the ETH address it derives to equals the configured vault.
-// MED-4 (CHAIN-V2-14). Non-fatal: logs CRITICAL on a confident mismatch,
-// DEBUG when the pubkey cannot be parsed (unknown encoding) so a working bot
-// is never bricked by this check.
-func validateTssVaultBinding(ctx context.Context, gql *vscGraphQL, tssKeyID, vault string) {
-	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	data, err := gql.query(qctx,
-		`query GetKey($id: String!){ getTssKey(keyId: $id){ public_key } }`,
+// fetchTssVault returns the ETH address of the bridge's TSS key when the key
+// holds one the way the contract reads it (mapping.TssVaultAddress): active,
+// or deprecated and renewable. ok=false: no key yet (before keygen), a retired
+// key, or a public key that is not a secp256k1 point.
+func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (string, bool, error) {
+	data, err := gql.query(ctx,
+		`query GetKey($id: String!){ getTssKey(keyId: $id){ status public_key } }`,
 		map[string]interface{}{"id": tssKeyID},
 	)
 	if err != nil {
-		slog.Warn("MED-4: could not fetch TSS key to validate vault binding (continuing)", "err", err)
-		return
+		return "", false, err
 	}
 	var parsed struct {
 		GetTssKey *struct {
+			Status    string `json:"status"`
 			PublicKey string `json:"public_key"`
 		} `json:"getTssKey"`
 	}
-	if err := json.Unmarshal(data, &parsed); err != nil || parsed.GetTssKey == nil {
-		slog.Warn("MED-4: TSS key not found / undecodable — skipping vault binding check", "keyId", tssKeyID)
-		return
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", false, err
 	}
-	addr, ok := tssPubKeyToAddress(parsed.GetTssKey.PublicKey)
-	if !ok {
-		slog.Debug("MED-4: TSS public_key encoding not recognized — skipping vault binding check (non-fatal)",
-			"keyId", tssKeyID)
-		return
+	k := parsed.GetTssKey
+	if k == nil || (k.Status != "active" && k.Status != "deprecated") {
+		return "", false, nil
 	}
-	if !strings.EqualFold(addr, vault) {
-		slog.Error("MED-4 CRITICAL: TSS-derived ETH address does NOT match configured VAULT_ADDRESS — withdrawals will be unconfirmable; verify configuration before funds move",
-			"keyId", tssKeyID, "derived", addr, "vault", vault)
-		return
+	addr, ok := tssPubKeyToAddress(k.PublicKey)
+	return addr, ok, nil
+}
+
+// waitForTssVault blocks until the bridge's TSS key exists and returns its
+// address. A configured VAULT_ADDRESS that is a different address is an error:
+// the bot would watch an address the contract does not credit.
+func waitForTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID, configured string, poll time.Duration) (string, error) {
+	for {
+		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		vault, ok, err := fetchTssVault(qctx, gql, tssKeyID)
+		cancel()
+		switch {
+		case err != nil:
+			slog.Warn("A18: could not fetch the TSS key (retrying)", "keyId", tssKeyID, "err", err)
+		case !ok:
+			slog.Info("A18: waiting for the bridge's TSS key", "keyId", tssKeyID)
+		case configured != "" && !strings.EqualFold(vault, configured):
+			return "", fmt.Errorf("VAULT_ADDRESS %s is not the bridge's TSS key address %s; the contract credits only deposits to the key's address", configured, vault)
+		default:
+			slog.Info("A18: vault is the TSS key's address", "keyId", tssKeyID, "vault", vault)
+			return vault, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
 	}
-	slog.Info("MED-4: TSS-derived ETH address matches configured vault", "vault", vault)
 }
 
 // tssPubKeyToAddress derives the lowercase 0x ETH address from a hex-encoded

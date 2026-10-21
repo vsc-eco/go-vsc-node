@@ -130,10 +130,11 @@ type fakeL2 struct {
 	submitted [][]byte                     // signed L2 txs, decoded from base64
 	status    func(txID string) string     // nil: every tx is CONFIRMED
 	nonce     uint64
+	keys      map[string][2]string // TSS key id -> {status, public key}
 }
 
 func newFakeL2() *fakeL2 {
-	return &fakeL2{state: map[string]map[string]string{}, sigs: map[string]string{}}
+	return &fakeL2{state: map[string]map[string]string{}, sigs: map[string]string{}, keys: map[string][2]string{}}
 }
 
 func (f *fakeL2) set(contract, key, value string) {
@@ -174,6 +175,12 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				}
 			}
 			data = map[string]any{"getTssRequests": reqs}
+		case strings.Contains(req.Query, "getTssKey"):
+			var key any
+			if k, ok := f.keys[fmt.Sprint(req.Variables["id"])]; ok {
+				key = map[string]string{"status": k[0], "public_key": k[1]}
+			}
+			data = map[string]any{"getTssKey": key}
 		case strings.Contains(req.Query, "getAccountNonce"):
 			data = map[string]any{"getAccountNonce": map[string]any{"nonce": f.nonce}}
 		case strings.Contains(req.Query, "submitTransactionV1"):

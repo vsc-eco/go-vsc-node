@@ -18,7 +18,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"os"
@@ -27,6 +29,7 @@ import (
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	stateEngine "vsc-node/modules/state-processing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -55,6 +58,16 @@ func rwContract(t *testing.T) *test_utils.ContractTest {
 	ct.StateSet(rwBridge, "chainid", "11155111")
 	ct.StateSet(rwBridge, "zkverifier", rwVerifier)
 	return &ct
+}
+
+// rwVaultKey gives the bridge a TSS primary key and returns it with its
+// address, which is the vault (A18).
+func rwVaultKey(t *testing.T, ct *test_utils.ContractTest) (*ecdsa.PrivateKey, common.Address) {
+	t.Helper()
+	key, _ := ethCrypto.GenerateKey()
+	ct.Tss.Keys.SetKey(tss_db.TssKey{Id: rwBridge + "-primary", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
+		PublicKey: hex.EncodeToString(ethCrypto.CompressPubkey(&key.PublicKey))})
+	return key, ethCrypto.PubkeyToAddress(key.PublicKey)
 }
 
 // rwHeader stores block 101 in the verifier's v1 header encoding
@@ -164,10 +177,9 @@ func TestRealWasm_ConfirmSpendRefusesHighSVaultSignature(t *testing.T) {
 // An ERC-20 deposit built by the bot is proven and credited.
 func TestRealWasm_ERC20DepositIsCredited(t *testing.T) {
 	ct := rwContract(t)
-	vault := common.HexToAddress("0x00000000000000000000000000000000000000fa")
+	_, vault := rwVaultKey(t, ct)
 	c, dep := erc20DepositFixture(t, vault, big.NewInt(25_000_000))
 	rwHeader(ct, c)
-	ct.StateSet(rwBridge, "vault", strings.ToLower(vault.Hex()))
 	ct.StateSet(rwBridge, "t-11155111-"+strings.ToLower(strings.TrimPrefix(dep.TokenAddress, "0x")), "USDC|6|1000")
 	payload := buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight)
 	r := rwCall(ct, rwRelayer, "map", payload)
@@ -184,15 +196,13 @@ func TestRealWasm_ERC20DepositIsCredited(t *testing.T) {
 // contract's canonical ecrecover) and credited net of the 1% reserve tax.
 func TestRealWasm_ETHDepositIsCredited(t *testing.T) {
 	ct := rwContract(t)
-	vaultKey, _ := ethCrypto.GenerateKey()
-	vault := ethCrypto.PubkeyToAddress(vaultKey.PublicKey)
+	_, vault := rwVaultKey(t, ct)
 	userKey, _ := ethCrypto.GenerateKey()
 	c := &fakeChain{}
 	tx := c.addTx(t, userKey, &types.DynamicFeeTx{
 		GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: big.NewInt(1e18),
 	})
 	rwHeader(ct, c)
-	ct.StateSet(rwBridge, "vault", strings.ToLower(vault.Hex()))
 	ct.StateSet(rwBridge, "rl-"+rwRelayer, "1")
 	dep := detectedDeposit{BlockHeight: 101, TxIndex: 0, LogIndex: -1, TxHash: tx.Hash().Hex(), DepositType: "eth"}
 	payload := buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight)
@@ -203,5 +213,28 @@ func TestRealWasm_ETHDepositIsCredited(t *testing.T) {
 	user := ethCrypto.PubkeyToAddress(userKey.PublicKey)
 	if got := ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth"); got != "990000000000000000" {
 		t.Fatalf("depositor balance %q, want 990000000000000000 (1 ETH less the 1%% reserve tax)", got)
+	}
+}
+
+// A18: the bridge credits only deposits to its TSS key's address. An address
+// set as "vault" in state (what the removed setVault wrote) is not the vault:
+// the bridge cannot spend from it, so a deposit there must not be credited.
+func TestRealWasm_A18_DepositToAnAddressThatIsNotTheKeysIsRefused(t *testing.T) {
+	ct := rwContract(t)
+	rwVaultKey(t, ct)
+	notTheKey := common.HexToAddress("0x00000000000000000000000000000000000000fa")
+	ct.StateSet(rwBridge, "vault", strings.ToLower(notTheKey.Hex()))
+	ct.StateSet(rwBridge, "rl-"+rwRelayer, "1")
+	userKey, _ := ethCrypto.GenerateKey()
+	c := &fakeChain{}
+	tx := c.addTx(t, userKey, &types.DynamicFeeTx{
+		GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &notTheKey, Value: big.NewInt(1e18),
+	})
+	rwHeader(ct, c)
+	dep := detectedDeposit{BlockHeight: 101, TxIndex: 0, LogIndex: -1, TxHash: tx.Hash().Hex(), DepositType: "eth"}
+	r := rwCall(ct, rwRelayer, "map", buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight))
+	user := ethCrypto.PubkeyToAddress(userKey.PublicKey)
+	if r.Success || ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth") != "" {
+		t.Fatalf("a deposit to %s (not the TSS key's address) was credited: success=%v balance=%q", notTheKey.Hex(), r.Success, ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth"))
 	}
 }
