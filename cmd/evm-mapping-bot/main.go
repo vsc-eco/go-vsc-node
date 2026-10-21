@@ -207,15 +207,49 @@ type Checkpoint struct {
 	LastScannedBlock uint64            `json:"last_scanned_block"`
 	SentWithdrawals  map[string]SentTx `json:"sent_withdrawals"`
 	BlockRetries     map[uint64]int    `json:"block_retries,omitempty"`
-	Version          int               `json:"version"`
-	mu               sync.Mutex
+	// PendingMaps: map calls submitted to L2 whose on-chain result is not
+	// known yet, keyed by L2 tx id (B4).
+	PendingMaps map[string]PendingMap `json:"pending_maps,omitempty"`
+	// DeadLetters: deposits the bot will not map automatically, with the
+	// reason, kept for an operator (B4/B6).
+	DeadLetters []DeadLetter `json:"dead_letters,omitempty"`
+	Version     int          `json:"version"`
+	mu          sync.Mutex
+}
+
+// PendingMap is a submitted map call awaiting its on-chain result.
+type PendingMap struct {
+	Block       uint64 `json:"block"`
+	DepositTx   string `json:"deposit_tx"`
+	SubmittedAt int64  `json:"submitted_at"`
+}
+
+// DeadLetter is a deposit the bot gave up mapping, and why.
+type DeadLetter struct {
+	Block     uint64 `json:"block"`
+	DepositTx string `json:"deposit_tx"`
+	MapTxId   string `json:"map_tx_id,omitempty"`
+	Reason    string `json:"reason"`
+	At        int64  `json:"at"`
+}
+
+// deadLetter records a deposit the bot will not map automatically. Caller
+// must not hold cp.mu.
+func (cp *Checkpoint) deadLetter(block uint64, depositTx, mapTxId, reason string) {
+	slog.Error("deposit dead-lettered: it will not be mapped automatically",
+		"block", block, "tx", depositTx, "mapTx", mapTxId, "reason", reason)
+	cp.mu.Lock()
+	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix()})
+	cp.mu.Unlock()
 }
 
 const blockRetryAlertThreshold = 10
 
 // checkpointVersion is the on-disk schema version. Bumping the struct layout
 // MUST bump this so a future bot refuses to silently consume a stale layout.
-const checkpointVersion = 1
+// Version 2 added PendingMaps and DeadLetters; a version 1 file loads as is
+// (the new fields start empty), and a version 1 bot refuses a version 2 file.
+const checkpointVersion = 2
 
 type SentTx struct {
 	SignedTxHex string `json:"signed_tx_hex"`
@@ -228,6 +262,7 @@ func loadCheckpoint(path string) *Checkpoint {
 	cp := &Checkpoint{
 		SentWithdrawals: make(map[string]SentTx),
 		BlockRetries:    make(map[uint64]int),
+		PendingMaps:     make(map[string]PendingMap),
 		Version:         checkpointVersion,
 	}
 	data, err := os.ReadFile(path)
@@ -246,7 +281,7 @@ func loadCheckpoint(path string) *Checkpoint {
 	}
 	// MED-43: reject an unknown on-disk schema version rather than mis-reading
 	// fields written by an incompatible build.
-	if cp.Version != 0 && cp.Version != checkpointVersion {
+	if cp.Version != 0 && cp.Version != 1 && cp.Version != checkpointVersion {
 		slog.Error("checkpoint schema version mismatch — refusing to start",
 			"path", path, "fileVersion", cp.Version, "expected", checkpointVersion)
 		os.Exit(1)
@@ -257,6 +292,9 @@ func loadCheckpoint(path string) *Checkpoint {
 	}
 	if cp.BlockRetries == nil {
 		cp.BlockRetries = make(map[uint64]int)
+	}
+	if cp.PendingMaps == nil {
+		cp.PendingMaps = make(map[string]PendingMap)
 	}
 	return cp
 }
@@ -567,6 +605,34 @@ func (g *vscGraphQL) fetchContractState(ctx context.Context, contractID string, 
 	return result, nil
 }
 
+// fetchTransactionStatus returns an L2 transaction's status (UNCONFIRMED,
+// INCLUDED, CONFIRMED, FAILED), as the BTC mapping bot reads it.
+func (g *vscGraphQL) fetchTransactionStatus(ctx context.Context, txID string) (string, error) {
+	data, err := g.query(ctx,
+		`query FindTransaction($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				status
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byId": txID}},
+	)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Status string `json:"status"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("decode transaction: %w", err)
+	}
+	if len(parsed.FindTransaction) == 0 {
+		return "", fmt.Errorf("transaction %s not found", txID)
+	}
+	return parsed.FindTransaction[0].Status, nil
+}
+
 // fetchTssSignatures queries getTssRequests for completed signatures.
 func (g *vscGraphQL) fetchTssSignatures(ctx context.Context, keyID string, msgHexList []string) (map[string]TssSignature, error) {
 	data, err := g.query(ctx,
@@ -843,13 +909,13 @@ func (s *l2Submitter) callWithRetry(
 	action string,
 	payload json.RawMessage,
 	maxAttempts int,
-) error {
+) (string, error) {
 	var lastErr error
 	var rcOverride uint64 // 0 = use configured default
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		_, err := s.callContractL2(ctx, contractID, action, payload, rcOverride)
+		txID, err := s.callContractL2(ctx, contractID, action, payload, rcOverride)
 		if err == nil {
-			return nil
+			return txID, nil
 		}
 		// MED-98 (M33-M4): if the prior submission already consumed the nonce
 		// (it landed), do NOT keep retrying at a stale nonce — that would stall
@@ -858,7 +924,7 @@ func (s *l2Submitter) callWithRetry(
 		if errors.Is(err, errNonceConsumed) {
 			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
 				"action", action)
-			return nil
+			return "", nil
 		}
 		lastErr = err
 		slog.Warn("L2 submission failed",
@@ -874,7 +940,7 @@ func (s *l2Submitter) callWithRetry(
 		// withdrawals, risking a second L1 broadcast). Stop retrying on an
 		// ambiguous context-done outcome rather than risk a double-submit.
 		if ctx.Err() != nil {
-			return fmt.Errorf("L2 submission aborted (context done; prior attempt outcome ambiguous, not retrying to avoid double-submit): %w", lastErr)
+			return "", fmt.Errorf("L2 submission aborted (context done; prior attempt outcome ambiguous, not retrying to avoid double-submit): %w", lastErr)
 		}
 		// MED-99 (M33-M6) + MED-96 (M33-H1): on an RC-exhaustion error (a
 		// gas-bomb payload) OR an RC-contention rejection (a competing bot
@@ -901,11 +967,11 @@ func (s *l2Submitter) callWithRetry(
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return ctx.Err()
+				return "", ctx.Err()
 			}
 		}
 	}
-	return fmt.Errorf("all %d L2 submission attempts failed: %w", maxAttempts, lastErr)
+	return "", fmt.Errorf("all %d L2 submission attempts failed: %w", maxAttempts, lastErr)
 }
 
 // errNonceConsumed is a sentinel: the L2 account nonce used for a submission was
@@ -2313,11 +2379,26 @@ func runOnce(
 				blockFailed = true
 				continue
 			}
+			// B6: a map payload over the node's contract-payload cap can never
+			// be submitted, on any retry. Anyone can make one (a 1-wei deposit
+			// with ~2 KB of calldata), so holding the block for it would stop
+			// every later deposit. Dead-letter it and move on.
+			if len(payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+				cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("map payload is %d bytes, over the node's %d-byte contract-payload cap", len(payload), params.MAX_CONTRACT_PAYLOAD_SIZE))
+				continue
+			}
 
-			if err := submitter.callWithRetry(ctx, cfg.ContractID, "map", payload, 3); err != nil {
+			txID, err := submitter.callWithRetry(ctx, cfg.ContractID, "map", payload, 3)
+			if err != nil {
 				slog.Error("map submission failed — block checkpoint will NOT advance",
 					"block", h, "tx", dep.TxHash, "err", err)
 				blockFailed = true
+				continue
+			}
+			if txID != "" {
+				cp.mu.Lock()
+				cp.PendingMaps[txID] = PendingMap{Block: h, DepositTx: dep.TxHash, SubmittedAt: time.Now().Unix()}
+				cp.mu.Unlock()
 			}
 		}
 
@@ -2348,6 +2429,9 @@ func runOnce(
 		cp.LastScannedBlock = h
 		cp.mu.Unlock()
 	}
+
+	// B4: resolve the map calls submitted on earlier ticks.
+	resolvePendingMaps(ctx, gql, cp)
 
 	// ---------------------------------------------------------------
 	// STEP 5: Handle withdrawals
@@ -2639,7 +2723,7 @@ func handleConfirmations(
 		}
 
 		// Submit confirmSpend via L2 with retry.
-		if err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3); err != nil {
+		if _, err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3); err != nil {
 			slog.Error("confirmSpend submission failed", "txHash", stx.TxHash, "err", err)
 			// Check if nonce already advanced (another instance confirmed it).
 			// If so, clear the stale entry to stop perpetual retries.
@@ -2668,6 +2752,40 @@ func handleConfirmations(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// mapResultTimeout: a submitted map with no on-chain result after this long is
+// dead-lettered (the L2 pool dropped it, or the node lost it).
+var mapResultTimeout = 30 * time.Minute
+
+// resolvePendingMaps reads the on-chain result of every map submitted on an
+// earlier tick (B4: the bot used to advance past a deposit as soon as the L2
+// pool accepted its map, so a map that then failed on chain left the deposit
+// uncredited with nobody told). CONFIRMED drops the entry; FAILED, or no result
+// within mapResultTimeout, dead-letters the deposit.
+func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
+	cp.mu.Lock()
+	pending := make(map[string]PendingMap, len(cp.PendingMaps))
+	for id, pm := range cp.PendingMaps {
+		pending[id] = pm
+	}
+	cp.mu.Unlock()
+	for txID, pm := range pending {
+		status, err := gql.fetchTransactionStatus(ctx, txID)
+		switch {
+		case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
+			slog.Info("map confirmed on chain", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+		case err == nil && status == "FAILED":
+			cp.deadLetter(pm.Block, pm.DepositTx, txID, "map failed on chain")
+		case time.Since(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout:
+			cp.deadLetter(pm.Block, pm.DepositTx, txID, fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err))
+		default:
+			continue // not final yet
+		}
+		cp.mu.Lock()
+		delete(cp.PendingMaps, txID)
+		cp.mu.Unlock()
+	}
+}
 
 func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID string) (uint64, error) {
 	// M23-F5 (#31): the account-mapping contract no longer stores "h" in its own
