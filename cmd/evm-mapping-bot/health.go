@@ -14,10 +14,11 @@ import (
 	"time"
 )
 
-// B11 / B12 / C4: the bot had no alarm for running out of RC (every map and
-// confirm stops), for a drained gas reserve (withdrawals are refused), or for
-// a vault holding less ETH than the bridge has credited, and nothing to poll
-// for its health. botHealth checks those every healthCheckEvery, logs each
+// B11 / B12 / C4 / D7: the bot had no alarm for running out of RC (every map
+// and confirm stops), for a drained gas reserve (withdrawals are refused), for
+// a vault holding less ETH than the bridge has credited, or for the vault key
+// nearing expiry (it retires ~14 days after expiring and then can never sign
+// again; renewKey), and nothing to poll for its health. botHealth checks those every healthCheckEvery, logs each
 // problem as a warning, and, with HEALTH_ADDR set, serves them on GET /health
 // (200 ok, 503 unhealthy), as the BTC mapping bot's /health does.
 //
@@ -26,6 +27,10 @@ import (
 //	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.01 ETH)
 
 const healthCheckEvery = 5 * time.Minute
+
+// keyExpiryWarnEpochs is how early the bot warns that the vault key expires:
+// 28 epochs, 7 days at 6 hours an epoch.
+const keyExpiryWarnEpochs = 28
 
 type botHealth struct {
 	mu          sync.Mutex
@@ -82,7 +87,7 @@ func (h *botHealth) due(now time.Time) bool {
 // check reads the bot's RC, the bridge's gas reserve and ETH custody, and the
 // vault's L1 balance, and keeps (and logs) every alarm. A read that fails is
 // itself reported, never taken as healthy.
-func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID, did, vault string) {
+func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID, tssKeyID, did, vault string) {
 	var alarms []string
 	warn := func(msg string, args ...any) {
 		alarms = append(alarms, msg)
@@ -93,6 +98,14 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn("B11: cannot read the bot's RC", "err", err)
 	} else if known && rc < h.rcAlarm {
 		warn(fmt.Sprintf("B11: bot RC %d is below %d: maps and confirms will stop", rc, h.rcAlarm), "did", did)
+	}
+
+	if status, expiry, epoch, err := gql.fetchKeyExpiry(ctx, tssKeyID); err != nil {
+		warn("D7: cannot read the vault key's expiry", "err", err)
+	} else if status == "deprecated" {
+		warn("D7: the vault key has expired: run renewKey now; it retires ~14 days after expiring and then can never sign", "key", tssKeyID)
+	} else if status == "active" && expiry > 0 && expiry <= epoch+keyExpiryWarnEpochs {
+		warn(fmt.Sprintf("D7: the vault key expires in %d epochs (~%dh): run renewKey", expiry-min(expiry, epoch), 6*(expiry-min(expiry, epoch))), "key", tssKeyID)
 	}
 
 	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "n"})
@@ -234,4 +247,29 @@ func (e *ethRPC) getBalance(addr string) (*big.Int, error) {
 		return nil, fmt.Errorf("eth_getBalance: %q is not a hex quantity", hexBal)
 	}
 	return bal, nil
+}
+
+// fetchKeyExpiry returns the TSS key's status and expiry epoch, and the
+// network's current epoch.
+func (g *vscGraphQL) fetchKeyExpiry(ctx context.Context, keyID string) (status string, expiry, epoch uint64, err error) {
+	data, err := g.query(ctx, `query($id: String!){ getTssKey(keyId: $id){ status expiry_epoch } localNodeInfo { epoch } }`, map[string]interface{}{"id": keyID})
+	if err != nil {
+		return "", 0, 0, err
+	}
+	var parsed struct {
+		GetTssKey *struct {
+			Status      string `json:"status"`
+			ExpiryEpoch uint64 `json:"expiry_epoch"`
+		} `json:"getTssKey"`
+		LocalNodeInfo *struct {
+			Epoch uint64 `json:"epoch"`
+		} `json:"localNodeInfo"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", 0, 0, err
+	}
+	if parsed.GetTssKey == nil || parsed.LocalNodeInfo == nil {
+		return "", 0, 0, fmt.Errorf("no key %s or node info", keyID)
+	}
+	return parsed.GetTssKey.Status, parsed.GetTssKey.ExpiryEpoch, parsed.LocalNodeInfo.Epoch, nil
 }

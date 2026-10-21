@@ -139,6 +139,8 @@ type fakeL2 struct {
 	nonce     uint64
 	keys      map[string][2]string // TSS key id -> {status, public key}
 	rc        map[string]int64     // getAccountRC by account (absent: no record)
+	expiry    map[string]uint64    // TSS key id -> expiry_epoch
+	epoch     uint64               // localNodeInfo.epoch
 }
 
 func newFakeL2() *fakeL2 {
@@ -185,10 +187,15 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 			data = map[string]any{"getTssRequests": reqs}
 		case strings.Contains(req.Query, "getTssKey"):
 			var key any
-			if k, ok := f.keys[fmt.Sprint(req.Variables["id"])]; ok {
-				key = map[string]string{"status": k[0], "public_key": k[1]}
+			id := fmt.Sprint(req.Variables["id"])
+			if k, ok := f.keys[id]; ok {
+				key = map[string]any{"status": k[0], "public_key": k[1], "expiry_epoch": f.expiry[id]}
 			}
-			data = map[string]any{"getTssKey": key}
+			out := map[string]any{"getTssKey": key}
+			if strings.Contains(req.Query, "localNodeInfo") {
+				out["localNodeInfo"] = map[string]any{"epoch": f.epoch}
+			}
+			data = out
 		case strings.Contains(req.Query, "getAccountRC"):
 			var rec any
 			if v, ok := f.rc[fmt.Sprint(req.Variables["a"])]; ok {

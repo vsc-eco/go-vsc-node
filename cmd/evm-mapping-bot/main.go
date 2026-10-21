@@ -2309,7 +2309,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		health.recordTick(time.Now(), err, cp)
 		if health.due(time.Now()) {
 			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
-			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, did.String(), cfg.VaultAddress)
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, tssKeyID, did.String(), cfg.VaultAddress)
 			hcancel()
 		}
 

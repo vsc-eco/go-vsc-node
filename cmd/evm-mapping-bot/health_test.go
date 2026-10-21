@@ -26,6 +26,9 @@ func healthWorld(t *testing.T, vaultETH float64) (*fakeL1, *fakeL2, *vscGraphQL,
 	l1.balances = map[string]*big.Int{healthVault: eth(vaultETH)}
 	l2 := newFakeL2()
 	l2.rc = map[string]int64{"did:bot": 100_000}
+	l2.keys["vsc1bridge-primary"] = [2]string{"active", tssPubG}
+	l2.expiry = map[string]uint64{"vsc1bridge-primary": 365}
+	l2.epoch = 100
 	l2.set("vsc1bridge", "gr", eth(0.05).String())
 	l2.set("vsc1bridge", "s-eth", eth(10).String()+"|"+eth(10).String()+"|0|7")
 	return l1, l2, l2.gql(t), l1.rpc(t)
@@ -36,7 +39,7 @@ func checked(t *testing.T, gql *vscGraphQL, rpc *ethRPC, cp *Checkpoint) healthR
 	h := newBotHealth(12 * time.Second)
 	now := time.Now()
 	h.recordTick(now, nil, cp)
-	h.check(context.Background(), now, gql, rpc, "vsc1bridge", "did:bot", healthVault)
+	h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault)
 	return h.report(now)
 }
 
@@ -98,6 +101,33 @@ func TestB11_HealthAlarms(t *testing.T) {
 	l2.set("vsc1bridge", "d-3", `{"nonce":3,"amount":500000000000000000,"asset":"usdc","unsigned_tx_hex":"02"}`)
 	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4") {
 		t.Fatalf("an ERC-20 withdrawal hid an ETH shortfall: %+v", r)
+	}
+
+	// D7: the key's expiry. 28 epochs out is a warning, 29 is not; an expired
+	// (deprecated) key is; no expiry (0) never is.
+	for _, tc := range []struct {
+		status        string
+		expiry, epoch uint64
+		want          string
+	}{
+		{"active", 365, 336, ""},
+		{"active", 365, 337, "expires in 28 epochs (~168h)"},
+		{"active", 365, 400, "expires in 0 epochs"},
+		{"deprecated", 365, 400, "has expired"},
+		{"active", 0, 9999, ""},
+	} {
+		_, l2, gql, rpc := healthWorld(t, 10)
+		l2.keys["vsc1bridge-primary"] = [2]string{tc.status, tssPubG}
+		l2.expiry["vsc1bridge-primary"], l2.epoch = tc.expiry, tc.epoch
+		r := checked(t, gql, rpc, emptyCP())
+		if got := hasIssue(r, "D7"); got != (tc.want != "") || (tc.want != "" && !hasIssue(r, tc.want)) {
+			t.Errorf("key %s expiry %d at epoch %d: issues %v, want %q", tc.status, tc.expiry, tc.epoch, r.Issues, tc.want)
+		}
+	}
+	_, l2, gql, rpc = healthWorld(t, 10)
+	delete(l2.keys, "vsc1bridge-primary")
+	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "D7: cannot read") {
+		t.Fatalf("unreadable key: %+v", r)
 	}
 
 	// A read that fails is an issue, not a pass.
