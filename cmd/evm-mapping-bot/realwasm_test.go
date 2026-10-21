@@ -85,8 +85,11 @@ func rwCall(ct *test_utils.ContractTest, caller, action string, payload []byte) 
 	})
 }
 
+// rwDID is the identity the bridge credits for an L1 address: the node's
+// did:pkh:eip155:1: namespace with the EIP-55 address, on every L1 chain
+// (account-mapping C6/E21).
 func rwDID(a common.Address) string {
-	return "did:pkh:eip155:11155111:" + strings.ToLower(a.Hex())
+	return "did:pkh:eip155:1:" + a.Hex()
 }
 
 // confirmSpend for the bot-built payload closes the withdrawal: both proofs,
