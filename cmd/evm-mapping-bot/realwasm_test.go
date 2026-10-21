@@ -31,6 +31,7 @@ import (
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	stateEngine "vsc-node/modules/state-processing"
 
@@ -309,5 +310,48 @@ func TestRealWasm_D3_StuckWithdrawalIsRolledBack(t *testing.T) {
 	}
 	if ct.StateGet(rwBridge, "n") != "1" || ct.StateGet(rwBridge, "d-0") != "" {
 		t.Fatalf("queue not advanced: n=%q", ct.StateGet(rwBridge, "n"))
+	}
+}
+
+// A12: an unmap emits one pipe-delimited "unmap" event with the debit, the
+// value sent and the L1 fee (the pre-fix bridge emitted nothing).
+func TestRealWasm_A12_UnmapLogsTheWithdrawal(t *testing.T) {
+	ct := rwContract(t)
+	_, vault := rwVaultKey(t, ct)
+	userKey, _ := ethCrypto.GenerateKey()
+	c := &fakeChain{}
+	six := new(big.Int).Mul(big.NewInt(6), big.NewInt(1e18))
+	tx := c.addTx(t, userKey, &types.DynamicFeeTx{
+		GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: six,
+	})
+	rwHeader(ct, c)
+	ct.StateSet(rwBridge, "rl-"+rwRelayer, "1")
+	dep := detectedDeposit{BlockHeight: 101, TxIndex: 0, LogIndex: -1, TxHash: tx.Hash().Hex(), DepositType: "eth"}
+	if r := rwCall(ct, rwRelayer, "map", buildMapPayloadFromRPC(context.Background(), c.rpc(t), dep, dep.BlockHeight)); !r.Success {
+		t.Fatalf("map failed: %s: %s", r.Err, r.ErrMsg)
+	}
+	// A fresh header to price the withdrawal from (LOW 10).
+	rwHeaderAt(ct, 102, &fakeChain{}, uint64(time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC).Unix()))
+	user := rwDID(ethCrypto.PubkeyToAddress(userKey.PublicKey))
+	ct.Deposit(user, 1_000_000, ledgerDb.AssetHbd) // RC for an EVM identity
+	r := rwCall(ct, user, "unmapETH", []byte(`{"to":"0x00000000000000000000000000000000000000e2","amount":"1000000000000000000","asset":"eth"}`))
+	if !r.Success {
+		t.Fatalf("unmapETH failed: %s: %s", r.Err, r.ErrMsg)
+	}
+	var lines []string
+	for _, out := range r.Logs {
+		for _, l := range out.Logs {
+			if strings.HasPrefix(l, "unmap|") {
+				lines = append(lines, l)
+			}
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("unmap logs %q, want exactly one", lines)
+	}
+	for _, want := range []string{"unmap|n=0|", "|f=" + user + "|", "|t=0x00000000000000000000000000000000000000e2|", "|a=eth|", "|s=1000000000000000000|", "|gs=user"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("log %q lacks %q", lines[0], want)
+		}
 	}
 }
