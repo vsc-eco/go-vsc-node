@@ -69,7 +69,7 @@ func main() {
 	cfg := parseConfig()
 
 	// Initialize L2 signing key
-	ethKey, did := initEthKey()
+	ethKey, did := initEthKey(cfg)
 
 	slog.Info("evm-mapping-bot starting",
 		"rpc", cfg.EthRPC,
@@ -106,7 +106,7 @@ func parseConfig() EVMBotConfig {
 		PollInterval:   12 * time.Second,
 		Network:        envOrDefault("NETWORK", "mainnet"),
 		Tokens:         map[string]string{},
-		GraphQLURLs:    strings.Split(envOrDefault("GRAPHQL_URLS", "https://api.vsc.eco/api/v1/graphql"), ","),
+		GraphQLURLs:    strings.Split(os.Getenv("GRAPHQL_URLS"), ","),
 		CheckpointFile: envOrDefault("CHECKPOINT_FILE", "evm-bot-checkpoint.json"),
 		NetID:          envOrDefault("NET_ID", "vsc-mainnet"),
 		RcLimit:        rcLimit,
@@ -118,6 +118,12 @@ func parseConfig() EVMBotConfig {
 
 	if cfg.VaultAddress == "" || cfg.ContractID == "" {
 		slog.Error("VAULT_ADDRESS and CONTRACT_ID must be set")
+		os.Exit(1)
+	}
+	// B17: the old default, api.vsc.eco, has been dead since 2026-09-17, so a
+	// bot started without GRAPHQL_URLS silently did nothing. Require it.
+	if os.Getenv("GRAPHQL_URLS") == "" {
+		slog.Error("GRAPHQL_URLS must be set (comma-separated Magi GraphQL endpoints)")
 		os.Exit(1)
 	}
 
@@ -158,35 +164,44 @@ func isValidEthAddress(s string) bool {
 	return !allZero
 }
 
-// initEthKey loads or generates the secp256k1 private key for L2 signing.
-func initEthKey() (*ecdsa.PrivateKey, dids.EthDID) {
-	keyHex := os.Getenv("BOT_ETH_PRIVKEY")
+// initEthKey loads or generates the secp256k1 private key for L2 signing:
+// BOT_ETH_PRIVKEY if set, else the key file (BOT_ETH_KEY_FILE, default the
+// checkpoint path + ".key"), else a new key written to that file (0600).
+//
+// LOW 71: a generated key used to be written to the log in hex. The key holds
+// the bot's HBD (its RC) and its relayer registration, and logs are copied
+// around; it is now kept only in the key file and never logged.
+func initEthKey(cfg EVMBotConfig) (*ecdsa.PrivateKey, dids.EthDID) {
+	keyHex, source := os.Getenv("BOT_ETH_PRIVKEY"), "BOT_ETH_PRIVKEY"
+	keyFile := envOrDefault("BOT_ETH_KEY_FILE", cfg.CheckpointFile+".key")
+	if keyHex == "" {
+		if b, err := os.ReadFile(keyFile); err == nil {
+			keyHex, source = strings.TrimSpace(string(b)), keyFile
+		}
+	}
 	if keyHex != "" {
 		priv, err := ethCrypto.HexToECDSA(keyHex)
 		if err != nil {
-			slog.Error("invalid BOT_ETH_PRIVKEY", "err", err)
+			slog.Error("invalid L2 signing key", "source", source, "err", err)
 			os.Exit(1)
 		}
-		addr := ethCrypto.PubkeyToAddress(priv.PublicKey).Hex()
-		did := dids.NewEthDID(addr)
-		slog.Info("loaded L2 signing key from BOT_ETH_PRIVKEY", "did", did.String())
+		did := dids.NewEthDID(ethCrypto.PubkeyToAddress(priv.PublicKey).Hex())
+		slog.Info("loaded L2 signing key", "source", source, "did", did.String())
 		return priv, did
 	}
 
-	// Auto-generate
 	priv, err := ethCrypto.GenerateKey()
 	if err != nil {
 		slog.Error("failed to generate signing key", "err", err)
 		os.Exit(1)
 	}
-	addr := ethCrypto.PubkeyToAddress(priv.PublicKey).Hex()
-	did := dids.NewEthDID(addr)
-	privHex := hex.EncodeToString(ethCrypto.FromECDSA(priv))
-	slog.Warn("generated new L2 signing key — fund this DID with HBD before the bot can submit transactions",
-		"did", did.String(),
-		"privkey_hex", privHex,
-	)
-	slog.Warn("set BOT_ETH_PRIVKEY to persist this key across restarts")
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(ethCrypto.FromECDSA(priv))), 0600); err != nil {
+		slog.Error("cannot save the generated L2 signing key; set BOT_ETH_PRIVKEY or a writable BOT_ETH_KEY_FILE", "path", keyFile, "err", err)
+		os.Exit(1)
+	}
+	did := dids.NewEthDID(ethCrypto.PubkeyToAddress(priv.PublicKey).Hex())
+	slog.Warn("generated a new L2 signing key: fund this DID with HBD and register it as a relayer before the bot can map deposits",
+		"did", did.String(), "keyFile", keyFile)
 	return priv, did
 }
 
@@ -269,6 +284,22 @@ type SentTx struct {
 	ConfirmTxId     string `json:"confirm_tx_id,omitempty"`
 	ConfirmFailures int    `json:"confirm_failures,omitempty"`
 	NextConfirmAt   int64  `json:"next_confirm_at,omitempty"`
+}
+
+// checkRelayerRegistered logs at ERROR when the bot's DID is not a registered
+// relayer (B10): the contract refuses ETH deposit maps from any other caller, so
+// every ETH deposit would fail on chain and be dead-lettered. Non-fatal: ERC-20
+// maps and withdrawals do not need the registration, and it can be added later.
+func checkRelayerRegistered(ctx context.Context, gql *vscGraphQL, contractID, did string) {
+	state, err := gql.fetchContractState(ctx, contractID, []string{"rl-" + did})
+	if err != nil {
+		slog.Warn("could not check the relayer registration", "did", did, "err", err)
+		return
+	}
+	if state["rl-"+did] != "1" {
+		slog.Error("this bot's DID is not a registered relayer: the contract refuses its ETH deposit maps until registerRelayer runs",
+			"did", did, "contract", contractID)
+	}
 }
 
 // rebroadcastInterval: an unmined withdrawal tx is re-posted this often (B8).
@@ -2155,6 +2186,8 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 	// EVM contract creates key with ID "primary" (BTC contract uses "main")
 	tssKeyID := cfg.ContractID + "-primary"
+
+	checkRelayerRegistered(ctx, gql, cfg.ContractID, did.String())
 
 	// MED-4 (CHAIN-V2-14): cross-validate that the TSS key's derived ETH
 	// address matches the configured vault. A mismatch means every withdrawal
