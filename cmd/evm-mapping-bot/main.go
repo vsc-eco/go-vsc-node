@@ -256,6 +256,37 @@ type SentTx struct {
 	TxHash      string `json:"tx_hash"`
 	Nonce       uint64 `json:"nonce"`
 	SentAt      int64  `json:"sent_at"`
+	// UnsignedTxHex is the PendingSpend tx this broadcast signed; a different
+	// one at the same nonce means an admin replaceWithdrawal re-signed it (B1).
+	UnsignedTxHex string `json:"unsigned_tx_hex,omitempty"`
+	// PrevTxHashes are earlier broadcasts at this nonce (replaced ones): any of
+	// them may be the one that mines.
+	PrevTxHashes []string `json:"prev_tx_hashes,omitempty"`
+	// LastBroadcastAt drives re-posting an unmined tx (B8).
+	LastBroadcastAt int64 `json:"last_broadcast_at,omitempty"`
+	// ConfirmTxId is the submitted confirmSpend awaiting its on-chain result;
+	// ConfirmFailures / NextConfirmAt back off after it fails (B4, B16).
+	ConfirmTxId     string `json:"confirm_tx_id,omitempty"`
+	ConfirmFailures int    `json:"confirm_failures,omitempty"`
+	NextConfirmAt   int64  `json:"next_confirm_at,omitempty"`
+}
+
+// rebroadcastInterval: an unmined withdrawal tx is re-posted this often (B8).
+var rebroadcastInterval = 5 * time.Minute
+
+// confirmBackoffBase: after the nth on-chain failure of a confirmSpend the bot
+// waits confirmBackoffBase * 2^(n-1), at most an hour, before re-submitting.
+var confirmBackoffBase = 5 * time.Minute
+
+func confirmBackoff(failures int) time.Duration {
+	d := confirmBackoffBase
+	for i := 1; i < failures && d < time.Hour; i++ {
+		d *= 2
+	}
+	if d > time.Hour {
+		d = time.Hour
+	}
+	return d
 }
 
 func loadCheckpoint(path string) *Checkpoint {
@@ -2463,12 +2494,19 @@ func handleWithdrawals(
 	confirmedNonce, _ := strconv.ParseUint(state["n"], 10, 64)
 	pendingNonce, _ := strconv.ParseUint(state["np"], 10, 64)
 
-	if pendingNonce <= confirmedNonce {
-		return
-	}
-
+	// LOW 17: drop entries for nonces the contract has already closed (a
+	// withdrawal settled by another bot, or cleared by an admin).
 	nonceKey := strconv.FormatUint(confirmedNonce, 10)
-	if _, alreadySent := cp.SentWithdrawals[nonceKey]; alreadySent {
+	cp.mu.Lock()
+	for k, stx := range cp.SentWithdrawals {
+		if stx.Nonce < confirmedNonce {
+			delete(cp.SentWithdrawals, k)
+		}
+	}
+	existing, alreadySent := cp.SentWithdrawals[nonceKey]
+	cp.mu.Unlock()
+
+	if pendingNonce <= confirmedNonce {
 		return
 	}
 
@@ -2489,6 +2527,22 @@ func handleWithdrawals(
 	if ps == nil {
 		slog.Error("failed to parse pending spend", "nonce", confirmedNonce, "raw", spendData)
 		return
+	}
+
+	if alreadySent {
+		if existing.UnsignedTxHex == "" { // a checkpoint v1 entry: it signed the queued tx
+			existing.UnsignedTxHex = ps.UnsignedTxHex
+		}
+		if ps.UnsignedTxHex == existing.UnsignedTxHex {
+			rebroadcastIfUnmined(rpc, cp, nonceKey, existing)
+			return
+		}
+		// B1: an admin replaceWithdrawal re-signed this nonce (a higher fee for
+		// a tx stuck underpriced). The bot used to keep waiting on the old tx
+		// forever. Broadcast the replacement; the old hash stays tracked, since
+		// whichever of the two mines settles the nonce.
+		slog.Info("withdrawal re-signed by replaceWithdrawal, broadcasting the replacement",
+			"nonce", confirmedNonce, "oldTxHash", existing.TxHash)
 	}
 
 	sighash, err := computeSighash(ps.UnsignedTxHex)
@@ -2584,14 +2638,12 @@ func handleWithdrawals(
 				}
 				slog.Info("withdrawal TX already mined on chain, recovering",
 					"txHash", candidateHash, "status", receipt.Status, "nonce", confirmedNonce)
-				cp.mu.Lock()
-				cp.SentWithdrawals[nonceKey] = SentTx{
+				recordSent(cp, nonceKey, SentTx{
 					SignedTxHex: candidate,
 					TxHash:      candidateHash,
 					Nonce:       confirmedNonce,
 					SentAt:      time.Now().Unix(),
-				}
-				cp.mu.Unlock()
+				}, ps.UnsignedTxHex, existing, alreadySent)
 				return
 			}
 			return
@@ -2606,13 +2658,51 @@ func handleWithdrawals(
 		"to", ps.To,
 	)
 
-	cp.mu.Lock()
-	cp.SentWithdrawals[nonceKey] = SentTx{
+	recordSent(cp, nonceKey, SentTx{
 		SignedTxHex: signedTxHex,
 		TxHash:      txHash,
 		Nonce:       confirmedNonce,
 		SentAt:      time.Now().Unix(),
+	}, ps.UnsignedTxHex, existing, alreadySent)
+}
+
+// recordSent stores the broadcast at nonceKey. A replacement keeps the earlier
+// hashes at this nonce (PrevTxHashes) and the original send time.
+func recordSent(cp *Checkpoint, nonceKey string, stx SentTx, unsignedTxHex string, prev SentTx, replacing bool) {
+	stx.UnsignedTxHex = unsignedTxHex
+	stx.LastBroadcastAt = time.Now().Unix()
+	if replacing {
+		stx.PrevTxHashes = append(append([]string{}, prev.PrevTxHashes...), prev.TxHash)
+		stx.SentAt = prev.SentAt
 	}
+	cp.mu.Lock()
+	cp.SentWithdrawals[nonceKey] = stx
+	cp.mu.Unlock()
+}
+
+// rebroadcastIfUnmined re-posts an unmined withdrawal tx every
+// rebroadcastInterval. B8: an L1 tx can leave every mempool (its fee cap fell
+// below a rising base fee, the RPC node restarted), and the bot used to poll its
+// receipt forever; with one withdrawal queue that froze every withdrawal.
+// Re-posting the same signed tx is harmless: same hash, and a node that still
+// holds it answers "already known".
+func rebroadcastIfUnmined(rpc *ethRPC, cp *Checkpoint, nonceKey string, stx SentTx) {
+	if time.Since(time.Unix(stx.LastBroadcastAt, 0)) < rebroadcastInterval {
+		return
+	}
+	for _, h := range append([]string{stx.TxHash}, stx.PrevTxHashes...) {
+		if r, err := rpc.getReceipt(h); err == nil && r != nil {
+			return // mined: handleConfirmations takes it from here
+		}
+	}
+	if _, err := rpc.broadcastTx(stx.SignedTxHex); err != nil {
+		slog.Warn("re-posting the unmined withdrawal tx", "nonce", stx.Nonce, "txHash", stx.TxHash, "err", err)
+	} else {
+		slog.Info("withdrawal tx not mined yet, re-posted", "nonce", stx.Nonce, "txHash", stx.TxHash)
+	}
+	stx.LastBroadcastAt = time.Now().Unix()
+	cp.mu.Lock()
+	cp.SentWithdrawals[nonceKey] = stx
 	cp.mu.Unlock()
 }
 
@@ -2635,6 +2725,11 @@ func handleConfirmations(
 		return
 	}
 
+	store := func(nonceKey string, stx SentTx) {
+		cp.mu.Lock()
+		cp.SentWithdrawals[nonceKey] = stx
+		cp.mu.Unlock()
+	}
 	for nonceKey, stx := range sent {
 		select {
 		case <-ctx.Done():
@@ -2642,8 +2737,45 @@ func handleConfirmations(
 		default:
 		}
 
-		receiptData, err := rpc.getReceipt(stx.TxHash)
-		if err != nil {
+		// B4 / B16: a submitted confirmSpend is settled by its on-chain result.
+		// The bot used to drop the withdrawal as soon as the L2 pool took the
+		// call; one that then failed on chain was re-found and re-sent every
+		// couple of ticks, burning RC. Now: CONFIRMED closes it, FAILED waits a
+		// backoff before re-sending, anything else is still pending.
+		if stx.ConfirmTxId != "" {
+			status, err := gql.fetchTransactionStatus(ctx, stx.ConfirmTxId)
+			switch {
+			case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
+				slog.Info("confirmSpend confirmed on chain", "nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId)
+				cp.mu.Lock()
+				delete(cp.SentWithdrawals, nonceKey)
+				cp.mu.Unlock()
+			case err == nil && status == "FAILED":
+				stx.ConfirmFailures++
+				wait := confirmBackoff(stx.ConfirmFailures)
+				slog.Error("confirmSpend failed on chain, re-sending after a backoff",
+					"nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId, "failures", stx.ConfirmFailures, "backoff", wait)
+				stx.ConfirmTxId = ""
+				stx.NextConfirmAt = time.Now().Add(wait).Unix()
+				store(nonceKey, stx)
+			}
+			continue
+		}
+		if stx.NextConfirmAt != 0 && time.Now().Unix() < stx.NextConfirmAt {
+			continue
+		}
+
+		// The tx that mined: this broadcast, or an earlier one at the same
+		// nonce that a replacement superseded (B1).
+		var receiptData json.RawMessage
+		var err error
+		for _, h := range append([]string{stx.TxHash}, stx.PrevTxHashes...) {
+			if receiptData, err = rpc.getReceipt(h); err == nil && receiptData != nil {
+				stx.TxHash = h
+				break
+			}
+		}
+		if err != nil || receiptData == nil {
 			slog.Debug("receipt not available yet", "txHash", stx.TxHash, "err", err)
 			continue
 		}
@@ -2723,7 +2855,8 @@ func handleConfirmations(
 		}
 
 		// Submit confirmSpend via L2 with retry.
-		if _, err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3); err != nil {
+		confirmTxID, err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3)
+		if err != nil {
 			slog.Error("confirmSpend submission failed", "txHash", stx.TxHash, "err", err)
 			// Check if nonce already advanced (another instance confirmed it).
 			// If so, clear the stale entry to stop perpetual retries.
@@ -2741,11 +2874,14 @@ func handleConfirmations(
 			continue
 		}
 
-		cp.mu.Lock()
-		delete(cp.SentWithdrawals, nonceKey)
-		cp.mu.Unlock()
-
-		slog.Info("confirmSpend submitted", "txHash", stx.TxHash, "nonce", stx.Nonce)
+		if confirmTxID == "" {
+			// The L2 nonce was already consumed: an earlier submission landed.
+			// The entry goes once the contract's confirmed nonce passes it.
+			continue
+		}
+		stx.ConfirmTxId = confirmTxID
+		store(nonceKey, stx)
+		slog.Info("confirmSpend submitted", "txHash", stx.TxHash, "nonce", stx.Nonce, "l2Tx", confirmTxID)
 	}
 }
 
