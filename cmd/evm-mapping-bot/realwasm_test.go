@@ -24,8 +24,10 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
@@ -35,6 +37,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	gethrlp "github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
@@ -72,19 +75,23 @@ func rwVaultKey(t *testing.T, ct *test_utils.ContractTest) (*ecdsa.PrivateKey, c
 
 // rwHeader stores block 101 in the verifier's v1 header encoding
 // (evm-mapping-contract contract/blocklist/blocks.go Serialize).
-func rwHeader(ct *test_utils.ContractTest, c *fakeChain) {
+func rwHeader(ct *test_utils.ContractTest, c *fakeChain) { rwHeaderAt(ct, 101, c, 1_700_000_000) }
+
+// rwHeaderAt stores block n with c's roots and the given timestamp as the
+// verifier's newest header.
+func rwHeaderAt(ct *test_utils.ContractTest, n uint64, c *fakeChain, timestamp uint64) {
 	b := []byte{0x01}
 	u := func(v uint64) { b = binary.BigEndian.AppendUint64(b, v) }
-	u(101)
+	u(n)
 	b = append(b, make([]byte, 32)...) // state root (unused here)
 	b = append(b, c.txRoot().Bytes()...)
 	b = append(b, c.receiptRoot().Bytes()...)
 	u(1e9)
 	u(30_000_000)
-	u(1_700_000_000)
+	u(timestamp)
 	u(wireChainID)
-	ct.StateSet(rwVerifier, "b-101", string(b))
-	ct.StateSet(rwVerifier, "h", "101")
+	ct.StateSet(rwVerifier, "b-"+strconv.FormatUint(n, 10), string(b))
+	ct.StateSet(rwVerifier, "h", strconv.FormatUint(n, 10))
 }
 
 func rwCall(ct *test_utils.ContractTest, caller, action string, payload []byte) test_utils.ContractTestCallResult {
@@ -236,5 +243,71 @@ func TestRealWasm_A18_DepositToAnAddressThatIsNotTheKeysIsRefused(t *testing.T) 
 	user := ethCrypto.PubkeyToAddress(userKey.PublicKey)
 	if r.Success || ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth") != "" {
 		t.Fatalf("a deposit to %s (not the TSS key's address) was credited: success=%v balance=%q", notTheKey.Hex(), r.Success, ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth"))
+	}
+}
+
+// D3: a withdrawal that never mines blocked the single queue for good (every
+// escape needed proof that it mined and reverted). rollWithdrawal re-signs the
+// nonce as a 0-value vault self-transfer once the verified L1 chain is 1200
+// blocks past it; when that mines, confirmSpend refunds the withdrawer.
+func TestRealWasm_D3_StuckWithdrawalIsRolledBack(t *testing.T) {
+	ct := rwContract(t)
+	vaultKey, vault := rwVaultKey(t, ct)
+	to := common.HexToAddress("0x00000000000000000000000000000000000000e2")
+	stored, _ := json.Marshal(contractPendingSpend{
+		Amount: big.NewInt(1e18), From: "hive:alice", To: to.Hex(), Asset: "eth", UnsignedTxHex: "02ee",
+		BlockHeight: 100, VaultAtQueue: vault.Hex(),
+	})
+	ct.StateSet(rwBridge, "d-0", string(stored))
+	ct.StateSet(rwBridge, "np", "1")
+	now := uint64(time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC).Unix()) // rwCall's block time
+
+	rwHeaderAt(ct, 1299, &fakeChain{}, now)
+	if r := rwCall(ct, "hive:carol", "rollWithdrawal", []byte(`{"nonce":0}`)); r.Success {
+		t.Fatal("rolled 1199 L1 blocks after the withdrawal was queued, want refused")
+	}
+	rwHeaderAt(ct, 1300, &fakeChain{}, now)
+	if r := rwCall(ct, "hive:carol", "rollWithdrawal", []byte(`{"nonce":0}`)); !r.Success {
+		t.Fatalf("rollWithdrawal: %s: %s", r.Err, r.ErrMsg)
+	}
+	ps := parsePendingSpend(0, ct.StateGet(rwBridge, "d-0"))
+	if ps == nil {
+		t.Fatal("pending spend gone after the roll")
+	}
+
+	// Sign the roll as the TSS group would and mine it.
+	raw, _ := hex.DecodeString(ps.UnsignedTxHex)
+	var f struct {
+		ChainID    *big.Int
+		Nonce      uint64
+		GasTipCap  *big.Int
+		GasFeeCap  *big.Int
+		Gas        uint64
+		To         *common.Address
+		Value      *big.Int
+		Data       []byte
+		AccessList types.AccessList
+	}
+	if len(raw) == 0 || raw[0] != 2 || gethrlp.DecodeBytes(raw[1:], &f) != nil {
+		t.Fatalf("roll tx %q is not an unsigned EIP-1559 tx", ps.UnsignedTxHex)
+	}
+	if f.Nonce != 0 || f.To == nil || *f.To != vault || f.Value.Sign() != 0 {
+		t.Fatalf("roll tx %+v, want a 0-value self-transfer from the vault at nonce 0", f)
+	}
+	c := &fakeChain{}
+	rolled := c.addTx(t, vaultKey, &types.DynamicFeeTx{Nonce: f.Nonce, GasTipCap: f.GasTipCap, GasFeeCap: f.GasFeeCap, Gas: f.Gas, To: f.To, Value: f.Value})
+	rwHeaderAt(ct, 1301, c, now)
+	payload, err := buildConfirmSpendPayload(c.rpc(t), rolled.Hash().Hex(), 1301, 0, ps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rwCall(ct, rwRelayer, "confirmSpend", payload); !r.Success {
+		t.Fatalf("confirmSpend for the mined roll: %s: %s", r.Err, r.ErrMsg)
+	}
+	if got := ct.StateGet(rwBridge, "a-hive:alice-eth"); got != "1000000000000000000" {
+		t.Fatalf("withdrawer balance %q, want the 1 ETH back", got)
+	}
+	if ct.StateGet(rwBridge, "n") != "1" || ct.StateGet(rwBridge, "d-0") != "" {
+		t.Fatalf("queue not advanced: n=%q", ct.StateGet(rwBridge, "n"))
 	}
 }
