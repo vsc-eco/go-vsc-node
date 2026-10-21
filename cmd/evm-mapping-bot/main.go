@@ -2596,7 +2596,7 @@ func handleWithdrawals(
 		// a tx stuck underpriced). The bot used to keep waiting on the old tx
 		// forever. Broadcast the replacement; the old hash stays tracked, since
 		// whichever of the two mines settles the nonce.
-		slog.Info("withdrawal re-signed by replaceWithdrawal, broadcasting the replacement",
+		slog.Info("withdrawal re-signed (replaceWithdrawal or rollWithdrawal), broadcasting the new tx",
 			"nonce", confirmedNonce, "oldTxHash", existing.TxHash)
 	}
 
