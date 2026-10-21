@@ -24,7 +24,8 @@ import (
 //
 //	HEALTH_ADDR            listen address, e.g. 127.0.0.1:8091 (unset: no endpoint)
 //	RC_ALARM               warn below this many RC on the bot's L2 identity (default 20000)
-//	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.01 ETH)
+//	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH: twice the
+//	                       contract's MinGasReserve, below which every unmap is refused)
 
 const healthCheckEvery = 5 * time.Minute
 
@@ -49,7 +50,7 @@ type botHealth struct {
 }
 
 func newBotHealth(poll time.Duration) *botHealth {
-	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e16), staleAfter: 5 * poll}
+	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll}
 	if v, err := strconv.ParseInt(os.Getenv("RC_ALARM"), 10, 64); err == nil {
 		h.rcAlarm = v
 	}
@@ -117,7 +118,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 			reserve = new(big.Int)
 		}
 		if reserve.Cmp(h.reserveWarn) < 0 {
-			warn(fmt.Sprintf("B12: gas reserve %s wei is below %s: withdrawals need it for L1 gas", reserve, h.reserveWarn))
+			warn(fmt.Sprintf("B12: gas reserve %s wei is below %s: withdrawals are refused below 0.05 ETH (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
 		}
 		custody := new(big.Int)
 		if f := strings.Split(st["s-eth"], "|"); len(f) >= 1 {

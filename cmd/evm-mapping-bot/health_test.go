@@ -18,7 +18,7 @@ func eth(n float64) *big.Int {
 	return v
 }
 
-// healthWorld is a bridge with 10 ETH credited, a 0.05 ETH gas reserve, a bot
+// healthWorld is a bridge with 10 ETH credited, a 0.2 ETH gas reserve, a bot
 // identity with 100k RC and a vault holding vaultETH.
 func healthWorld(t *testing.T, vaultETH float64) (*fakeL1, *fakeL2, *vscGraphQL, *ethRPC) {
 	t.Helper()
@@ -29,7 +29,7 @@ func healthWorld(t *testing.T, vaultETH float64) (*fakeL1, *fakeL2, *vscGraphQL,
 	l2.keys["vsc1bridge-primary"] = [2]string{"active", tssPubG}
 	l2.expiry = map[string]uint64{"vsc1bridge-primary": 365}
 	l2.epoch = 100
-	l2.set("vsc1bridge", "gr", eth(0.05).String())
+	l2.set("vsc1bridge", "gr", eth(0.2).String())
 	l2.set("vsc1bridge", "s-eth", eth(10).String()+"|"+eth(10).String()+"|0|7")
 	return l1, l2, l2.gql(t), l1.rpc(t)
 }
@@ -81,9 +81,14 @@ func TestB11_HealthAlarms(t *testing.T) {
 	}
 
 	_, l2, gql, rpc = healthWorld(t, 10)
-	l2.set("vsc1bridge", "gr", eth(0.009).String())
+	l2.set("vsc1bridge", "gr", eth(0.06).String()) // above the contract's 0.05 floor, below 0.1
 	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "B12: gas reserve") {
 		t.Fatalf("low gas reserve: %+v", r)
+	}
+	_, l2, gql, rpc = healthWorld(t, 10)
+	l2.set("vsc1bridge", "gr", eth(0.1).String())
+	if r := checked(t, gql, rpc, emptyCP()); hasIssue(r, "B12") {
+		t.Fatalf("gas reserve at the threshold raised an alarm: %+v", r)
 	}
 
 	_, _, gql, rpc = healthWorld(t, 9.5)
