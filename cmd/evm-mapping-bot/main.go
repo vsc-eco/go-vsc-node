@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -72,7 +73,7 @@ func main() {
 	ethKey, did := initEthKey(cfg)
 
 	slog.Info("evm-mapping-bot starting",
-		"rpc", cfg.EthRPC,
+		"rpc", rpcHosts(cfg.EthRPC),
 		"vault", cfg.VaultAddress,
 		"contract", cfg.ContractID,
 		"tokens", len(cfg.Tokens),
@@ -409,13 +410,25 @@ func acquireCheckpointLock(path string) (*os.File, error) {
 // Ethereum RPC client — thin wrapper for JSON-RPC calls.
 // ---------------------------------------------------------------------------
 
+// ethRPC is the bot's L1 JSON-RPC client. ETH_RPC may list several
+// endpoints, comma separated (B14): a call moves to the next one only when an
+// endpoint does not answer (transport, HTTP status, or an unreadable body),
+// never on a JSON-RPC error or null result, which are the chain's answer. A
+// lying endpoint can only stall the bot: every proof is checked against the
+// verifier's ZK-proven headers.
 type ethRPC struct {
-	url    string
+	urls   []string
 	client *http.Client
 }
 
-func newEthRPC(url string) *ethRPC {
-	return &ethRPC{url: url, client: &http.Client{Timeout: 30 * time.Second}}
+func newEthRPC(urls string) *ethRPC {
+	e := &ethRPC{client: &http.Client{Timeout: 30 * time.Second}}
+	for _, u := range strings.Split(urls, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			e.urls = append(e.urls, u)
+		}
+	}
+	return e
 }
 
 // maxHTTPResponseBytes caps how many bytes we will read from any single HTTP
@@ -453,15 +466,52 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
-	resp, err := e.client.Post(e.url, "application/json", strings.NewReader(body))
+	var lastErr error
+	for i, url := range e.urls {
+		res, answered, err := e.callOne(url, method, body)
+		if answered {
+			return res, err
+		}
+		lastErr = err
+		if i+1 < len(e.urls) {
+			slog.Warn("B14: ETH RPC endpoint did not answer, trying the next", "endpoint", i, "method", method, "err", err)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no ETH RPC endpoint configured")
+	}
+	return nil, lastErr
+}
+
+// rpcHosts names the configured ETH RPC endpoints by host only: hosted RPC
+// URLs usually carry the provider's API key in the path or query.
+func rpcHosts(urls string) string {
+	var hosts []string
+	for _, u := range strings.Split(urls, ",") {
+		if p, err := neturl.Parse(strings.TrimSpace(u)); err == nil && p.Host != "" {
+			hosts = append(hosts, p.Host)
+		} else if strings.TrimSpace(u) != "" {
+			hosts = append(hosts, "(unparsed)")
+		}
+	}
+	return strings.Join(hosts, ",")
+}
+
+// callOne sends body to url. answered is false when the endpoint gave no
+// usable answer (the caller tries the next one).
+func (e *ethRPC) callOne(url, method, body string) (res json.RawMessage, answered bool, err error) {
+	resp, err := e.client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("rpc HTTP %d", resp.StatusCode)
+	}
 	// MED-57: bound the response body so a hostile RPC cannot OOM the bot.
 	raw, err := readBodyCapped(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read rpc response: %w", err)
+		return nil, false, fmt.Errorf("read rpc response: %w", err)
 	}
 
 	var result struct {
@@ -469,15 +519,16 @@ func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 		Error  *struct{ Message string } `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("malformed rpc response: %w", err)
+		return nil, false, fmt.Errorf("malformed rpc response: %w", err)
 	}
+	res, err = result.Result, nil
 	if result.Error != nil {
-		return nil, fmt.Errorf("rpc error: %s", result.Error.Message)
+		return nil, true, fmt.Errorf("rpc error: %s", result.Error.Message)
 	}
 	if result.Result == nil || string(result.Result) == "null" {
-		return nil, fmt.Errorf("null result from %s", method)
+		return nil, true, fmt.Errorf("null result from %s", method)
 	}
-	return result.Result, nil
+	return res, true, nil
 }
 
 func (e *ethRPC) getFinalizedBlock() (uint64, error) {
@@ -2202,6 +2253,11 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	}
 	cfg.VaultAddress = vault
 
+	health := newBotHealth(cfg.PollInterval)
+	if addr := os.Getenv("HEALTH_ADDR"); addr != "" {
+		go serveHealth(addr, health)
+	}
+
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
 
 	// MED-51 (F-M37-7): exponential backoff applied when the contract is paused
@@ -2225,6 +2281,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		if pErr == nil && paused {
 			slog.Warn("contract is paused — skipping tick and backing off",
 				"backoff", pausedBackoff.String())
+			health.recordTick(time.Now(), errors.New("contract is paused"), cp)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -2248,6 +2305,13 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		}
 
 		loopCancel()
+
+		health.recordTick(time.Now(), err, cp)
+		if health.due(time.Now()) {
+			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, did.String(), cfg.VaultAddress)
+			hcancel()
+		}
 
 		cp.save(cfg.CheckpointFile)
 

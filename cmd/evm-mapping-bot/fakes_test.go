@@ -23,6 +23,7 @@ type fakeL1 struct {
 	blocks    map[uint64]*fakeChain
 	finalized uint64
 	sent      []string // raw signed txs passed to eth_sendRawTransaction
+	balances  map[string]*big.Int // eth_getBalance by lowercase address (nil: 0)
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -103,6 +104,12 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 					}
 				}
 			}
+		case "eth_getBalance":
+			b := f.balances[strings.ToLower(arg0)]
+			if b == nil {
+				b = new(big.Int)
+			}
+			result = hexutil.EncodeBig(b)
 		case "eth_sendRawTransaction":
 			f.sent = append(f.sent, arg0)
 			b, _ := hexutil.Decode(arg0)
@@ -131,6 +138,7 @@ type fakeL2 struct {
 	status    func(txID string) string     // nil: every tx is CONFIRMED
 	nonce     uint64
 	keys      map[string][2]string // TSS key id -> {status, public key}
+	rc        map[string]int64     // getAccountRC by account (absent: no record)
 }
 
 func newFakeL2() *fakeL2 {
@@ -181,6 +189,12 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				key = map[string]string{"status": k[0], "public_key": k[1]}
 			}
 			data = map[string]any{"getTssKey": key}
+		case strings.Contains(req.Query, "getAccountRC"):
+			var rec any
+			if v, ok := f.rc[fmt.Sprint(req.Variables["a"])]; ok {
+				rec = map[string]int64{"amount": v}
+			}
+			data = map[string]any{"getAccountRC": rec}
 		case strings.Contains(req.Query, "getAccountNonce"):
 			data = map[string]any{"getAccountNonce": map[string]any{"nonce": f.nonce}}
 		case strings.Contains(req.Query, "submitTransactionV1"):
