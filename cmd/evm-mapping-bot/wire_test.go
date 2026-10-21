@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -222,16 +223,25 @@ type contractPendingSpend struct {
 // contractConfirmSpendRequest is the bridge contract's ConfirmSpendRequest
 // (contract/mapping/types.go), decoded there with encoding/json.
 type contractConfirmSpendRequest struct {
-	BlockHeight     uint64 `json:"block_height"`
-	TxIndex         uint64 `json:"tx_index"`
-	TxHex           string `json:"tx_hex"`
-	TxProofHex      string `json:"tx_proof_hex"`
-	ReceiptHex      string `json:"receipt_hex"`
-	ReceiptProofHex string `json:"receipt_proof_hex"`
-	IntentNonce     uint64 `json:"intent_nonce"`
-	IntentTo        string `json:"intent_to"`
-	IntentAmount    string `json:"intent_amount"`
-	IntentAsset     string `json:"intent_asset"`
+	BlockHeight  uint64 `json:"block_height"`
+	TxIndex      uint64 `json:"tx_index"`
+	TxProof      string `json:"tx_proof"`
+	ReceiptProof string `json:"receipt_proof"`
+	IntentNonce  uint64 `json:"intent_nonce"`
+	IntentTo     string `json:"intent_to"`
+	IntentAmount string `json:"intent_amount"`
+	IntentAsset  string `json:"intent_asset"`
+}
+
+// verifyLeafB64 checks that the base64 proof proves leaf at index under root:
+// the contract takes the tx and receipt from these proven leaves.
+func verifyLeafB64(t *testing.T, what string, root common.Hash, index int, leaf []byte, proofB64 string) {
+	t.Helper()
+	proof, err := base64.StdEncoding.DecodeString(proofB64)
+	if err != nil {
+		t.Fatalf("%s: proof is not base64: %v", what, err)
+	}
+	verifyLeaf(t, what, root, index, hex.EncodeToString(leaf), hex.EncodeToString(proof))
 }
 
 // withdrawalFixture returns a block holding one vault withdrawal of amount wei
@@ -273,8 +283,10 @@ func checkConfirmSpendWire(t *testing.T, amount *big.Int) {
 	if req.IntentAmount != amount.String() {
 		t.Fatalf("intent_amount = %q, want %q", req.IntentAmount, amount.String())
 	}
-	verifyLeaf(t, "tx leg", c.txRoot(), 0, req.TxHex, req.TxProofHex)
-	verifyLeaf(t, "receipt leg", c.receiptRoot(), 0, req.ReceiptHex, req.ReceiptProofHex)
+	rawTx, _ := c.txs[0].MarshalBinary()
+	rawReceipt, _ := c.receipts[0].MarshalBinary()
+	verifyLeafB64(t, "tx leg", c.txRoot(), 0, rawTx, req.TxProof)
+	verifyLeafB64(t, "receipt leg", c.receiptRoot(), 0, rawReceipt, req.ReceiptProof)
 }
 
 // E2: the contract decodes intent_amount into a string (decimal wei) and

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
 
@@ -719,6 +720,10 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 // L2 contract call — mirrors mapper.Bot.callContractL2
 // ---------------------------------------------------------------------------
 
+// errPayloadTooLarge: callContractL2 refused a payload over the node's
+// contract-payload cap before submitting it.
+var errPayloadTooLarge = errors.New("contract call payload over the node's cap")
+
 // callContractL2 submits a vsc.call contract invocation through the VSC L2
 // transaction pool using the bot's did:pkh:eip155 identity.
 func (s *l2Submitter) callContractL2(
@@ -728,6 +733,19 @@ func (s *l2Submitter) callContractL2(
 	payload json.RawMessage,
 	rcOverride uint64,
 ) (string, error) {
+	// EVM-T1: every node fails a contract call whose payload is over
+	// MAX_CONTRACT_PAYLOAD_SIZE (state-processing, checked before execution),
+	// which is below the pool's MAX_TX_SIZE checked further down. Refuse it here
+	// and log it, rather than submit a call that cannot succeed.
+	if len(payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+		slog.Error("contract call payload exceeds the node's payload cap",
+			"action", action,
+			"payload_size", len(payload),
+			"limit", params.MAX_CONTRACT_PAYLOAD_SIZE,
+		)
+		return "", fmt.Errorf("%w: %s payload is %d bytes (limit %d)", errPayloadTooLarge, action, len(payload), params.MAX_CONTRACT_PAYLOAD_SIZE)
+	}
+
 	// Serialize concurrent L2 submissions for nonce ordering.
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1548,31 +1566,31 @@ type receiptForProof struct {
 // nested {tx_data:{block_height,tx_index,raw_hex,merkle_proof_hex}} (the DEPOSIT
 // envelope), which the flat intent-bound confirmSpend ABI ignores entirely —
 // every field decoded zero → confirmSpend ALWAYS reverted on the intent gate.
-// The contract verifies BOTH a transactions-trie proof (tx_hex + tx_proof_hex
-// against header.TransactionsRoot) AND a receipts-trie proof (receipt_hex +
-// receipt_proof_hex against header.ReceiptsRoot) for the SAME tx_index, plus the
-// 4 intent_* fields (verified == PendingSpend BEFORE any proof work, HIGH #13).
+// The contract verifies BOTH a transactions-trie proof (tx_proof against
+// header.TransactionsRoot) AND a receipts-trie proof (receipt_proof against
+// header.ReceiptsRoot) for the SAME tx_index, plus the 4 intent_* fields
+// (verified == PendingSpend BEFORE any proof work, HIGH #13).
+//
+// EVM-T1: the proofs are base64 and the tx and receipt are not sent on their
+// own (the contract takes them from the proven leaves). The hex payload with
+// both leaves repeated went over the node's 8,192-byte contract-payload cap for
+// a withdrawal mined late in a large block, and then no withdrawal could settle.
 type confirmSpendRequest struct {
-	BlockHeight     uint64 `json:"block_height"`
-	TxIndex         uint64 `json:"tx_index"`
-	TxHex           string `json:"tx_hex"`
-	TxProofHex      string `json:"tx_proof_hex"`
-	ReceiptHex      string `json:"receipt_hex"`
-	ReceiptProofHex string `json:"receipt_proof_hex"`
-	IntentNonce     uint64 `json:"intent_nonce"`
-	IntentTo        string `json:"intent_to"`
-	IntentAmount    string `json:"intent_amount"` // decimal wei; the contract decodes it as a string
-	IntentAsset     string `json:"intent_asset"`
+	BlockHeight  uint64 `json:"block_height"`
+	TxIndex      uint64 `json:"tx_index"`
+	TxProof      string `json:"tx_proof"`      // base64 (standard, padded): concatenated tx-trie nodes
+	ReceiptProof string `json:"receipt_proof"` // base64 (standard, padded): concatenated receipt-trie nodes
+	IntentNonce  uint64 `json:"intent_nonce"`
+	IntentTo     string `json:"intent_to"`
+	IntentAmount string `json:"intent_amount"` // decimal wei; the contract decodes it as a string
+	IntentAsset  string `json:"intent_asset"`
 }
 
-// buildConfirmSpendPayload assembles the flat 10-field ConfirmSpendRequest
+// buildConfirmSpendPayload assembles the flat 8-field ConfirmSpendRequest
 // (H-F2). It builds a transactions-trie proof and a receipts-trie proof for the
 // withdrawal tx at txIndex, and carries the intent fields from the PendingSpend
 // the bot already parsed (ps). The contract uses the same tx_index as the trie
-// key for BOTH proofs (handlers.go:492,593), so a single index drives both legs.
-//
-// All proof hex is BARE (no 0x prefix): the contract decodes via Go's
-// encoding/hex which rejects a 0x prefix (proof.go / handlers.go hex.DecodeString).
+// key for BOTH proofs, so a single index drives both legs.
 func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
 	if ps == nil {
 		return nil, fmt.Errorf("confirmSpend: nil pending spend (intent fields unavailable)")
@@ -1593,11 +1611,11 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(block.Transactions))
 	}
 
-	// --- Transactions-trie leg: tx_hex (raw typed tx RLP) + tx_proof_hex.
+	// --- Transactions-trie leg: tx_proof (its leaf is the raw typed tx RLP).
 	// Mirrors the deposit path (buildMapPayloadFromRPC): the raw tx bytes
 	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
 	// so the reconstructed root matches header.TransactionsRoot. The contract
-	// compares the proven leaf byte-for-byte against tx_hex.
+	// parses the proven leaf as the withdrawal tx.
 	rawTxs := make([][]byte, len(block.Transactions))
 	for i, hash := range block.Transactions {
 		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
@@ -1617,37 +1635,31 @@ func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, tx
 	for i := range txKeys {
 		txKeys[i] = rlpEncodeUint64(uint64(i))
 	}
-	_, txProofNodes, txTargetRLP := buildMPTProof(txKeys, rawTxs, txIndex)
+	_, txProofNodes, _ := buildMPTProof(txKeys, rawTxs, txIndex)
 	if txProofNodes == nil {
 		return nil, fmt.Errorf("confirmSpend tx proof construction failed: txIndex %d / %d txs", txIndex, len(rawTxs))
 	}
 
-	// --- Receipts-trie leg: receipt_hex (RLP receipt) + receipt_proof_hex.
-	rcptTargetRLP, rcptProofNodes, err := receiptTrieProof(rpc, block.Transactions, txIndex)
+	// --- Receipts-trie leg: receipt_proof (its leaf is the receipt).
+	_, rcptProofNodes, err := receiptTrieProof(rpc, block.Transactions, txIndex)
 	if err != nil {
 		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
 
-	txProofHex := ""
-	for _, node := range txProofNodes {
-		txProofHex += hex.EncodeToString(node)
-	}
-	rcptProofHex := ""
-	for _, node := range rcptProofNodes {
-		rcptProofHex += hex.EncodeToString(node)
-	}
+	return confirmSpendPayload(blockHeight, txIndex, txProofNodes, rcptProofNodes, ps)
+}
 
+// confirmSpendPayload encodes a ConfirmSpendRequest from the two proofs' nodes.
+func confirmSpendPayload(blockHeight uint64, txIndex int, txProofNodes, rcptProofNodes [][]byte, ps *PendingSpend) (json.RawMessage, error) {
 	req := confirmSpendRequest{
-		BlockHeight:     blockHeight,
-		TxIndex:         uint64(txIndex),
-		TxHex:           hex.EncodeToString(txTargetRLP),
-		TxProofHex:      txProofHex,
-		ReceiptHex:      hex.EncodeToString(rcptTargetRLP),
-		ReceiptProofHex: rcptProofHex,
-		IntentNonce:     ps.Nonce,
-		IntentTo:        ps.To,
-		IntentAmount:    ps.Amount.String(),
-		IntentAsset:     ps.Asset,
+		BlockHeight:  blockHeight,
+		TxIndex:      uint64(txIndex),
+		TxProof:      base64.StdEncoding.EncodeToString(bytes.Join(txProofNodes, nil)),
+		ReceiptProof: base64.StdEncoding.EncodeToString(bytes.Join(rcptProofNodes, nil)),
+		IntentNonce:  ps.Nonce,
+		IntentTo:     ps.To,
+		IntentAmount: ps.Amount.String(),
+		IntentAsset:  ps.Asset,
 	}
 
 	data, err := json.Marshal(req)
