@@ -2196,7 +2196,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	// address is the vault. MED-4 used to only log a mismatch with
 	// VAULT_ADDRESS, and the bot then scanned for deposits the contract
 	// refuses. Wait for keygen, and refuse a VAULT_ADDRESS that differs.
-	vault, err := waitForTssVault(ctx, gql, tssKeyID, cfg.VaultAddress, cfg.PollInterval)
+	vault, err := waitForTssVault(ctx, gql, submitter, cfg.ContractID, tssKeyID, cfg.VaultAddress, cfg.PollInterval)
 	if err != nil {
 		return err
 	}
@@ -2285,13 +2285,13 @@ func runOnceSafe(
 // holds one the way the contract reads it (mapping.TssVaultAddress): active,
 // or deprecated and renewable. ok=false: no key yet (before keygen), a retired
 // key, or a public key that is not a secp256k1 point.
-func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (string, bool, error) {
+func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault, pubHex string, ok bool, err error) {
 	data, err := gql.query(ctx,
 		`query GetKey($id: String!){ getTssKey(keyId: $id){ status public_key } }`,
 		map[string]interface{}{"id": tssKeyID},
 	)
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	var parsed struct {
 		GetTssKey *struct {
@@ -2300,23 +2300,30 @@ func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (strin
 		} `json:"getTssKey"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	k := parsed.GetTssKey
 	if k == nil || (k.Status != "active" && k.Status != "deprecated") {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	addr, ok := tssPubKeyToAddress(k.PublicKey)
-	return addr, ok, nil
+	return addr, strings.ToLower(strings.TrimPrefix(k.PublicKey, "0x")), ok, nil
 }
 
-// waitForTssVault blocks until the bridge's TSS key exists and returns its
-// address. A configured VAULT_ADDRESS that is a different address is an error:
-// the bot would watch an address the contract does not credit.
-func waitForTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID, configured string, poll time.Duration) (string, error) {
+// waitForTssVault blocks until the bridge's TSS key exists and the contract
+// treats its address as the vault, and returns that address. A configured
+// VAULT_ADDRESS that is a different address is an error: the bot would watch an
+// address the contract does not credit.
+//
+// E23: the contract refuses deposits to the key's address until the key has
+// signed the vault check message and someone has shown it the signature
+// (account-mapping mapping/vaultcheck.go). While it waits the bot does both
+// (driveVaultCheck), so a fresh bridge goes live on its own.
+func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, configured string, poll time.Duration) (string, error) {
+	var requested time.Time
 	for {
 		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		vault, ok, err := fetchTssVault(qctx, gql, tssKeyID)
+		vault, pub, ok, err := fetchTssVault(qctx, gql, tssKeyID)
 		cancel()
 		switch {
 		case err != nil:
@@ -2326,8 +2333,16 @@ func waitForTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID, configured 
 		case configured != "" && !strings.EqualFold(vault, configured):
 			return "", fmt.Errorf("VAULT_ADDRESS %s is not the bridge's TSS key address %s; the contract credits only deposits to the key's address", configured, vault)
 		default:
-			slog.Info("A18: vault is the TSS key's address", "keyId", tssKeyID, "vault", vault)
-			return vault, nil
+			dctx, dcancel := context.WithTimeout(ctx, time.Minute)
+			live, derr := driveVaultCheck(dctx, gql, sub, contractID, tssKeyID, vault, pub, &requested)
+			dcancel()
+			if live {
+				slog.Info("A18: vault is the TSS key's address", "keyId", tssKeyID, "vault", vault)
+				return vault, nil
+			}
+			if derr != nil {
+				slog.Warn("E23: vault check step failed (retrying)", "vault", vault, "err", derr)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -2335,6 +2350,84 @@ func waitForTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID, configured 
 		case <-time.After(poll):
 		}
 	}
+}
+
+// vaultCheckRetry is how long the bot waits for the TSS group's check
+// signature before asking for it again (the node keeps one request per
+// message, so a repeat only costs the call's RC).
+const vaultCheckRetry = 10 * time.Minute
+
+// vaultCheckDigest mirrors account-mapping mapping.VaultCheckDigest: the
+// personal_sign digest of the text naming the contract, its L1 chain and the key.
+func vaultCheckDigest(contractID string, chainID uint64, pubHex string) []byte {
+	msg := "magi evm vault check-signature v1:" + contractID + ":" + strconv.FormatUint(chainID, 10) + ":" + pubHex
+	return ethCrypto.Keccak256([]byte("\x19Ethereum Signed Message:\n" + strconv.Itoa(len(msg)) + msg))
+}
+
+// driveVaultCheck reports whether the contract has verified the key pub. If
+// not, it attests the key's check signature once the TSS group has produced
+// it, or asks for one (again after vaultCheckRetry).
+func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, vault, pub string, requested *time.Time) (bool, error) {
+	st, err := gql.fetchContractState(ctx, contractID, []string{"vaultok", "chainid"})
+	if err != nil {
+		return false, err
+	}
+	if st["vaultok"] != "" && strings.EqualFold(st["vaultok"], pub) {
+		return true, nil
+	}
+	chainID, _ := strconv.ParseUint(st["chainid"], 10, 64)
+	if chainID == 0 {
+		chainID = 1 // the contract's chainId() default
+	}
+	digest := hex.EncodeToString(vaultCheckDigest(contractID, chainID, pub))
+	sigs, err := gql.fetchTssSignatures(ctx, tssKeyID, []string{digest})
+	if err != nil {
+		return false, err
+	}
+	if sig, ok := sigs[digest]; ok {
+		rsv, err := vaultCheckRSV(sig.Bytes, digest, vault)
+		if err != nil {
+			return false, err
+		}
+		payload, _ := json.Marshal(map[string]string{"signature": hex.EncodeToString(rsv)})
+		tx, err := sub.callWithRetry(ctx, contractID, "attestVault", payload, 3)
+		if err == nil {
+			slog.Info("E23: attested the vault key's check signature", "vault", vault, "tx", tx)
+		}
+		return false, err // live once the call lands; the next poll reads it
+	}
+	if time.Since(*requested) < vaultCheckRetry {
+		return false, nil
+	}
+	tx, err := sub.callWithRetry(ctx, contractID, "requestVaultCheck", json.RawMessage(`{}`), 3)
+	if err != nil {
+		return false, err
+	}
+	*requested = time.Now()
+	slog.Info("E23: asked the TSS key to sign the vault check message", "vault", vault, "tx", tx)
+	return false, nil
+}
+
+// vaultCheckRSV turns the TSS group's DER signature over digestHex into the
+// r||s||v attestVault takes: s low (the contract recovers strictly) and the v
+// that recovers vault.
+func vaultCheckRSV(der []byte, digestHex, vault string) ([]byte, error) {
+	r, s, err := parseDERSignature(der)
+	if err != nil {
+		return nil, err
+	}
+	n := ethCrypto.S256().Params().N
+	if sv := new(big.Int).SetBytes(s); sv.Cmp(new(big.Int).Rsh(n, 1)) > 0 {
+		s = sv.Sub(n, sv).FillBytes(make([]byte, 32))
+	}
+	digest, _ := hex.DecodeString(digestHex)
+	for v := byte(0); v < 2; v++ {
+		sig := append(append(append([]byte{}, r...), s...), v)
+		if pub, err := ethCrypto.SigToPub(digest, sig); err == nil && strings.EqualFold(ethCrypto.PubkeyToAddress(*pub).Hex(), vault) {
+			return sig, nil
+		}
+	}
+	return nil, errors.New("the TSS signature over the vault check message does not recover the vault")
 }
 
 // tssPubKeyToAddress derives the lowercase 0x ETH address from a hex-encoded

@@ -65,12 +65,17 @@ func rwContract(t *testing.T) *test_utils.ContractTest {
 }
 
 // rwVaultKey gives the bridge a TSS primary key and returns it with its
-// address, which is the vault (A18).
+// address, which is the vault (A18) once the key's check signature over the
+// bot's vaultCheckDigest is attested on the bridge wasm (E23).
 func rwVaultKey(t *testing.T, ct *test_utils.ContractTest) (*ecdsa.PrivateKey, common.Address) {
 	t.Helper()
 	key, _ := ethCrypto.GenerateKey()
-	ct.Tss.Keys.SetKey(tss_db.TssKey{Id: rwBridge + "-primary", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType,
-		PublicKey: hex.EncodeToString(ethCrypto.CompressPubkey(&key.PublicKey))})
+	pub := hex.EncodeToString(ethCrypto.CompressPubkey(&key.PublicKey))
+	ct.Tss.Keys.SetKey(tss_db.TssKey{Id: rwBridge + "-primary", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType, PublicKey: pub})
+	sig, _ := ethCrypto.Sign(vaultCheckDigest(rwBridge, wireChainID, pub), key)
+	if r := rwCall(ct, rwRelayer, "attestVault", []byte(`{"signature":"`+hex.EncodeToString(sig)+`"}`)); !r.Success {
+		t.Fatalf("attestVault: %s: %s", r.Err, r.ErrMsg)
+	}
 	return key, ethCrypto.PubkeyToAddress(key.PublicKey)
 }
 
