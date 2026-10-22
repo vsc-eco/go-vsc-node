@@ -233,3 +233,61 @@ func TestE23_VaultCheckDigestIsPersonalSign(t *testing.T) {
 		t.Fatalf("digest %x, want %x", got, want)
 	}
 }
+
+// vaultCalls runs waitForTssVault for d against l2 and returns the actions of
+// the L2 calls it made.
+func vaultCalls(t *testing.T, l2 *fakeL2, d time.Duration) []string {
+	t.Helper()
+	gql := l2.gql(t)
+	botKey, _ := ethCrypto.GenerateKey()
+	sub := &l2Submitter{ethKey: botKey, did: dids.NewEthDID(ethCrypto.PubkeyToAddress(botKey.PublicKey).Hex()), gql: gql,
+		cfg: EVMBotConfig{ContractID: "vsc1bridge", NetID: "vsc-devnet", RcLimit: 10000}}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	if v, err := waitForTssVault(ctx, gql, sub, "vsc1bridge", "vsc1bridge-primary", "", 20*time.Millisecond); err == nil {
+		t.Fatalf("the bot took the vault %q, which was never verified", v)
+	}
+	l2.mu.Lock()
+	defer l2.mu.Unlock()
+	var out []string
+	for _, b := range l2.submitted {
+		var tx map[string]any
+		if err := cbornode.DecodeInto(b, &tx); err != nil {
+			t.Fatal(err)
+		}
+		op, _ := tx["tx"].([]any)[0].(map[string]any)
+		raw, _ := base64.StdEncoding.DecodeString(fmt.Sprint(op["payload"]))
+		var call map[string]any
+		if err := cbornode.DecodeInto(raw, &call); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, fmt.Sprint(call["action"]))
+	}
+	return out
+}
+
+// B-R6: the contract takes requestVaultCheck and attestVault only for an
+// active key. For a deprecated key whose vault was never verified the bot sent
+// requestVaultCheck every vaultCheckRetry, each failing on chain; it now sends
+// nothing and waits for a renewed key.
+func TestBR6_NoVaultCheckCallsForADeprecatedKey(t *testing.T) {
+	l2 := newFakeL2()
+	l2.keys["vsc1bridge-primary"] = [2]string{"deprecated", tssPubG}
+	if got := vaultCalls(t, l2, 300*time.Millisecond); len(got) != 0 {
+		t.Fatalf("L2 calls %v for a deprecated key, want none", got)
+	}
+}
+
+// B-R6: with the check signature available the bot attested on every poll
+// until the first attestVault landed. It now waits vaultAttestRetry.
+func TestBR6_AttestOnceUntilItLands(t *testing.T) {
+	l2 := newFakeL2()
+	l2.keys["vsc1bridge-primary"] = [2]string{"active", tssPubG}
+	digest := vaultCheckDigest("vsc1bridge", 1, tssPubG)
+	key1, _ := ethCrypto.ToECDSA(append(make([]byte, 31), 1)) // the key behind tssPubG
+	sig, _ := ethCrypto.Sign(digest, key1)
+	l2.sigs[hex.EncodeToString(digest)] = hex.EncodeToString(derSig(sig, false))
+	if got := vaultCalls(t, l2, 300*time.Millisecond); len(got) != 1 || got[0] != "attestVault" {
+		t.Fatalf("L2 calls %v in 300ms of 20ms polls, want one attestVault", got)
+	}
+}

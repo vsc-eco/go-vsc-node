@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,6 +38,9 @@ import (
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -64,7 +68,23 @@ type l2Submitter struct {
 	gql    *vscGraphQL
 	cfg    EVMBotConfig
 	mu     sync.Mutex // serializes L2 submissions for nonce ordering
+
+	// B-R1: the node's account nonce counts only transactions a block has
+	// included, and its pool takes a second transaction at that nonce, then
+	// deletes it once the first is included. next is the nonce after this
+	// bot's last accepted submission, so the calls of one tick take n, n+1, ...
+	// Guarded by mu.
+	next      uint64
+	haveNext  bool
+	seeded    bool      // the bot's own pending transactions were read once at start
+	holeSince time.Time // first "missing previous nonce" refusal since the last accepted submission
 }
+
+// nonceHoleGrace: how long the node may keep refusing the bot's next nonce
+// for a missing previous one before the bot starts again from the account
+// nonce. Short refusals are gossip catching up (the previous transaction went
+// to another node); a longer one means that transaction is gone.
+var nonceHoleGrace = 2 * time.Minute
 
 func main() {
 	cfg := parseConfig()
@@ -288,7 +308,14 @@ type SentTx struct {
 	ConfirmTxId     string `json:"confirm_tx_id,omitempty"`
 	ConfirmFailures int    `json:"confirm_failures,omitempty"`
 	NextConfirmAt   int64  `json:"next_confirm_at,omitempty"`
+	// ConfirmSubmittedAt: when ConfirmTxId was submitted (B-R1). One the node
+	// still does not know confirmVanishGrace later is gone, and is re-sent.
+	ConfirmSubmittedAt int64 `json:"confirm_submitted_at,omitempty"`
 }
+
+// confirmVanishGrace: a submitted confirmSpend the node has no record of after
+// this long was deleted from the pool (it lost its nonce) and never ran.
+var confirmVanishGrace = 10 * time.Minute
 
 // checkRelayerRegistered logs at ERROR when the bot's DID is not a registered
 // relayer (B10): the contract refuses ETH deposit maps from any other caller, so
@@ -419,6 +446,9 @@ func acquireCheckpointLock(path string) (*os.File, error) {
 type ethRPC struct {
 	urls   []string
 	client *http.Client
+	// B-R4: index of the endpoint that last answered; calls start there, so a
+	// hung primary costs its timeout once rather than on every call.
+	start atomic.Int64
 }
 
 func newEthRPC(urls string) *ethRPC {
@@ -467,13 +497,18 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
 	var lastErr error
-	for i, url := range e.urls {
-		res, answered, err := e.callOne(url, method, body)
+	first := int(e.start.Load())
+	for k := range e.urls {
+		i := (first + k) % len(e.urls)
+		res, answered, err := e.callOne(e.urls[i], method, body)
 		if answered {
+			if i != first {
+				e.start.Store(int64(i))
+			}
 			return res, err
 		}
 		lastErr = err
-		if i+1 < len(e.urls) {
+		if k+1 < len(e.urls) {
 			slog.Warn("B14: ETH RPC endpoint did not answer, trying the next", "endpoint", i, "method", method, "err", err)
 		}
 	}
@@ -744,9 +779,50 @@ func (g *vscGraphQL) fetchTransactionStatus(ctx context.Context, txID string) (s
 		return "", fmt.Errorf("decode transaction: %w", err)
 	}
 	if len(parsed.FindTransaction) == 0 {
-		return "", fmt.Errorf("transaction %s not found", txID)
+		return "", fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
 	}
 	return parsed.FindTransaction[0].Status, nil
+}
+
+// errTxNotFound: the node holds no transaction with that id. Right after a
+// submission that can be gossip; much later the transaction is gone (the pool
+// deletes one that loses its nonce to another).
+var errTxNotFound = errors.New("transaction not found")
+
+// fetchTopPendingNonce returns the highest nonce among the account's own
+// transactions still waiting in the node's pool (found=false: none).
+func (g *vscGraphQL) fetchTopPendingNonce(ctx context.Context, account string) (top uint64, found bool, err error) {
+	data, err := g.query(ctx,
+		`query PendingTxs($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				nonce
+				required_auths
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byAccount": account, "byStatus": "UNCONFIRMED", "limit": 100}},
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Nonce         uint64   `json:"nonce"`
+			RequiredAuths []string `json:"required_auths"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return 0, false, fmt.Errorf("decode pending transactions: %w", err)
+	}
+	for _, tx := range parsed.FindTransaction {
+		// byAccount also matches transactions that only pay the account.
+		if len(tx.RequiredAuths) != 1 || tx.RequiredAuths[0] != account {
+			continue
+		}
+		if !found || tx.Nonce > top {
+			top, found = tx.Nonce, true
+		}
+	}
+	return top, found, nil
 }
 
 // fetchTssSignatures queries getTssRequests for completed signatures.
@@ -934,7 +1010,7 @@ func (s *l2Submitter) callContractL2(
 
 	did := s.did
 
-	nonce, err := s.gql.FetchAccountNonce(ctx, did.String())
+	nonce, err := s.nextNonce(ctx, did.String())
 	if err != nil {
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
 	}
@@ -990,6 +1066,19 @@ func (s *l2Submitter) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Tx),
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
+	if err != nil && isMissingPrevNonceErr(err) {
+		// B-R1: the node does not hold the bot's previous transaction. Give
+		// gossip nonceHoleGrace to bring it; past that, refill from the
+		// account nonce.
+		if s.holeSince.IsZero() {
+			s.holeSince = time.Now()
+		} else if time.Since(s.holeSince) > nonceHoleGrace {
+			slog.Warn("B-R1: the node still lacks the bot's previous L2 transaction; continuing from the account nonce",
+				"action", action, "nonce", nonce, "since", s.holeSince)
+			s.haveNext, s.holeSince = false, time.Time{}
+		}
+		return "", fmt.Errorf("broadcast L2 tx: %w", err)
+	}
 	if err != nil {
 		// MED-98 (M33-M4): the bot uses a single freshly-fetched L2 account
 		// nonce per submission. If a prior attempt actually landed (but the bot
@@ -1000,12 +1089,17 @@ func (s *l2Submitter) callContractL2(
 		// terminal-progress (errNonceConsumed) so the retry layer stops cleanly
 		// instead of wedging — the next tick re-derives a fresh nonce.
 		if isNonceConsumedErr(err) {
+			// B-R7: the transaction that holds the nonce is most likely this
+			// one (an earlier attempt that reached the node): its id is the
+			// CID of these bytes, so the caller can still follow its result.
+			id := localTxID(sTx.Tx)
 			slog.Warn("MED-98: L2 nonce already consumed (prior submission likely landed) — not stalling on a stale-nonce retry",
-				"action", action, "nonce", nonce, "err", err)
-			return "", fmt.Errorf("%w: %v", errNonceConsumed, err)
+				"action", action, "nonce", nonce, "id", id, "err", err)
+			return id, fmt.Errorf("%w: %v", errNonceConsumed, err)
 		}
 		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
+	s.next, s.haveNext, s.holeSince = nonce+1, true, time.Time{}
 
 	slog.Info("L2 tx broadcast",
 		"id", txID,
@@ -1039,8 +1133,8 @@ func (s *l2Submitter) callWithRetry(
 		// nonce and the contract dedupes the already-landed action.
 		if errors.Is(err, errNonceConsumed) {
 			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
-				"action", action)
-			return "", nil
+				"action", action, "id", txID)
+			return txID, nil
 		}
 		lastErr = err
 		slog.Warn("L2 submission failed",
@@ -1094,6 +1188,48 @@ func (s *l2Submitter) callWithRetry(
 // already consumed by a prior attempt that actually landed. MED-98 — callers
 // must treat this as terminal-progress, NOT a retryable failure.
 var errNonceConsumed = errors.New("l2 nonce already consumed")
+
+// nextNonce picks the nonce for the next submission (caller holds s.mu): the
+// account nonce, or the one after the bot's last accepted submission while
+// that is higher. At start it reads the bot's own transactions still in the
+// pool, so a restart does not reuse the nonce of a call made before it.
+func (s *l2Submitter) nextNonce(ctx context.Context, account string) (uint64, error) {
+	confirmed, err := s.gql.FetchAccountNonce(ctx, account)
+	if err != nil {
+		return 0, err
+	}
+	if !s.seeded {
+		top, found, err := s.gql.fetchTopPendingNonce(ctx, account)
+		if err != nil {
+			return 0, fmt.Errorf("read pending L2 transactions: %w", err)
+		}
+		s.seeded = true
+		if found && top+1 > confirmed {
+			s.next, s.haveNext = top+1, true
+		}
+	}
+	if s.haveNext && s.next > confirmed {
+		return s.next, nil
+	}
+	return confirmed, nil
+}
+
+// localTxID is the id the node gives a submitted transaction: the CID
+// (dag-cbor, sha2-256) of its bytes, signature excluded
+// (transactionpool.IngestTx).
+func localTxID(tx []byte) string {
+	c, err := cid.Prefix{Version: 1, Codec: uint64(multicodec.DagCbor), MhType: uint64(multihash.SHA2_256), MhLength: -1}.Sum(tx)
+	if err != nil {
+		return ""
+	}
+	return c.String()
+}
+
+// isMissingPrevNonceErr: the pool refused a nonce above the account nonce
+// because it holds no transaction at the nonce before it.
+func isMissingPrevNonceErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "missing previous nonce")
+}
 
 // isNonceConsumedErr reports whether an L2 submission error indicates the nonce
 // was already used (the prior attempt landed). MED-98.
@@ -1291,10 +1427,12 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s",null,"%s"]}`,
 			height, height, tokenAddr, TransferEventSig, vaultPadded,
 		)
+		// B-R2: any error below fails the block, which is retried next tick
+		// (runOnce stops at the first failed block); skipping it lost the
+		// deposit while the block was marked scanned.
 		logsData, err := rpc.call("eth_getLogs", logsParams)
 		if err != nil {
-			slog.Warn("eth_getLogs failed", "token", tokenAddr, "block", height, "err", err)
-			continue
+			return nil, fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
 
 		var logs []struct {
@@ -1302,7 +1440,9 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			TransactionHash  string `json:"transactionHash"`
 			LogIndex         string `json:"logIndex"`
 		}
-		json.Unmarshal(logsData, &logs)
+		if err := json.Unmarshal(logsData, &logs); err != nil {
+			return nil, fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
+		}
 
 		for _, log := range logs {
 			// W4-A CRIT #14 + F2 hardening: the contract reader expects the
@@ -1315,15 +1455,11 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			// block-level index gives each deposit a distinct per-receipt
 			// position.
 			if log.LogIndex == "" {
-				slog.Warn("eth_getLogs returned a log with no logIndex (non-standard RPC); skipping deposit",
-					"tx", log.TransactionHash, "token", tokenAddr)
-				continue
+				return nil, fmt.Errorf("eth_getLogs returned a log with no logIndex (non-standard RPC), tx %s token %s", log.TransactionHash, tokenAddr)
 			}
 			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
 			if lookupErr != nil {
-				slog.Warn("CRIT #14: per-receipt logIndex lookup failed; skipping deposit",
-					"tx", log.TransactionHash, "token", tokenAddr, "err", lookupErr)
-				continue
+				return nil, fmt.Errorf("CRIT #14: per-receipt logIndex lookup, tx %s token %s: %w", log.TransactionHash, tokenAddr, lookupErr)
 			}
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight:  height,
@@ -1619,6 +1755,27 @@ func computeSighash(unsignedTxHex string) (string, error) {
 	}
 	hash := keccak256(unsignedBytes)
 	return hex.EncodeToString(hash), nil
+}
+
+// signedTxSigns reports whether signedHex (attachSignatureToTx's output) is
+// unsignedHex with a signature attached: the signed list's items are the
+// unsigned list's followed by v, r and s, so its content starts with the
+// unsigned content.
+func signedTxSigns(signedHex, unsignedHex string) bool {
+	content := func(h string) ([]byte, bool) {
+		b, err := hex.DecodeString(strings.TrimPrefix(h, "0x"))
+		if err != nil || len(b) < 2 || b[0] != 0x02 {
+			return nil, false
+		}
+		start, n, err := decodeRLPListHeader(b[1:])
+		if err != nil || start+n > len(b)-1 {
+			return nil, false
+		}
+		return b[1+start : 1+start+n], true
+	}
+	sc, ok1 := content(signedHex)
+	uc, ok2 := content(unsignedHex)
+	return ok1 && ok2 && len(sc) > len(uc) && bytes.Equal(sc[:len(uc)], uc)
 }
 
 // ---------------------------------------------------------------------------
@@ -2349,13 +2506,13 @@ func runOnceSafe(
 // holds one the way the contract reads it (mapping.TssVaultAddress): active,
 // or deprecated and renewable. ok=false: no key yet (before keygen), a retired
 // key, or a public key that is not a secp256k1 point.
-func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault, pubHex string, ok bool, err error) {
+func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault, pubHex string, active, ok bool, err error) {
 	data, err := gql.query(ctx,
 		`query GetKey($id: String!){ getTssKey(keyId: $id){ status public_key } }`,
 		map[string]interface{}{"id": tssKeyID},
 	)
 	if err != nil {
-		return "", "", false, err
+		return "", "", false, false, err
 	}
 	var parsed struct {
 		GetTssKey *struct {
@@ -2364,14 +2521,14 @@ func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault
 		} `json:"getTssKey"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", "", false, err
+		return "", "", false, false, err
 	}
 	k := parsed.GetTssKey
 	if k == nil || (k.Status != "active" && k.Status != "deprecated") {
-		return "", "", false, nil
+		return "", "", false, false, nil
 	}
 	addr, ok := tssPubKeyToAddress(k.PublicKey)
-	return addr, strings.ToLower(strings.TrimPrefix(k.PublicKey, "0x")), ok, nil
+	return addr, strings.ToLower(strings.TrimPrefix(k.PublicKey, "0x")), k.Status == "active", ok, nil
 }
 
 // waitForTssVault blocks until the bridge's TSS key exists and the contract
@@ -2384,10 +2541,10 @@ func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault
 // (account-mapping mapping/vaultcheck.go). While it waits the bot does both
 // (driveVaultCheck), so a fresh bridge goes live on its own.
 func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, configured string, poll time.Duration) (string, error) {
-	var requested time.Time
+	var vc vaultCheckTimes
 	for {
 		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		vault, pub, ok, err := fetchTssVault(qctx, gql, tssKeyID)
+		vault, pub, active, ok, err := fetchTssVault(qctx, gql, tssKeyID)
 		cancel()
 		switch {
 		case err != nil:
@@ -2398,7 +2555,7 @@ func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, con
 			return "", fmt.Errorf("VAULT_ADDRESS %s is not the bridge's TSS key address %s; the contract credits only deposits to the key's address", configured, vault)
 		default:
 			dctx, dcancel := context.WithTimeout(ctx, time.Minute)
-			live, derr := driveVaultCheck(dctx, gql, sub, contractID, tssKeyID, vault, pub, &requested)
+			live, derr := driveVaultCheck(dctx, gql, sub, contractID, tssKeyID, vault, pub, active, &vc)
 			dcancel()
 			if live {
 				slog.Info("A18: vault is the TSS key's address", "keyId", tssKeyID, "vault", vault)
@@ -2421,6 +2578,17 @@ func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, con
 // message, so a repeat only costs the call's RC).
 const vaultCheckRetry = 10 * time.Minute
 
+// vaultAttestRetry: after submitting attestVault, how long the bot waits for
+// the contract to show the key verified before attesting again (B-R6: it
+// attested on every poll until the first call landed).
+const vaultAttestRetry = 2 * time.Minute
+
+// vaultCheckTimes: when driveVaultCheck last asked for the check signature
+// (or warned about a deprecated key) and last attested it.
+type vaultCheckTimes struct {
+	requested, attested time.Time
+}
+
 // vaultCheckDigest mirrors account-mapping mapping.VaultCheckDigest: the
 // personal_sign digest of the text naming the contract, its L1 chain and the key.
 func vaultCheckDigest(contractID string, chainID uint64, pubHex string) []byte {
@@ -2431,13 +2599,25 @@ func vaultCheckDigest(contractID string, chainID uint64, pubHex string) []byte {
 // driveVaultCheck reports whether the contract has verified the key pub. If
 // not, it attests the key's check signature once the TSS group has produced
 // it, or asks for one (again after vaultCheckRetry).
-func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, vault, pub string, requested *time.Time) (bool, error) {
+func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, vault, pub string, active bool, vc *vaultCheckTimes) (bool, error) {
 	st, err := gql.fetchContractState(ctx, contractID, []string{"vaultok", "chainid"})
 	if err != nil {
 		return false, err
 	}
 	if st["vaultok"] != "" && strings.EqualFold(st["vaultok"], pub) {
 		return true, nil
+	}
+	if !active {
+		// B-R6: the contract takes requestVaultCheck and attestVault only for
+		// an active key, so for a deprecated one both calls fail on chain and
+		// only burn RC. Its vault was never verified: deposits stay refused
+		// until the key is renewed.
+		if time.Since(vc.requested) >= vaultCheckRetry {
+			slog.Warn("E23: the bridge's TSS key is deprecated and its vault was never verified; waiting for a renewed key",
+				"keyId", tssKeyID, "vault", vault)
+			vc.requested = time.Now()
+		}
+		return false, nil
 	}
 	chainID, _ := strconv.ParseUint(st["chainid"], 10, 64)
 	if chainID == 0 {
@@ -2449,6 +2629,9 @@ func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, con
 		return false, err
 	}
 	if sig, ok := sigs[digest]; ok {
+		if time.Since(vc.attested) < vaultAttestRetry {
+			return false, nil // the last attest has not landed yet
+		}
 		rsv, err := vaultCheckRSV(sig.Bytes, digest, vault)
 		if err != nil {
 			return false, err
@@ -2456,18 +2639,19 @@ func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, con
 		payload, _ := json.Marshal(map[string]string{"signature": hex.EncodeToString(rsv)})
 		tx, err := sub.callWithRetry(ctx, contractID, "attestVault", payload, 3)
 		if err == nil {
+			vc.attested = time.Now()
 			slog.Info("E23: attested the vault key's check signature", "vault", vault, "tx", tx)
 		}
 		return false, err // live once the call lands; the next poll reads it
 	}
-	if time.Since(*requested) < vaultCheckRetry {
+	if time.Since(vc.requested) < vaultCheckRetry {
 		return false, nil
 	}
 	tx, err := sub.callWithRetry(ctx, contractID, "requestVaultCheck", json.RawMessage(`{}`), 3)
 	if err != nil {
 		return false, err
 	}
-	*requested = time.Now()
+	vc.requested = time.Now()
 	slog.Info("E23: asked the TSS key to sign the vault check message", "vault", vault, "tx", tx)
 	return false, nil
 }
@@ -2547,8 +2731,12 @@ func runOnce(
 	// ---------------------------------------------------------------
 	contractHeight, err := fetchContractLastHeight(ctx, gql, cfg.ContractID)
 	if err != nil {
-		slog.Warn("couldn't fetch contract height, proceeding with deposits only up to finalized", "err", err)
-		contractHeight = finalized
+		// B-R3: without the contract's height the bot cannot tell which blocks
+		// have a stored header; a map for one that has none fails on chain
+		// and is dead-lettered. Scan nothing this tick (withdrawals and
+		// confirmations below still run).
+		slog.Warn("couldn't fetch contract height, no deposit scan this tick", "err", err)
+		contractHeight = cp.LastScannedBlock
 	}
 
 	// MED-48 (F-M22-MED-4): if the contract's ingested height is behind our
@@ -2742,7 +2930,10 @@ func handleWithdrawals(
 	}
 
 	if alreadySent {
-		if existing.UnsignedTxHex == "" { // a checkpoint v1 entry: it signed the queued tx
+		// A checkpoint v1 entry has no UnsignedTxHex. B-R5: adopt the queued
+		// tx only if the entry's signed tx is that tx; one an admin replaced
+		// before the upgrade falls through to the replacement below.
+		if existing.UnsignedTxHex == "" && signedTxSigns(existing.SignedTxHex, ps.UnsignedTxHex) {
 			existing.UnsignedTxHex = ps.UnsignedTxHex
 		}
 		if ps.UnsignedTxHex == existing.UnsignedTxHex {
@@ -2970,6 +3161,20 @@ func handleConfirmations(
 				stx.ConfirmTxId = ""
 				stx.NextConfirmAt = time.Now().Add(wait).Unix()
 				store(nonceKey, stx)
+			case errors.Is(err, errTxNotFound):
+				// B-R1: the pool deletes a transaction that loses its nonce
+				// to another, so one the node still does not know is gone.
+				// Without this the withdrawal was never closed.
+				switch {
+				case stx.ConfirmSubmittedAt == 0: // an entry from before the field
+					stx.ConfirmSubmittedAt = time.Now().Unix()
+					store(nonceKey, stx)
+				case time.Since(time.Unix(stx.ConfirmSubmittedAt, 0)) > confirmVanishGrace:
+					slog.Error("confirmSpend is unknown to the node long after its submission; re-sending",
+						"nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId, "submittedAt", stx.ConfirmSubmittedAt)
+					stx.ConfirmTxId, stx.ConfirmSubmittedAt = "", 0
+					store(nonceKey, stx)
+				}
 			}
 			continue
 		}
@@ -3087,11 +3292,12 @@ func handleConfirmations(
 		}
 
 		if confirmTxID == "" {
-			// The L2 nonce was already consumed: an earlier submission landed.
-			// The entry goes once the contract's confirmed nonce passes it.
+			// No id for the submission (none is expected): the entry goes once
+			// the contract's confirmed nonce passes it.
 			continue
 		}
 		stx.ConfirmTxId = confirmTxID
+		stx.ConfirmSubmittedAt = time.Now().Unix()
 		store(nonceKey, stx)
 		slog.Info("confirmSpend submitted", "txHash", stx.TxHash, "nonce", stx.Nonce, "l2Tx", confirmTxID)
 	}

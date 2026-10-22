@@ -12,6 +12,9 @@ import (
 	"sync"
 	"testing"
 
+	"vsc-node/modules/common"
+	transactionpool "vsc-node/modules/transaction-pool"
+
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -22,8 +25,9 @@ type fakeL1 struct {
 	mu        sync.Mutex
 	blocks    map[uint64]*fakeChain
 	finalized uint64
-	sent      []string // raw signed txs passed to eth_sendRawTransaction
+	sent      []string            // raw signed txs passed to eth_sendRawTransaction
 	balances  map[string]*big.Int // eth_getBalance by lowercase address (nil: 0)
+	logs      string              // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -84,7 +88,15 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 			}
 			result = map[string]any{"number": hexutil.EncodeUint64(n), "transactions": txs}
 		case "eth_getLogs":
-			result = []any{}
+			switch f.logs {
+			case "error":
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000, "message": "query timeout"}})
+				return
+			case "garbage":
+				result = "not a list"
+			default:
+				result = []any{}
+			}
 		case "eth_getRawTransactionByHash", "eth_getTransactionByHash", "eth_getTransactionReceipt":
 			for n, c := range f.blocks {
 				for i, tx := range c.txs {
@@ -141,6 +153,83 @@ type fakeL2 struct {
 	rc        map[string]int64     // getAccountRC by account (absent: no record)
 	expiry    map[string]uint64    // TSS key id -> expiry_epoch
 	epoch     uint64               // localNodeInfo.epoch
+	pool      *fakePool            // nil: getAccountNonce counts submissions
+	failState map[string]bool      // contract id -> its state reads return a GraphQL error
+}
+
+// fakePool makes the nonce and submissions behave as the node's
+// (transactionpool.IngestTx, blockProducer, InvalidateCompetingTransactions):
+// getAccountNonce is the account nonce, which moves only when produce()
+// includes transactions; a submission below it, or above it with no pending
+// transaction at the nonce before, is refused; past those checks the same
+// bytes again return the same id; produce() includes one transaction per
+// nonce, in order, and deletes the others at those nonces, which
+// findTransaction then does not know.
+type fakePool struct {
+	confirmed uint64
+	txs       []*fakePoolTx // in submission order
+	staleRead *uint64       // set: the next getAccountNonce answers this, once
+}
+
+type fakePoolTx struct {
+	id, status, auth string
+	nonce            uint64
+}
+
+func (p *fakePool) submit(raw []byte) (string, error) {
+	var shell transactionpool.VSCTransactionShell
+	if err := common.DecodeCbor(raw, &shell); err != nil {
+		return "", err
+	}
+	n := shell.Headers.Nonce
+	id := localTxID(raw)
+	switch {
+	case n < p.confirmed:
+		return "", fmt.Errorf("nonce too low: %d < %d", n, p.confirmed)
+	case n > p.confirmed+100:
+		return "", fmt.Errorf("nonce incrementing too fast: %d > %d", n, p.confirmed)
+	case n > p.confirmed && p.pending(n-1) == nil:
+		return "", fmt.Errorf("missing previous nonce %d in transaction pool", n-1)
+	}
+	if p.byID(id) != nil {
+		return id, nil
+	}
+	p.txs = append(p.txs, &fakePoolTx{id: id, status: "UNCONFIRMED", auth: shell.Headers.RequiredAuths[0], nonce: n})
+	return id, nil
+}
+
+func (p *fakePool) pending(n uint64) *fakePoolTx {
+	for _, tx := range p.txs {
+		if tx.status == "UNCONFIRMED" && tx.nonce == n {
+			return tx
+		}
+	}
+	return nil
+}
+
+// produce includes the pending transactions from the account nonce on, one
+// per nonce, and deletes the ones that lost their nonce.
+func (p *fakePool) produce() {
+	for tx := p.pending(p.confirmed); tx != nil; tx = p.pending(p.confirmed) {
+		tx.status = "CONFIRMED"
+		p.confirmed++
+	}
+	kept := p.txs[:0]
+	for _, tx := range p.txs {
+		if tx.status != "UNCONFIRMED" || tx.nonce >= p.confirmed {
+			kept = append(kept, tx)
+		}
+	}
+	p.txs = kept
+}
+
+func (p *fakePool) byID(id string) *fakePoolTx {
+	for _, tx := range p.txs {
+		if tx.id == id {
+			return tx
+		}
+	}
+	return nil
 }
 
 func newFakeL2() *fakeL2 {
@@ -168,6 +257,9 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 		defer f.mu.Unlock()
 		var data any
 		switch {
+		case strings.Contains(req.Query, "getStateByKeys") && f.failState[fmt.Sprint(req.Variables["contractId"])]:
+			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "state read failed"}}})
+			return
 		case strings.Contains(req.Query, "getStateByKeys"):
 			out := map[string]string{}
 			st := f.state[fmt.Sprint(req.Variables["contractId"])]
@@ -202,15 +294,51 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				rec = map[string]int64{"amount": v}
 			}
 			data = map[string]any{"getAccountRC": rec}
+		case strings.Contains(req.Query, "getAccountNonce") && f.pool != nil:
+			n := f.pool.confirmed
+			if f.pool.staleRead != nil {
+				n, f.pool.staleRead = *f.pool.staleRead, nil
+			}
+			data = map[string]any{"getAccountNonce": map[string]any{"nonce": n}}
 		case strings.Contains(req.Query, "getAccountNonce"):
 			data = map[string]any{"getAccountNonce": map[string]any{"nonce": f.nonce}}
+		case strings.Contains(req.Query, "submitTransactionV1") && f.pool != nil:
+			b, _ := base64.URLEncoding.DecodeString(fmt.Sprint(req.Variables["tx"]))
+			f.submitted = append(f.submitted, b)
+			id, err := f.pool.submit(b)
+			if err != nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": err.Error()}}})
+				return
+			}
+			data = map[string]any{"submitTransactionV1": map[string]any{"id": id}}
 		case strings.Contains(req.Query, "submitTransactionV1"):
 			b, _ := base64.URLEncoding.DecodeString(fmt.Sprint(req.Variables["tx"]))
 			f.submitted = append(f.submitted, b)
 			f.nonce++
 			data = map[string]any{"submitTransactionV1": map[string]any{"id": fmt.Sprintf("l2tx-%d", len(f.submitted))}}
 		case strings.Contains(req.Query, "findTransaction"):
-			id := fmt.Sprint(req.Variables["filterOptions"].(map[string]any)["byId"])
+			fo := req.Variables["filterOptions"].(map[string]any)
+			if acct, ok := fo["byAccount"]; ok { // the bot's own pending transactions
+				list := []map[string]any{}
+				if f.pool != nil {
+					for _, tx := range f.pool.txs {
+						if tx.status == "UNCONFIRMED" && tx.auth == fmt.Sprint(acct) {
+							list = append(list, map[string]any{"nonce": tx.nonce, "required_auths": []string{tx.auth}})
+						}
+					}
+				}
+				data = map[string]any{"findTransaction": list}
+				break
+			}
+			id := fmt.Sprint(fo["byId"])
+			if f.pool != nil {
+				list := []map[string]string{}
+				if tx := f.pool.byID(id); tx != nil {
+					list = append(list, map[string]string{"status": tx.status})
+				}
+				data = map[string]any{"findTransaction": list}
+				break
+			}
 			st := "CONFIRMED"
 			if f.status != nil {
 				st = f.status(id)

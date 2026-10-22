@@ -199,3 +199,39 @@ func TestB1_TheReplacedTxMiningStillSettles(t *testing.T) {
 		t.Fatalf("%d submissions, entry %+v; want confirmSpend for the mined (replaced) tx", len(l2.submitted), got)
 	}
 }
+
+// B-R5: a checkpoint v1 entry (no UnsignedTxHex) adopted whatever tx the
+// contract had queued, so a withdrawal an admin replaced before the upgrade
+// was taken as already broadcast: the bot re-posted the old tx and never the
+// replacement. The entry adopts the queued tx only if its signed tx is that tx.
+func TestBR5_AV1EntryAdoptsOnlyTheTxItSigned(t *testing.T) {
+	oldTx, newTx := queuedTx(t, 40e9), queuedTx(t, 80e9)
+	signed := func(unsigned string) string {
+		h, err := attachSignatureToTx(unsigned, 1, make([]byte, 32), append(make([]byte, 31), 7))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if !signedTxSigns(signed(oldTx), oldTx) || signedTxSigns(signed(oldTx), newTx) || signedTxSigns(oldTx, oldTx) {
+		t.Fatal("signedTxSigns: want true only for a tx and its own signed form")
+	}
+
+	// Replaced before the upgrade: the replacement is broadcast.
+	l1, _, rpc, gql, cp, cfg := wdWorld(t, newTx)
+	cp.SentWithdrawals["0"] = SentTx{TxHash: "0xold", SignedTxHex: signed(oldTx), Nonce: 0, SentAt: 1, LastBroadcastAt: time.Now().Unix()}
+	handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primary")
+	got := cp.SentWithdrawals["0"]
+	if len(l1.sent) != 1 || got.UnsignedTxHex != newTx || len(got.PrevTxHashes) != 1 || got.PrevTxHashes[0] != "0xold" {
+		t.Fatalf("replaced v1 entry: %d broadcasts, entry %+v; want the replacement broadcast and the old hash kept", len(l1.sent), got)
+	}
+
+	// Not replaced: the entry keeps waiting on its own tx; nothing new is signed.
+	l1, _, rpc, gql, cp, cfg = wdWorld(t, oldTx)
+	cp.SentWithdrawals["0"] = SentTx{TxHash: "0xold", SignedTxHex: signed(oldTx), Nonce: 0, SentAt: 1, LastBroadcastAt: time.Now().Unix()}
+	handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primary")
+	got = cp.SentWithdrawals["0"]
+	if len(l1.sent) != 0 || got.TxHash != "0xold" || len(got.PrevTxHashes) != 0 {
+		t.Fatalf("unreplaced v1 entry: %d broadcasts, entry %+v; want it left waiting on its tx", len(l1.sent), got)
+	}
+}

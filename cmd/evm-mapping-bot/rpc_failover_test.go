@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -57,5 +58,31 @@ func TestB14_RPCHostsHidesKeys(t *testing.T) {
 	got := rpcHosts("https://eth-sepolia.g.alchemy.com/v2/SECRETKEY, https://sepolia.infura.io/v3/KEY2?x=1,not a url")
 	if strings.Contains(got, "SECRET") || strings.Contains(got, "KEY2") || got != "eth-sepolia.g.alchemy.com,sepolia.infura.io,(unparsed)" {
 		t.Fatalf("rpcHosts = %q", got)
+	}
+}
+
+// B-R4: every call started at the first endpoint, so a primary that does not
+// answer cost each call its timeout. Calls now start at the endpoint that last
+// answered.
+func TestBR4_FailoverSticksToTheEndpointThatAnswered(t *testing.T) {
+	var primaryHits, backupHits atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
+		w.WriteHeader(503)
+	}))
+	t.Cleanup(primary.Close)
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupHits.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x2a"}}`))
+	}))
+	t.Cleanup(backup.Close)
+	rpc := newEthRPC(primary.URL + "," + backup.URL)
+	for i := 0; i < 3; i++ {
+		if got, err := rpc.getFinalizedBlock(); err != nil || got != 42 {
+			t.Fatalf("call %d: %d %v", i, got, err)
+		}
+	}
+	if p, b := primaryHits.Load(), backupHits.Load(); p != 1 || b != 3 {
+		t.Fatalf("primary asked %d times, backup %d; want the primary once", p, b)
 	}
 }
