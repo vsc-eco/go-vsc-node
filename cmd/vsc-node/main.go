@@ -162,6 +162,10 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if err := sysConfig.OracleParams().ValidateEvmBridges(); err != nil {
+		log.Error("invalid EVM bridge config", "err", err)
+		os.Exit(1)
+	}
 
 	if err != nil {
 		log.Error("startup error", "err", err)

@@ -133,7 +133,11 @@ func (c *countingOutputs) GetLastOutput(string, uint64) (contracts.ContractOutpu
 func evmOnlyManager(t *testing.T, version consensusversion.Version, bridges map[string]string) (*TssManager, *countingOutputs) {
 	t.Helper()
 	mgr := newTestTssManager(t, "observer")
-	mgr.sconf = evmOnlyConfig{SystemConfig: systemconfig.MocknetConfig(), op: params.OracleParams{EvmBridgeContracts: bridges}}
+	from := map[string]uint64{}
+	for sym := range bridges {
+		from[sym] = 0
+	}
+	mgr.sconf = evmOnlyConfig{SystemConfig: systemconfig.MocknetConfig(), op: params.OracleParams{EvmBridgeContracts: bridges, EvmBridgeFromHeight: from}}
 	mgr.scheduler = &fakeSolvencyScheduler{minVer: version}
 	mgr.tssCommitments = evmCommitments{rows: map[string]tss_db.TssCommitment{
 		evmKey: {Epoch: 9, Commitment: bitsetB64(2, 3)},
@@ -165,6 +169,16 @@ func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 	}
 	if !mgr.retiringGenSignerSetCached(1000).HasReadiness("dave") {
 		t.Fatal("the cached accessor (gossip receive path) must see the EVM holders too")
+	}
+
+	// C-R2: below the bridge's activation height its key is not covered.
+	early, _ := evmOnlyManager(t, consensusversion.V0_12_0, bridges)
+	early.sconf = evmOnlyConfig{SystemConfig: systemconfig.MocknetConfig(), op: params.OracleParams{EvmBridgeContracts: bridges, EvmBridgeFromHeight: map[string]uint64{"ETH": 1001}}}
+	if early.retiringGenSignerSet(1000).HasReadiness("dave") {
+		t.Fatal("below the bridge's activation height: the EVM holders must not be eligible")
+	}
+	if !early.retiringGenSignerSet(1001).HasReadiness("dave") {
+		t.Fatal("at the bridge's activation height: the EVM holders must be eligible")
 	}
 
 	// No bridge configured: inert, byte-identical to before.

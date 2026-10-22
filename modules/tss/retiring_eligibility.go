@@ -104,13 +104,14 @@ func (tssMgr *TssManager) retiringSetInForce(bh uint64) bool {
 
 // evmVaultKeysBound returns the EVM bridges' vault keys when the 0.12.0
 // key-custody rules cover them at bh (consensusversion.EvmVaultCustodyActive
-// on the chain-active version), else nil. The key list is per-network config;
-// cheap and local, so it is checked before the version read.
+// on the chain-active version), else nil. The key list is per-network config,
+// each bridge from its activation height; cheap and local, so it is checked
+// before the version read.
 func (tssMgr *TssManager) evmVaultKeysBound(bh uint64) []string {
 	if tssMgr.sconf == nil || tssMgr.scheduler == nil {
 		return nil
 	}
-	keys := tssMgr.sconf.OracleParams().EvmVaultKeyIds()
+	keys := tssMgr.sconf.OracleParams().EvmVaultKeyIds(bh)
 	if len(keys) == 0 || !consensusversion.EvmVaultCustodyActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
 		return nil
 	}

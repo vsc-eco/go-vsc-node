@@ -162,7 +162,7 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 // for the vault with a released bond. Retiring older shares is the key
 // rotation's job (C3).
 func (se *StateEngine) evmVaultHolders(height uint64) (bool, map[string]bool, error) {
-	keys := se.sconf.OracleParams().EvmVaultKeyIds()
+	keys := se.sconf.OracleParams().EvmVaultKeyIds(height)
 	if len(keys) == 0 || !consensusversion.EvmVaultCustodyActive(se.ActiveConsensusVersion(height)) {
 		return false, nil, nil
 	}

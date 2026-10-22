@@ -72,7 +72,7 @@ func evmPoaEnv(t *testing.T, version uint64, row *tss_db.TssCommitment, current 
 	t.Helper()
 	se, _, _ := poaEnv(t, version)
 	se.sconf = evmPoaConfig{SystemConfig: systemconfig.MocknetConfig(),
-		op: params.OracleParams{EvmBridgeContracts: map[string]string{"ETH": evmPoaBridge}}}
+		op: params.OracleParams{EvmBridgeContracts: map[string]string{"ETH": evmPoaBridge}, EvmBridgeFromHeight: map[string]uint64{"ETH": 0}}}
 	commits := &evmPoaCommitments{row: row}
 	se.tssCommitments = commits
 	se.electionDb = &evmPoaElections{fakeElections: fakeElections{version: version}, current: current}
@@ -107,6 +107,18 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 	}
 	if commits.heldAt != h {
 		t.Errorf("the EVM commitment was read below %d, want strictly below the unstake height %d (POA-1's rule)", commits.heldAt, h)
+	}
+
+	// C-R2: before the bridge's activation height its key is not a
+	// consensus input, so nothing is held for it.
+	early, _ := evmPoaEnv(t, 12, newest)
+	early.sconf = evmPoaConfig{SystemConfig: systemconfig.MocknetConfig(),
+		op: params.OracleParams{EvmBridgeContracts: map[string]string{"ETH": evmPoaBridge}, EvmBridgeFromHeight: map[string]uint64{"ETH": h + 1}}}
+	if held, err := early.heldShareOfFundedVault("hive:carol", h); err != nil || held {
+		t.Fatalf("below the bridge's activation height: carol held=%v err=%v, want not held", held, err)
+	}
+	if held, err := early.heldShareOfFundedVault("hive:carol", h+1); err != nil || !held {
+		t.Fatalf("at the bridge's activation height: carol held=%v err=%v, want held", held, err)
 	}
 
 	// No keygen yet: the key holds nothing, nothing is held for it.

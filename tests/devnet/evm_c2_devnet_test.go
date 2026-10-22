@@ -62,6 +62,7 @@ func TestEVMBridge_C2_DepartedHolderBondHeld(t *testing.T) {
 	}
 	if ruleOn {
 		d.cfg.SysConfigOverrides.OracleParams.EvmBridgeContracts = map[string]string{"ETH": e.amID}
+		d.cfg.SysConfigOverrides.OracleParams.EvmBridgeFromHeight = map[string]uint64{"ETH": 0}
 	}
 	if err := writeSysConfigOverrides(d.cfg, d.devnetDir); err != nil {
 		t.Fatal(err)

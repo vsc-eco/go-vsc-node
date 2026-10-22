@@ -799,7 +799,8 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 }
 
 // EvmVaultCustodyActive reports whether the EVM bridge's vault key (the
-// "primary" TSS key of each OracleParams.EvmBridgeContracts contract) gets the
+// "primary" TSS key of each OracleParams.EvmBridgeContracts contract, from its
+// EvmBridgeFromHeight) gets the
 // key-custody rules of the active BTC vault key: the holders named by its
 // newest keygen/reshare commitment stay readiness/signing-eligible after leaving
 // the election (C1, as ActiveKeyHoldersBoundActive), and while the key exists
