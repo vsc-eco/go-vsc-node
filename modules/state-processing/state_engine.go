@@ -1679,8 +1679,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							tssLog.Debug("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
 							continue
 						}
-						for _, c := range commitmentMap {
-							commitments = append(commitments, c)
+						// In key order, not Go map order: map order is random per
+						// node, and two commitments for one key (e.g. two keygens
+						// that both finished before either landed) activate
+						// whichever is read first.
+						keys := make([]string, 0, len(commitmentMap))
+						for k := range commitmentMap {
+							keys = append(keys, k)
+						}
+						slices.Sort(keys)
+						for _, k := range keys {
+							commitments = append(commitments, commitmentMap[k])
 						}
 					}
 
