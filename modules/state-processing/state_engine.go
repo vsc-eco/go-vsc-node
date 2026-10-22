@@ -1606,9 +1606,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
-								if err != nil {
-									log.Debug("failed to find key", "keyId", sigPack.KeyId, "err", err)
+								tssKey, found := se.findKeyBlocking(sigPack.KeyId)
+								if !found {
+									log.Debug("failed to find key", "keyId", sigPack.KeyId)
 									continue
 								}
 								if tssKey.Status != tss_db.TssKeyActive {
@@ -1837,19 +1837,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// retries instead of deciding differently from its peers;
 						// only a key that does not exist falls through.
 						if commitment.Type == "keygen" && consensusversion.KeygenOnceActive(se.ActiveConsensusVersion(block.BlockNumber)) {
-							var k tss_db.TssKey
-							found := false
-							blockingRetry("TSS-KG-1 FindKey", func() error {
-								got, err := se.tssKeys.FindKey(commitment.KeyId)
-								if err != nil {
-									if isTransientReadErr(err) {
-										return err
-									}
-									return nil
-								}
-								k, found = got, true
-								return nil
-							})
+							k, found := se.findKeyBlocking(commitment.KeyId)
 							if found && k.Status != tss_db.TssKeyCreated {
 								tssLog.Warn("dropping keygen commitment for a key already activated by an earlier keygen", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "epoch", commitment.Epoch, "keyEpoch", k.Epoch, "status", k.Status)
 								continue
@@ -1882,14 +1870,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 
-						var newKey bool
-						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-						if savedKeyInfo.Status == "created" {
-							newKey = true
-						}
+						// C-R6: one fail-stop read; a missing key reads as the zero
+						// key, as before.
+						savedKeyInfo, _ := se.findKeyBlocking(commitment.KeyId)
+						newKey := savedKeyInfo.Status == "created"
 
 						if commitment.Type == "keygen" || commitment.Type == "reshare" {
-							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							keyInfo := savedKeyInfo
 							if newKey && commitment.PublicKey != nil {
 								keyInfo.PublicKey = *commitment.PublicKey
 								keyInfo.CreatedHeight = int64(block.BlockNumber)
@@ -3132,6 +3119,28 @@ func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool)
 	}
 	// Zero stake -> this is an unstake report; debit the reserve.
 	return -unstakedAmount, true
+}
+
+// findKeyBlocking reads a TSS key row for a consensus decision (C-R6): a read
+// that failed on this node alone (a Mongo blip) blocks and retries, so the
+// node does not decide differently from its peers; found=false only when the
+// key does not exist. The vsc.tss_commitment and vsc.tss_sign handlers used
+// to treat any error as an absent key.
+func (se *StateEngine) findKeyBlocking(keyId string) (tss_db.TssKey, bool) {
+	var k tss_db.TssKey
+	found := false
+	blockingRetry("FindKey "+keyId, func() error {
+		got, err := se.tssKeys.FindKey(keyId)
+		if err != nil {
+			if isTransientReadErr(err) {
+				return err
+			}
+			return nil
+		}
+		k, found = got, true
+		return nil
+	})
+	return k, found
 }
 
 func blockingRetry(what string, read func() error, stallHook ...func(time.Duration)) {
