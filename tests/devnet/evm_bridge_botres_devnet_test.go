@@ -163,22 +163,17 @@ func TestEVMBridge_BotResilience(t *testing.T) {
 	if !botA2.WaitForLog(ctx, logLoadedCheckpoint, 90*time.Second) {
 		t.Fatalf("bot A2 never logged %q on restart; logs:\n%s", logLoadedCheckpoint, joinLogs(botA2))
 	}
-	// ASSERT it resumed from the persisted block, not 0. The slog line is
-	// `loaded checkpoint lastBlock=<n>` — assert the resumed value matches.
-	wantResume := fmt.Sprintf("lastBlock=%d", savedBlock)
-	resumed := botA2.WaitForLog(ctx, wantResume, 30*time.Second)
-	if !resumed {
-		// Tolerate the (rare) case where the bot advanced past savedBlock before
-		// dumping logs; re-read the live checkpoint and require it did not regress.
-		cpNow, rerr := readCheckpoint(cpPath)
-		if rerr != nil || cpNow.LastScannedBlock < savedBlock {
-			t.Fatalf("bot A2 did NOT resume from saved block %d (no %q log; checkpoint now=%v err=%v); logs:\n%s",
-				savedBlock, wantResume, cpNow.LastScannedBlock, rerr, joinLogs(botA2))
-		}
-		t.Logf("ASSERT resume: no exact log match but checkpoint did not regress (now=%d >= saved=%d)", cpNow.LastScannedBlock, savedBlock)
-	} else {
-		t.Logf("ASSERT resume: bot A2 loaded checkpoint at saved block %d (did not rescan from 0)", savedBlock)
+	// ASSERT it resumed from the persisted block, not 0: the block the
+	// `loaded checkpoint lastBlock=<n>` line reports, at load time, is at least
+	// savedBlock (bot A may have saved a later block before it stopped). B-R8:
+	// the old fallback re-read the live checkpoint, which a bot that rescanned
+	// from 0 also passes once it catches up.
+	loaded, ok := loggedCheckpointBlock(joinLogs(botA2))
+	if !ok || loaded < savedBlock {
+		t.Fatalf("bot A2 did NOT resume from saved block %d (loaded %d, logged=%v); logs:\n%s",
+			savedBlock, loaded, ok, joinLogs(botA2))
 	}
+	t.Logf("ASSERT resume: bot A2 loaded checkpoint at block %d >= saved %d (did not rescan from 0)", loaded, savedBlock)
 	botA2.Stop()
 	_ = os.Remove(lockPath)
 	devnetSleep(2 * time.Second)
@@ -304,6 +299,26 @@ func writeCleanCheckpoint(path string, lastBlock uint64) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o600)
+}
+
+// loggedCheckpointBlock reads lastBlock from the bot's first "loaded
+// checkpoint" log line.
+func loggedCheckpointBlock(logs string) (uint64, bool) {
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, "loaded checkpoint") {
+			continue
+		}
+		i := strings.Index(line, "lastBlock=")
+		if i < 0 {
+			return 0, false
+		}
+		var n uint64
+		if _, err := fmt.Sscanf(line[i+len("lastBlock="):], "%d", &n); err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 func joinLogs(b *Bot) string {
