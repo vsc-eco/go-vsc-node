@@ -96,6 +96,15 @@ func VerifyGatewayKeyPoP(gatewayKey string, account string, pop string) error {
 	if s.Sign() <= 0 || s.Cmp(gatewayPoPHalfOrderN) > 0 {
 		return fmt.Errorf("gateway pop: non-canonical high-S signature")
 	}
+	// secp256k1/v2 v2.0.1 RecoverCompact does not range-check R: for R == 0 it
+	// takes ModInverse(0, N) == nil and nil-panics (the gateway's H3). The PoP
+	// comes from a witness announcement anyone can publish, and the election
+	// proposer verifies it for every enabled witness on every election, so a
+	// panic here would stop the node at every election. Require 1 <= R < N.
+	r := new(big.Int).SetBytes(sigBytes[1 : 1+32])
+	if r.Sign() <= 0 || r.Cmp(secp256k1.S256().Params().N) >= 0 {
+		return fmt.Errorf("gateway pop: signature R is zero or out of range")
+	}
 	pubKey, _, err := secp256k1.RecoverCompact(sigBytes, gatewayPoPDigest(gatewayKey, account))
 	if err != nil {
 		return fmt.Errorf("gateway pop: recover: %w", err)
