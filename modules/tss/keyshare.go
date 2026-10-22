@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 
 	tss_helpers "vsc-node/modules/tss/helpers"
 
@@ -41,14 +42,26 @@ func sharePubHex(algo tss_helpers.SigningAlgo, raw []byte) (string, error) {
 		if err := json.Unmarshal(raw, &kd); err != nil || kd.ECDSAPub == nil {
 			return "", fmt.Errorf("not an ECDSA share: %v", err)
 		}
-		pk := btcec.PublicKey{Curve: btss.S256(), X: kd.ECDSAPub.X(), Y: kd.ECDSAPub.Y()}
-		return hex.EncodeToString(pk.SerializeCompressed()), nil
+		return pointPubHex(algo, kd.ECDSAPub.X(), kd.ECDSAPub.Y())
 	case tss_helpers.SigningAlgoEddsa:
 		var kd keyGenEddsa.LocalPartySaveData
 		if err := json.Unmarshal(raw, &kd); err != nil || kd.EDDSAPub == nil {
 			return "", fmt.Errorf("not an EdDSA share: %v", err)
 		}
-		return hex.EncodeToString(edwards.NewPublicKey(kd.EDDSAPub.X(), kd.EDDSAPub.Y()).SerializeCompressed()), nil
+		return pointPubHex(algo, kd.EDDSAPub.X(), kd.EDDSAPub.Y())
+	}
+	return "", fmt.Errorf("unknown algo %q", algo)
+}
+
+// pointPubHex encodes the public key (x, y) on algo's curve as a keygen
+// commits it (compressed secp256k1 / compressed edwards).
+func pointPubHex(algo tss_helpers.SigningAlgo, x, y *big.Int) (string, error) {
+	switch algo {
+	case tss_helpers.SigningAlgoEcdsa:
+		pk := btcec.PublicKey{Curve: btss.S256(), X: x, Y: y}
+		return hex.EncodeToString(pk.SerializeCompressed()), nil
+	case tss_helpers.SigningAlgoEddsa:
+		return hex.EncodeToString(edwards.NewPublicKey(x, y).SerializeCompressed()), nil
 	}
 	return "", fmt.Errorf("unknown algo %q", algo)
 }

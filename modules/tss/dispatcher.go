@@ -105,6 +105,24 @@ type ReshareDispatcher struct {
 // verifyResharedKey checks that the reshared public key matches the original.
 // extractPub deserializes the stored key data and returns the original (X, Y).
 func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
+	// C-R5 (TSS-KG-1, 0.12.0): for a keygen-born epoch the reference is the
+	// key's on-chain public key, not this node's slot. A node in a late
+	// keygen's committee only holds that keygen's share in the slot; as a
+	// new-only party of the first reshare (which loads no old share, so
+	// loadKeyShare never repairs the slot) it refused the correctly reshared
+	// key and kept no share while the reshare commitment names it.
+	if dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen" {
+		if key, err := dispatcher.tssMgr.tssKeys.FindKey(dispatcher.keyId); err == nil && key.PublicKey != "" {
+			got, perr := pointPubHex(dispatcher.algo, newX, newY)
+			if perr == nil && got == key.PublicKey {
+				return nil
+			}
+			log.Error("RESHARE KEY MISMATCH - public key is not the key's on-chain key, aborting reshare",
+				"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId, "algo", algo,
+				"keyPubKey", key.PublicKey, "newPubKey", got)
+			return fmt.Errorf("reshare produced a public key other than key %s's on-chain key", dispatcher.keyId)
+		}
+	}
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
 	if err != nil {
 		return fmt.Errorf("keystore encryption key: %w", err)

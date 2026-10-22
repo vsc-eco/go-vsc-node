@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -205,4 +206,50 @@ func TestTSSKG1_RepairWorksForTheEvmVaultKeyId(t *testing.T) {
 	got, err := sign.loadKeyShare(shareStoreEpoch, true)
 	require.NoError(t, err)
 	require.Equal(t, activating, got, "the activating keygen's share is used for the EVM vault key")
+}
+
+// C-R5 (TSS-KG-1, 0.12.0): the post-reshare check compared the new public key
+// with this node's slot. A node in a late keygen's committee only holds that
+// keygen's share in the slot and, as a new-only party of the first reshare,
+// has no reason to repair it, so it refused the correctly reshared key and
+// kept no share. For a keygen-born epoch the reference is the on-chain key.
+func TestCR5_ReshareIsCheckedAgainstTheOnChainKey(t *testing.T) {
+	for _, algo := range []tss_helpers.SigningAlgo{tss_helpers.SigningAlgoEcdsa, tss_helpers.SigningAlgoEddsa} {
+		curve := btss.S256()
+		if algo == tss_helpers.SigningAlgoEddsa {
+			curve = btss.Edwards()
+		}
+		point := func(k int64) (*big.Int, *big.Int) { return curve.ScalarBaseMult(big.NewInt(k).Bytes()) }
+		extract := func(data []byte) (*big.Int, *big.Int, error) {
+			if algo == tss_helpers.SigningAlgoEddsa {
+				var kd keyGenEddsa.LocalPartySaveData
+				if err := json.Unmarshal(data, &kd); err != nil || kd.EDDSAPub == nil {
+					return nil, nil, fmt.Errorf("not a share")
+				}
+				return kd.EDDSAPub.X(), kd.EDDSAPub.Y(), nil
+			}
+			var kd keyGenSecp256k1.LocalPartySaveData
+			if err := json.Unmarshal(data, &kd); err != nil || kd.ECDSAPub == nil {
+				return nil, nil, fmt.Errorf("not a share")
+			}
+			return kd.ECDSAPub.X(), kd.ECDSAPub.Y(), nil
+		}
+		_, pubA := testShare(t, algo, 7)
+		later, pubL := testShare(t, algo, 11)
+		mgr, _ := keyshareBase(t, algo, pubA)
+		putShare(t, mgr, "slot", later, pubL) // no copy: not in the activating keygen
+		rd := &ReshareDispatcher{BaseDispatcher: shareStoreBase(t, mgr, "sign-2600-0-vsc1Vault-mainv2"), prevCommitmentType: "keygen"}
+		rd.algo, rd.keygenShareCheck = algo, true
+
+		xA, yA := point(7)
+		require.NoError(t, rd.verifyResharedKey(xA, yA, string(algo), extract), "%s: the on-chain key is accepted", algo)
+		xL, yL := point(11)
+		require.Error(t, rd.verifyResharedKey(xL, yL, string(algo), extract), "%s: any other key is refused", algo)
+
+		// Below 0.12.0, or a reshare-born epoch: the slot, as before.
+		rd.keygenShareCheck = false
+		require.Error(t, rd.verifyResharedKey(xA, yA, string(algo), extract), "%s: unchecked, compared with the slot", algo)
+		rd.keygenShareCheck, rd.prevCommitmentType = true, "reshare"
+		require.Error(t, rd.verifyResharedKey(xA, yA, string(algo), extract), "%s: reshare-born, compared with the slot", algo)
+	}
 }
