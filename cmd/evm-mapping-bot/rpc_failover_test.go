@@ -86,3 +86,17 @@ func TestBR4_FailoverSticksToTheEndpointThatAnswered(t *testing.T) {
 		t.Fatalf("primary asked %d times, backup %d; want the primary once", p, b)
 	}
 }
+
+// S-1: a transport error carried the endpoint's full URL, API key included,
+// into the logs and the /health report. Only the host is kept.
+func TestS1_RPCErrorsDoNotCarryTheAPIKey(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close() // connection refused
+	_, err := newEthRPC(closed.URL + "/v2/SECRETKEY?key=KEY2").getFinalizedBlock()
+	if err == nil {
+		t.Fatal("no error from a closed endpoint")
+	}
+	if strings.Contains(err.Error(), "SECRETKEY") || strings.Contains(err.Error(), "KEY2") || !strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("error %q: want the host only", err)
+	}
+}

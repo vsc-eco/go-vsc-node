@@ -518,6 +518,21 @@ func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	return nil, lastErr
 }
 
+// redactURL keeps only the scheme and host of the URL in an HTTP request
+// error: hosted RPC URLs carry the provider's API key in the path or query,
+// and the error reaches the logs and the /health report (S-1).
+func redactURL(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		if p, perr := neturl.Parse(ue.URL); perr == nil && p.Host != "" {
+			ue.URL = p.Scheme + "://" + p.Host
+		} else {
+			ue.URL = "(endpoint)"
+		}
+	}
+	return err
+}
+
 // rpcHosts names the configured ETH RPC endpoints by host only: hosted RPC
 // URLs usually carry the provider's API key in the path or query.
 func rpcHosts(urls string) string {
@@ -537,7 +552,7 @@ func rpcHosts(urls string) string {
 func (e *ethRPC) callOne(url, method, body string) (res json.RawMessage, answered bool, err error) {
 	resp, err := e.client.Post(url, "application/json", strings.NewReader(body))
 	if err != nil {
-		return nil, false, err
+		return nil, false, redactURL(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
