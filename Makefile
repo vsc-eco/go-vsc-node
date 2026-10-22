@@ -230,7 +230,7 @@ test-e2e:
 EVM_SHARED_WAVES = TestEVMBridge_(W1|W2|W3|W5|W6Neg|W7|BotHFinding|BotResilience|ZK)
 test-evm-e2e:
 	@echo "==> EVM bridge devnet waves (build tag: evm_devnet)"
-	eval "$$(tests/devnet/suite/evm-artifacts.sh)" && \
+	exports="$$(tests/devnet/suite/evm-artifacts.sh)" && eval "$$exports" && \
 	$(GO_TEST) $(VERBOSE) -tags evm_devnet -parallel 3 -timeout 180m -run '$(EVM_SHARED_WAVES)' ./tests/devnet/ && \
 	$(GO_TEST) $(VERBOSE) -tags evm_devnet -timeout 60m -run 'TestEVMBridge_W0_2_HostInstantiate' ./tests/devnet/ && \
 	$(GO_TEST) $(VERBOSE) -tags evm_devnet -timeout 60m -run 'TestEVMBridge_WMock_HeaderInjection' ./tests/devnet/

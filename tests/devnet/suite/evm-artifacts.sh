@@ -53,10 +53,9 @@ cp "$zk/bin/mock-verifier.wasm" "$out/mock-verifier.wasm"
 for f in evm-bridge.wasm evm-bridge-devnet.wasm zk-verifier.wasm mock-verifier.wasm evm-mapping-bot; do
 	echo "# $(sha256sum "$out/$f" | cut -c1-16)  $f" >&2
 done
-cat <<EOF
-export EVM_BRIDGE_WASM=$out/evm-bridge.wasm
-export EVM_BRIDGE_DEVNET_WASM=$out/evm-bridge-devnet.wasm
-export ZK_VERIFIER_WASM=$out/zk-verifier.wasm
-export EVM_MOCK_VERIFIER_WASM=$out/mock-verifier.wasm
-export EVM_BOT_BIN=$out/evm-mapping-bot
-EOF
+# Quoted for eval: a checkout path may contain spaces.
+printf 'export EVM_BRIDGE_WASM=%q\n' "$out/evm-bridge.wasm"
+printf 'export EVM_BRIDGE_DEVNET_WASM=%q\n' "$out/evm-bridge-devnet.wasm"
+printf 'export ZK_VERIFIER_WASM=%q\n' "$out/zk-verifier.wasm"
+printf 'export EVM_MOCK_VERIFIER_WASM=%q\n' "$out/mock-verifier.wasm"
+printf 'export EVM_BOT_BIN=%q\n' "$out/evm-mapping-bot"
