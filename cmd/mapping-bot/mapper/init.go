@@ -67,6 +67,7 @@ type Bot struct {
 	Caller     ContractCaller
 	StateDB    StateStore
 	AddrDB     AddressStore
+	InstrDB    InstructionStore
 	FailedTxDB FailedTxStore
 
 	// GqlClient and GqlURL are single-endpoint overrides used in tests.
@@ -95,6 +96,10 @@ type Bot struct {
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
+
+	// Deposit addresses derived from instructions x vault generations (deposit_index.go).
+	depositIdxOnce sync.Once
+	depositIndex   *depositIndex
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.
@@ -226,6 +231,25 @@ func (b *Bot) addrDB() AddressStore {
 	}
 	return b.Db.Addresses
 }
+
+// instrDB returns the InstructionStore to use: the override if set, otherwise
+// Db.Instructions. A Bot built without a database (unit tests that only parse)
+// watches no stored instructions.
+func (b *Bot) instrDB() InstructionStore {
+	if b.InstrDB != nil {
+		return b.InstrDB
+	}
+	if b.Db != nil && b.Db.Instructions != nil {
+		return b.Db.Instructions
+	}
+	return noInstructions{}
+}
+
+type noInstructions struct{}
+
+func (noInstructions) Touch(context.Context, string) (bool, error)            { return false, nil }
+func (noInstructions) MarkDeposit(context.Context, string) error              { return nil }
+func (noInstructions) ListSince(context.Context, time.Time) ([]string, error) { return nil, nil }
 
 // botContractCaller wraps the Bot's callContract method to satisfy ContractCaller.
 type botContractCaller struct{ b *Bot }

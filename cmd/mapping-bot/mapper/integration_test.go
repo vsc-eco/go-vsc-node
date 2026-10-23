@@ -64,6 +64,7 @@ func newTestBotWithMocks() (
 		Caller:  caller,
 		StateDB: state,
 		AddrDB:  addr,
+		InstrDB: newMockInstructionStore(),
 	}
 	return
 }

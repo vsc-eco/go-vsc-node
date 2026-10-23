@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
@@ -163,6 +164,30 @@ func TestRequestHandler(t *testing.T) {
 		requestHandler(t.Context(), bot).ServeHTTP(w, req)
 		assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 	})
+}
+
+// BOT-ADDR-2: a request records the instruction (the durable record the bot derives
+// every generation's address from), and a repeat request renews it.
+func TestRequestHandler_RecordsAndRenewsTheInstruction(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
+	instruction := "deposit_to=hive:renewal-check"
+	body := requestBody{Instruction: instruction}
+
+	w := httptest.NewRecorder()
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", body))
+	require.Equal(t, http.StatusCreated, w.Code)
+	all, err := db.Instructions.ListSince(t.Context(), time.Time{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{instruction}, all)
+
+	before := time.Now().UTC()
+	w = httptest.NewRecorder()
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", body))
+	require.Equal(t, http.StatusOK, w.Code, "the address response is unchanged")
+	renewed, err := db.Instructions.ListSince(t.Context(), before)
+	require.NoError(t, err)
+	assert.Equal(t, []string{instruction}, renewed, "the repeat request renewed the instruction")
 }
 
 func TestSignHandler(t *testing.T) {

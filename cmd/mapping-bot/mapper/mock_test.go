@@ -33,6 +33,9 @@ type mockGraphQL struct {
 	simCalls   int
 	primaryKey []byte
 	backupKey  []byte
+	// keySets: the vault generations FetchVaultKeySets reports; nil = a contract
+	// with no keys (no derived addresses, the address store alone decides).
+	keySets    *DepositKeySets
 	observedTx map[string]bool   // key: "txid:vout" (display/reversed hex)
 	txStatuses map[string]string // key: tx ID, value: status
 	// keyCommitment: TSS key id -> type of its newest keygen/reshare commitment.
@@ -122,6 +125,19 @@ func (m *mockGraphQL) FetchAbandonedSweep(ctx context.Context, txId string) (boo
 func (m *mockGraphQL) FetchPublicKeys(ctx context.Context) ([]byte, []byte, error) {
 	m.recordCall("FetchPublicKeys")
 	return m.primaryKey, m.backupKey, nil
+}
+
+func (m *mockGraphQL) FetchVaultKeySets(ctx context.Context) (DepositKeySets, error) {
+	m.recordCall("FetchVaultKeySets")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.readErr["FetchVaultKeySets"]; err != nil {
+		return DepositKeySets{}, err
+	}
+	if m.keySets == nil {
+		return DepositKeySets{Fingerprint: "none"}, nil
+	}
+	return *m.keySets, nil
 }
 
 func (m *mockGraphQL) FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error) {
@@ -553,6 +569,50 @@ func (m *mockAddressStore) Insert(ctx context.Context, chainAddr, instruction st
 	}
 	m.instructions[chainAddr] = instruction
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// mockInstructionStore — in-memory satisfying InstructionStore
+// ---------------------------------------------------------------------------
+
+type mockInstructionStore struct {
+	mu        sync.Mutex
+	requested map[string]time.Time
+	deposits  map[string]int
+}
+
+func newMockInstructionStore() *mockInstructionStore {
+	return &mockInstructionStore{requested: map[string]time.Time{}, deposits: map[string]int{}}
+}
+
+func (m *mockInstructionStore) Touch(ctx context.Context, instruction string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, known := m.requested[instruction]
+	m.requested[instruction] = time.Now().UTC()
+	return !known, nil
+}
+
+func (m *mockInstructionStore) MarkDeposit(ctx context.Context, instruction string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, known := m.requested[instruction]; !known {
+		m.requested[instruction] = time.Now().UTC()
+	}
+	m.deposits[instruction]++
+	return nil
+}
+
+func (m *mockInstructionStore) ListSince(ctx context.Context, since time.Time) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for instr, at := range m.requested {
+		if since.IsZero() || !at.Before(since) {
+			out = append(out, instr)
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------

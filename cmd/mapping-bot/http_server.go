@@ -256,10 +256,21 @@ func requestHandler(
 		ctx, cancel = context.WithTimeout(globalCtx, 15*time.Second)
 		defer cancel()
 
+		// BOT-ADDR-2: the instruction is the durable record the bot watches; the
+		// address of every live vault generation is derived from it. Each request
+		// renews it, so an instruction in use is never forgotten.
+		instrCreated, err := bot.TouchInstruction(ctx, requestBody.Instruction)
+		if err != nil {
+			writeResponse(w, http.StatusInternalServerError, "")
+			writeError(err)
+			return
+		}
+
+		addrExists := false
 		if err := bot.Db.Addresses.Insert(ctx, btcAddr, requestBody.Instruction); err != nil {
 			if errors.Is(err, database.ErrAddrExists) {
+				addrExists = true
 				writeResponse(w, http.StatusOK, "address mapping exists: "+btcAddr+" -> "+requestBody.Instruction)
-				return
 			} else {
 				writeResponse(w, http.StatusInternalServerError, "")
 				writeError(err)
@@ -267,10 +278,13 @@ func requestHandler(
 		} else {
 			writeResponse(w, http.StatusCreated, "address mapping created: "+btcAddr+" -> "+requestBody.Instruction)
 		}
+		if addrExists && !instrCreated {
+			return // already watched: the main loop maps its deposits
+		}
 
 		// handle this error, also allows test scripts witout bot
 		if bot != nil {
-			go bot.HandleExistingTxs(btcAddr)
+			go bot.HandleExistingDeposits(requestBody.Instruction, btcAddr)
 		} else {
 			fmt.Fprintf(os.Stderr, "no mapper state passed to http server, skipping check for previous txs")
 		}
