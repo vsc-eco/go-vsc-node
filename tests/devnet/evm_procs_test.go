@@ -70,7 +70,7 @@ func TestSUITE4_HelperDiesWithTheTest(t *testing.T) {
 	if pid == 0 {
 		t.Fatal("the parent never reported its child")
 	}
-	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) {
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(100 * time.Millisecond) { // wall: an OS process exiting, not chain time
 		if err := syscall.Kill(pid, 0); err != nil {
 			return // gone
 		}
