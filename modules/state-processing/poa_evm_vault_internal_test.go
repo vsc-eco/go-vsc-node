@@ -15,9 +15,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// C2 (0.12.0): POA-1 read only the BTC vault registry, so the bonds behind the
+// C2 (0.13.0): POA-1 read only the BTC vault registry, so the bonds behind the
 // EVM bridge's vault key were never held: a holder could unstake and keep a
-// share that signs for the vault. From 0.12.0, while the EVM key exists, its
+// share that signs for the vault. From 0.13.0, while the EVM key exists, its
 // newest holders, the current committee and every electable or recently active
 // witness are held, as for a funded BTC generation.
 
@@ -79,17 +79,17 @@ func evmPoaEnv(t *testing.T, version uint64, row *tss_db.TssCommitment, current 
 	return se, commits
 }
 
-func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
+func TestC2_EvmVaultHoldersBondsAreHeldFrom013(t *testing.T) {
 	const h = uint64(1_000_000)
 	// The EVM key's newest commitment (epoch 9) names carol and dave (bits 2, 3).
 	newest := &tss_db.TssCommitment{Epoch: 9, Commitment: bits(2, 3)}
 
-	pre, _ := evmPoaEnv(t, 11, newest)
+	pre, _ := evmPoaEnv(t, 12, newest)
 	if held, err := pre.heldShareOfFundedVault("hive:carol", h); err != nil || held {
-		t.Fatalf("0.11.0: an EVM-key holder is not held (BTC-only rule): held=%v err=%v", held, err)
+		t.Fatalf("0.12.0: an EVM-key holder is not held (BTC-only rule): held=%v err=%v", held, err)
 	}
 
-	se, commits := evmPoaEnv(t, 12, newest, "hive:bob")
+	se, commits := evmPoaEnv(t, 13, newest, "hive:bob")
 	for _, tc := range []struct {
 		account string
 		want    bool
@@ -102,7 +102,7 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 	} {
 		held, err := se.heldShareOfFundedVault(tc.account, h)
 		if err != nil || held != tc.want {
-			t.Errorf("0.12.0: %s held=%v err=%v, want %v", tc.account, held, err, tc.want)
+			t.Errorf("0.13.0: %s held=%v err=%v, want %v", tc.account, held, err, tc.want)
 		}
 	}
 	if commits.heldAt != h {
@@ -111,7 +111,7 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 
 	// C-R2: before the bridge's activation height its key is not a
 	// consensus input, so nothing is held for it.
-	early, _ := evmPoaEnv(t, 12, newest)
+	early, _ := evmPoaEnv(t, 13, newest)
 	early.sconf = evmPoaConfig{SystemConfig: systemconfig.MocknetConfig(),
 		op: params.OracleParams{EvmBridgeContracts: map[string]string{"ETH": evmPoaBridge}, EvmBridgeFromHeight: map[string]uint64{"ETH": h + 1}}}
 	if held, err := early.heldShareOfFundedVault("hive:carol", h); err != nil || held {
@@ -122,13 +122,13 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 	}
 
 	// No keygen yet: the key holds nothing, nothing is held for it.
-	nokey, _ := evmPoaEnv(t, 12, nil, "hive:bob")
+	nokey, _ := evmPoaEnv(t, 13, nil, "hive:bob")
 	if held, err := nokey.heldShareOfFundedVault("hive:bob", h); err != nil || held {
 		t.Fatalf("no EVM keygen and no BTC registry: nothing is funded, held=%v err=%v", held, err)
 	}
 
 	// A transient read is returned (the caller blocks and retries), never decided.
-	flaky, fc := evmPoaEnv(t, 12, newest)
+	flaky, fc := evmPoaEnv(t, 13, newest)
 	fc.err = errors.New("mongo blip")
 	if held, err := flaky.heldShareOfFundedVault("hive:alice", h); err == nil || !held {
 		t.Fatalf("a commitment read error must hold and be returned: held=%v err=%v", held, err)
@@ -136,7 +136,7 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 
 	// A stored row that does not decode is the same on every node: the unstake
 	// decides (held) instead of retrying forever (POA-1's ErrDecode rule).
-	corrupt, cc := evmPoaEnv(t, 12, newest)
+	corrupt, cc := evmPoaEnv(t, 13, newest)
 	cc.err = fmt.Errorf("failed to decode commitment: %w: bad epoch", vdb.ErrDecode)
 	decided := make(chan bool, 1)
 	go func() { decided <- corrupt.HeldShareOfFundedVaultOrBlock("hive:alice", h) }()
@@ -150,7 +150,7 @@ func TestC2_EvmVaultHoldersBondsAreHeldFrom012(t *testing.T) {
 	}
 
 	// No bridge configured: no EVM read at all.
-	plain, pc := evmPoaEnv(t, 12, newest)
+	plain, pc := evmPoaEnv(t, 13, newest)
 	plain.sconf = evmPoaConfig{SystemConfig: systemconfig.MocknetConfig()}
 	pc.heldAt = 0
 	if held, _ := plain.heldShareOfFundedVault("hive:carol", h); held || pc.heldAt != 0 {

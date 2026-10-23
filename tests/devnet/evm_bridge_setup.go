@@ -47,7 +47,7 @@ func ensureSharedDevnet() (*Devnet, error) {
 	sharedDevnetOnce.Do(func() {
 		ctx := context.Background() // long-lived: outlives individual test timeouts
 		cfg := evmBridgeConfig()
-		// EVM_CONSENSUS_FLOOR=12 pins the version floor to 0.12 from epoch 1,
+		// EVM_CONSENSUS_FLOOR=13 pins the version floor to 0.13 from epoch 1,
 		// as the C1 custody devnet does, and the waves wait until the chain
 		// runs it, so the rules gated on it (TSS-KG-1, the EVM key custody)
 		// are in force when the bridge keys are created, as on a network that

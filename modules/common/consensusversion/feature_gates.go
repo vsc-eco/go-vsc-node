@@ -798,6 +798,20 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 	return Version0_11_0Active(active)
 }
 
+// V0_13_0 is the EVM bridge line: the key-custody rules extended to the EVM
+// bridge's vault key (C1, C2) and the keygen-once rule (TSS-KG-1). A new line
+// because the TSS-PARTY batch ships 0.12.0 first, without the EVM bridge; a
+// behaviour tied to an active line would switch per node during a rolling
+// upgrade. Binaries announce it from this batch on (version.go
+// currentConsensus); every rule on it is inert until the chain floor reaches it.
+var V0_13_0 = Version{Major: 0, Consensus: 13, NonConsensus: 0}
+
+// Version0_13_0Active reports whether the 0.13.0 line is in force given the
+// chain-active consensus version.
+func Version0_13_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_13_0)
+}
+
 // EvmVaultCustodyActive reports whether the EVM bridge's vault key (the
 // "primary" TSS key of each OracleParams.EvmBridgeContracts contract, from its
 // EvmBridgeFromHeight) gets the
@@ -808,10 +822,10 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 // witness cannot unstake their bond (C2, as POA-1). Resolve `active` at the
 // decision height.
 func EvmVaultCustodyActive(active Version) bool {
-	return Version0_12_0Active(active)
+	return Version0_13_0Active(active)
 }
 
-// KeygenOnceActive (0.12.0): a keygen commitment for a key that an earlier
+// KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.
 // Keygen re-runs while a key is still "created", so several keygens can
@@ -820,7 +834,7 @@ func EvmVaultCustodyActive(active Version) bool {
 // which can then never sign. Resolve `active` at the commitment's block (A)
 // and at the session height (B).
 func KeygenOnceActive(active Version) bool {
-	return Version0_12_0Active(active)
+	return Version0_13_0Active(active)
 }
 
 // (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe

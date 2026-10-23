@@ -28,10 +28,10 @@ func TestKeyCustodyGatesActivateAtElevenTogether(t *testing.T) {
 	}
 }
 
-// The EVM key-custody rules and the keygen-once rule are inert below 0.12.0,
-// so 0.11.0 (the BTC vault release) keeps its behaviour, and all in force from
-// it.
-func TestEvmVaultCustodyActivatesAtTwelve(t *testing.T) {
+// The EVM key-custody rules and the keygen-once rule are inert below 0.13.0,
+// so 0.11.0 (the BTC vault release) and 0.12.0 (the TSS-PARTY batch) keep
+// their behaviour, and all in force from it.
+func TestEvmVaultCustodyActivatesAtThirteen(t *testing.T) {
 	gates := map[string]func(Version) bool{
 		"EvmVaultCustodyActive": EvmVaultCustodyActive,
 		"KeygenOnceActive":      KeygenOnceActive,
@@ -44,8 +44,9 @@ func TestEvmVaultCustodyActivatesAtTwelve(t *testing.T) {
 			{Version{}, false},
 			{V0_10_0, false},
 			{V0_11_0, false},
-			{V0_12_0, true},
-			{Version{Major: 0, Consensus: 13}, true},
+			{V0_12_0, false},
+			{V0_13_0, true},
+			{Version{Major: 0, Consensus: 14}, true},
 		} {
 			if got := gate(tc.active); got != tc.want {
 				t.Errorf("%s(%s) = %v, want %v", name, tc.active.Format(), got, tc.want)

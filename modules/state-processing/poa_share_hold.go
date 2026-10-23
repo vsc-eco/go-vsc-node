@@ -148,7 +148,7 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 }
 
 // evmVaultHolders is POA-1 for the EVM bridges' vault keys (C2, consensus
-// 0.12.0, consensusversion.EvmVaultCustodyActive): whether any such key exists
+// 0.13.0, consensusversion.EvmVaultCustodyActive): whether any such key exists
 // below height, and the accounts named by each key's newest keygen/reshare
 // commitment below height. An EVM bridge key holds funds from its keygen on
 // (any block can bring a deposit) and is never drained, so its existence is

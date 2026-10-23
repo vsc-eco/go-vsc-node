@@ -1827,7 +1827,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
-						// TSS-KG-1 (0.12.0): a keygen for a key an earlier keygen
+						// TSS-KG-1 (0.13.0): a keygen for a key an earlier keygen
 						// already activated is dropped before it is stored. Its row
 						// would become the key's newest keygen commitment, and
 						// reshares and signs would then use that keygen's shares

@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TSS-KG-1 (0.12.0): same-epoch keygens write one share slot, so the slot can
+// TSS-KG-1 (0.13.0): same-epoch keygens write one share slot, so the slot can
 // hold another keygen's share than the one the chain activated, and the node
 // then signs with a key the chain does not hold. A share loaded for a
 // keygen-born epoch must be the key's on-chain public key's; the activating
@@ -99,7 +99,7 @@ func TestTSSKG1_ShareOfTheActivatingKeygenIsUsed(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, activating, got)
 
-		// Not checked (below 0.12.0, or a reshare-born epoch): the slot as before.
+		// Not checked (below 0.13.0, or a reshare-born epoch): the slot as before.
 		mgr, d = keyshareBase(t, algo, pubA)
 		putShare(t, mgr, "slot", later, pubL)
 		putShare(t, mgr, "copy", activating, pubA)
@@ -127,7 +127,7 @@ func TestTSSKG1_ShareOfTheActivatingKeygenIsUsed(t *testing.T) {
 	}
 }
 
-// From 0.12.0 storeKeygenResult keeps every keygen's share under its public key
+// From 0.13.0 storeKeygenResult keeps every keygen's share under its public key
 // and leaves the slot alone once another keygen activated the key; below it,
 // nothing changes and no copy is written.
 func TestTSSKG1_LateKeygenKeepsTheSlot(t *testing.T) {
@@ -146,7 +146,7 @@ func TestTSSKG1_LateKeygenKeepsTheSlot(t *testing.T) {
 		// finishes after the commitment activated the key with this keygen's
 		// own pubkey: its share is the key's and must be written.
 		{"key active with this keygen's pubkey: the slot is written", true, tss_db.TssKeyActive, pubL, pubL},
-		{"below 0.12.0: the slot is written as before", false, tss_db.TssKeyActive, pubA, pubL},
+		{"below 0.13.0: the slot is written as before", false, tss_db.TssKeyActive, pubA, pubL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mgr, _ := keyshareBase(t, tss_helpers.SigningAlgoEcdsa, pubA)
@@ -163,10 +163,10 @@ func TestTSSKG1_LateKeygenKeepsTheSlot(t *testing.T) {
 			require.Equal(t, tc.wantSlot, slotPub(t, mgr, tss_helpers.SigningAlgoEcdsa))
 			cp, err := keystoreGetDecrypted(context.Background(), mgr.keyStore, keygenShareKey(pubL), mgr.keystoreKey)
 			if !tc.check {
-				require.Error(t, err, "below 0.12.0 no copy is written")
+				require.Error(t, err, "below 0.13.0 no copy is written")
 				return
 			}
-			require.NoError(t, err, "from 0.12.0 the copy is written")
+			require.NoError(t, err, "from 0.13.0 the copy is written")
 			require.Equal(t, later, cp)
 		})
 	}
@@ -208,7 +208,7 @@ func TestTSSKG1_RepairWorksForTheEvmVaultKeyId(t *testing.T) {
 	require.Equal(t, activating, got, "the activating keygen's share is used for the EVM vault key")
 }
 
-// C-R5 (TSS-KG-1, 0.12.0): the post-reshare check compared the new public key
+// C-R5 (TSS-KG-1, 0.13.0): the post-reshare check compared the new public key
 // with this node's slot. A node in a late keygen's committee only holds that
 // keygen's share in the slot and, as a new-only party of the first reshare,
 // has no reason to repair it, so it refused the correctly reshared key and
@@ -246,7 +246,7 @@ func TestCR5_ReshareIsCheckedAgainstTheOnChainKey(t *testing.T) {
 		xL, yL := point(11)
 		require.Error(t, rd.verifyResharedKey(xL, yL, string(algo), extract), "%s: any other key is refused", algo)
 
-		// Below 0.12.0, or a reshare-born epoch: the slot, as before.
+		// Below 0.13.0, or a reshare-born epoch: the slot, as before.
 		rd.keygenShareCheck = false
 		require.Error(t, rd.verifyResharedKey(xA, yA, string(algo), extract), "%s: unchecked, compared with the slot", algo)
 		rd.keygenShareCheck, rd.prevCommitmentType = true, "reshare"

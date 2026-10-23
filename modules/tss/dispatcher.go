@@ -105,7 +105,7 @@ type ReshareDispatcher struct {
 // verifyResharedKey checks that the reshared public key matches the original.
 // extractPub deserializes the stored key data and returns the original (X, Y).
 func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
-	// C-R5 (TSS-KG-1, 0.12.0): for a keygen-born epoch the reference is the
+	// C-R5 (TSS-KG-1, 0.13.0): for a keygen-born epoch the reference is the
 	// key's on-chain public key, not this node's slot. A node in a late
 	// keygen's committee only holds that keygen's share in the slot; as a
 	// new-only party of the first reshare (which loads no old share, so
@@ -1456,7 +1456,7 @@ type BaseDispatcher struct {
 	// culprit is not the author of the bad data without that culprit. Set once
 	// from the session height, so every node decides the same way.
 	dropUnattributableCulprits bool
-	// keygenShareCheck (TSS-KG-1, 0.12.0): a share born of the key's keygen
+	// keygenShareCheck (TSS-KG-1, 0.13.0): a share born of the key's keygen
 	// must be the key's on-chain public key's (loadKeyShare). Set once from the
 	// session height, so every node decides the same way.
 	keygenShareCheck bool
@@ -2143,7 +2143,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-	// TSS-KG-1 (0.12.0): keep this keygen's share under its public key, so the
+	// TSS-KG-1 (0.13.0): keep this keygen's share under its public key, so the
 	// share of whichever keygen the chain activates can be found (loadKeyShare).
 	// Below the line nothing extra is written.
 	if err == nil && dispatcher.keygenShareCheck {
@@ -2151,7 +2151,7 @@ func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 			log.Warn("keygen share copy NOT saved", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", cerr)
 		}
 	}
-	// From 0.12.0 a keygen that finishes after another keygen activated the key
+	// From 0.13.0 a keygen that finishes after another keygen activated the key
 	// leaves the slot alone: it holds, or will hold, the activated key's share.
 	// The activating keygen itself can finish here after its own commitment
 	// landed (on a node slower than the 2/3 that signed it); it writes the slot.

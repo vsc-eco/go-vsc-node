@@ -21,15 +21,15 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// C1 (consensus 0.12.0) on a devnet of its own: the EVM bridge's vault key is
+// C1 (consensus 0.13.0) on a devnet of its own: the EVM bridge's vault key is
 // held by all five members; two of them stand down. With 5 holders the key
 // needs 4 signers and only 3 are left in the election, so the key signs only if
 // the departed holders stay readiness-eligible. Then the key is handed to the 3
 // remaining members, and signs again with the departed nodes offline.
 //
-// Both arms run the same binaries at consensus 0.12.0. EVM_CUSTODY_AB=off is the
+// Both arms run the same binaries at consensus 0.13.0. EVM_CUSTODY_AB=off is the
 // A/B arm: the nodes are not told the bridge's contract id
-// (OracleParams.EvmBridgeContracts), so the 0.12.0 rule has no key to cover, the
+// (OracleParams.EvmBridgeContracts), so the 0.13.0 rule has no key to cover, the
 // departed holders are not eligible, and the key must NOT sign.
 // Run with EVM_CUSTODY_RUN=1 (own 5-node devnet, ~1.5 h).
 func TestEVMBridge_C1_VaultKeyHoldersOutsideTheElection(t *testing.T) {
@@ -39,7 +39,7 @@ func TestEVMBridge_C1_VaultKeyHoldersOutsideTheElection(t *testing.T) {
 	ruleOn := os.Getenv("EVM_CUSTODY_AB") != "off"
 	cfg := evmBridgeConfig()
 	cp := cfg.SysConfigOverrides.ConsensusParams
-	cp.ConsensusVersionFloorMajor, cp.ConsensusVersionFloorConsensus, cp.ConsensusVersionFloorEpoch = 0, 12, 1
+	cp.ConsensusVersionFloorMajor, cp.ConsensusVersionFloorConsensus, cp.ConsensusVersionFloorEpoch = 0, 13, 1
 	if cfg.SysConfigOverrides.TssParams == nil {
 		cfg.SysConfigOverrides.TssParams = &params.TssParams{}
 	}
@@ -71,7 +71,7 @@ func TestEVMBridge_C1_VaultKeyHoldersOutsideTheElection(t *testing.T) {
 	if err := pollUntil(ctx, 5*time.Minute, func() bool { _, _, err := d.LocalNodeInfo(ctx, e.gqlNode); return err == nil }); err != nil {
 		t.Fatal("nodes did not come back after the config restart")
 	}
-	// Precondition: the chain runs 0.12.0 in both arms.
+	// Precondition: the chain runs 0.13.0 in both arms.
 	var ver string
 	if err := pollUntil(ctx, 10*time.Minute, func() bool {
 		var out struct {
@@ -83,9 +83,9 @@ func TestEVMBridge_C1_VaultKeyHoldersOutsideTheElection(t *testing.T) {
 			return false
 		}
 		ver = out.LocalNodeInfo.V
-		return strings.HasPrefix(ver, "0.12.")
+		return strings.HasPrefix(ver, "0.13.")
 	}); err != nil {
-		t.Fatalf("PRECONDITION FAILED: chain-active version %q, want 0.12.x", ver)
+		t.Fatalf("PRECONDITION FAILED: chain-active version %q, want 0.13.x", ver)
 	}
 
 	anvil := StartAnvil(t, ctx, evmChainID, nextAnvilPort())

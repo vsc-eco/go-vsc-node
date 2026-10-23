@@ -22,7 +22,7 @@ import (
 // devnet W3's keygen-500 activated the key (pubkey P500, epoch 5), then
 // keygen-540's commitment (epoch 6) bumped the key to epoch 6, whose shares
 // are keygen-540's, so the network signed with a key the chain does not hold.
-// From 0.12.0 a keygen for an already activated key is dropped before it is
+// From 0.13.0 a keygen for an already activated key is dropped before it is
 // stored.
 
 type kgMember struct {
@@ -113,11 +113,11 @@ func TestTSSKG1_LateKeygenDoesNotTakeOverAnActiveKey(t *testing.T) {
 		// the next reshare loads keygen-540's shares for a key whose pubkey is
 		// keygen-500's. (With rotation-v2 in force, as here, the key's epoch is not
 		// bumped; without it, as on the devnet, it is, and the split is immediate.)
-		{11, 0, 2, p540},
-		{12, 0, 1, p500},
+		{12, 0, 2, p540},
+		{13, 0, 1, p500},
 		// A Mongo blip on one node must not make it store the row its peers
 		// drop: the read blocks and retries, then decides as everyone else.
-		{12, 1, 1, p500},
+		{13, 1, 1, p500},
 	} {
 		te := newTestEnv()
 		ms := kgMembers(t, 4)

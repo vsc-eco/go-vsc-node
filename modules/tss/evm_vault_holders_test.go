@@ -17,10 +17,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// 0.12.0 (account-mapping C1): the EVM bridge's vault key is reshared for good
+// 0.13.0 (account-mapping C1): the EVM bridge's vault key is reshared for good
 // and only the current election could sign or reshare it, so if more than a
 // third of its holders left before a reshare handed it on, the key froze with
-// every share still on disk. From 0.12.0 the holders named by its newest
+// every share still on disk. From 0.13.0 the holders named by its newest
 // commitment stay readiness-eligible after leaving, as the active BTC
 // generation's do (0.11.0).
 
@@ -59,17 +59,17 @@ func evmHolderDeps(include, withBtc bool) vaultrotation.RetiringSignerDeps {
 	return d
 }
 
-func TestComputeRetiringSignerSet_EvmVaultHoldersFrom012(t *testing.T) {
+func TestComputeRetiringSignerSet_EvmVaultHoldersFrom013(t *testing.T) {
 	for _, withBtc := range []bool{false, true} {
 		pre := vaultrotation.ComputeRetiringSignerSet(evmHolderDeps(false, withBtc))
 		if pre.HasReadiness("dave") {
-			t.Fatalf("btc=%v: below 0.12.0 an EVM-key holder outside the election must not be eligible", withBtc)
+			t.Fatalf("btc=%v: below 0.13.0 an EVM-key holder outside the election must not be eligible", withBtc)
 		}
 
 		set := vaultrotation.ComputeRetiringSignerSet(evmHolderDeps(true, withBtc))
 		for _, a := range []string{"carol", "dave"} {
 			if !set.HasReadiness(a) {
-				t.Fatalf("btc=%v: EVM-key holder %s must be readiness-eligible from 0.12.0", withBtc, a)
+				t.Fatalf("btc=%v: EVM-key holder %s must be readiness-eligible from 0.13.0", withBtc, a)
 			}
 			if e, ok := set.ReadinessElection(a); !ok || e.Epoch != 9 {
 				t.Fatalf("btc=%v: %s must verify against the commitment's epoch-9 election, got %v %v", withBtc, a, e.Epoch, ok)
@@ -154,15 +154,15 @@ func evmOnlyManager(t *testing.T, version consensusversion.Version, bridges map[
 func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 	bridges := map[string]string{"ETH": evmBridge}
 
-	pre, _ := evmOnlyManager(t, consensusversion.V0_11_0, bridges)
+	pre, _ := evmOnlyManager(t, consensusversion.V0_12_0, bridges)
 	if s := pre.retiringGenSignerSet(1000); s.HasReadiness("dave") {
-		t.Fatal("0.11.0: the EVM holders must not be eligible")
+		t.Fatal("0.12.0: the EVM holders must not be eligible")
 	}
 
-	mgr, outputs := evmOnlyManager(t, consensusversion.V0_12_0, bridges)
+	mgr, outputs := evmOnlyManager(t, consensusversion.V0_13_0, bridges)
 	set := mgr.retiringGenSignerSet(1000)
 	if !set.HasReadiness("carol") || !set.HasReadiness("dave") || set.HasReadiness("alice") {
-		t.Fatalf("0.12.0: want carol and dave eligible, got %v", set.ActiveSignerElection)
+		t.Fatalf("0.13.0: want carol and dave eligible, got %v", set.ActiveSignerElection)
 	}
 	if outputs.reads != 0 {
 		t.Fatalf("an EVM-only height read a contract output %d times (no BTC contract to read)", outputs.reads)
@@ -172,7 +172,7 @@ func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 	}
 
 	// C-R2: below the bridge's activation height its key is not covered.
-	early, _ := evmOnlyManager(t, consensusversion.V0_12_0, bridges)
+	early, _ := evmOnlyManager(t, consensusversion.V0_13_0, bridges)
 	early.sconf = evmOnlyConfig{SystemConfig: systemconfig.MocknetConfig(), op: params.OracleParams{EvmBridgeContracts: bridges, EvmBridgeFromHeight: map[string]uint64{"ETH": 1001}}}
 	if early.retiringGenSignerSet(1000).HasReadiness("dave") {
 		t.Fatal("below the bridge's activation height: the EVM holders must not be eligible")
@@ -182,7 +182,7 @@ func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 	}
 
 	// No bridge configured: inert, byte-identical to before.
-	none, _ := evmOnlyManager(t, consensusversion.V0_12_0, nil)
+	none, _ := evmOnlyManager(t, consensusversion.V0_13_0, nil)
 	if keys := none.evmVaultKeysBound(1000); keys != nil {
 		t.Fatalf("no EVM bridge configured: keys %v", keys)
 	}
@@ -192,8 +192,8 @@ func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 }
 
 // The real receive path: an attestation from an EVM-key holder outside the
-// current election is stored from 0.12.0 and dropped at 0.11.0.
-func TestReadyGossip_EvmVaultHoldersOutsideTheElectionFrom012(t *testing.T) {
+// current election is stored from 0.13.0 and dropped at 0.12.0.
+func TestReadyGossip_EvmVaultHoldersOutsideTheElectionFrom013(t *testing.T) {
 	const currentBh = uint64(1 << 30)
 	keys := map[string]string{}
 	type signer struct {
@@ -245,12 +245,12 @@ func TestReadyGossip_EvmVaultHoldersOutsideTheElectionFrom012(t *testing.T) {
 		return got
 	}
 
-	pre := run(t, consensusversion.V0_11_0)
+	pre := run(t, consensusversion.V0_12_0)
 	if !pre["alice"] || pre["carol"] || pre["dave"] {
-		t.Fatalf("0.11.0: only the election member is stored, got %v", pre)
+		t.Fatalf("0.12.0: only the election member is stored, got %v", pre)
 	}
-	post := run(t, consensusversion.V0_12_0)
+	post := run(t, consensusversion.V0_13_0)
 	if !post["alice"] || !post["carol"] || !post["dave"] {
-		t.Fatalf("0.12.0: the EVM-key holders outside the election must be stored, got %v", post)
+		t.Fatalf("0.13.0: the EVM-key holders outside the election must be stored, got %v", post)
 	}
 }

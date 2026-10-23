@@ -20,7 +20,7 @@ import (
 // TSS-KG-1: a key's keygen re-runs every rotation while the key is still
 // "created", so several keygens can succeed before the first commitment lands,
 // and the one the chain activates need not be the one whose share sits in the
-// (keyId, epoch) slot: same-epoch keygens write the same slot. From 0.12.0
+// (keyId, epoch) slot: same-epoch keygens write the same slot. From 0.13.0
 // every keygen result is therefore also kept under its public key
 // (keygenShareKey), and a share loaded for a keygen-born epoch that is not the
 // key's on-chain public key is replaced by the activating keygen's copy.
@@ -67,7 +67,7 @@ func pointPubHex(algo tss_helpers.SigningAlgo, x, y *big.Int) (string, error) {
 }
 
 // loadKeyShare reads this node's share of keyId at epoch. With check set (the
-// share was born of the key's keygen, from 0.12.0) and the slot's public key
+// share was born of the key's keygen, from 0.13.0) and the slot's public key
 // not the key's on-chain one, the activating keygen's copy is written back to
 // the slot and returned, so every reader of the slot sees it. Without a copy
 // the slot's share is returned as before.

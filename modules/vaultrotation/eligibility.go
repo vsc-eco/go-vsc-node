@@ -69,7 +69,7 @@ type RetiringSignerSet struct {
 	// generation is funded. Kept apart from SignerElection on purpose: SignerElection
 	// feeds the #11 retiring-member checks, which must not change here.
 	ActiveSignerElection map[string]elections.ElectionResult
-	// ReadinessWidened records that IncludeActiveHolders (or, from 0.12.0,
+	// ReadinessWidened records that IncludeActiveHolders (or, from 0.13.0,
 	// IncludeEvmVaultHolders) was set. The gossip receive path then also accepts
 	// a PENDING generation's keygen committee (PendingSignerElection), which until
 	// 0.11.0 could emit readiness from outside the election but was never
@@ -165,7 +165,7 @@ type RetiringSignerDeps struct {
 	ExcludeInactive bool
 	// EvmVaultKeyIds are the EVM bridges' vault keys
 	// (params.OracleParams.EvmVaultKeyIds). With IncludeEvmVaultHolders
-	// (consensus 0.12.0, consensusversion.EvmVaultCustodyActive) the holders
+	// (consensus 0.13.0, consensusversion.EvmVaultCustodyActive) the holders
 	// named by each key's newest keygen/reshare commitment join
 	// ActiveSignerElection, as the active BTC generation's do (C1). An EVM
 	// bridge key is never rotated or drained, so it has no retiring committee:
@@ -189,7 +189,7 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		ReshareSkipKeyIds:     map[string]bool{},
 		ReadinessWidened:      d.IncludeActiveHolders || d.IncludeEvmVaultHolders,
 	}
-	// C1 (0.12.0): before the BTC registry, which may be absent. Readiness only;
+	// C1 (0.13.0): before the BTC registry, which may be absent. Readiness only;
 	// none of this reaches SignerElection / KeyIds (the #11 retiring bond lock).
 	if d.IncludeEvmVaultHolders {
 		for _, keyId := range d.EvmVaultKeyIds {

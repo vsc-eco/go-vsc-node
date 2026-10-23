@@ -1116,7 +1116,7 @@ type OracleParams struct {
 
 	// EvmBridgeContracts maps EVM chain symbols (e.g. "ETH") to the bridge
 	// (account-mapping evm-mapping-contract) contract IDs. Each bridge's vault
-	// is its "primary" TSS key, which the key-custody rules cover from 0.12.0
+	// is its "primary" TSS key, which the key-custody rules cover from 0.13.0
 	// (consensusversion.EvmVaultCustodyActive). Consensus input: every node of a
 	// network must carry the same map, as with ChainContracts["BTC"].
 	EvmBridgeContracts map[string]string `json:"evmBridgeContracts,omitempty"`

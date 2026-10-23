@@ -18,7 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// C2 (consensus 0.12.0) on a devnet of its own: a holder of the EVM bridge's
+// C2 (consensus 0.13.0) on a devnet of its own: a holder of the EVM bridge's
 // vault key keeps its bond while it still holds a share. All five members hold
 // the key; magi-4 and magi-5 stand down and go offline, so only 3 of the 5
 // holders are left and the key (4 signers) cannot be reshared away from them:
@@ -37,7 +37,7 @@ func TestEVMBridge_C2_DepartedHolderBondHeld(t *testing.T) {
 	const exitHalt = 40 // blocks (~2 min): the departed holders stop being "recently active" fast
 	cfg := evmBridgeConfig()
 	cp := cfg.SysConfigOverrides.ConsensusParams
-	cp.ConsensusVersionFloorMajor, cp.ConsensusVersionFloorConsensus, cp.ConsensusVersionFloorEpoch = 0, 12, 1
+	cp.ConsensusVersionFloorMajor, cp.ConsensusVersionFloorConsensus, cp.ConsensusVersionFloorEpoch = 0, 13, 1
 	cp.PoaExitHaltBlocks = exitHalt
 	if cfg.SysConfigOverrides.TssParams == nil {
 		cfg.SysConfigOverrides.TssParams = &params.TssParams{}
@@ -73,7 +73,7 @@ func TestEVMBridge_C2_DepartedHolderBondHeld(t *testing.T) {
 	if err := pollUntil(ctx, 5*time.Minute, func() bool { _, _, err := d.LocalNodeInfo(ctx, e.gqlNode); return err == nil }); err != nil {
 		t.Fatal("nodes did not come back after the config restart")
 	}
-	if err := waitForConsensus(ctx, d, "0.12", 10*time.Minute); err != nil {
+	if err := waitForConsensus(ctx, d, "0.13", 10*time.Minute); err != nil {
 		t.Fatalf("PRECONDITION FAILED: %v", err)
 	}
 

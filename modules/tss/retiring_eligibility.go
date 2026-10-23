@@ -102,7 +102,7 @@ func (tssMgr *TssManager) retiringSetInForce(bh uint64) bool {
 	return len(tssMgr.evmVaultKeysBound(bh)) > 0
 }
 
-// evmVaultKeysBound returns the EVM bridges' vault keys when the 0.12.0
+// evmVaultKeysBound returns the EVM bridges' vault keys when the 0.13.0
 // key-custody rules cover them at bh (consensusversion.EvmVaultCustodyActive
 // on the chain-active version), else nil. The key list is per-network config,
 // each bridge from its activation height; cheap and local, so it is checked
