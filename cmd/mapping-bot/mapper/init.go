@@ -93,6 +93,17 @@ type Bot struct {
 	// node observes our submissions in monotonic nonce order.
 	l2SubmitMu sync.Mutex
 
+	// The node's account nonce counts only transactions a block has included,
+	// and its pool takes a second transaction at that nonce, then deletes it
+	// when the first is included. HandleMap and HandleConfirmations run at the
+	// same time, so a map and a confirmSpend both read that nonce and one was
+	// deleted (its handler then waited out its timeout and retried next round).
+	// l2Next is the nonce after this bot's last accepted submission, so they
+	// take n and n+1. Guarded by l2SubmitMu.
+	l2Next      uint64
+	l2HaveNext  bool
+	l2HoleSince time.Time // first "missing previous nonce" refusal since the last accepted submission
+
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
