@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"vsc-node/lib/dids"
 	"vsc-node/modules/db/vsc/contracts"
@@ -49,6 +50,9 @@ func (b *Bot) callContractL2(
 	nonce, err := b.gql().FetchAccountNonce(ctx, did.String())
 	if err != nil {
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
+	}
+	if b.l2HaveNext && b.l2Next > nonce {
+		nonce = b.l2Next // past this bot's own transactions still in the pool (see Bot.l2Next)
 	}
 
 	// Per-action: the vault-rotation ops need a far higher ceiling than the bot's
@@ -133,8 +137,21 @@ func (b *Bot) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
 	if err != nil {
+		// The node does not hold the bot's previous transaction: give gossip
+		// l2NonceHoleGrace to bring it (it may have gone to another node), then
+		// refill from the account nonce.
+		if strings.Contains(strings.ToLower(err.Error()), "missing previous nonce") {
+			if b.l2HoleSince.IsZero() {
+				b.l2HoleSince = time.Now()
+			} else if time.Since(b.l2HoleSince) > l2NonceHoleGrace {
+				b.L.Warn("the node still lacks the bot's previous L2 transaction; continuing from the account nonce",
+					"action", action, "nonce", nonce, "since", b.l2HoleSince)
+				b.l2HaveNext, b.l2HoleSince = false, time.Time{}
+			}
+		}
 		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
+	b.l2Next, b.l2HaveNext, b.l2HoleSince = nonce+1, true, time.Time{}
 
 	b.L.Info("L2 tx broadcast",
 		"id", txID,
@@ -145,6 +162,10 @@ func (b *Bot) callContractL2(
 	)
 	return txID, nil
 }
+
+// l2NonceHoleGrace: how long the node may refuse the bot's next nonce for a
+// missing previous one before the bot starts again from the account nonce.
+var l2NonceHoleGrace = 2 * time.Minute
 
 const (
 	// simulateRcCap is the most simulateContractCalls accepts per call.
