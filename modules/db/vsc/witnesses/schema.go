@@ -22,6 +22,9 @@ type Witness struct {
 	// key's PoP). Empty for witnesses that announced before gateway-PoP support.
 	GatewayKeyPoP string   `json:"gateway_key_pop" bson:"gateway_key_pop,omitempty"`
 	PeerAddrs     []string `json:"peer_addrs" bson:"peer_addrs"`
+	// PeerIdPoPOk: this row's peer_id proof of possession verified at ingest
+	// (consensus 0.12.0+, B1). Absent on older rows; readers prefer rows with it.
+	PeerIdPoPOk bool `json:"peer_id_pop_ok,omitempty" bson:"peer_id_pop_ok,omitempty"`
 	// DelegationMode is the operator's announced consensus-delegation policy
 	// (delegationmode.{Deactivated,Share,Custom}). Empty for witnesses that
 	// announced before this field existed; callers normalize empty → Deactivated.
@@ -57,8 +60,10 @@ type PostingJsonKeys struct {
 }
 
 type PostingJsonMetadataVscNode struct {
-	NetId           string   `json:"net_id"`
-	PeerId          string   `json:"peer_id"`
+	NetId  string `json:"net_id"`
+	PeerId string `json:"peer_id"`
+	// PeerIdPoP proves the announcer holds PeerId's libp2p key (lib/peerpop, B1).
+	PeerIdPoP       string   `json:"peer_id_pop,omitempty"`
 	PeerAddrs       []string `json:"peer_addrs"`
 	Ts              string   `json:"ts"`
 	GitCommit       string   `json:"git_commit"`
@@ -96,4 +101,6 @@ type SetWitnessUpdateType struct {
 	// via a JSON round-trip.
 	DelegationModeEffective     string `json:"delegation_mode_effective"`
 	DelegationModeMaturityEpoch uint64 `json:"delegation_mode_maturity_epoch"`
+	// PeerIdPoPOk: the announcement's peer_id proof verified (B1); stored only when true.
+	PeerIdPoPOk bool `json:"peer_id_pop_ok"`
 }

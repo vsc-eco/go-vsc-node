@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/peerpop"
 	"vsc-node/lib/vsclog"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -170,7 +171,9 @@ type payloadVscNode struct {
 	VersionNonConsensus uint64   `json:"version_non_consensus"`
 	GatewayKey          string   `json:"gateway_key"`
 	GatewayKeyPoP       string   `json:"gateway_key_pop"`
-	Witness             struct {
+	// PeerIdPoP proves this node holds PeerId's libp2p key (lib/peerpop, B1).
+	PeerIdPoP string `json:"peer_id_pop,omitempty"`
+	Witness   struct {
 		Enabled bool `json:"enabled"`
 	} `json:"witness"`
 	// DelegationMode is the operator's consensus-delegation policy
@@ -302,6 +305,17 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	runningVersion := consensusversion.RunningVersion()
 
+	// B1: prove the announced peer id is this node's own libp2p key, so no other
+	// account can claim it (verified at ingest from consensus 0.12.0).
+	peerId := a.safePeerId()
+	peerIdPoP := ""
+	if libp2pKey, err := a.conf.Libp2pPrivateKey(); err != nil {
+		alog.Error("cannot load the libp2p key for the peer id proof", "err", err)
+	} else if peerIdPoP, err = peerpop.Sign(libp2pKey, a.conf.Get().HiveUsername, peerId); err != nil {
+		alog.Error("cannot sign the peer id proof", "err", err)
+		peerIdPoP = ""
+	}
+
 	payload := payload{
 		Services: []string{"vsc.network"},
 		DidKeys: []didConsensusKey{
@@ -315,7 +329,8 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
 			NetId:               a.sconf.NetId(),
-			PeerId:              a.safePeerId(), //Plz fill in
+			PeerId:              peerId,
+			PeerIdPoP:           peerIdPoP,
 			PeerAddrs:           peerAddrs,
 			Ts:                  time.Now().Format(time.RFC3339),
 			GitCommit:           GitCommit,
