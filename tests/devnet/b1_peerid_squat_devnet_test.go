@@ -106,7 +106,7 @@ func TestB1PeerIdSquatDevnet(t *testing.T) {
 		"services": []string{"vsc.network"},
 		"did_keys": []map[string]any{{"t": "consensus", "ct": "DID-BLS", "key": did.String(), "pop": pop}},
 		"vsc_node": map[string]any{"net_id": netId, "peer_id": victimPeer, "peer_addrs": []string{},
-			"ts": time.Now().Format(time.RFC3339), "witness": map[string]any{"enabled": false}},
+			"ts": time.Now().Format(time.RFC3339), "witness": map[string]any{"enabled": false}}, // wall: announcement payload timestamp, not a wait
 	}
 	metaJSON, _ := json.Marshal(meta)
 	memo := accountMemoKey(t, d, "initminer")
