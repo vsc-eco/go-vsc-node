@@ -728,6 +728,15 @@ func TssAccuseYieldsToFloorActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// PeerIdPoPActive reports whether a witness announcement that carries a peer_id
+// must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
+// Without it any account could announce another member's peer id and make TSS
+// attribute that member's round messages to the wrong account. A new line, like
+// every ingest change: below it a reindex stores exactly what it stored before.
+func PeerIdPoPActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // KeyResharedFlagActive reports whether TssGetKey appends a fifth field, "1"
 // once the key's epoch has moved past the keygen that created it (it has been
 // reshared at least once), else "0". The BTC vault contract refuses to start a

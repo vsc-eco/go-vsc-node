@@ -97,6 +97,11 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		set["delegation_mode_effective"] = request.DelegationModeEffective
 		set["delegation_mode_maturity_epoch"] = request.DelegationModeMaturityEpoch
 	}
+	// B1: only written when the peer_id proof verified (consensus 0.12.0+), so
+	// rows below the line stay byte-identical.
+	if request.PeerIdPoPOk {
+		set["peer_id_pop_ok"] = true
+	}
 	update := bson.M{"$set": set}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
 
@@ -317,6 +322,66 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOpti
 	}
 
 	return witnesses, nil
+}
+
+// GetCurrentWitnessesByPeerId lists the accounts whose LATEST announcement carries one of
+// PeerIds (B1). GetWitnessesByPeerId returns every account that has EVER announced the
+// peer id, in map order, so a caller taking the first entry can pick an account that
+// moved on, or one that merely copied the peer id. This one keeps the latest row per
+// account only, ordered peer-id-proof-verified first, then newest, then by account, so
+// every node resolves a leftover collision the same way. TSS message attribution uses
+// it (node-local, no gate); the election proposer's presence check keeps
+// GetWitnessesByPeerId.
+// The production store must keep the current-row lookup TSS asserts for (B1).
+var _ interface {
+	GetCurrentWitnessesByPeerId([]string) ([]Witness, error)
+} = (*witnesses)(nil)
+
+func (w *witnesses) GetCurrentWitnessesByPeerId(PeerIds []string) ([]Witness, error) {
+	ctx := context.Background()
+	want := make(map[string]bool, len(PeerIds))
+	for _, p := range PeerIds {
+		want[p] = true
+	}
+	findResult, err := w.Find(ctx, bson.M{"peer_id": bson.M{"$in": PeerIds}},
+		options.Find().SetProjection(bson.M{"account": 1}))
+	if err != nil {
+		return nil, err
+	}
+	accounts := make(map[string]struct{})
+	for findResult.Next(ctx) {
+		var row struct {
+			Account string `bson:"account"`
+		}
+		if err := findResult.Decode(&row); err != nil {
+			return nil, fmt.Errorf("failed to decode witness: %w", err)
+		}
+		accounts[row.Account] = struct{}{}
+	}
+	if err := findResult.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]Witness, 0, len(accounts))
+	for account := range accounts {
+		latest, err := w.GetWitnessAtHeight(account, nil)
+		if err != nil {
+			return nil, err
+		}
+		if latest != nil && want[latest.PeerId] {
+			out = append(out, *latest)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PeerIdPoPOk != out[j].PeerIdPoPOk {
+			return out[i].PeerIdPoPOk
+		}
+		if out[i].Height != out[j].Height {
+			return out[i].Height > out[j].Height
+		}
+		return out[i].Account < out[j].Account
+	})
+	return out, nil
 }
 
 func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, error) {

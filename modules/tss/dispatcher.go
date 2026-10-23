@@ -60,6 +60,30 @@ type Dispatcher interface {
 	Cleanup()
 }
 
+// partyLister reports the accounts of a session's parties, for attributing a
+// round message to the account that is actually in the session (B1, rpc.go
+// senderAccount). The lists are set when the dispatcher is built, before it is
+// registered in actionMap, and never reassigned, so the RPC goroutine may read them.
+type partyLister interface {
+	partyAccounts() []string
+}
+
+func (dispatcher *BaseDispatcher) partyAccounts() []string {
+	out := make([]string, 0, len(dispatcher.participants))
+	for _, p := range dispatcher.participants {
+		out = append(out, p.Account)
+	}
+	return out
+}
+
+func (dispatcher *ReshareDispatcher) partyAccounts() []string {
+	out := dispatcher.BaseDispatcher.partyAccounts()
+	for _, p := range dispatcher.newParticipants {
+		out = append(out, p.Account)
+	}
+	return out
+}
+
 type ReshareDispatcher struct {
 	BaseDispatcher
 

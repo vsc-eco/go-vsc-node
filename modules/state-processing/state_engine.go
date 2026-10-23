@@ -22,6 +22,7 @@ import (
 	"vsc-node/lib/btcvault"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/peerpop"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -961,12 +962,29 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 					}
+					// B1 (0.12.0): an announced peer_id must come with proof that the
+					// announcer holds its libp2p key, or any account could claim a
+					// member's peer id and make TSS attribute the member's messages to
+					// itself. Pure function of the announce payload, like the BLS guard
+					// above, and gated so a reindex below the line stores what it did.
+					peerIdPoPOk, peerIdErr := witnessAnnouncePeerIdProof(se.ActiveConsensusVersion(blockInfo.BlockHeight), rawJson, acct)
+					if peerIdErr != nil {
+						se.warnSync(
+							blockInfo.BlockHeight,
+							"witness announce REJECTED: peer_id proof of possession failed (B1)",
+							"account", acct, "peerId", rawJson.VscNode.PeerId, "err", peerIdErr, "txId", tx.TransactionID,
+						)
+						se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+						se.profiler.Record(PhaseTxParse, time.Since(parseStart))
+						continue
+					}
 					inputData := witnesses.SetWitnessUpdateType{
-						Account:  acct,
-						Height:   blockInfo.BlockHeight,
-						TxId:     tx.TransactionID,
-						BlockId:  blockInfo.BlockId,
-						Metadata: rawJson,
+						Account:     acct,
+						Height:      blockInfo.BlockHeight,
+						TxId:        tx.TransactionID,
+						BlockId:     blockInfo.BlockId,
+						Metadata:    rawJson,
+						PeerIdPoPOk: peerIdPoPOk,
 					}
 					// Delegation-mode downgrade timelock (consensus 0.5.0+): resolve
 					// the effective mode + maturity for this announcement from the
@@ -2093,6 +2111,21 @@ func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) e
 func witnessAnnounceHasRogueBlsKey(meta witnesses.PostingJsonMetadata, account string) bool {
 	err := verifyAnnouncedBlsPoP(meta, account)
 	return err != nil && !errors.Is(err, errNoConsensusBlsKey)
+}
+
+// witnessAnnouncePeerIdProof checks an announce's peer_id proof of possession (B1).
+// Below 0.12.0, or for an announce without a peer_id, it accepts and reports
+// verified=false (the row is stored exactly as before). From 0.12.0 an announced
+// peer_id must carry a proof that verifies for this account (lib/peerpop), else the
+// announce is rejected. Pure function of the payload: every node reaches the same verdict.
+func witnessAnnouncePeerIdProof(active consensusversion.Version, meta witnesses.PostingJsonMetadata, account string) (verified bool, err error) {
+	if !consensusversion.PeerIdPoPActive(active) || meta.VscNode.PeerId == "" {
+		return false, nil
+	}
+	if err := peerpop.Verify(account, meta.VscNode.PeerId, meta.VscNode.PeerIdPoP); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // isUnsupportedGatewaySavingsDeposit reports whether an L1 op is a
