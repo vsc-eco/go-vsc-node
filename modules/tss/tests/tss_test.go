@@ -1959,10 +1959,14 @@ func TestTss(t *testing.T) {
 	// Critical DB test: insert both commitments with the SAME tx_id.
 	// With the old {tx_id}-only filter, the second SetCommitmentData would
 	// overwrite the first. With the {key_id, tx_id} fix, both persist.
+	// The rows are synthetic (epoch 55 has no election and no shares), so
+	// they go on keys no later phase signs or reshares with: on "test-key"
+	// the first became its newest commitment, and phase 12's sign built its
+	// party list from epoch 55 and never completed.
 	for _, node := range nodes {
 		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 			Type:        "reshare",
-			KeyId:       "test-key",
+			KeyId:       "test-key-dbcheck",
 			Epoch:       55,
 			BlockHeight: 700,
 			Commitment:  commitmentStr,
@@ -1979,15 +1983,15 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify both records exist (the core assertion for the DB fix)
-	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 55)
+	c1, err := nodes[0].tssCommitments.GetCommitment("test-key-dbcheck", 55)
 	if err != nil {
-		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 55: %v", err)
+		t.Fatalf("Phase 11: Failed to get commitment for test-key-dbcheck epoch 55: %v", err)
 	}
 	if c1.Type != "reshare" {
-		t.Errorf("Phase 11: Expected test-key commitment type 'reshare', got '%s'", c1.Type)
+		t.Errorf("Phase 11: Expected test-key-dbcheck commitment type 'reshare', got '%s'", c1.Type)
 	}
 	if c1.TxId != "mock-multi-tx" {
-		t.Errorf("Phase 11: Expected test-key tx_id 'mock-multi-tx', got '%s'", c1.TxId)
+		t.Errorf("Phase 11: Expected test-key-dbcheck tx_id 'mock-multi-tx', got '%s'", c1.TxId)
 	}
 
 	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 55)
