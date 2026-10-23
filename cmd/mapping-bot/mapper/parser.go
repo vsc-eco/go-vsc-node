@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"errors"
-
-	"vsc-node/cmd/mapping-bot/database"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -43,6 +40,12 @@ func (b *Bot) ParseBlock(
 		return nil, err
 	}
 
+	// BOT-ADDR-2 / BOT-DEAD-1: match against every address the contract credits for
+	// a known instruction (deposit_index.go). A read error holds the block.
+	if err := b.refreshDepositIndex(ctx); err != nil {
+		return nil, err
+	}
+
 	// map of indices to their deposit instructions
 	matchedTxIndices := make(map[int][]string)
 
@@ -52,15 +55,24 @@ func (b *Bot) ParseBlock(
 
 			// this loop should never be longer than one cycle, only happens with multisig which is outdated
 			for _, addr := range addresses {
-				if instruction, err := b.addrDB().GetInstruction(ctx, addr); err == nil {
-					b.L.Debug("instruction address found", "instruction", instruction)
-					if observed.Has(tx.TxID(), i) {
-						break
-					}
-					matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], instruction)
-				} else if !errors.Is(err, database.ErrAddrNotFound) {
+				target, found, err := b.lookupDeposit(ctx, addr)
+				if err != nil {
 					return nil, err
 				}
+				if !found {
+					continue
+				}
+				if !target.Creditable {
+					// The contract would accept the map and credit nothing; report the
+					// stranded coin instead of submitting it.
+					b.reportUncreditableDeposit(tx.TxID(), i, txOut.Value, addr, target, blockHeight)
+					continue
+				}
+				b.L.Debug("instruction address found", "instruction", target.Instruction, "generation", target.Generation)
+				if observed.Has(tx.TxID(), i) {
+					break
+				}
+				matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], target.Instruction)
 			}
 		}
 	}

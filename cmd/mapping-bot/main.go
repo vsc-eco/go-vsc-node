@@ -21,6 +21,11 @@ import (
 
 // releaseBlockLease releases the lease with a fresh short-lived context so it
 // doesn't inherit an already-expired deadline from the main-loop context.
+// unusedInstructionRetention: how long an instruction that has never received a
+// deposit is watched after its last request. Renewed by every request; an
+// instruction with a deposit is never dropped.
+const unusedInstructionRetention = 30 * 24 * time.Hour
+
 func releaseBlockLease(bot *mapper.Bot, blockHeight uint64, instanceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -138,6 +143,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// BOT-ADDR-2: fold every instruction the address mappings know into the durable
+	// instruction store (idempotent), so an upgraded bot keeps watching them all.
+	backfillCtx, backfillCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if n, err := db.Instructions.BackfillFromAddresses(backfillCtx, db.Addresses); err != nil {
+		bot.L.Error("could not backfill deposit instructions from the address mappings", "err", err)
+	} else {
+		bot.L.Info("deposit instructions backfilled from the address mappings", "instructions", n)
+	}
+	backfillCancel()
+
 	httpCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, bot)
@@ -163,6 +178,16 @@ func main() {
 			_, err := db.Addresses.DeleteOlderThan(ctx, 24*30*time.Hour)
 			if err != nil {
 				bot.L.Error("error deleting expired addresses", "err", err)
+			}
+			// BOT-ADDR-2: the watched set is the instruction store. Only an
+			// instruction that never received a deposit and was not requested for
+			// unusedInstructionRetention is dropped (a bound on what the public
+			// request endpoint can make the bot watch); one that saw a deposit stays.
+			if n, err := db.Instructions.DeleteStale(ctx, unusedInstructionRetention); err != nil {
+				bot.L.Error("error deleting stale deposit instructions", "err", err)
+			} else if n > 0 {
+				bot.L.Info("deleted unused deposit instructions", "count", n)
+				bot.ResetDepositIndex()
 			}
 			// Clean up txs stuck in "sent" state for > 7 days (likely failed broadcasts)
 			_, err = db.State.DeleteOldSentTransactions(ctx, 7*24*time.Hour)

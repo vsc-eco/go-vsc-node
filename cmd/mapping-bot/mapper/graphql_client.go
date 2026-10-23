@@ -520,7 +520,14 @@ func (b *Bot) FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backup
 	if err != nil {
 		return nil, nil, err
 	}
-	if raw := st[contractinterface.VaultRegistryKey]; len(raw) > 0 {
+	if raw := st[contractinterface.VaultRegistryKey]; len(raw) == 0 && registryMissingAfterRotation(st[contractinterface.VaultActiveGenKey]) {
+		// C1: generation > 0 active with no registry is a broken read (a rotation
+		// always leaves registry entries). The legacy slots hold gen 0's retired
+		// keys, so an address derived from them would direct deposits to a
+		// generation the contract may no longer credit. Generation 0 with an empty
+		// registry is the normal pre-fold state and keeps the legacy keys.
+		return nil, nil, fmt.Errorf("vault registry missing while generation %d is active", btcvaultActive(st[contractinterface.VaultActiveGenKey]))
+	} else if len(raw) > 0 {
 		vaults, err := btcvault.UnmarshalVaultRegistry(raw)
 		if err != nil {
 			return nil, nil, fmt.Errorf("undecodable vault registry: %w", err)

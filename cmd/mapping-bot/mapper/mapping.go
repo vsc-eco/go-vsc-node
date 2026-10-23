@@ -105,7 +105,9 @@ func (b *Bot) HandleMap(
 	// deposit behind it; it is recorded for the operator instead.
 	retryBlock := false
 	for i, tx := range jsonMessages {
-		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err != nil {
+		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err == nil {
+			b.recordDeposits(ctx, foundTxs[i].Instructions)
+		} else {
 			b.L.Error("map call failed", "err", err)
 			switch {
 			case errors.Is(err, ErrTxFailed):
@@ -221,6 +223,8 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 			}
 			if _, err := b.callWithRetry(ctx, json.RawMessage(jsonBytes), "map", broadcastRetryAttempts); err != nil {
 				b.L.Error("historical map call failed", "err", err)
+			} else {
+				b.recordDeposits(ctx, tx.Instructions)
 			}
 		}
 	}

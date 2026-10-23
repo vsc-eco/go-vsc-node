@@ -23,6 +23,7 @@ type GraphQLFetcher interface {
 	// record ("sa-<txid>") for txId: a sweep it wrote off that can still settle.
 	FetchAbandonedSweep(ctx context.Context, txId string) (bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
+	FetchVaultKeySets(ctx context.Context) (DepositKeySets, error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
 	// by its tx ID (Hive tx ID for custom_json-submitted, or L2 CID for
@@ -75,6 +76,13 @@ type StateStore interface {
 }
 
 // AddressStore abstracts the database.AddressStore operations used by Bot methods.
+// InstructionStore abstracts the durable deposit-instruction record (BOT-ADDR-2).
+type InstructionStore interface {
+	Touch(ctx context.Context, instruction string) (bool, error)
+	MarkDeposit(ctx context.Context, instruction string) error
+	ListSince(ctx context.Context, since time.Time) ([]string, error)
+}
+
 type AddressStore interface {
 	GetInstruction(ctx context.Context, chainAddr string) (string, error)
 	Insert(ctx context.Context, chainAddr, instruction string) error
