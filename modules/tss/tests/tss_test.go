@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -364,6 +365,7 @@ func reconnectNode(t *testing.T, nodes []nodeComponents, targetIdx int) {
 func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64) {
 	hh := *headHeight // Snapshot: async BlockTick goroutines won't see later mutations
 	for bh := start; bh <= end; bh++ {
+		waitReadinessConverged(nodes, bh)
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
 				Transactions: []hive_blocks.Tx{},
@@ -379,6 +381,53 @@ func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64
 		}
 	}
 	time.Sleep(2 * time.Second) // Let final async goroutines complete + gossip propagate
+}
+
+// readinessConvergeTimeout bounds waitReadinessConverged. A node that never
+// attests (stopped, partitioned) keeps the sets apart; the wait then gives up
+// and the window closes as before.
+const readinessConvergeTimeout = 10 * time.Second
+
+// waitReadinessConverged holds block bh back while it is the first settle-window
+// block (DEFAULT_SETTLE_BLOCKS before the target) of a readiness target whose
+// attestations the nodes do not all hold yet. On a live chain the 30-block
+// window is about 90 s of gossip; processBlocks runs it in well under a second,
+// so an attestation signed a few hundred ms late reached peers already in the
+// settle window, which reject a new one: some built the party list with that
+// node and some without, the session failed, and a test that drives a single
+// rotation never got the retry a live network gets. The devnet pacemaker holds
+// fast blocks back on the same condition (TssManager.HeldAttestations).
+func waitReadinessConverged(nodes []nodeComponents, bh uint64) {
+	targets := map[string]bool{}
+	for _, node := range nodes {
+		for target := range node.tssMgr.HeldAttestations() {
+			if t, err := strconv.ParseUint(target, 10, 64); err == nil && t > bh && t-bh == vtss.DEFAULT_SETTLE_BLOCKS {
+				targets[target] = true
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	deadline := time.Now().Add(readinessConvergeTimeout)
+	for {
+		converged := true
+		for target := range targets {
+			var first []string
+			for i, node := range nodes {
+				held := node.tssMgr.HeldAttestations()[target]
+				if i == 0 {
+					first = held
+				} else if !slices.Equal(first, held) {
+					converged = false
+				}
+			}
+		}
+		if converged || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // verifyEcdsaSig verifies a DER-encoded ECDSA signature (hex) against a message hash (hex)
