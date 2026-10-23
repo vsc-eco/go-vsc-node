@@ -704,6 +704,30 @@ func Version0_11_0Active(active Version) bool {
 	return active.MeetsConsensusMin(V0_11_0)
 }
 
+// V0_12_0 is the line after the key-custody batch. A new line rather than an
+// addition to 0.11.0 because the testnet already runs 0.11.0: a behaviour tied to
+// an active line would switch per node during a rolling upgrade. Binaries
+// announce it from this batch on (version.go currentConsensus); every rule on it
+// is inert until the chain floor reaches it.
+var V0_12_0 = Version{Major: 0, Consensus: 12, NonConsensus: 0}
+
+// Version0_12_0Active reports whether the 0.12.0 line is in force given the
+// chain-active consensus version.
+func Version0_12_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_12_0)
+}
+
+// TssAccuseYieldsToFloorActive reports whether a POA-8 accusation exclusion is
+// dropped when it would leave the new committee below what the reshare needs
+// (the commit quorum or the Item-4 threshold floor, whichever is higher), the
+// same minimum banned members are let back in for (TssBanYieldsToQuorumActive).
+// Without it a 4-member committee could not rotate a key for a whole blame window
+// after one accusation (P8, testnet 2026-10-22): leaving the accused out made the
+// floor refuse every attempt, and only a success would have cleared it.
+func TssAccuseYieldsToFloorActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // KeyResharedFlagActive reports whether TssGetKey appends a fifth field, "1"
 // once the key's epoch has moved past the keygen that created it (it has been
 // reshared at least once), else "0". The BTC vault contract refuses to start a
