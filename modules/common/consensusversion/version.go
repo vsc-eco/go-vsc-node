@@ -131,9 +131,16 @@ import (
 //     the testnet already runs 0.10.0. Mainnet
 //     can raise its floor from 0.3.0 straight to 0.11.0. Until 0.11.0 is
 //     chain-active every rule is inert and old and new binaries interoperate.
+//   - 0.12.0: the Consensus 11→12 bump gates the TSS-PARTY batch
+//     (consensusversion.V0_12_0): a POA-8 accusation exclusion yields when it
+//     would leave a reshare below the commit quorum or the threshold floor
+//     (TssAccuseYieldsToFloorActive), and a witness announcement that carries a
+//     peer_id must prove it holds that peer's libp2p key (PeerIdPoPActive). A new
+//     line because the testnet already runs 0.11.0. Until 0.12.0 is chain-active
+//     every rule is inert and old and new binaries interoperate.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 11
+	currentConsensus    uint64 = 12
 	currentNonConsensus uint64 = 0
 )
 

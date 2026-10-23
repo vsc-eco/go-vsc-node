@@ -2356,7 +2356,10 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							alreadyOut++
 						}
 					}
-					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut)
+					// P8 (0.12.0): never let an exclusion starve the new side below
+					// what the reshare needs; the ban-yield below uses the same minimum.
+					newMin := accuseNewMin(minReshareVer, len(currentElection.Members))
+					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut, newMin)
 					for a := range accusedOut {
 						excludedNodes = append(excludedNodes, a)
 					}

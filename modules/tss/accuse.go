@@ -383,7 +383,13 @@ func (tssMgr *TssManager) blsSignCommitment(c tss_helpers.BaseCommitment) (strin
 
 // applyAccusedExclusions leaves the selected accused parties out of both
 // reshare lists (the old committee that would run and the new committee).
-func applyAccusedExclusions(oldList, newList []Participant, counts map[string]int, fullOldSize, alreadyOut int) (keepOld, keepNew []Participant, out map[string]bool) {
+//
+// newMin (0 = no minimum) is the new-committee size the reshare needs (see
+// TssAccuseYieldsToFloorActive). An exclusion that would leave fewer new parties
+// is dropped: the reshare would be refused anyway, and only a successful one
+// clears the accusation, so leaving the party out would block the key for the
+// whole blame window. Same rule as the old side: nobody is left out instead.
+func applyAccusedExclusions(oldList, newList []Participant, counts map[string]int, fullOldSize, alreadyOut, newMin int) (keepOld, keepNew []Participant, out map[string]bool) {
 	oldAccounts := make([]string, 0, len(oldList))
 	for _, p := range oldList {
 		oldAccounts = append(oldAccounts, p.Account)
@@ -402,7 +408,26 @@ func applyAccusedExclusions(oldList, newList []Participant, counts map[string]in
 			keepNew = append(keepNew, p)
 		}
 	}
+	if len(out) > 0 && len(keepNew) < newMin {
+		return oldList, newList, map[string]bool{}
+	}
 	return keepOld, keepNew, out
+}
+
+// accuseNewMin is the new-committee size an accusation exclusion must leave (0 =
+// no minimum, before 0.12.0): the commit quorum, or the threshold floor's party
+// count when that is higher. Identical to the ban-yield's needNew (tss.go "Ban
+// stall"), so the two exclusion paths stop at the same point.
+func accuseNewMin(active consensusversion.Version, electionSize int) int {
+	if !consensusversion.TssAccuseYieldsToFloorActive(active) {
+		return 0
+	}
+	elecThr, _ := tss_helpers.GetThreshold(electionSize)
+	need := elecThr + 1
+	if consensusversion.TssReshareKeepsThresholdActive(active) {
+		need = max(need, minPartiesForThreshold(reshareThresholdFloor(electionSize)))
+	}
+	return need
 }
 
 // commitmentOpPackets splits one leader broadcast into custom_json payloads,
