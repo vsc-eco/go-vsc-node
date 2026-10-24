@@ -95,17 +95,32 @@ func TestB11_HealthAlarms(t *testing.T) {
 	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4: vault") || !hasIssue(r, "500000000000000000 short") {
 		t.Fatalf("vault short of custody: %+v", r)
 	}
-	// The queued withdrawal has left the vault but confirmSpend has not run.
-	_, l2, gql, rpc = healthWorld(t, 9.5)
+	// A queued 0.5 ETH withdrawal, as the bridge books it: custody drops to
+	// 9.5 at unmap; the vault holds 10 until the transfer mines, then 9.5.
+	// Neither is a shortfall.
+	for _, vaultETH := range []float64{10, 9.5} {
+		_, l2, gql, rpc = healthWorld(t, vaultETH)
+		l2.set("vsc1bridge", "s-eth", eth(9.5).String()+"|"+eth(9.5).String()+"|0|7")
+		l2.set("vsc1bridge", "n", "3")
+		l2.set("vsc1bridge", "d-3", `{"nonce":3,"amount":500000000000000000,"asset":"eth","unsigned_tx_hex":"02"}`)
+		if r := checked(t, gql, rpc, emptyCP()); hasIssue(r, "C4") {
+			t.Fatalf("vault %v ETH during a queued withdrawal: %+v", vaultETH, r)
+		}
+	}
+	// A real shortfall while that withdrawal is pending is reported: counting
+	// the pending 0.5 ETH on the vault's side would hide it.
+	_, l2, gql, rpc = healthWorld(t, 9)
+	l2.set("vsc1bridge", "s-eth", eth(9.5).String()+"|"+eth(9.5).String()+"|0|7")
 	l2.set("vsc1bridge", "n", "3")
 	l2.set("vsc1bridge", "d-3", `{"nonce":3,"amount":500000000000000000,"asset":"eth","unsigned_tx_hex":"02"}`)
-	if r := checked(t, gql, rpc, emptyCP()); hasIssue(r, "C4") {
-		t.Fatalf("an in-flight withdrawal counted as a shortfall: %+v", r)
+	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "500000000000000000 short") {
+		t.Fatalf("a pending withdrawal hid a shortfall: %+v", r)
 	}
-	// ...but not an ERC-20 one.
-	l2.set("vsc1bridge", "d-3", `{"nonce":3,"amount":500000000000000000,"asset":"usdc","unsigned_tx_hex":"02"}`)
-	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4") {
-		t.Fatalf("an ERC-20 withdrawal hid an ETH shortfall: %+v", r)
+	// A custody record that does not parse is an issue, not a pass.
+	_, l2, gql, rpc = healthWorld(t, 10)
+	l2.set("vsc1bridge", "s-eth", "garbage|0|0|0")
+	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4: cannot parse") {
+		t.Fatalf("unparseable custody: %+v", r)
 	}
 
 	// D7: the key's expiry. 28 epochs out is a warning, 29 is not; an expired

@@ -109,7 +109,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(fmt.Sprintf("D7: the vault key expires in %d epochs (~%dh): run renewKey", expiry-min(expiry, epoch), 6*(expiry-min(expiry, epoch))), "key", tssKeyID)
 	}
 
-	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "n"})
+	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth"})
 	if err != nil {
 		warn("B12: cannot read the bridge's gas reserve and custody", "err", err)
 	} else {
@@ -120,26 +120,17 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		if reserve.Cmp(h.reserveWarn) < 0 {
 			warn(fmt.Sprintf("B12: gas reserve %s wei is below %s: withdrawals are refused below 0.05 ETH (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
 		}
-		custody := new(big.Int)
-		if f := strings.Split(st["s-eth"], "|"); len(f) >= 1 {
-			if v, ok := new(big.Int).SetString(f[0], 10); ok {
-				custody = v
-			}
-		}
-		// The queued withdrawal may already have left the vault on L1 before
-		// confirmSpend lowers custody.
-		inFlight := new(big.Int)
-		if n, perr := strconv.ParseUint(st["n"], 10, 64); perr == nil || st["n"] == "" {
-			key := "d-" + strconv.FormatUint(n, 10)
-			if ds, derr := gql.fetchContractState(ctx, contractID, []string{key}); derr == nil {
-				if ps := parsePendingSpend(n, ds[key]); ps != nil && ps.Asset == "eth" {
-					inFlight = ps.Amount
-				}
-			}
-		}
-		if bal, berr := rpc.getBalance(vault); berr != nil {
+		// The bridge lowers custody when it queues a withdrawal, before the L1
+		// transfer, and credits a reverted one back only after it mined, so
+		// the vault never rightly holds less than custody. (A pending
+		// withdrawal is not added to the vault's side: it is already out of
+		// custody, and adding it could only hide a shortfall.)
+		custody, ok := supplyActive(st["s-eth"])
+		if !ok {
+			warn("C4: cannot parse the bridge's ETH custody", "s-eth", st["s-eth"])
+		} else if bal, berr := rpc.getBalance(vault); berr != nil {
 			warn("C4: cannot read the vault's L1 balance", "err", berr)
-		} else if short := new(big.Int).Sub(custody, new(big.Int).Add(bal, inFlight)); short.Sign() > 0 {
+		} else if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
 			warn(fmt.Sprintf("C4: vault %s holds %s wei, %s short of the %s wei of ETH the bridge has credited", vault, bal, short, custody))
 		}
 	}
@@ -148,6 +139,17 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 	h.alarms = alarms
 	h.checkedAt = now
 	h.mu.Unlock()
+}
+
+// supplyActive is the custody field (Active, the first) of a bridge supply
+// record "active|user|fee|basefee": 0 when there is no record (nothing
+// bridged yet), false when the record does not parse.
+func supplyActive(rec string) (*big.Int, bool) {
+	if rec == "" {
+		return new(big.Int), true
+	}
+	v, ok := new(big.Int).SetString(strings.Split(rec, "|")[0], 10)
+	return v, ok
 }
 
 type healthReport struct {
