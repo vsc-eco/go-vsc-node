@@ -20,16 +20,17 @@ import (
 // a vault holding less ETH, or less of a watched ERC-20 (TOKENS), than the
 // bridge has credited, or for the vault key nearing expiry (it retires ~14
 // days after expiring and then can never sign again; renewKey), and nothing
-// to poll for its health. botHealth checks those every healthCheckEvery, logs
+// to poll for its health. botHealth checks those every HEALTH_CHECK_EVERY, logs
 // each problem as a warning, and, with HEALTH_ADDR set, serves them on GET /health
 // (200 ok, 503 unhealthy), as the BTC mapping bot's /health does.
 //
 //	HEALTH_ADDR            listen address, e.g. 127.0.0.1:8091 (unset: no endpoint)
 //	RC_ALARM               warn below this many RC on the bot's L2 identity (default 20000)
+//	HEALTH_CHECK_EVERY     how often the alarms are checked (Go duration, default 5m)
 //	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH: twice the
 //	                       contract's MinGasReserve, below which every unmap is refused)
 
-const healthCheckEvery = 5 * time.Minute
+const defaultHealthCheckEvery = 5 * time.Minute
 
 // keyExpiryWarnEpochs is how early the bot warns that the vault key expires:
 // 28 epochs, 7 days at 6 hours an epoch.
@@ -40,6 +41,7 @@ type botHealth struct {
 	rcAlarm     int64
 	reserveWarn *big.Int
 	staleAfter  time.Duration
+	every       time.Duration
 
 	lastTickAt  time.Time
 	lastTickErr string
@@ -52,7 +54,10 @@ type botHealth struct {
 }
 
 func newBotHealth(poll time.Duration) *botHealth {
-	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll}
+	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll, every: defaultHealthCheckEvery}
+	if v, err := time.ParseDuration(os.Getenv("HEALTH_CHECK_EVERY")); err == nil && v > 0 {
+		h.every = v
+	}
 	if v, err := strconv.ParseInt(os.Getenv("RC_ALARM"), 10, 64); err == nil {
 		h.rcAlarm = v
 	}
@@ -84,7 +89,7 @@ func (h *botHealth) recordTick(now time.Time, err error, cp *Checkpoint) {
 func (h *botHealth) due(now time.Time) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return now.Sub(h.checkedAt) >= healthCheckEvery
+	return now.Sub(h.checkedAt) >= h.every
 }
 
 // check reads the bot's RC, the bridge's gas reserve and ETH custody, and the

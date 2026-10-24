@@ -285,3 +285,20 @@ func TestB11_HealthReport(t *testing.T) {
 		t.Fatalf("healthy GET /health: %d", resp.StatusCode)
 	}
 }
+
+// The alarms are due every HEALTH_CHECK_EVERY (default 5m); an unparseable or
+// non-positive value keeps the default.
+func TestHealthCheckEvery(t *testing.T) {
+	for env, want := range map[string]time.Duration{"": 5 * time.Minute, "10s": 10 * time.Second, "-1s": 5 * time.Minute, "soon": 5 * time.Minute} {
+		t.Setenv("HEALTH_CHECK_EVERY", env)
+		h := newBotHealth(12 * time.Second)
+		now := time.Now()
+		if !h.due(now) {
+			t.Fatalf("HEALTH_CHECK_EVERY=%q: not due before the first check", env)
+		}
+		h.checkedAt = now
+		if h.due(now.Add(want-time.Millisecond)) || !h.due(now.Add(want)) {
+			t.Errorf("HEALTH_CHECK_EVERY=%q: due cadence is not %s", env, want)
+		}
+	}
+}
