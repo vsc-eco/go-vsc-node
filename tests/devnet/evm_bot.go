@@ -10,6 +10,8 @@ package devnet
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +29,8 @@ type BotConfig struct {
 	GraphQLURL string // a devnet node GQL endpoint
 	EthPrivHex string // 64-hex L2 relayer key (its DID must be RC-funded)
 	Checkpoint string // checkpoint file path
+	Tokens     string // TOKENS: ERC-20 addresses to watch (comma-separated)
+	HealthAddr string // HEALTH_ADDR: serve GET /health here (with alarms checked every 10s)
 }
 
 // Bot is a running bot process with captured logs.
@@ -55,6 +59,12 @@ func StartBot(t *testing.T, ctx context.Context, cfg BotConfig) *Bot {
 	)
 	if cfg.VaultAddr != "" { // optional: the bot takes the vault from the TSS key and refuses a different one
 		cmd.Env = append(cmd.Env, "VAULT_ADDRESS="+cfg.VaultAddr)
+	}
+	if cfg.Tokens != "" {
+		cmd.Env = append(cmd.Env, "TOKENS="+cfg.Tokens)
+	}
+	if cfg.HealthAddr != "" {
+		cmd.Env = append(cmd.Env, "HEALTH_ADDR="+cfg.HealthAddr, "HEALTH_CHECK_EVERY=10s")
 	}
 	cmd.SysProcAttr = dieWithTest()
 	stdout, _ := cmd.StdoutPipe()
@@ -112,4 +122,29 @@ func (b *Bot) WaitForLog(ctx context.Context, substr string, timeout time.Durati
 		case <-devnetAfter(time.Second):
 		}
 	}
+}
+
+// BotHealth is the bot's GET /health report (cmd/evm-mapping-bot healthReport).
+type BotHealth struct {
+	Status    string   `json:"status"`
+	CheckedAt string   `json:"checkedAt"`
+	Issues    []string `json:"issues"`
+}
+
+// Health reads the bot's /health at addr (its BotConfig.HealthAddr).
+func (b *Bot) Health(ctx context.Context, addr string) (*BotHealth, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var h BotHealth
+	if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
+		return nil, err
+	}
+	return &h, nil
 }
