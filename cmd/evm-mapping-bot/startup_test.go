@@ -75,3 +75,18 @@ func TestB10_UnregisteredRelayerIsReported(t *testing.T) {
 		}
 	}
 }
+
+// A malformed TOKENS entry stops the bot at startup: skipped, its deposits
+// would never be mapped.
+func TestTokensEnv_MalformedEntryStopsTheBot(t *testing.T) {
+	if os.Getenv("TOKENS_CHILD") == "1" {
+		parseConfig()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestTokensEnv_MalformedEntryStopsTheBot")
+	cmd.Env = append(os.Environ(), "TOKENS_CHILD=1", "GRAPHQL_URLS=http://127.0.0.1:1", "CONTRACT_ID=vsc1bridge", "NETWORK=testnet", "TOKENS=0x1c7d4b196cb0c7b01d743fbc6116a902379c7238,0x12")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "bad TOKENS") || !strings.Contains(string(out), `\"0x12\"`) {
+		t.Fatalf("parseConfig with a malformed TOKENS entry: err=%v output=%s", err, out)
+	}
+}

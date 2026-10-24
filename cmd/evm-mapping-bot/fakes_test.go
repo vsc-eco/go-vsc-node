@@ -25,9 +25,10 @@ type fakeL1 struct {
 	mu        sync.Mutex
 	blocks    map[uint64]*fakeChain
 	finalized uint64
-	sent      []string            // raw signed txs passed to eth_sendRawTransaction
-	balances  map[string]*big.Int // eth_getBalance by lowercase address (nil: 0)
-	logs      string              // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
+	sent      []string                       // raw signed txs passed to eth_sendRawTransaction
+	balances  map[string]*big.Int            // eth_getBalance by lowercase address (nil: 0)
+	tokens    map[string]map[string]*big.Int // eth_call balanceOf: token -> holder -> balance (lowercase; unknown token: "0x")
+	logs      string                         // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -122,6 +123,19 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 				b = new(big.Int)
 			}
 			result = hexutil.EncodeBig(b)
+		case "eth_call":
+			var call struct{ To, Data string }
+			_ = json.Unmarshal(req.Params[0], &call)
+			holders, ok := f.tokens[strings.ToLower(call.To)]
+			if !ok || !strings.HasPrefix(call.Data, "0x70a08231") || len(call.Data) != 74 {
+				result = "0x"
+				break
+			}
+			b := holders["0x"+call.Data[34:]]
+			if b == nil {
+				b = new(big.Int)
+			}
+			result = "0x" + fmt.Sprintf("%064x", b)
 		case "eth_sendRawTransaction":
 			f.sent = append(f.sent, arg0)
 			b, _ := hexutil.Decode(arg0)

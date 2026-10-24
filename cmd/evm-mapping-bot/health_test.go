@@ -39,7 +39,7 @@ func checked(t *testing.T, gql *vscGraphQL, rpc *ethRPC, cp *Checkpoint) healthR
 	h := newBotHealth(12 * time.Second)
 	now := time.Now()
 	h.recordTick(now, nil, cp)
-	h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault)
+	h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault, nil)
 	return h.report(now)
 }
 
@@ -154,6 +154,91 @@ func TestB11_HealthAlarms(t *testing.T) {
 	_, _, gql, _ = healthWorld(t, 10)
 	if r := checked(t, gql, newEthRPC("http://127.0.0.1:1"), emptyCP()); !hasIssue(r, "C4: cannot read") {
 		t.Fatalf("unreadable vault balance: %+v", r)
+	}
+}
+
+const healthUSDC = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
+
+// C4 for a watched ERC-20: the vault's balanceOf against the custody of the
+// symbol the bridge registered for that token.
+func TestC4_TokenCustodyAlarm(t *testing.T) {
+	world := func(vaultUSDC int64) (*fakeL1, *fakeL2, *vscGraphQL, *ethRPC) {
+		l1, l2, gql, rpc := healthWorld(t, 10)
+		l1.tokens = map[string]map[string]*big.Int{healthUSDC: {healthVault: big.NewInt(vaultUSDC)}}
+		l2.set("vsc1bridge", "chainid", "11155111")
+		l2.set("vsc1bridge", "t-11155111-"+healthUSDC[2:], "usdc|6|10000000")
+		l2.set("vsc1bridge", "s-usdc", "30000000|30000000|0|0")
+		return l1, l2, gql, rpc
+	}
+	tokens := map[string]string{healthUSDC: healthUSDC}
+	check := func(gql *vscGraphQL, rpc *ethRPC) healthReport {
+		h := newBotHealth(12 * time.Second)
+		now := time.Now()
+		h.recordTick(now, nil, emptyCP())
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault, tokens)
+		return h.report(now)
+	}
+
+	for _, held := range []int64{30_000_000, 31_000_000} { // equal; more (a deposit not yet mapped)
+		_, _, gql, rpc := world(held)
+		if r := check(gql, rpc); r.Status != "ok" {
+			t.Fatalf("vault holds %d of 30000000 usdc: %+v", held, r)
+		}
+	}
+	_, _, gql, rpc := world(29_999_999)
+	if r := check(gql, rpc); !hasIssue(r, "C4: vault "+healthVault+" holds 29999999 usdc, 1 short of the 30000000 usdc") {
+		t.Fatalf("vault 1 short: %+v", r)
+	}
+	// The symbol is the registry's: custody under another symbol is not read.
+	_, l2, gql, rpc := world(0)
+	l2.set("vsc1bridge", "t-11155111-"+healthUSDC[2:], "usdcx|6|10000000")
+	if r := check(gql, rpc); hasIssue(r, "C4: vault") {
+		t.Fatalf("read the custody of a symbol the token is not registered under: %+v", r)
+	}
+	// No chain id stored: the bridge's default chain 1 names the entry.
+	_, l2, gql, rpc = world(0)
+	l2.set("vsc1bridge", "chainid", "")
+	l2.set("vsc1bridge", "t-1-"+healthUSDC[2:], "usdc|6|10000000")
+	if r := check(gql, rpc); !hasIssue(r, "30000000 short") {
+		t.Fatalf("chain id default: %+v", r)
+	}
+
+	// Each failure is an issue, never a pass.
+	_, l2, gql, rpc = world(30_000_000)
+	l2.set("vsc1bridge", "t-11155111-"+healthUSDC[2:], "")
+	if r := check(gql, rpc); !hasIssue(r, "C4: token "+healthUSDC+" is not registered on the bridge") {
+		t.Fatalf("unregistered token: %+v", r)
+	}
+	l1, _, gql, rpc := world(30_000_000)
+	l1.tokens = nil // no contract at the address: eth_call returns "0x"
+	if r := check(gql, rpc); !hasIssue(r, "C4: cannot read the vault's usdc balance") {
+		t.Fatalf("unreadable balance: %+v", r)
+	}
+	_, l2, gql, rpc = world(30_000_000)
+	l2.set("vsc1bridge", "s-usdc", "x|0|0|0")
+	if r := check(gql, rpc); !hasIssue(r, "C4: cannot parse the bridge's usdc custody") {
+		t.Fatalf("unparseable custody: %+v", r)
+	}
+}
+
+// TOKENS adds watched ERC-20s on any network; mainnet always watches USDC; a
+// malformed entry is refused, not skipped.
+func TestTokensEnv(t *testing.T) {
+	got, err := parseTokens("testnet", " 0x1C7D4B196Cb0C7B01d743Fbc6116a902379C7238 ,,0x00000000000000000000000000000000000000bb")
+	if err != nil || len(got) != 2 || got[healthUSDC] == "" || got["0x00000000000000000000000000000000000000bb"] == "" {
+		t.Fatalf("testnet TOKENS: %v %v", got, err)
+	}
+	if got, err := parseTokens("testnet", ""); err != nil || len(got) != 0 {
+		t.Fatalf("testnet without TOKENS watches %v (%v), want none", got, err)
+	}
+	got, err = parseTokens("mainnet", healthUSDC)
+	if err != nil || len(got) != 2 || got["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] != "usdc" {
+		t.Fatalf("mainnet: %v %v", got, err)
+	}
+	for _, bad := range []string{"0x1234", "1c7d4b196cb0c7b01d743fbc6116a902379c7238", "0x0000000000000000000000000000000000000000", healthUSDC + ",0xzz"} {
+		if _, err := parseTokens("testnet", bad); err == nil {
+			t.Errorf("TOKENS=%q accepted", bad)
+		}
 	}
 }
 

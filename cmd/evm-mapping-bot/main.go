@@ -51,7 +51,7 @@ import (
 type EVMBotConfig struct {
 	EthRPC         string
 	VaultAddress   string            // 0x... lowercase
-	Tokens         map[string]string // address → symbol (lowercase keys)
+	Tokens         map[string]string // ERC-20 address (lowercase) → name for logs (parseTokens)
 	ContractID     string
 	GraphQLURLs    []string
 	PollInterval   time.Duration
@@ -133,9 +133,12 @@ func parseConfig() EVMBotConfig {
 		RcLimit:        rcLimit,
 	}
 
-	if cfg.Network == "mainnet" {
-		cfg.Tokens["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] = "usdc"
+	tokens, err := parseTokens(cfg.Network, os.Getenv("TOKENS"))
+	if err != nil {
+		slog.Error("bad TOKENS", "err", err)
+		os.Exit(1)
 	}
+	cfg.Tokens = tokens
 
 	if cfg.ContractID == "" {
 		slog.Error("CONTRACT_ID must be set")
@@ -162,6 +165,31 @@ func parseConfig() EVMBotConfig {
 	}
 
 	return cfg
+}
+
+// parseTokens is the set of ERC-20 contracts the bot watches for deposits:
+// USDC on mainnet, plus TOKENS, comma-separated token addresses, on any
+// network (a testnet bridge has no tokens otherwise). A malformed entry is an
+// error, never skipped: its deposits would go unmapped. The value names the
+// token in logs only; the bridge's registry holds its symbol.
+func parseTokens(network, tokensEnv string) (map[string]string, error) {
+	tokens := map[string]string{}
+	if network == "mainnet" {
+		tokens["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] = "usdc"
+	}
+	for _, a := range strings.Split(tokensEnv, ",") {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		if !isValidEthAddress(a) {
+			return nil, fmt.Errorf("token %q is not a 0x-prefixed 20-byte hex address", a)
+		}
+		if _, ok := tokens[a]; !ok {
+			tokens[a] = a
+		}
+	}
+	return tokens, nil
 }
 
 // isValidEthAddress reports whether s is a 0x-prefixed 20-byte hex address that
@@ -2481,7 +2509,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		health.recordTick(time.Now(), err, cp)
 		if health.due(time.Now()) {
 			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
-			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, tssKeyID, did.String(), cfg.VaultAddress)
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, tssKeyID, did.String(), cfg.VaultAddress, cfg.Tokens)
 			hcancel()
 		}
 

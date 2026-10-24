@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,10 +17,11 @@ import (
 
 // B11 / B12 / C4 / D7: the bot had no alarm for running out of RC (every map
 // and confirm stops), for a drained gas reserve (withdrawals are refused), for
-// a vault holding less ETH than the bridge has credited, or for the vault key
-// nearing expiry (it retires ~14 days after expiring and then can never sign
-// again; renewKey), and nothing to poll for its health. botHealth checks those every healthCheckEvery, logs each
-// problem as a warning, and, with HEALTH_ADDR set, serves them on GET /health
+// a vault holding less ETH, or less of a watched ERC-20 (TOKENS), than the
+// bridge has credited, or for the vault key nearing expiry (it retires ~14
+// days after expiring and then can never sign again; renewKey), and nothing
+// to poll for its health. botHealth checks those every healthCheckEvery, logs
+// each problem as a warning, and, with HEALTH_ADDR set, serves them on GET /health
 // (200 ok, 503 unhealthy), as the BTC mapping bot's /health does.
 //
 //	HEALTH_ADDR            listen address, e.g. 127.0.0.1:8091 (unset: no endpoint)
@@ -88,7 +90,7 @@ func (h *botHealth) due(now time.Time) bool {
 // check reads the bot's RC, the bridge's gas reserve and ETH custody, and the
 // vault's L1 balance, and keeps (and logs) every alarm. A read that fails is
 // itself reported, never taken as healthy.
-func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID, tssKeyID, did, vault string) {
+func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID, tssKeyID, did, vault string, tokens map[string]string) {
 	var alarms []string
 	warn := func(msg string, args ...any) {
 		alarms = append(alarms, msg)
@@ -109,7 +111,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(fmt.Sprintf("D7: the vault key expires in %d epochs (~%dh): run renewKey", expiry-min(expiry, epoch), 6*(expiry-min(expiry, epoch))), "key", tssKeyID)
 	}
 
-	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth"})
+	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid"})
 	if err != nil {
 		warn("B12: cannot read the bridge's gas reserve and custody", "err", err)
 	} else {
@@ -133,12 +135,66 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		} else if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
 			warn(fmt.Sprintf("C4: vault %s holds %s wei, %s short of the %s wei of ETH the bridge has credited", vault, bal, short, custody))
 		}
+		checkTokenCustody(ctx, warn, gql, rpc, contractID, st["chainid"], vault, tokens)
 	}
 
 	h.mu.Lock()
 	h.alarms = alarms
 	h.checkedAt = now
 	h.mu.Unlock()
+}
+
+// checkTokenCustody is C4 for each watched ERC-20: the vault's balanceOf must
+// cover the token's custody, as for ETH (custody drops at unmap, a reverted
+// transfer is credited back after it mined). The token's symbol, which names
+// its custody record s-<symbol>, is read from the bridge's own registry entry
+// t-<chainid>-<address hex>, so no symbol is configured on the bot.
+func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscGraphQL, rpc *ethRPC, contractID, chainID, vault string, tokens map[string]string) {
+	if len(tokens) == 0 {
+		return
+	}
+	if chainID == "" {
+		chainID = "1" // the bridge's chainId() when none is set
+	}
+	addrs := make([]string, 0, len(tokens))
+	for a := range tokens {
+		addrs = append(addrs, a)
+	}
+	sort.Strings(addrs)
+	keys := make([]string, len(addrs))
+	for i, a := range addrs {
+		keys[i] = "t-" + chainID + "-" + strings.TrimPrefix(a, "0x")
+	}
+	reg, err := gql.fetchContractState(ctx, contractID, keys)
+	if err != nil {
+		warn("C4: cannot read the bridge's token registry", "err", err)
+		return
+	}
+	for i, a := range addrs {
+		sym := strings.Split(reg[keys[i]], "|")[0]
+		if sym == "" {
+			warn(fmt.Sprintf("C4: token %s is not registered on the bridge: its deposits are refused", a))
+			continue
+		}
+		st, err := gql.fetchContractState(ctx, contractID, []string{"s-" + sym})
+		if err != nil {
+			warn(fmt.Sprintf("C4: cannot read the bridge's %s custody", sym), "err", err)
+			continue
+		}
+		custody, ok := supplyActive(st["s-"+sym])
+		if !ok {
+			warn(fmt.Sprintf("C4: cannot parse the bridge's %s custody", sym), "s-"+sym, st["s-"+sym])
+			continue
+		}
+		bal, err := rpc.erc20BalanceOf(a, vault)
+		if err != nil {
+			warn(fmt.Sprintf("C4: cannot read the vault's %s balance", sym), "token", a, "err", err)
+			continue
+		}
+		if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
+			warn(fmt.Sprintf("C4: vault %s holds %s %s, %s short of the %s %s the bridge has credited", vault, bal, sym, short, custody, sym))
+		}
+	}
 }
 
 // supplyActive is the custody field (Active, the first) of a bridge supply
@@ -248,6 +304,27 @@ func (e *ethRPC) getBalance(addr string) (*big.Int, error) {
 	bal, ok := new(big.Int).SetString(strings.TrimPrefix(hexBal, "0x"), 16)
 	if !ok {
 		return nil, fmt.Errorf("eth_getBalance: %q is not a hex quantity", hexBal)
+	}
+	return bal, nil
+}
+
+// erc20BalanceOf returns holder's balance of token at the latest block. A
+// reply that is not one 32-byte word (no contract at the address, say) is an
+// error.
+func (e *ethRPC) erc20BalanceOf(token, holder string) (*big.Int, error) {
+	data := "0x70a08231" + strings.Repeat("0", 24) + strings.TrimPrefix(strings.ToLower(holder), "0x")
+	raw, err := e.call("eth_call", fmt.Sprintf(`{"to":"%s","data":"%s"}, "latest"`, token, data))
+	if err != nil {
+		return nil, err
+	}
+	var word string
+	if err := json.Unmarshal(raw, &word); err != nil {
+		return nil, err
+	}
+	word = strings.TrimPrefix(word, "0x")
+	bal, ok := new(big.Int).SetString(word, 16)
+	if len(word) != 64 || !ok {
+		return nil, fmt.Errorf("balanceOf: %q is not a uint256", word)
 	}
 	return bal, nil
 }
