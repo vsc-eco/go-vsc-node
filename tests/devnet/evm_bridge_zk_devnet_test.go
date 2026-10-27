@@ -44,9 +44,14 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
+
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rlp"
 )
 
 const (
@@ -208,7 +213,15 @@ func TestEVMBridge_ZK_VerifierRejectPaths(t *testing.T) {
 	// (d) RP-9 submitHeaders links headers down from a stored one: with no
 	// stored header above this one (a missing key reads as "" on this
 	// runtime) it refuses.
-	tx, err := e.callOnce(e.ownerNode, verifierID, "submitHeaders", `{"headers":`+headersOne+`}`)
+	zero := ethcommon.Hash{}
+	blob := uint64(0)
+	wellFormed, err := rlp.EncodeToBytes(&ethtypes.Header{ParentHash: ethcommon.Hash{0xaa}, UncleHash: ethtypes.EmptyUncleHash,
+		Difficulty: new(big.Int), Number: big.NewInt(5000), GasLimit: 30_000_000, Time: 1_760_000_000, BaseFee: big.NewInt(7),
+		WithdrawalsHash: &ethtypes.EmptyWithdrawalsHash, BlobGasUsed: &blob, ExcessBlobGas: &blob, ParentBeaconRoot: &zero, RequestsHash: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := e.callOnce(e.ownerNode, verifierID, "submitHeaders", fmt.Sprintf(`{"headers":[{"rlp_hex":"%x"}]}`, wellFormed))
 	if err != nil {
 		t.Fatalf("[link/no-anchor] submitHeaders broadcast: %v", err)
 	}
