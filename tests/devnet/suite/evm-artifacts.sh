@@ -41,6 +41,8 @@ bridge -o /work/bin/main.wasm
 bridge -tags devnet_fasttimelock -o /work/bin/main-devnet.wasm
 cp "$am/bin/main.wasm" "$out/evm-bridge.wasm"
 cp "$am/bin/main-devnet.wasm" "$out/evm-bridge-devnet.wasm"
+# RP-7: MagiDeposit's creation code (the bridge derives its address from it).
+cp "$am/../l1-deposit/MagiDeposit.creation.hex" "$out/magi-deposit.creation.hex"
 
 # The verifier and its mock: the verifier repo's own build (pinned there).
 make -C "$zk" build >&2
@@ -59,3 +61,4 @@ printf 'export EVM_BRIDGE_DEVNET_WASM=%q\n' "$out/evm-bridge-devnet.wasm"
 printf 'export ZK_VERIFIER_WASM=%q\n' "$out/zk-verifier.wasm"
 printf 'export EVM_MOCK_VERIFIER_WASM=%q\n' "$out/mock-verifier.wasm"
 printf 'export EVM_BOT_BIN=%q\n' "$out/evm-mapping-bot"
+printf 'export EVM_MAGI_DEPOSIT_HEX=%q\n' "$out/magi-deposit.creation.hex"

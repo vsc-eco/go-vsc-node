@@ -205,14 +205,23 @@ func TestEVMBridge_ZK_VerifierRejectPaths(t *testing.T) {
 	assertReject("required-fields/empty-headers", "00", zeroPv, `[]`,
 		"proof, public_values, and headers required")
 
-	// (d) E5 backfill export: with no gap open (a missing key reads as "" on
-	// this runtime) submitHeaders refuses before reading a header.
+	// (d) RP-9 submitHeaders links headers down from a stored one: with no
+	// stored header above this one (a missing key reads as "" on this
+	// runtime) it refuses.
 	tx, err := e.callOnce(e.ownerNode, verifierID, "submitHeaders", `{"headers":`+headersOne+`}`)
 	if err != nil {
-		t.Fatalf("[backfill/no-gap] submitHeaders broadcast: %v", err)
+		t.Fatalf("[link/no-anchor] submitHeaders broadcast: %v", err)
 	}
-	if ok, msg := e.outResult(ctx, tx); ok || !strings.Contains(msg, "no header gap is open") {
-		t.Fatalf("[backfill/no-gap] submitHeaders ok=%v msg=%q, want refused with no gap open (tx=%s)", ok, msg, tx)
+	if ok, msg := e.outResult(ctx, tx); ok || !strings.Contains(msg, "is not the stored parent") {
+		t.Fatalf("[link/no-anchor] submitHeaders ok=%v msg=%q, want refused: no stored header above it (tx=%s)", ok, msg, tx)
+	}
+	// (e) RP-9 attestHeaders needs a stored history root.
+	tx, err = e.callOnce(e.ownerNode, verifierID, "attestHeaders", `{"root_block":5,"headers":[{"rlp_hex":"00","storage_proof":"AA=="}]}`)
+	if err != nil {
+		t.Fatalf("[attest/no-root] attestHeaders broadcast: %v", err)
+	}
+	if ok, msg := e.outResult(ctx, tx); ok || !strings.Contains(msg, "call attestHistoryRoot first") {
+		t.Fatalf("[attest/no-root] attestHeaders ok=%v msg=%q, want refused with no history root (tx=%s)", ok, msg, tx)
 	}
 
 	t.Log("ZK PASS — verifier reject paths: " +

@@ -31,6 +31,8 @@ type BotConfig struct {
 	Checkpoint string // checkpoint file path
 	Tokens     string // TOKENS: ERC-20 addresses to watch (comma-separated)
 	HealthAddr string // HEALTH_ADDR: serve GET /health here (with alarms checked every 10s)
+	StartBlock string // START_BLOCK for a new checkpoint (default 1: an anvil chain is short)
+	NeedsFile  string // NEEDS_FILE: where the bot asks the operator for a proof (RP-9)
 }
 
 // Bot is a running bot process with captured logs.
@@ -65,6 +67,15 @@ func StartBot(t *testing.T, ctx context.Context, cfg BotConfig) *Bot {
 	}
 	if cfg.HealthAddr != "" {
 		cmd.Env = append(cmd.Env, "HEALTH_ADDR="+cfg.HealthAddr, "HEALTH_CHECK_EVERY=10s")
+	}
+	// RP-1: a new checkpoint starts at START_BLOCK or the verifier tip, never
+	// block 1; a wave's deposits can predate the tip it plants.
+	if cfg.StartBlock == "" {
+		cfg.StartBlock = "1"
+	}
+	cmd.Env = append(cmd.Env, "START_BLOCK="+cfg.StartBlock)
+	if cfg.NeedsFile != "" {
+		cmd.Env = append(cmd.Env, "NEEDS_FILE="+cfg.NeedsFile)
 	}
 	cmd.SysProcAttr = dieWithTest()
 	stdout, _ := cmd.StdoutPipe()
