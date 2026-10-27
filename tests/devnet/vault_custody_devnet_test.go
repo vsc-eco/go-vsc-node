@@ -22,7 +22,8 @@ import (
 // still break.
 //
 //	CUST-WAIT   funds do not move into a new vault key before it has been
-//	            reshared once; they do right after, and a dry run agrees.
+//	            reshared once; they do right after, and a dry run agrees. From
+//	            0.12.0 (VR2-12) activation itself waits for that reshare.
 //	CUST-SAVE   a node that cannot save its share does not vouch for the keygen,
 //	            the key is still made by the others, the node flags its missing
 //	            share, and the vault still activates (or the stall is measured).
@@ -197,8 +198,11 @@ func TestVaultCustodyMigrationWaitsForReshare(t *testing.T) {
 	keyEpoch, keygenEpoch, _ = custodyEpochs(d, ctx, 2, key1)
 	switch {
 	case !firstNotReshared:
-		c.rec("CUST-WAIT", "migrateVault refused before the new key's first reshare", false,
-			fmt.Sprintf("INCONCLUSIVE: gen-1 was already reshared at activation (epoch %d > keygen %d)", keyEpoch, keygenEpoch))
+		// VR2-12 (0.12.0): activateKey itself waits for the new key's first reshare, so no
+		// window exists in which a migration could move funds into an un-reshared key.
+		c.rec("CUST-WAIT", "the new key was reshared before it could take funds (VR2-12: activation waits for the reshare)",
+			firstOK && keyEpoch > keygenEpoch,
+			fmt.Sprintf("at activation key epoch %d > keygen %d; first migrateVault dry run ok=%v msg=%q", keyEpoch, keygenEpoch, firstOK, firstMsg))
 	case keyEpoch > keygenEpoch:
 		c.rec("CUST-WAIT", "migrateVault refused before the new key's first reshare (dry run right after activation)", gateNamed,
 			fmt.Sprintf("dry run ok=%v msg=%q; the reshare landed before the real call", firstOK, firstMsg))

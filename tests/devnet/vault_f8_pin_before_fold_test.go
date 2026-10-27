@@ -220,10 +220,9 @@ func TestVaultF8PinBeforeFold(t *testing.T) {
 	if rotated {
 		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 		// Run 1 (2026-09-05) left gen-0 with THREE registry entries after one tranche
-		// (gen-1 had two) with no registry dump to explain them; the first tranche of a
-		// Retiring gen is also capped at MigrationCanaryValue (1,000,000 sats), so a
-		// single tranche is not a drain by design. Dump the registry at every step and
-		// sweep up to four tranches, stopping when a tranche makes no progress.
+		// (gen-1 had two) with no registry dump to explain them; legacy entries go one per
+		// tranche, so a single call is not always a drain. Dump the registry at every step
+		// and sweep up to four times, stopping when a call makes no progress.
 		vfDumpRegistry(t, d, ctx, 2, cid, "after rotation + fee top-up, before tranche 1")
 		left := genUtxoCount(t, d, ctx, cid, 0)
 		tranches := 0

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vsc-node/modules/common/consensusversion"
 
 	"vsc-node/lib/btcvault"
 	"vsc-node/modules/common/params"
@@ -163,7 +164,9 @@ func rhIssueUnmap(t *testing.T, d *Devnet, ctx context.Context, cid, keyId strin
 //     migrate() folds the legacy key into generation 0 and the in-flight v1 withdrawal
 //     settles under v2 code;
 //
-//  4. the floor is raised to 0.9.0 the way operators will do it, with
+//  4. the floor is raised to this tree's consensus line (0.12.0, the BTC release batch:
+//     POA from 0.9.0, the vault key-custody rules from 0.11.0, VR2-12 from 0.12.0) the way
+//     operators will do it, with
 //     vsc.propose_consensus_version: POA bootstraps from the committee in force before
 //     the switch (every seat on every node identical) and the vault rotation rules
 //     (0.8.0) come on with it;
@@ -413,23 +416,26 @@ func TestMainnetRehearsal(t *testing.T) {
 	}
 
 	// -------------------------------------------------------------------------
-	// Step 4: raise the floor to 0.9.0 with the on-chain proposal.
+	// Step 4: raise the floor to this tree's line with the on-chain proposal. Mainnet goes
+	// straight to the release line; a lower target would leave the vault rules of 0.11.0
+	// and 0.12.0 off and the rotation below could never activate or sweep.
 	// -------------------------------------------------------------------------
+	floor := consensusversion.RunningVersion().Consensus
 	cur, _ := d.currentEpoch(ctx, 1)
 	target := cur + 2
 	for _, n := range nodes {
-		if _, err := d.proposeConsensusVersion(n, 0, 9, target); err != nil {
+		if _, err := d.proposeConsensusVersion(n, 0, floor, target); err != nil {
 			t.Logf("propose from magi-%d failed (continuing): %v", n, err)
 		}
 	}
-	t.Logf("proposed 0.9.0 at epoch %d (current %d)", target, cur)
+	t.Logf("proposed 0.%d.0 at epoch %d (current %d)", floor, target, cur)
 	var riseEpoch, riseHeight uint64
 	deadline := devnetNow().Add(45 * time.Minute)
 	for riseEpoch == 0 && devnetNow().Before(deadline) {
 		devnetSleep(20 * time.Second)
 		last, _, _ := rhLatestElection(ctx, d, 1)
 		for e := cur + 1; e <= last; e++ {
-			if v, bh, err := rhElection(ctx, d, 1, e); err == nil && v >= 9 {
+			if v, bh, err := rhElection(ctx, d, 1, e); err == nil && v >= floor {
 				riseEpoch, riseHeight = e, bh
 				break
 			}
@@ -437,9 +443,9 @@ func TestMainnetRehearsal(t *testing.T) {
 	}
 	if riseEpoch == 0 {
 		_, v, _ := rhLatestElection(ctx, d, 1)
-		c.rec("RH-RISE", "the floor rises to 0.9.0 through the proposal", false, fmt.Sprintf("latest election still at 0.%d", v))
+		c.rec("RH-RISE", fmt.Sprintf("the floor rises to 0.%d.0 through the proposal", floor), false, fmt.Sprintf("latest election still at 0.%d", v))
 		c.summary("RH")
-		t.Fatalf("the floor never rose to 0.9.0")
+		t.Fatalf("the floor never rose to 0.%d.0", floor)
 	}
 	// Flat weight lands with the first election built under POA; seats are written at the
 	// transition. Wait one election past it, on every node.
@@ -477,10 +483,10 @@ func TestMainnetRehearsal(t *testing.T) {
 			}
 		}
 	}
-	c.rec("RH-RISE-POA", "the floor rises to 0.9.0; POA seats the pre-switch committee identically on every node and weights go flat",
+	c.rec("RH-RISE-POA", "the floor rises to the release line; POA seats the pre-switch committee identically on every node and weights go flat",
 		seatsSame && allSeated && flat,
-		fmt.Sprintf("0.9.0 at epoch %d (block %d); pre-switch committee %v; registry %s; epoch %d weights %v",
-			riseEpoch, riseHeight, prevMembers, fp, riseEpoch+1, func() []uint64 {
+		fmt.Sprintf("0.%d.0 at epoch %d (block %d); pre-switch committee %v; registry %s; epoch %d weights %v",
+			floor, riseEpoch, riseHeight, prevMembers, fp, riseEpoch+1, func() []uint64 {
 				if el1 == nil {
 					return nil
 				}
@@ -488,7 +494,7 @@ func TestMainnetRehearsal(t *testing.T) {
 			}()))
 
 	// -------------------------------------------------------------------------
-	// Step 5: key regen and migration under the 0.8.0 vault rules.
+	// Step 5: key regen and migration under the release line's vault rules.
 	// -------------------------------------------------------------------------
 	for _, n := range nodes {
 		vfWaitProcessed(t, d, ctx, n, riseHeight+5, 6*time.Minute)

@@ -37,10 +37,11 @@ import (
 //
 //  2. REVERT-ON-LATE-DEPOSIT. ReconcileRetiringVaults (the owner-only retireVault op)
 //     scans the live UTXO registry and, for an INACTIVE generation that is
-//     registry-NON-empty, takes the revert branch: status back to DRAINING and
-//     InactiveHeight reset to 0. The reset matters as much as the status flip, because
-//     canPurgeGen fails closed on a zero anchor, so the re-funded generation must serve
-//     a FRESH full 144-block grace window before it can ever be purged again.
+//     registry-NON-empty, takes the revert branch: status back to DRAINING, with
+//     InactiveHeight KEPT (PURGE-GRIEF-1). When the generation empties again the anchor
+//     only moves forward, so it purges at max(first emptied + grace, last emptied + 144
+//     blocks): a late deposit cannot restart the full grace, and the last coin still
+//     gets a reorg margin.
 //
 // The revert also re-arms the sweep: HandleMigrateVault only acts on RETIRING or
 // DRAINING generations, so without the revert the late deposit would sit in a vault no
@@ -59,8 +60,8 @@ import (
 //   - F19-LATE-CREDIT  a valid SPV-proven deposit to that INACTIVE generation credits
 //     the depositor and re-tags a UTXO to gen-0 (match-until-purged).
 //   - F19-REVERT       retireVault flips the re-funded generation INACTIVE to DRAINING
-//     AND clears InactiveHeight to 0, so the purge-grace clock restarts
-//     from scratch rather than carrying over the old anchor.
+//     AND keeps InactiveHeight at the first anchor (PURGE-GRIEF-1), so a
+//     late deposit cannot restart the purge-grace clock.
 //   - F19-RESWEEP      the re-engaged sweep drains gen-0 back to zero UTXOs while the
 //     depositor's balance stays exactly where the credit left it.
 //   - F19-PURGED       after a second retire plus the full 144-block grace window the
@@ -224,15 +225,15 @@ func TestVaultF19LateDepositInactive(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		revertSt = vaultStatusOf(t, d, ctx, cid, 0)
 		revertAnchor, revertFound = f19InactiveHeightOf(d, ctx, 2, cid, 0)
-		if revertSt == 3 && revertFound && revertAnchor == 0 {
+		if revertSt == 3 && revertFound && revertAnchor != 0 && revertAnchor == anchor {
 			break
 		}
 		devnetSleep(10 * time.Second)
 	}
-	c.rec("F19-REVERT", "retireVault reverts the re-funded generation Inactive to Draining and resets the purge-grace anchor to 0",
-		revertSt == 3 && revertFound && revertAnchor == 0,
-		fmt.Sprintf("gen-0 status=%s (want Draining), InactiveHeight=%d (want 0, present=%v), was anchored at %d",
-			statusStr(revertSt), revertAnchor, revertFound, anchor))
+	c.rec("F19-REVERT", "retireVault reverts the re-funded generation Inactive to Draining and keeps its purge-grace anchor (PURGE-GRIEF-1)",
+		revertSt == 3 && revertFound && revertAnchor != 0 && revertAnchor == anchor,
+		fmt.Sprintf("gen-0 status=%s (want Draining), InactiveHeight=%d (want %d, present=%v)",
+			statusStr(revertSt), revertAnchor, anchor, revertFound))
 
 	// === STEP 3: the re-engaged sweep moves the late deposit to the successor ===
 	balBeforeSweep := balanceSats(t, d, ctx, cid, owner2)
