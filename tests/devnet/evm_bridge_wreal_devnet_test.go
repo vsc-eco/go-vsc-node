@@ -1,30 +1,34 @@
 //go:build evm_devnet && evm_realproof
 
-// WREAL: the EVM bridge end to end on REAL data. L1 is Sepolia (public RPCs),
-// the verifier is the real zk-header-verifier, and every header the bridge
-// relies on arrives through a real Groth16 proof bought on the Succinct Prover
-// Network by the sp1-helios-magi operator (magi_operator), plus the operator's
-// header backfill. Nothing is planted.
+// WREAL: the EVM bridge end to end on REAL data, as it runs after the 10-27
+// launch fixes. L1 is Sepolia (public RPCs), the verifier is the real
+// zk-header-verifier, and every header the bridge relies on is bound to a real
+// Groth16 proof bought on the Succinct Prover Network by the sp1-helios-magi
+// operator, which proves on demand: the bot asks (NEEDS_FILE), the operator
+// waits the 10-min batch window, proves once; the bot then stores the headers
+// it needs (EIP-2935 attestation where the RPC serves recent state proofs,
+// else linked down by parent hash from the proven block). Nothing is planted.
 //
 // Core flow (a failure stops the test):
 //
-//	(0) TSS keygen gives the vault; the real bot attests it (E23) and takes it (A18).
+//	(0) TSS keygen gives the vault; the real bot (no relayer registration, RP-8;
+//	    START_BLOCK, RP-1) attests it (E23) and takes it (A18).
 //	(1) init the verifier from magi_genesis at the live finalized checkpoint, pin the ELF.
-//	(2) Sepolia deposits from a funded test wallet: 0.04975 ETH to the gas
-//	    reserve (calldata "to_reserve=1"), 0.025 ETH for the user (its 1% tax
-//	    brings the reserve to exactly the 0.05 floor), 2 USDC (Circle's Sepolia
-//	    FiatToken v2).
-//	(3) T1: once they are finalized, one paid proof; the verifier accepts it
-//	    (sp1_verify_groth16 under the pinned VK) and the operator backfills.
-//	(4) the bot maps all three deposits from the proven headers.
-//	(5a) the user withdraws 0.01 ETH; the TSS committee signs it with the
-//	    heaviest node down, the bot broadcasts it to Sepolia, the recipient is
-//	    paid. While it is pending, the user's USDC withdrawal is refused (RP-11).
-//	(6a) T2: a second paid proof covers it (E5 on real data); a new bot, started
-//	    from the first one's checkpoint, closes it with confirmSpend.
-//	(5b)/(6b) the user withdraws 1 USDC; T3, a third paid proof, covers it and
-//	    the bot closes it. A further ETH withdrawal is then refused by the
-//	    reserve floor (RP-4).
+//	(2) Sepolia deposits, gas from eth_estimateGas (GLAM-1: the first one creates
+//	    the vault account): 0.04975 ETH to the gas reserve (calldata
+//	    "to_reserve=1"), 0.025 ETH for the user, 2 USDC, and 0.005 ETH through
+//	    MagiDeposit (deployed by CREATE2 for the vault) for another recipient (RP-7).
+//	(3) T1: the bot asks for a proof; one paid proof on demand; the verifier
+//	    accepts it and stores only the proven header (RP-9).
+//	(4) the bot stores the deposit blocks' headers and maps all four deposits.
+//	(5) three withdrawals in flight at once (RP-11): ETH with the gas limit
+//	    eth_estimateGas gives for a fresh recipient, ETH at the old fixed 21,000
+//	    (GLAM-1: it reverts on Sepolia and is refunded less its fee), 1 USDC
+//	    (gas limit registered for a first-time holder); the TSS signs them with
+//	    the heaviest node down.
+//	(6) T2: a second proof, the operator killed mid-request and resumed without
+//	    paying again (RP-10); a new bot stores the headers and confirms all three
+//	    in nonce order.
 //	(7) replay: a bot with a fresh checkpoint rescans everything; nothing is
 //	    credited twice.
 //
@@ -42,15 +46,15 @@
 //	F1  T1's real proof with one byte flipped: refused by the Groth16 check.
 //	F2  T1's real proof submitted again: refused (the head does not advance).
 //	F3  T1's real proof with its public values tampered: refused by the Groth16 check.
-//	F4  with a header gap open, a real Sepolia header with one field changed:
-//	    refused; the same header unchanged: accepted.
+//	F4  a real Sepolia header with one field changed, linked below a stored
+//	    header (submitHeaders): refused.
 //	F5  a relayer forges a deposit: another tx's real trie proof with a raw tx
 //	    that pays the vault: refused; the real deposit replayed: refused.
-//	F6  confirmSpend with another withdrawal's tx, a raised amount, or the wrong
+//	F6  confirmSpend with another recipient, a raised amount, or the wrong
 //	    block: refused; the real one replayed after it closed: refused.
 //	F7  the operator against a verifier whose vkey is not this ELF's: no paid proof.
-//	F8  the operator killed mid-backfill and restarted with --max-proofs 0:
-//	    the gap closes and no second proof is bought.
+//	F8  (RP-10) the operator killed after its Prover Network request and
+//	    restarted: it resumes that request, buys no second proof.
 //	F9  the operator with an empty requester balance: no proof, no spend.
 //	F10 the confirming bot lists a dead RPC first: it fails over, and does not
 //	    send the vault's withdrawals again.
@@ -58,12 +62,13 @@
 //	F12 the heaviest node (node 4, ~30% of the weight, mainnet's v4vapp role)
 //	    down while the TSS signs the withdrawals; the chain and TSS carry on; it rejoins.
 //	F13 the operator handed a mainnet execution RPC: no paid proof.
-//	F14 a bot handed a mainnet RPC (RP-5): observed.
+//	F14 (RP-5) a bot handed a mainnet RPC for this Sepolia bridge: it refuses to start.
 //	F15 deposits as legacy (type 0) and access-list (type 1) txs: credited.
 //	F16 a deposit forwarded by a contract (an internal tx, E18): observed.
+//	RP-4 with the reserve below its floor, an ETH withdrawal still goes through.
 //
-// It spends real PROVE (three proofs, each capped by --max-proofs 1), so it
-// needs its own build tag and never runs with the evm_devnet suite.
+// It spends real PROVE (two proofs, each capped by --max-proofs 1), so it needs
+// its own build tag and never runs with the evm_devnet suite.
 //
 // Inputs (env):
 //
@@ -74,7 +79,8 @@
 //	WREAL_LOG_DIR             where the operator logs go
 //	WREAL_SOURCE_DIR          optional: build the node image from this tree
 //	WREAL_EXEC_RPC, WREAL_BEACON_RPC, WREAL_MAINNET_RPC   optional endpoints
-//	plus the evm-artifacts.sh exports (EVM_BRIDGE_DEVNET_WASM, ZK_VERIFIER_WASM, EVM_BOT_BIN)
+//	plus the evm-artifacts.sh exports (EVM_BRIDGE_DEVNET_WASM, ZK_VERIFIER_WASM,
+//	EVM_BOT_BIN, EVM_MAGI_DEPOSIT_HEX)
 //
 // Run: go test -tags 'evm_devnet evm_realproof' -run TestEVMBridge_WReal ./tests/devnet/ -timeout 420m -v
 package devnet
@@ -408,6 +414,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	userDep := milliEth(25)
 	reserveDep := new(big.Int).Sub(milliEth(50), new(big.Int).Div(userDep, big.NewInt(100)))
 	smallDep := milliEth(1) // F15 (twice) and F16
+	mdDep := milliEth(5)    // RP-7: through MagiDeposit
 
 	// Funds first: an unfunded wallet must not cost a devnet.
 	l1 := dialSepolia(t, ctx, execRPC)
@@ -422,7 +429,8 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	}
 	needEth := new(big.Int).Add(reserveDep, userDep)
 	needEth.Add(needEth, new(big.Int).Mul(smallDep, big.NewInt(3)))
-	needEth.Add(needEth, big.NewInt(600_000_000_000_000)) // + 0.0006 ETH of gas
+	needEth.Add(needEth, mdDep)
+	needEth.Add(needEth, big.NewInt(4_000_000_000_000_000)) // + 0.004 ETH of gas (MagiDeposit's deploy, a new vault account)
 	if ethBal.Cmp(needEth) < 0 || usdcBal.Cmp(big.NewInt(2_000_000)) < 0 {
 		t.Fatalf("Sepolia wallet %s holds %s wei and %s USDC units; needs %s wei and 2000000", wallet.Hex(), ethBal, usdcBal, needEth)
 	}
@@ -539,26 +547,40 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	vState := func(keys ...string) map[string]string { return vStateOf(verifierID, keys...) }
 	t.Logf("contracts: account-mapping=%s, real zk verifier=%s (wired)", e.amID, verifierID)
 
-	// USDC: Circle's Sepolia token.
-	reg := fmt.Sprintf(`{"address":"%s","symbol":"usdc","decimals":6,"min_withdrawal":1000000}`, usdcAddr.Hex())
+	// estimate is eth_estimateGas plus a quarter (GLAM-1: Sepolia prices a
+	// new account or storage slot far above the old fixed limits).
+	estimate := func(from ethcommon.Address, to ethcommon.Address, value *big.Int, data []byte) uint64 {
+		t.Helper()
+		g, err := l1.cli.EstimateGas(ctx, ethereum.CallMsg{From: from, To: &to, Value: value, Data: data})
+		if err != nil {
+			t.Fatalf("eth_estimateGas from %s to %s: %v", from.Hex(), to.Hex(), err)
+		}
+		return g + g/4
+	}
+	// USDC: Circle's Sepolia token, registered with the gas a transfer to a
+	// first-time holder takes here (USDC-GAS-1 / GLAM-1).
+	usdcGas := estimate(wallet, usdcAddr, nil, usdcCall("transfer(address,uint256)", cryptoPubkeyAddr(mustKey(t)), big.NewInt(1_000_000)))
+	if usdcGas > 500_000 {
+		t.Fatalf("a USDC transfer to a new holder needs %d gas on Sepolia, above the bridge's 500,000 token cap", usdcGas)
+	}
+	t.Logf("GLAM-1 MEASURED: a USDC transfer to a first-time holder on Sepolia: %d gas with margin (the old fixed limit was 65,000)", usdcGas)
+	reg := fmt.Sprintf(`{"address":"%s","symbol":"usdc","decimals":6,"min_withdrawal":1000000,"gas_limit":%d}`, usdcAddr.Hex(), usdcGas)
 	if err := e.proposeExecute("registerToken", reg); err != nil {
 		t.Fatalf("registerToken usdc: %v", err)
 	}
 	regKey := "t-" + strconv.FormatUint(evmChainID, 10) + "-" + strings.ToLower(usdcAddr.Hex()[2:])
-	if err := pollUntil(ctx, evmL2Wait, func() bool { return e.stateStr(regKey) == "usdc|6|1000000" }); err != nil {
+	if err := pollUntil(ctx, evmL2Wait, func() bool { return e.stateStr(regKey) == fmt.Sprintf("usdc|6|1000000|0|%d", usdcGas) }); err != nil {
 		t.Fatalf("registerToken not stored: %s=%q", regKey, e.stateStr(regKey))
 	}
 
-	// Relayers: the bot, a second honest bot (M3), and a malicious relayer
-	// that submits every forged call.
+	// Callers: the bot, a second honest bot (M3), and a malicious caller that
+	// submits every forged call. None is a registered relayer (RP-8: mapping is
+	// permissionless); each holds HBD for RC.
 	botKey, botBKey, attKey := mustKey(t), mustKey(t), mustKey(t)
 	botDID := dids.NewEthDID(cryptoPubkeyAddr(botKey).Hex()).String()
 	botBDID := dids.NewEthDID(cryptoPubkeyAddr(botBKey).Hex()).String()
 	attDID := dids.NewEthDID(cryptoPubkeyAddr(attKey).Hex()).String()
 	for _, r := range []string{botDID, botBDID, attDID} {
-		if err := e.proposeExecute("registerRelayer", fmt.Sprintf(`{"account":"%s"}`, r)); err != nil {
-			t.Fatalf("registerRelayer %s: %v", r, err)
-		}
 		if err := e.fundDID(r, "20000.000"); err != nil {
 			t.Fatalf("fund %s: %v", r, err)
 		}
@@ -598,24 +620,19 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// RP-1: a bot without a checkpoint scans from L1 block 1 (36 days on
-	// mainnet). Seed it at the current finalized block, before any deposit.
+	// RP-1: a new checkpoint starts at START_BLOCK (the current finalized
+	// block, before any deposit), never block 1.
 	seed, err := l1.finalized(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	startBlock := strconv.FormatUint(seed+1, 10)
 	cpPath := filepath.Join(logDir, "bot-checkpoint.json")
-	seedCheckpoint := func(path string) {
-		t.Helper()
-		if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"last_scanned_block": %d}`, seed)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	seedCheckpoint(cpPath)
+	needsPath := filepath.Join(logDir, "needs.json")
 	botHex := hex.EncodeToString(ethCrypto.FromECDSA(botKey))
 	bot := StartBot(t, ctx, BotConfig{
 		EthRPC: execRPC, ContractID: e.amID, GraphQLURL: d.GQLEndpoint(2),
-		EthPrivHex: botHex, Checkpoint: cpPath, Tokens: usdcAddr.Hex(),
+		EthPrivHex: botHex, Checkpoint: cpPath, Tokens: usdcAddr.Hex(), StartBlock: startBlock, NeedsFile: needsPath,
 	})
 	t.Cleanup(bot.Stop)
 	botLogs := func(b *Bot) string { return strings.Join(b.Logs(), "\n") }
@@ -625,13 +642,12 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if !bot.WaitForLog(ctx, "A18: vault is the TSS key's address", evmL2Wait) {
 		t.Fatalf("the bot did not take the vault:\n%s", botLogs(bot))
 	}
-	t.Logf("(0) PASS: vault %s attested and live; bot checkpoint seeded at Sepolia block %d", vault.Hex(), seed)
-	// M3: a second honest bot with its own relayer key, overlapping the first.
+	t.Logf("(0) PASS: vault %s attested and live; the bot (no relayer registration) starts at Sepolia block %s", vault.Hex(), startBlock)
+	// M3: a second honest bot with its own key, overlapping the first.
 	cpB := filepath.Join(logDir, "botB-checkpoint.json")
-	seedCheckpoint(cpB)
 	botB := StartBot(t, ctx, BotConfig{
 		EthRPC: execRPC, ContractID: e.amID, GraphQLURL: d.GQLEndpoint(3),
-		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botBKey)), Checkpoint: cpB, Tokens: usdcAddr.Hex(),
+		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botBKey)), Checkpoint: cpB, Tokens: usdcAddr.Hex(), StartBlock: startBlock,
 	})
 	t.Cleanup(botB.Stop)
 	// M2: the vault key and the epoch, tracked through the run.
@@ -691,24 +707,51 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	initVerifier(verifierID, strings.TrimSpace(string(gout)))
 	t.Logf("(1) PASS: verifier init at slot %v / block %d (%v), ELF pinned", genesis["initial_head"], anchor, genesis["initial_block_hash"])
 
-	// (2) Sepolia deposits.
-	rcRes, err := l1.send(ctx, walletKey, vault, reserveDep, []byte("to_reserve=1"), 30_000)
+	// (2) Sepolia deposits. Gas from eth_estimateGas (GLAM-1): the first one
+	// creates the vault's account, which Sepolia prices far above 21,000.
+	toReserve := []byte("to_reserve=1")
+	rcRes, err := l1.send(ctx, walletKey, vault, reserveDep, toReserve, estimate(wallet, vault, reserveDep, toReserve))
 	if err != nil || rcRes.Status != 1 {
 		t.Fatalf("reserve deposit: %v %+v", err, rcRes)
 	}
-	rcEth, err := l1.send(ctx, walletKey, vault, userDep, nil, 21_000)
+	t.Logf("GLAM-1 MEASURED: the first deposit to the new vault account used %d gas", rcRes.GasUsed)
+	rcEth, err := l1.send(ctx, walletKey, vault, userDep, nil, estimate(wallet, vault, userDep, nil))
 	if err != nil || rcEth.Status != 1 {
 		t.Fatalf("ETH deposit: %v %+v", err, rcEth)
 	}
-	rcUsdc, err := l1.send(ctx, walletKey, usdcAddr, new(big.Int), usdcCall("transfer(address,uint256)", vault, big.NewInt(2_000_000)), 100_000)
+	usdcDep := usdcCall("transfer(address,uint256)", vault, big.NewInt(2_000_000))
+	rcUsdc, err := l1.send(ctx, walletKey, usdcAddr, new(big.Int), usdcDep, estimate(wallet, usdcAddr, nil, usdcDep))
 	if err != nil || rcUsdc.Status != 1 {
 		t.Fatalf("USDC deposit: %v %+v", err, rcUsdc)
 	}
-	lastDeposit := rcUsdc.BlockNumber.Uint64()
-	t.Logf("(2) deposits on Sepolia: reserve %s (block %d), ETH %s (block %d), USDC %s (block %d)",
-		rcRes.TxHash.Hex(), rcRes.BlockNumber, rcEth.TxHash.Hex(), rcEth.BlockNumber, rcUsdc.TxHash.Hex(), lastDeposit)
+	// RP-7: MagiDeposit for this vault (CREATE2 through the deterministic
+	// deployment proxy), and a deposit through it for another recipient.
+	mdHex, err := os.ReadFile(evmArtifact(t, "EVM_MAGI_DEPOSIT_HEX"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdInit := append(ethcommon.FromHex(strings.TrimSpace(string(mdHex))), ethcommon.LeftPadBytes(vault.Bytes(), 32)...)
+	mdDeploy := append(make([]byte, 32), mdInit...)
+	if rc, err := l1.send(ctx, walletKey, create2Deployer, new(big.Int), mdDeploy, estimate(wallet, create2Deployer, nil, mdDeploy)); err != nil || rc.Status != 1 {
+		t.Fatalf("deploy MagiDeposit: %v %+v", err, rc)
+	} else {
+		t.Logf("MagiDeposit deployed for the vault: %d gas", rc.GasUsed)
+	}
+	dc := ethCrypto.CreateAddress2(create2Deployer, [32]byte{}, ethCrypto.Keccak256(mdInit))
+	mdRecipient := evmDID(cryptoPubkeyAddr(mustKey(t)))
+	mdCall := depositCalldata("deposit(string)", nil, mdRecipient)
+	rcMd, err := l1.send(ctx, walletKey, dc, mdDep, mdCall, estimate(wallet, dc, mdDep, mdCall))
+	if err != nil || rcMd.Status != 1 {
+		t.Fatalf("MagiDeposit deposit: %v %+v", err, rcMd)
+	}
+	lastDeposit := rcMd.BlockNumber.Uint64()
+	t.Logf("(2) deposits on Sepolia: reserve %s (block %d), ETH %s (block %d), USDC %s (block %d), MagiDeposit %s at %s for %s (block %d)",
+		rcRes.TxHash.Hex(), rcRes.BlockNumber, rcEth.TxHash.Hex(), rcEth.BlockNumber, rcUsdc.TxHash.Hex(), rcUsdc.BlockNumber,
+		rcMd.TxHash.Hex(), dc.Hex(), mdRecipient, lastDeposit)
 
-	// (3) T1: the first paid proof, once the deposits are finalized.
+	// (3) T1: on demand. The bot finds the deposits once they are finalized,
+	// asks for a proof (NEEDS_FILE), and the operator proves after its 10-min
+	// batch window.
 	opKey := mustKey(t)
 	opDID := dids.NewEthDID(cryptoPubkeyAddr(opKey).Hex()).String()
 	if err := e.fundDID(opDID, "20000.000"); err != nil {
@@ -719,66 +762,73 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 			"NETWORK_PRIVATE_KEY="+requester,
 			"MAGI_OPERATOR_PRIVATE_KEY="+hex.EncodeToString(ethCrypto.FromECDSA(opKey)),
 			"SP1_HELIOS_FULFILLMENT_STRATEGY=auction",
+			"MAGI_PROOF_REQUEST_FILE="+filepath.Join(logDir, "proof-request.json"),
 			"PATH="+signerDir+":"+os.Getenv("PATH"),
 			"RUST_LOG=info",
 		)
 	}
 	opEnv := opEnvWith(requesterHex)
-	opArgsFor := func(verifier, exec string, maxProofs int) []string {
-		return []string{
+	// opArgsFor: onDemand reads the bot's needs file; without it the operator
+	// proves every new checkpoint (the refusal checks F7/F9/F13 use that).
+	opArgsFor := func(verifier, exec string, maxProofs int, onDemand bool) []string {
+		a := []string{
 			"--source-chain-id", strconv.FormatUint(evmChainID, 10),
 			"--source-consensus-rpc", beaconRPC, "--source-execution-rpc", exec,
 			"--magi-graphql", d.GQLEndpoint(2), "--verifier-contract", verifier,
 			"--net-id", d.netId(), "--land-timeout-mins", "5", "--max-proofs", strconv.Itoa(maxProofs),
 		}
+		if onDemand {
+			a = append(a, "--needs-file", needsPath, "--batch-window-mins", "10")
+		}
+		return a
 	}
 	logOp := func(name, out string) {
-		for _, l := range operatorLines(out, "identity", "ELF hash", "proof budget", "received from the Prover Network", "submitProof", "submitHeaders", "landed", "stopping", "refus", "mismatch", "rror", "PGU", "gas", "cost", "price", "cycles", "fee", "auction", "Request") {
+		for _, l := range operatorLines(out, "identity", "ELF hash", "proof budget", "on demand", "proof wanted", "not proving", "Prover Network", "RP-10", "received from the Prover Network", "submitProof", "landed", "stopping", "refus", "mismatch", "rror", "PGU", "gas", "cost", "price", "cycles", "fee", "auction") {
 			t.Logf("  op %s| %s", name, l)
 		}
 	}
-	// checkProof asserts a paid proof landed and its gap is closed.
+	landed := func(l string) bool { return strings.Contains(l, "proof(s) landed") }
+	// checkProof asserts a paid proof landed and moved the tip past mustCover.
 	checkProof := func(name string, before map[string]string, mustCover uint64) {
 		t.Helper()
-		after := vState("bh", "h", "gapb", "gapw")
+		after := vState("bh", "h")
 		h, _ := strconv.ParseUint(after["h"], 10, 64)
-		if after["bh"] == before["bh"] || h < mustCover || after["gapb"] != "" || after["gapw"] != "" {
-			t.Fatalf("%s: verifier state after the proof %v (before %v): want bh moved, h >= %d, no open gap", name, after, before, mustCover)
+		if after["bh"] == before["bh"] || h < mustCover {
+			t.Fatalf("%s: verifier state after the proof %v (before %v): want bh moved and h >= %d", name, after, before, mustCover)
 		}
-		t.Logf("%s PASS: a real network proof was accepted on-chain; beacon head %s -> %s, headers to block %s, gap closed", name, before["bh"], after["bh"], after["h"])
+		if b, _ := d.getStateHex(ctx, 2, verifierID, "b-"+after["h"]); b == "" {
+			t.Fatalf("%s: the proven block %s's header is not stored", name, after["h"])
+		}
+		t.Logf("%s PASS: a real network proof was accepted on-chain; beacon head %s -> %s, tip %s -> %s (its header stored, nothing backfilled)", name, before["bh"], after["bh"], before["h"], after["h"])
+	}
+	rcFrozen := func(did string) int64 {
+		var rc struct {
+			R struct {
+				Amount int64 `json:"amount"`
+				Max    int64 `json:"max_rcs"`
+			} `json:"getAccountRC"`
+		}
+		if err := d.gqlQuery(ctx, 2, `query($a:String!){getAccountRC(account:$a){amount max_rcs}}`, map[string]any{"a": did}, &rc); err != nil || rc.R.Max == 0 {
+			return -1
+		}
+		return rc.R.Max - rc.R.Amount
 	}
 	if err := l1.waitFinalized(ctx, lastDeposit, 40*time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	botRC0 := rcFrozen(botDID)
 	before := vState("bh", "h")
-	out, _, err := runOperator(t, ctx, filepath.Join(logDir, "operator-T1.log"), opEnv, opArgsFor(verifierID, execRPC, 1), 100*time.Minute, nil)
+	out, _, err := runOperator(t, ctx, filepath.Join(logDir, "operator-T1.log"), opEnv, opArgsFor(verifierID, execRPC, 1, true), 100*time.Minute, landed)
 	logOp("T1", out)
-	if err != nil {
-		t.Fatalf("T1: operator exited with %v", err)
-	}
 	if len(operatorLines(out, "proof 1 received from the Prover Network")) != 1 || len(operatorLines(out, "1 proof(s) landed")) == 0 {
-		t.Fatalf("T1: the operator log does not show exactly one paid proof that landed")
+		t.Fatalf("T1: the operator log does not show exactly one paid proof that landed (exit %v)", err)
+	}
+	if len(operatorLines(out, "proof wanted")) == 0 || len(operatorLines(out, "batching up to")) == 0 {
+		t.Errorf("T1: the operator did not wait for the bot's request and its batch window (on demand)")
 	}
 	checkProof("T1", before, lastDeposit)
-	// RP-9: the operator's RC for one proof plus its backfill (its first txs,
-	// so everything frozen now is T1's; regen over ~minutes is ~0.1%).
-	var rc struct {
-		R struct {
-			Amount int64 `json:"amount"`
-			Max    int64 `json:"max_rcs"`
-		} `json:"getAccountRC"`
-	}
-	if err := d.gqlQuery(ctx, 2, `query($a:String!){getAccountRC(account:$a){amount max_rcs}}`, map[string]any{"a": opDID}, &rc); err == nil && rc.R.Max > 0 {
-		hT1, _ := strconv.ParseUint(vState("h")["h"], 10, 64)
-		headers := int64(hT1 - anchor)
-		frozen := rc.R.Max - rc.R.Amount
-		if headers > 0 {
-			t.Logf("RP-9 MEASURED: T1 froze %d RC on the operator for %d headers (proof + backfill): %.0f RC per header; x7200 headers/day = %.1fM RC/day",
-				frozen, headers, float64(frozen)/float64(headers), float64(frozen)/float64(headers)*7200/1e6)
-		}
-	} else {
-		t.Logf("RP-9 NOT MEASURED: getAccountRC(%s): %v %+v", opDID, err, rc.R)
-	}
+	opT1 := rcFrozen(opDID)
+	t.Logf("RP-9 MEASURED: T1 froze %d RC on the operator (one proof, its one header; was proof + backfill of every block)", opT1)
 
 	// F1-F3 on T1's real proof (no gap is open, so each reaches the checks).
 	if m := opTxRe.FindStringSubmatch(strings.Join(operatorLines(out, "submitProof tx"), "\n")); m == nil {
@@ -825,9 +875,9 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		}
 		t.Logf("%s PASS: no proof bought (exit %v, stopped on a failed step: %v)", id, err, stopped)
 	}
-	noPaidProof("F13", "operator-F13-mainnet-rpc.log", opEnv, opArgsFor(verifierID, mainnetRPC, 1), 15*time.Minute)
+	noPaidProof("F13", "operator-F13-mainnet-rpc.log", opEnv, opArgsFor(verifierID, mainnetRPC, 1, false), 15*time.Minute)
 	// F9: a requester with no PROVE: no proof, no spend.
-	noPaidProof("F9", "operator-F9-empty-requester.log", opEnvWith(hex.EncodeToString(ethCrypto.FromECDSA(mustKey(t)))), opArgsFor(verifierID, execRPC, 1), 15*time.Minute)
+	noPaidProof("F9", "operator-F9-empty-requester.log", opEnvWith(hex.EncodeToString(ethCrypto.FromECDSA(mustKey(t)))), opArgsFor(verifierID, execRPC, 1, false), 15*time.Minute)
 	// F7: a verifier whose vkey is not this ELF's: refused before paying.
 	if v2, err := deployWithRetry(ctx, d, ContractDeployOpts{WasmPath: evmArtifact(t, "ZK_VERIFIER_WASM"), Name: "zk-header-verifier-f7", DeployerNode: 1, GQLNode: 2}, 3); err != nil {
 		t.Errorf("F7 NOT RUN: deploy: %v", err)
@@ -837,23 +887,31 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		g2["sp1_vkey_hash"] = flipHex(fmt.Sprint(g2["sp1_vkey_hash"]))
 		b, _ := json.Marshal(g2)
 		initVerifier(v2, string(b))
-		noPaidProof("F7", "operator-F7-vkey-mismatch.log", opEnv, opArgsFor(v2, execRPC, 1), 15*time.Minute)
+		noPaidProof("F7", "operator-F7-vkey-mismatch.log", opEnv, opArgsFor(v2, execRPC, 1, false), 15*time.Minute)
 	}
 
-	// (4) The bot maps the three deposits from the proven headers.
+	// (4) The bot stores the deposit blocks' headers (EIP-2935 attestation, or
+	// linked down from the proven block when the RPC serves no recent state
+	// proofs) and maps all four deposits.
 	user := evmDID(wallet)
 	tax := new(big.Int).Div(userDep, big.NewInt(100))
 	wantUser, wantGr := new(big.Int).Sub(userDep, tax), new(big.Int).Add(reserveDep, tax) // gr = exactly 0.05
-	if err := pollUntil(ctx, 15*time.Minute, func() bool {
-		return e.stateStr("a-"+user+"-eth") == wantUser.String() && e.stateStr("a-"+user+"-usdc") == "2000000" && e.stateStr("gr") == wantGr.String()
+	mdTax := new(big.Int).Div(mdDep, big.NewInt(100))
+	wantMd := new(big.Int).Sub(mdDep, mdTax)
+	wantGr.Add(wantGr, mdTax)
+	if err := pollUntil(ctx, 45*time.Minute, func() bool {
+		return e.stateStr("a-"+user+"-eth") == wantUser.String() && e.stateStr("a-"+user+"-usdc") == "2000000" &&
+			e.stateStr("a-"+mdRecipient+"-eth") == wantMd.String() && e.stateStr("gr") == wantGr.String()
 	}); err != nil {
-		t.Fatalf("deposits not mapped: eth=%q usdc=%q gr=%q (want %s, 2000000, %s)\nbot:\n%s",
-			e.stateStr("a-"+user+"-eth"), e.stateStr("a-"+user+"-usdc"), e.stateStr("gr"), wantUser, wantGr, botLogs(bot))
+		t.Fatalf("deposits not mapped: eth=%q usdc=%q md=%q gr=%q (want %s, 2000000, %s, %s)\nbot:\n%s",
+			e.stateStr("a-"+user+"-eth"), e.stateStr("a-"+user+"-usdc"), e.stateStr("a-"+mdRecipient+"-eth"), e.stateStr("gr"), wantUser, wantMd, wantGr, botLogs(bot))
 	}
 	if got := e.stateStr("s-usdc"); got != "2000000|2000000|0|0" {
 		t.Fatalf("s-usdc=%q after the deposit", got)
 	}
-	t.Logf("(4) PASS: mapped from real proofs: %s eth=%s usdc=2000000, gas reserve %s", user, wantUser, wantGr)
+	attested, linked := len(operatorLines(botLogs(bot), "RP-9: headers attested")), len(operatorLines(botLogs(bot), "linking down from the proven tip"))
+	t.Logf("(4) PASS: mapped from real proofs: %s eth=%s usdc=2000000; MagiDeposit credited %s %s (RP-7); gas reserve %s; headers: %d attestation run(s), %d link-down run(s); bot froze %d RC",
+		user, wantUser, mdRecipient, wantMd, wantGr, attested, linked, rcFrozen(botDID)-botRC0)
 
 	// F5 / F11: forged and replayed deposits from the malicious relayer.
 	balances := func() string {
@@ -898,8 +956,12 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		return
 	}
 
-	// (5a) Withdrawals go one at a time (RP-11). The ETH one first, with node 4
-	// (the heaviest, ~30% of the weight) down while the TSS signs it (F12).
+	// (5) Three withdrawals in flight at once (RP-11), node 4 (the heaviest,
+	// ~30% of the weight) down while the TSS signs them (F12):
+	//   d-0 ETH to a fresh address with the gas eth_estimateGas gives (GLAM-1 fix)
+	//   d-1 ETH to another fresh address at the old fixed 21,000: reverts on
+	//       Sepolia (GLAM-1 on real data), refunded less its fee
+	//   d-2 1 USDC to a fresh holder (the registered gas limit)
 	if err := e.fundDID(user, "10000.000"); err != nil {
 		t.Fatalf("fund user DID: %v", err)
 	}
@@ -910,8 +972,11 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if err := d.StopNode(ctx, 4); err != nil {
 		t.Errorf("F12 NOT RUN: stop node 4: %v", err)
 	}
-	recipU, recipE := cryptoPubkeyAddr(mustKey(t)), cryptoPubkeyAddr(mustKey(t))
-	ethUnmap := fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, recipE.Hex(), milliEth(10))
+	recipU, recipE, recipG := cryptoPubkeyAddr(mustKey(t)), cryptoPubkeyAddr(mustKey(t)), cryptoPubkeyAddr(mustKey(t))
+	ethGas := estimate(vault, recipE, milliEth(10), nil)
+	t.Logf("GLAM-1 MEASURED: an ETH transfer to a fresh address on Sepolia: %d gas with margin", ethGas)
+	ethUnmap := fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth","gas_limit":%d}`, recipE.Hex(), milliEth(10), ethGas)
+	glamUnmap := fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, recipG.Hex(), milliEth(10))
 	usdcUnmap := fmt.Sprintf(`{"to":"%s","amount":"1000000","token_address":"%s"}`, recipU.Hex(), usdcAddr.Hex())
 	stored := map[uint64]string{}
 	queue := func(action, payload string, nonce uint64) *ethtypes.DynamicFeeTx {
@@ -926,7 +991,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		if err := pollUntil(ctx, evmL2Wait, func() bool {
 			return json.Unmarshal([]byte(e.stateStr(key)), &ps) == nil && ps.UnsignedTxHex != ""
 		}); err != nil {
-			t.Fatalf("%s queued nothing at %s (%q)", action, key, e.stateStr(key))
+			t.Fatalf("%s issued nothing at %s (%q)", action, key, e.stateStr(key))
 		}
 		stored[nonce] = e.stateStr(key)
 		q, err := DecodeUnsigned1559(ps.UnsignedTxHex)
@@ -955,7 +1020,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		block uint64
 	}
 	vaultSent := map[uint64]sent{}
-	waitSent := func(nonce uint64, q *ethtypes.DynamicFeeTx, from uint64, logs func() string) sent {
+	waitSent := func(nonce uint64, q *ethtypes.DynamicFeeTx, from uint64, wantStatus uint64, logs func() string) sent {
 		t.Helper()
 		next := from
 		var tx *ethtypes.Transaction
@@ -967,12 +1032,12 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("the vault never sent nonce %d on Sepolia\nbot:\n%s", nonce, logs())
 		}
-		if rc.Status != 1 || tx.To() == nil || *tx.To() != *q.To || tx.Value().Cmp(q.Value) != 0 || !strings.EqualFold(hex.EncodeToString(tx.Data()), hex.EncodeToString(q.Data)) {
-			t.Fatalf("vault nonce %d: status %d to=%v value=%s, want the queued tx to=%v value=%s", nonce, rc.Status, tx.To(), tx.Value(), q.To, q.Value)
+		if rc.Status != wantStatus || tx.To() == nil || *tx.To() != *q.To || tx.Value().Cmp(q.Value) != 0 || tx.Gas() != q.Gas || !strings.EqualFold(hex.EncodeToString(tx.Data()), hex.EncodeToString(q.Data)) {
+			t.Fatalf("vault nonce %d: status %d (want %d) to=%v value=%s gas=%d, want the issued tx to=%v value=%s gas=%d", nonce, rc.Status, wantStatus, tx.To(), tx.Value(), tx.Gas(), q.To, q.Value, q.Gas)
 		}
 		s := sent{tx, rc, rc.BlockNumber.Uint64()}
 		vaultSent[nonce] = s
-		t.Logf("vault nonce %d mined on Sepolia: %s block %d gas %d", nonce, tx.Hash().Hex(), s.block, rc.GasUsed)
+		t.Logf("vault nonce %d mined on Sepolia: %s block %d status %d gas %d of %d", nonce, tx.Hash().Hex(), s.block, rc.Status, rc.GasUsed, tx.Gas())
 		return s
 	}
 	scanFrom, err := l1.cli.BlockNumber(ctx)
@@ -980,19 +1045,30 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		t.Fatal(err)
 	}
 	qE := queue("unmapETH", ethUnmap, 0)
-	checkVaultKey("ETH withdrawal queued")
-	// RP-11 on real data: while d-0 is pending, the USDC withdrawal is refused.
-	if st, msg := userCall("unmapERC20", usdcUnmap); st != "FAILED" || !strings.Contains(msg, "withdrawal pending") || e.stateStr("d-1") != "" {
-		t.Errorf("RP-11 observation: a second withdrawal while d-0 is pending was %s (%q), d-1 queued=%v", st, msg, e.stateStr("d-1") != "")
-	} else {
-		t.Logf("RP-11 OBSERVED on real data: with d-0 pending, the user's USDC withdrawal is refused: %s", msg)
+	qG := queue("unmapETH", glamUnmap, 1)
+	qU := queue("unmapERC20", usdcUnmap, 2)
+	// After the three debits, the user's ETH moves only by d-1's refund and
+	// the F15 credits below.
+	afterIssue, _ := new(big.Int).SetString(e.stateStr("a-"+user+"-eth"), 10)
+	if np := e.stateStr("np"); np != "3" {
+		t.Fatalf("RP-11: %s withdrawals in flight, want 3", np)
 	}
-	sE := waitSent(0, qE, scanFrom, func() string { return botLogs(bot) })
+	t.Logf("(5) RP-11 PASS on real data: three withdrawals in flight at once (gas %d / %d / %d)", qE.Gas, qG.Gas, qU.Gas)
+	checkVaultKey("withdrawals issued")
+	logs := func() string { return botLogs(bot) }
+	sE := waitSent(0, qE, scanFrom, 1, logs)
+	sG := waitSent(1, qG, scanFrom, 0, logs)
+	sU := waitSent(2, qU, scanFrom, 1, logs)
 	if got, _ := l1.cli.BalanceAt(ctx, recipE, nil); got == nil || got.Cmp(qE.Value) != 0 {
 		t.Fatalf("ETH recipient holds %v wei, want %s", got, qE.Value)
 	}
-	afterE := map[string]string{"eth": e.stateStr("a-" + user + "-eth"), "usdc": e.stateStr("a-" + user + "-usdc")}
-	t.Logf("(5a) PASS: the TSS-signed ETH withdrawal paid %s wei on Sepolia with node 4 down (F12); user now eth=%s", qE.Value, afterE["eth"])
+	if got, _ := l1.usdcBalance(ctx, recipU); got == nil || got.Cmp(big.NewInt(1_000_000)) != 0 {
+		t.Fatalf("USDC recipient holds %v, want 1000000", got)
+	}
+	if got, _ := l1.cli.BalanceAt(ctx, recipG, nil); got == nil || got.Sign() != 0 {
+		t.Fatalf("the 21,000-gas withdrawal paid its fresh recipient %v wei; Sepolia should have run it out of gas", got)
+	}
+	t.Logf("GLAM-1 OBSERVED on real data: the withdrawal signed at the old fixed 21,000 gas to a fresh address reverted (gas used %d); the one with the estimated %d paid %s wei", sG.rc.GasUsed, qE.Gas, qE.Value)
 	if err := d.StartNode(ctx, 4); err != nil {
 		t.Errorf("F12 FAIL: restart node 4: %v", err)
 	}
@@ -1022,63 +1098,15 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		t.Errorf("F16 NOT RUN: the forwarding creation tx did not move %s wei to the vault (%v %+v)", smallDep, err, rcFwd)
 		fwdOK = false
 	}
-	lastT2 := sE.block
-	for _, rc := range []*ethtypes.Receipt{rcLegacy, rcAL, rcFwd} {
+	lastT2 := sU.block
+	for _, rc := range []*ethtypes.Receipt{sE.rc, sG.rc, rcLegacy, rcAL, rcFwd} {
 		if rc != nil && rc.BlockNumber.Uint64() > lastT2 {
 			lastT2 = rc.BlockNumber.Uint64()
 		}
 	}
 
-	// (6a) T2, with F8: the operator is killed once backfill starts.
-	bot.Stop() // the confirming bot comes later, from this checkpoint (F10)
-	botB.Stop()
-	if err := l1.waitFinalized(ctx, lastT2, 40*time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	before = vState("bh", "h")
-	out, killed, _ := runOperator(t, ctx, filepath.Join(logDir, "operator-T2.log"), opEnv, opArgsFor(verifierID, execRPC, 1), 100*time.Minute,
-		func(l string) bool { return strings.Contains(l, "submitHeaders tx") })
-	logOp("T2", out)
-	if len(operatorLines(out, "proof 1 received from the Prover Network")) != 1 {
-		t.Fatalf("T2: the operator log does not show exactly one paid proof")
-	}
-	devnetSleep(30 * time.Second) // the killed operator's last submitHeaders lands
-	gap := vState("gapw", "gapl")
-	if !killed || gap["gapw"] == "" {
-		t.Errorf("F8/F4 NOT EXERCISED: killed=%v, gap %v (the backfill finished before the kill)", killed, gap)
-	} else {
-		// F4: the next header the gap wants, from Sepolia; changed, then real.
-		low, _ := strconv.ParseUint(gap["gapl"], 10, 64)
-		hdr, err := l1.cli.HeaderByNumber(ctx, new(big.Int).SetUint64(low-1))
-		if err != nil {
-			t.Errorf("F4 NOT RUN: header %d: %v", low-1, err)
-		} else if enc, err := rlp.EncodeToBytes(hdr); err != nil || ethCrypto.Keccak256Hash(enc) != hdr.Hash() ||
-			!strings.EqualFold(strings.TrimPrefix(gap["gapw"], "0x"), hex.EncodeToString(hdr.Hash().Bytes())) {
-			t.Errorf("F4 NOT RUN: local RLP of block %d does not reproduce the wanted hash %s (%v)", low-1, gap["gapw"], err)
-		} else {
-			bad := ethtypes.CopyHeader(hdr)
-			bad.Extra = append(append([]byte{}, bad.Extra...), 0x01)
-			badEnc, _ := rlp.EncodeToBytes(bad)
-			hp := func(b []byte) string { return fmt.Sprintf(`{"headers":[{"rlp_hex":"%s"}]}`, hex.EncodeToString(b)) }
-			refused("F4", verifierID, "submitHeaders", hp(badEnc), "")
-			if st, msg := attempt(verifierID, "submitHeaders", hp(enc)); st != "CONFIRMED" || vState("gapl")["gapl"] == gap["gapl"] {
-				t.Errorf("F4 control FAIL: the real header %d was %s (%q), gap low %s", low-1, st, msg, vState("gapl")["gapl"])
-			} else {
-				t.Logf("F4 control PASS: the real header %d extends the backfill (gap low %s -> %s)", low-1, gap["gapl"], vState("gapl")["gapl"])
-			}
-		}
-		// F8: restart with --max-proofs 0: backfill only.
-		out, _, err := runOperator(t, ctx, filepath.Join(logDir, "operator-T2-restart.log"), opEnv, opArgsFor(verifierID, execRPC, 0), 40*time.Minute, nil)
-		logOp("T2-restart", out)
-		if err != nil || len(operatorLines(out, "received from the Prover Network")) != 0 {
-			t.Errorf("F8 FAIL: restart with --max-proofs 0: exit %v, paid proofs %d", err, len(operatorLines(out, "received from the Prover Network")))
-		} else {
-			t.Logf("F8 PASS: restarted with --max-proofs 0, backfilled without buying a proof")
-		}
-	}
-	checkProof("T2", before, lastT2)
-
-	// F6: forged confirmSpends for d-0, before any bot confirms.
+	// F6: forged confirmSpends for d-0 while it is the head (no header for its
+	// block yet, so no bot can confirm it): refused.
 	csPayload := func(nonce uint64, s sent, blockDelta int64, amountDelta int64, toOverride string) (string, error) {
 		idx := uint64(s.rc.TransactionIndex)
 		_, txp, err := pr.TxTrieProof(ctx, s.block, idx)
@@ -1130,106 +1158,130 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		}
 	}
 
-	// F10: a new bot from the first one's checkpoint, a dead RPC listed first.
+	// (6) T2. The bots stop (a confirming bot comes later, F10); the test asks
+	// for the proof as the bot would (NEEDS_FILE), keeping it fresh.
+	bot.Stop()
+	botB.Stop()
+	if err := l1.waitFinalized(ctx, lastT2, 40*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	wantSince := time.Now().Add(-11 * time.Minute).Unix() // wall: the operator reads wall-clock unix time
+	needsCtx, stopNeeds := context.WithCancel(ctx)
+	go func() {
+		for {
+			_ = os.WriteFile(needsPath, []byte(fmt.Sprintf(`{"want_proof":true,"since":%d,"updated":%d,"reasons":["test: T2"]}`, wantSince, time.Now().Unix())), 0o644) // wall: as above
+			select {
+			case <-needsCtx.Done():
+				return
+			case <-time.After(30 * time.Second): // wall: as above
+			}
+		}
+	}()
+	before = vState("bh", "h")
+	// F8 (RP-10): killed right after the Prover Network request; restarted, it
+	// resumes that request instead of buying another.
+	newRequest := regexp.MustCompile(`Prover Network request (0x[0-9a-f]{64}) \(max`)
+	out, killed, _ := runOperator(t, ctx, filepath.Join(logDir, "operator-T2.log"), opEnv, opArgsFor(verifierID, execRPC, 1, true), 100*time.Minute,
+		func(l string) bool { return newRequest.MatchString(l) })
+	logOp("T2", out)
+	m := newRequest.FindStringSubmatch(out)
+	if !killed || m == nil {
+		t.Fatalf("T2: the operator was not killed after its Prover Network request (killed %v)", killed)
+	}
+	out2, _, err := runOperator(t, ctx, filepath.Join(logDir, "operator-T2-restart.log"), opEnv, opArgsFor(verifierID, execRPC, 1, true), 100*time.Minute, landed)
+	logOp("T2-restart", out2)
+	stopNeeds()
+	switch {
+	case !strings.Contains(out2, "RP-10: resuming Prover Network request "+m[1]):
+		t.Errorf("F8 FAIL: the restarted operator did not resume request %s (exit %v)", m[1], err)
+	case newRequest.MatchString(out2):
+		t.Errorf("F8 FAIL: the restarted operator made a new Prover Network request: %v", newRequest.FindAllString(out2, -1))
+	case len(operatorLines(out2, "proof(s) landed")) == 0:
+		t.Errorf("F8 FAIL: the resumed proof did not land (exit %v)", err)
+	default:
+		t.Logf("F8 PASS (RP-10): killed after requesting %s; the restart resumed it and bought nothing more", m[1])
+	}
+	checkProof("T2", before, lastT2)
+
+	// F4: a real header with one field changed, linked below the proven block
+	// (submitHeaders): refused.
+	tipT2, _ := strconv.ParseUint(vState("h")["h"], 10, 64)
+	if hdr, err := l1.cli.HeaderByNumber(ctx, new(big.Int).SetUint64(tipT2-1)); err != nil {
+		t.Errorf("F4 NOT RUN: header %d: %v", tipT2-1, err)
+	} else {
+		bad := ethtypes.CopyHeader(hdr)
+		bad.Extra = append(append([]byte{}, bad.Extra...), 0x01)
+		badEnc, _ := rlp.EncodeToBytes(bad)
+		refused("F4", verifierID, "submitHeaders", fmt.Sprintf(`{"headers":[{"rlp_hex":"%s"}]}`, hex.EncodeToString(badEnc)), "is not the stored parent")
+	}
+
+	// F10: a new bot from the first one's checkpoint, a dead RPC listed first:
+	// it stores the withdrawal blocks' headers and confirms d-0..d-2 in order.
 	vaultNonce, _ := l1.cli.NonceAt(ctx, vault, nil)
 	bot2 := StartBot(t, ctx, BotConfig{
 		EthRPC: "http://127.0.0.1:9," + execRPC, ContractID: e.amID, GraphQLURL: d.GQLEndpoint(3),
-		EthPrivHex: botHex, Checkpoint: cpPath, Tokens: usdcAddr.Hex(),
+		EthPrivHex: botHex, Checkpoint: cpPath, Tokens: usdcAddr.Hex(), NeedsFile: needsPath,
 	})
 	t.Cleanup(bot2.Stop)
-	if err := pollUntil(ctx, 15*time.Minute, func() bool { return e.stateStr("n") == "1" && e.stateStr("d-0") == "" }); err != nil {
-		t.Fatalf("confirmSpend never closed d-0: n=%q d-0=%v\nbot2:\n%s", e.stateStr("n"), e.stateStr("d-0") != "", botLogs(bot2))
+	if err := pollUntil(ctx, 45*time.Minute, func() bool { return e.stateStr("n") == "3" && e.stateStr("d-2") == "" }); err != nil {
+		t.Fatalf("confirmSpend never closed d-0..d-2: n=%q\nbot2:\n%s", e.stateStr("n"), botLogs(bot2))
 	}
-	if n, _ := l1.cli.NonceAt(ctx, vault, nil); n != vaultNonce || n != 1 {
+	if n, _ := l1.cli.NonceAt(ctx, vault, nil); n != vaultNonce || n != 3 {
 		t.Errorf("F10 FAIL: the vault's L1 nonce went %d -> %d; the new bot sent again", vaultNonce, n)
 	} else {
-		t.Logf("F10 PASS: the new bot failed over past the dead RPC and confirmed d-0; vault nonce still %d", n)
+		t.Logf("F10 PASS: the new bot failed over past the dead RPC and confirmed d-0..d-2; vault nonce still %d", n)
 	}
-	t.Logf("(6a) PASS: confirmSpend closed the ETH withdrawal from proven headers (n=1)")
+	t.Logf("(6) PASS: confirmSpend closed all three in nonce order (n=3)")
 	if real0 != "" {
 		refused("F6-replay", e.amID, "confirmSpend", real0, "")
 	}
 
-	// F15 / F16 credits, mapped by the new bot from T2's headers.
+	// GLAM-1 refund (d-1's value back, its fee kept) and the F15 credits
+	// (type 0 and type 1 deposits, each 0.001 less 1%), mapped by the new bot.
 	f15 := new(big.Int).Mul(new(big.Int).Sub(smallDep, new(big.Int).Div(smallDep, big.NewInt(100))), big.NewInt(2))
-	wantEth := new(big.Int)
-	wantEth.SetString(afterE["eth"], 10)
+	wantEth := new(big.Int).Add(afterIssue, qG.Value)
 	wantEth.Add(wantEth, f15)
-	if err := pollUntil(ctx, 15*time.Minute, func() bool { return e.stateStr("a-"+user+"-eth") == wantEth.String() }); err != nil {
-		t.Errorf("F15 FAIL: legacy + access-list deposits: user eth %s, want %s (each 0.001 less 1%%)", e.stateStr("a-"+user+"-eth"), wantEth)
+	if err := pollUntil(ctx, 30*time.Minute, func() bool { return e.stateStr("a-"+user+"-eth") == wantEth.String() }); err != nil {
+		t.Errorf("GLAM-1 refund / F15 FAIL: user eth %s, want %s (after issue %s + the reverted %s + F15 %s)", e.stateStr("a-"+user+"-eth"), wantEth, afterIssue, qG.Value, f15)
 	} else {
-		t.Logf("F15 PASS: type 0 and type 1 deposits credited (user eth %s)", wantEth)
+		t.Logf("GLAM-1 PASS: the reverted withdrawal's %s wei came back (its fee kept); F15 PASS: type 0 and type 1 deposits credited (user eth %s)", qG.Value, wantEth)
 	}
 	if fwdOK {
-		t.Logf("F16 OBSERVED (E18): %s wei reached the vault through a contract's internal call (tx %s); credited to no one: user eth %s, reserve %s",
-			smallDep, rcFwd.TxHash.Hex(), e.stateStr("a-"+user+"-eth"), e.stateStr("gr"))
+		t.Logf("F16 OBSERVED (E18): %s wei reached the vault through a contract's internal call (tx %s); credited to no one (a MagiDeposit deposit is the way for a contract, RP-7)",
+			smallDep, rcFwd.TxHash.Hex())
 	}
 
-	// (5b) The USDC withdrawal (d-1), now that d-0 is confirmed.
-	scanFrom, err = l1.cli.BlockNumber(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	qU := queue("unmapERC20", usdcUnmap, 1)
-	sU := waitSent(1, qU, scanFrom, func() string { return botLogs(bot2) })
-	if got, _ := l1.usdcBalance(ctx, recipU); got == nil || got.Cmp(big.NewInt(1_000_000)) != 0 {
-		t.Fatalf("USDC recipient holds %v, want 1000000", got)
-	}
-	afterU := e.stateStr("a-"+user+"-eth") + "|" + e.stateStr("a-"+user+"-usdc")
-	t.Logf("(5b) PASS: the TSS-signed USDC withdrawal paid 1 USDC on Sepolia (gas cap %s); reserve now %s", qU.GasFeeCap, e.stateStr("gr"))
-
-	// (6b) T3: a third proof covers it; the bot confirms it.
-	if err := l1.waitFinalized(ctx, sU.block, 40*time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	before = vState("bh", "h")
-	out3, _, err := runOperator(t, ctx, filepath.Join(logDir, "operator-T3.log"), opEnv, opArgsFor(verifierID, execRPC, 1), 100*time.Minute, nil)
-	logOp("T3", out3)
-	if err != nil || len(operatorLines(out3, "proof 1 received from the Prover Network")) != 1 || len(operatorLines(out3, "1 proof(s) landed")) == 0 {
-		t.Fatalf("T3: operator exit %v; the log does not show exactly one paid proof that landed", err)
-	}
-	checkProof("T3", before, sU.block)
-	if err := pollUntil(ctx, 15*time.Minute, func() bool { return e.stateStr("n") == "2" && e.stateStr("d-1") == "" }); err != nil {
-		t.Fatalf("confirmSpend never closed d-1: n=%q d-1=%v\nbot2:\n%s", e.stateStr("n"), e.stateStr("d-1") != "", botLogs(bot2))
-	}
-	if n, _ := l1.cli.NonceAt(ctx, vault, nil); n != 2 {
-		t.Errorf("vault L1 nonce %d after two withdrawals, want 2", n)
-	}
-	if got := e.stateStr("a-"+user+"-eth") + "|" + e.stateStr("a-"+user+"-usdc"); got != afterU {
-		t.Fatalf("confirmSpend moved the user's balances: %s -> %s", afterU, got)
-	}
-	t.Logf("(6b) PASS: confirmSpend closed the USDC withdrawal (n=2)")
-
-	// RP-4 on real data: the USDC gas left the reserve below the floor, so a
-	// funded user's ETH withdrawal is refused. Inverts once RP-4 is fixed.
-	if st, msg := userCall("unmapETH", ethUnmap); st != "FAILED" || !strings.Contains(msg, "insufficient gas reserve") || e.stateStr("d-2") != "" {
-		t.Errorf("RP-4 observation: an ETH withdrawal with the reserve at %s was %s (%q), d-2 queued=%v", e.stateStr("gr"), st, msg, e.stateStr("d-2") != "")
+	// RP-4: the USDC gas left the reserve below its floor; a funded user's ETH
+	// withdrawal still goes through (it pays its own gas). Old code: refused.
+	recipR := cryptoPubkeyAddr(mustKey(t))
+	if st, msg := userCall("unmapETH", fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth","gas_limit":%d}`, recipR.Hex(), milliEth(10), ethGas)); st != "CONFIRMED" {
+		t.Errorf("RP-4 FAIL: an ETH withdrawal with the reserve at %s was %s (%q)", e.stateStr("gr"), st, msg)
 	} else {
-		t.Logf("RP-4 OBSERVED on real data: reserve %s (< 0.05 floor); the user's funded 0.01 ETH withdrawal refused: %s", e.stateStr("gr"), msg)
+		t.Logf("RP-4 PASS on real data: reserve %s (floor 0.05); the user's ETH withdrawal was issued (np=%s)", e.stateStr("gr"), e.stateStr("np"))
 	}
 	lastL1 := lastT2
-	if sU.block > lastL1 {
-		lastL1 = sU.block
-	}
 
 	// F12: node 4 caught up.
 	if err := pollUntil(ctx, 10*time.Minute, func() bool {
 		m, _ := d.GetStateByKeys(ctx, 4, e.amID, []string{"n"})
-		return m != nil && fmt.Sprint(m["n"]) == "2"
+		return m != nil && fmt.Sprint(m["n"]) == "3"
 	}); err != nil {
 		t.Errorf("F12 FAIL: node 4 never caught up after its restart")
 	} else {
-		t.Logf("F12 PASS: node 4 rejoined and serves n=2")
+		t.Logf("F12 PASS: node 4 rejoined and serves n=3")
 	}
 
 	// (7) Replay: a bot with a fresh checkpoint rescans everything.
-	final := balances()
+	balances = func() string {
+		return e.stateStr("a-"+user+"-eth") + "|" + e.stateStr("a-"+user+"-usdc") + "|" + e.stateStr("a-"+mdRecipient+"-eth")
+	}
 	bot2.Stop()
+	devnetSleep(time.Minute) // d-3 (RP-4) settles its L2 side before the snapshot
+	final := balances()
 	cp3 := filepath.Join(logDir, "bot3-checkpoint.json")
-	seedCheckpoint(cp3)
 	bot3 := StartBot(t, ctx, BotConfig{
 		EthRPC: execRPC, ContractID: e.amID, GraphQLURL: d.GQLEndpoint(3),
-		EthPrivHex: botHex, Checkpoint: cp3, Tokens: usdcAddr.Hex(),
+		EthPrivHex: botHex, Checkpoint: cp3, Tokens: usdcAddr.Hex(), StartBlock: startBlock,
 	})
 	t.Cleanup(bot3.Stop)
 	if err := pollUntil(ctx, 25*time.Minute, func() bool {
@@ -1247,21 +1299,21 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	}
 	t.Logf("(7) PASS: a full rescan of the real deposits credited nothing twice (%s)", final)
 
-	// F14 (RP-5): a bot handed a mainnet RPC for this Sepolia bridge.
+	// F14 (RP-5): a bot handed a mainnet RPC for this Sepolia bridge refuses to start.
 	bot3.Stop()
-	cp4 := filepath.Join(logDir, "bot4-checkpoint.json")
-	seedCheckpoint(cp4)
 	bot4 := StartBot(t, ctx, BotConfig{
 		EthRPC: mainnetRPC, ContractID: e.amID, GraphQLURL: d.GQLEndpoint(3),
-		EthPrivHex: botHex, Checkpoint: cp4, Tokens: usdcAddr.Hex(),
+		EthPrivHex: botHex, Checkpoint: filepath.Join(logDir, "bot4-checkpoint.json"), Tokens: usdcAddr.Hex(), StartBlock: startBlock,
 	})
 	t.Cleanup(bot4.Stop)
-	devnetSleep(90 * time.Second)
-	refusedChain := strings.Contains(strings.ToLower(botLogs(bot4)), "chain")
+	if !bot4.WaitForLog(ctx, "RP-5", 3*time.Minute) {
+		t.Errorf("F14 FAIL (RP-5): a bot on a mainnet RPC for a Sepolia bridge did not refuse:\n%s", botLogs(bot4))
+	} else {
+		t.Logf("F14 PASS (RP-5): a bot on a mainnet RPC for this Sepolia bridge refused to start")
+	}
 	if got := balances(); got != final {
 		t.Errorf("F14 FAIL: a bot on the wrong chain moved balances: %s -> %s", final, got)
 	}
-	t.Logf("F14 OBSERVED (RP-5): a bot on a mainnet RPC for a Sepolia bridge; mentions the chain in its logs: %v; balances unchanged", refusedChain)
 
 	checkVaultKey("end of run")
 	// M3: RPC trouble the bots met on the public endpoint.
