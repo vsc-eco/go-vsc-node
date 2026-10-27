@@ -194,6 +194,10 @@ func (p2pServer *P2PServer) Init() error {
 	if nPeers > 0 || nSubnets > 0 {
 		log.Info("p2p: connection gater active", "blockedPeers", nPeers, "blockedSubnets", nSubnets)
 	}
+	// P2P-START-1: no connection in or out until Start. Gossipsub registers at the end
+	// of this Init and bitswap in the datalayer's Init; a peer that connects before
+	// both exist is left unable to gossip to this node or serve it blocks.
+	gater.holdUntilStart()
 
 	var idht *dht.IpfsDHT
 	options := []libp2p.Option{
@@ -296,6 +300,13 @@ func (p2pServer *P2PServer) Init() error {
 
 // Start implements aggregate.Plugin.
 func (p2ps *P2PServer) Start() *promise.Promise[any] {
+	// P2P-START-1: every plugin's Init has run (the aggregate Inits all plugins before
+	// it Starts any), so every stream handler registered there exists. Open the gate
+	// before the dials below.
+	if p2ps.connectionGater().releaseHold() {
+		log.Info("p2p: accepting connections", "protocols", len(p2ps.host.Mux().Protocols()))
+	}
+
 	p2ps.cron.AddFunc("@every 30m", func() {
 		p2ps.discoverPeers()
 	})

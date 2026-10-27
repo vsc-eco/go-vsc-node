@@ -109,3 +109,47 @@ func TestNL6_ConnectionGaterMalformedCIDRRejected(t *testing.T) {
 		t.Fatal("BlockSubnet should reject malformed CIDR")
 	}
 }
+
+// P2P-START-1: the startup hold refuses every connection, in and out, until it is
+// released, and the deny lists keep working once it is.
+func TestP2PStart1_GaterHoldsEveryConnectionUntilRelease(t *testing.T) {
+	g := newConnectionGater()
+	pid := peer.ID("12D3KooWStarting")
+	other := peer.ID("12D3KooWBlockedAfter")
+	addr := ma.StringCast("/ip4/192.0.2.7/tcp/10720")
+	cma := fakeConnAddrs{local: ma.StringCast("/ip4/0.0.0.0/tcp/10720"), remote: addr}
+
+	allowed := func() []bool {
+		return []bool{
+			g.InterceptPeerDial(pid),
+			g.InterceptAddrDial(pid, addr),
+			g.InterceptAccept(cma),
+			g.InterceptSecured(libp2pNet.DirInbound, pid, cma),
+			g.InterceptSecured(libp2pNet.DirOutbound, pid, cma),
+		}
+	}
+
+	g.holdUntilStart()
+	for i, ok := range allowed() {
+		if ok {
+			t.Fatalf("hold: intercept %d let a connection through before Start", i)
+		}
+	}
+
+	if !g.releaseHold() {
+		t.Fatal("releaseHold must report the hold it lifted")
+	}
+	if g.releaseHold() {
+		t.Fatal("a second releaseHold has no hold to lift")
+	}
+	for i, ok := range allowed() {
+		if !ok {
+			t.Fatalf("released: intercept %d still refuses", i)
+		}
+	}
+
+	g.BlockPeer(other)
+	if g.InterceptPeerDial(other) {
+		t.Fatal("deny list must still apply after the hold is released")
+	}
+}
