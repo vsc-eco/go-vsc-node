@@ -194,6 +194,13 @@ type Deposit struct {
 	Asset   string
 	Memo    string
 	From    string
+
+	// HivePrefixRecipientFix (consensus 0.12.0, DEP-PREFIX-1): a "to=hive:<name>" memo is
+	// checked on the name alone, and one that does not name a valid account falls back to
+	// the sender as given. Before it the check counted the "hive:" prefix against the
+	// 16-character limit, so a 12-16 character name failed, and the fallback prefixed the
+	// already-prefixed sender: the deposit landed on "hive:hive:<sender>".
+	HivePrefixRecipientFix bool
 }
 
 // Add more fields as necessary

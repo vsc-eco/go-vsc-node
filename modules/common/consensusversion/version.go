@@ -134,8 +134,11 @@ import (
 //   - 0.12.0: the Consensus 11→12 bump gates the TSS-PARTY batch
 //     (consensusversion.V0_12_0): a POA-8 accusation exclusion yields when it
 //     would leave a reshare below the commit quorum or the threshold floor
-//     (TssAccuseYieldsToFloorActive), and a witness announcement that carries a
-//     peer_id must prove it holds that peer's libp2p key (PeerIdPoPActive). A new
+//     (TssAccuseYieldsToFloorActive), a witness announcement that carries a
+//     peer_id must prove it holds that peer's libp2p key (PeerIdPoPActive), and a
+//     pending BTC vault key is reshared once its check-signature has verified,
+//     before activation (PendingKeyReshareActive), and a deposit memo naming
+//     "hive:<account>" is checked on the account name (HivePrefixRecipientActive). A new
 //     line because the testnet already runs 0.11.0. Until 0.12.0 is chain-active
 //     every rule is inert and old and new binaries interoperate.
 const (

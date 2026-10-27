@@ -737,6 +737,27 @@ func PeerIdPoPActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// HivePrefixRecipientActive reports whether a deposit memo "to=hive:<name>" is checked
+// on the name alone and falls back to the sender as given (DEP-PREFIX-1). Before it a
+// 12-16 character name failed the check and the deposit was credited to
+// "hive:hive:<sender>", an account nobody controls. An ingest change, so a new line:
+// below it a reindex credits exactly what it credited before. Resolve `active` at the
+// deposit's block height.
+func HivePrefixRecipientActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
+// PendingKeyReshareActive reports whether a PENDING BTC vault generation whose
+// BRK-2 check-signature has verified is reshared before activation (VR2-12), so
+// its first reshare lands while the old generation still serves withdrawals and
+// migration can start right after activation. Below it a pending generation is
+// never reshared (VR2-10). A new line: a node resharing the pending key while its
+// peers skip it would time the session out and blame them. Resolve `active` at
+// the reshare's block height.
+func PendingKeyReshareActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // KeyResharedFlagActive reports whether TssGetKey appends a fifth field, "1"
 // once the key's epoch has moved past the keygen that created it (it has been
 // reshared at least once), else "0". The BTC vault contract refuses to start a

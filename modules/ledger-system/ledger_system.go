@@ -1546,6 +1546,11 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		decodedParams.To = `hive:` + decodedParams.To
 	} else if matchedEth {
 		decodedParams.To = `did:pkh:eip155:1:` + decodedParams.To
+	} else if strings.HasPrefix(decodedParams.To, "hive:") && deposit.HivePrefixRecipientFix {
+		name := strings.TrimPrefix(decodedParams.To, "hive:")
+		if !(hiveRegex.MatchString(name) && len(name) >= 3 && len(name) < 17) {
+			decodedParams.To = deposit.From
+		}
 	} else if strings.HasPrefix(decodedParams.To, "hive:") {
 		//No nothing. It's parsed correctly
 		matchedEth := hiveRegex.MatchString(strings.Split(decodedParams.To, ":")[1])
