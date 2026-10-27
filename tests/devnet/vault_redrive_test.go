@@ -13,7 +13,7 @@ import (
 )
 
 // sweepOutputValue reads the (unsigned) sweep tx from the contract's signing data
-// for txId and returns its first output value (sats to the successor). Lower value
+// for txId and returns its total output value (sats to the successor). Lower value
 // == higher miner fee for the same inputs — how we observe a re-drive fee bump.
 func sweepOutputValue(t *testing.T, d *Devnet, ctx context.Context, cid, txId string) int64 {
 	t.Helper()
@@ -29,7 +29,13 @@ func sweepOutputValue(t *testing.T, d *Devnet, ctx context.Context, cid, txId st
 	if len(tx.TxOut) == 0 {
 		return -1
 	}
-	return tx.TxOut[0].Value
+	// SWEEP-SPLIT: a sweep may pay the successor in several coins; the amount it moves
+	// is their total.
+	var total int64
+	for _, out := range tx.TxOut {
+		total += out.Value
+	}
+	return total
 }
 
 // TestVaultRedriveSweep proves the L7-01 re-drive at the CONTRACT level: a stuck,

@@ -290,6 +290,13 @@ func settleReport(t *testing.T, format string, args ...any) {
 	t.Errorf(format, args...)
 }
 
+// vfIsSweep reports whether pending spend txid is a migration sweep (it has an "ms-"
+// record), so a user withdrawal created while a helper polls is never taken for one.
+func vfIsSweep(d *Devnet, ctx context.Context, cid, txid string) bool {
+	st, err := getStateHex(d, ctx, 2, cid, []string{"ms-" + txid})
+	return err == nil && len(st["ms-"+txid]) > 0
+}
+
 func migrateAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, succPrimary, succBackup string) {
 	t.Helper()
 	migrateAndSettleAs(t, d, ctx, 1, cid, retiringKeyId, succPrimary, succBackup)
@@ -307,20 +314,19 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		settleReport(t, "CASE VL-GP-06 FAIL — migrateVault rejected status=%s", s)
 		return
 	}
-	var txid string
+	var txids []string
 	// Up to 3 minutes: the call is CONFIRMED on the calling node before magi-2 (the
 	// reading node) has applied it, and under two-lane load that lag exceeded the old
 	// 60 s window (F3 run 1 recorded a false "no sweep appeared").
-	for i := 0; i < 60 && txid == ""; i++ {
+	for i := 0; i < 60 && len(txids) == 0; i++ {
 		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
-			if !contains(before, id) {
-				txid = id
-				break
+			if !contains(before, id) && vfIsSweep(d, ctx, cid, id) {
+				txids = append(txids, id)
 			}
 		}
 	}
-	if txid == "" {
+	if len(txids) == 0 {
 		// Name the cause: a CONFIRMED migrateVault that builds nothing means the
 		// contract answered "nothing to migrate" (no selectable input), so show what the
 		// registry holds and which spends are already pending.
@@ -329,8 +335,12 @@ func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int
 		settleReport(t, "CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
 		return
 	}
-	t.Logf("migration sweep txid=%s (retiring gen %s)", txid, retiringKeyId)
-	settleSweepByTxid(t, d, ctx, cid, retiringKeyId, txid)
+	// MIG-PAR: one migrateVault may build several tranches (legacy entries go one per
+	// tranche); settle every one it built, as the bot does.
+	for _, txid := range txids {
+		t.Logf("migration sweep txid=%s (retiring gen %s, %d built by this call)", txid, retiringKeyId, len(txids))
+		settleSweepByTxid(t, d, ctx, cid, retiringKeyId, txid)
+	}
 }
 
 // settleSweepByTxid is the second half of migrateAndSettleAs: TSS-sign an ALREADY-BUILT

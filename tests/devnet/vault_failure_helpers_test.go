@@ -533,7 +533,7 @@ func vfBuildSweep(t *testing.T, d *Devnet, ctx context.Context, opNode int, cid 
 	for i := 0; i < 20 && txid == ""; i++ {
 		devnetSleep(3 * time.Second)
 		for _, id := range txSpendIds(t, d, ctx, cid) {
-			if !contains(before, id) {
+			if !contains(before, id) && vfIsSweep(d, ctx, cid, id) {
 				txid = id
 				break
 			}

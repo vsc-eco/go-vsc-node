@@ -247,9 +247,9 @@ func TestVaultF3CrashMidKeygen(t *testing.T) {
 	gen1Left := -1
 	if activated2 {
 		fundFeeReserve(t, d, ctx, cid, primary2, backupPubKeyG, 10_000_000)
-		// The loop retries because a single tranche may be refused: migrateVault waits for
-		// gen-2's first reshare, and the canary tranche takes only part of gen-1. A failed
-		// try is reported, not asserted; F3-GEN1-DRAINED below asserts the outcome.
+		// The loop retries because a single try may be refused: migrateVault waits for
+		// gen-2's first reshare. A failed try is reported, not asserted; F3-GEN1-DRAINED
+		// below asserts the outcome.
 		vfSettleBestEffort = true
 		for i := 0; i < 6 && genUtxoCount(t, d, ctx, cid, 1) != 0; i++ {
 			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("before gen-1 drain tranche %d", i+1))

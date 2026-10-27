@@ -92,8 +92,8 @@ func TestVaultShadowEmptyGen(t *testing.T) {
 	c.rec("SHADOW-EMPTY-RETIRING", "generation 0 retires holding nothing", st0 == 2 && g0 == 0,
 		fmt.Sprintf("gen0 status=%s utxos=%d", statusStr(st0), g0))
 
-	// Fund generation 1 with two deposits above the 1M-sat canary: one canary tranche,
-	// then one bulk tranche.
+	// Fund generation 1 with two deposits, so it holds funds when the next rotation
+	// retires it.
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 60_000_000, contractLastHeight(t, d, ctx, cid))
 	fundVaultViaSPV(t, d, ctx, cid, primary1, backupPubKeyG, env.owner, 40_000_000, contractLastHeight(t, d, ctx, cid))
 	g1 := vfGenUtxoCountOn(d, ctx, 2, cid, 1)

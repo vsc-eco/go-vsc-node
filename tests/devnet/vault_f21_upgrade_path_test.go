@@ -306,8 +306,9 @@ func TestVaultF21UpgradePath(t *testing.T) {
 		fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
 		left := f21GenUtxoCountOn(d, ctx, 2, cid, 0)
 		tranches := 0
-		// The first tranche is capped at MigrationCanaryValue and always carries exactly
-		// one input, so a multi-UTXO legacy generation needs several tranches to drain.
+		// Legacy entries go one per tranche (H-2). One migrateVault builds several of them
+		// (MIG-PAR) and migrateAndSettle settles every one, so a legacy generation drains in
+		// a few calls; the loop stops when a call makes no progress.
 		for i := 0; i < 5 && left > 0; i++ {
 			vfDumpRegistry(t, d, ctx, 2, cid, fmt.Sprintf("before sweep tranche %d", i+1))
 			migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)

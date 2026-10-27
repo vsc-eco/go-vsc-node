@@ -135,22 +135,53 @@ func TestB1PeerIdSquatDevnet(t *testing.T) {
 		}
 		devnetSleep(5 * time.Second)
 	}
-	// Every node must reach the same verdict on the announcement.
+	// Every node must reach the same verdict on the announcement. Node 1 can ingest the
+	// block a moment before the others, so a split only counts once it outlasts a minute.
 	storedOn := 0
-	for n := 1; n <= cfg.Nodes; n++ {
-		if r := latestWitnessRowOrNil(d, ctx, n, "initminer"); r != nil && r["peer_id"] == victimPeer {
-			storedOn++
+	settle := devnetNow().Add(time.Minute)
+	for {
+		storedOn = 0
+		for n := 1; n <= cfg.Nodes; n++ {
+			if r := latestWitnessRowOrNil(d, ctx, n, "initminer"); r != nil && r["peer_id"] == victimPeer {
+				storedOn++
+			}
 		}
+		if storedOn == 0 || storedOn == cfg.Nodes || !devnetNow().Before(settle) {
+			break
+		}
+		devnetSleep(5 * time.Second)
 	}
 	if storedOn != 0 && storedOn != cfg.Nodes {
 		t.Fatalf("the squat is stored on %d of %d nodes: ingest verdict differs between nodes", storedOn, cfg.Nodes)
 	}
 	if floor >= 12 {
-		if stored || storedOn != 0 {
-			t.Fatalf("0.12: the squat (no peer-id proof) was stored")
+		// Node 1's rejection ends the first loop, so wait for every node to log its own
+		// rejection, then count stored rows again: a node a block behind could still store it.
+		rejectedOn := 0
+		settle = devnetNow().Add(time.Minute)
+		for {
+			rejectedOn = 0
+			for n := 1; n <= cfg.Nodes; n++ {
+				if nodeLogsContain(d, context.Background(), n, "peer_id proof of possession failed (B1)") {
+					rejectedOn++
+				}
+			}
+			if rejectedOn == cfg.Nodes || !devnetNow().Before(settle) {
+				break
+			}
+			devnetSleep(5 * time.Second)
 		}
-		if !nodeLogsContain(d, context.Background(), 1, "peer_id proof of possession failed (B1)") {
-			t.Fatalf("0.12: the squat was not stored, but no rejection was logged either (did the announcement land?)")
+		storedOn = 0
+		for n := 1; n <= cfg.Nodes; n++ {
+			if r := latestWitnessRowOrNil(d, ctx, n, "initminer"); r != nil && r["peer_id"] == victimPeer {
+				storedOn++
+			}
+		}
+		if stored || storedOn != 0 {
+			t.Fatalf("0.12: the squat (no peer-id proof) was stored on %d of %d nodes", storedOn, cfg.Nodes)
+		}
+		if rejectedOn != cfg.Nodes {
+			t.Fatalf("0.12: the squat was not stored, but only %d of %d nodes logged the rejection (did the announcement land?)", rejectedOn, cfg.Nodes)
 		}
 		t.Logf("0.12: squat rejected at ingest on every node")
 	} else if !stored {
