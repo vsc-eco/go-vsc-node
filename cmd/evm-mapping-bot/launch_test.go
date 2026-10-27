@@ -190,21 +190,81 @@ func TestRP11_ALaterWithdrawalWaitsForTheHead(t *testing.T) {
 	}
 }
 
-// RP-11: the drain fills the free slots, with an RC limit sized to them.
+// tipHeader is a 137-byte stored header with L1 timestamp ts.
+func tipHeader(ts time.Time) string {
+	hdr := make([]byte, 137)
+	u := uint64(ts.Unix())
+	for i := 0; i < 8; i++ {
+		hdr[121+i] = byte(u >> (56 - 8*i))
+	}
+	return string(hdr)
+}
+
+// RP-11: the drain fills the free slots, with an RC limit sized to them, at
+// most once a minute and only with a fresh price (else it would do nothing).
 func TestRP11_DrainFillsTheFreeSlots(t *testing.T) {
 	l2, sub := poolWorld(t)
-	for k, v := range map[string]string{"wqh": "3", "wqt": "8", "n": "10", "np": "16"} {
+	for k, v := range map[string]string{"wqh": "3", "wqt": "8", "n": "10", "np": "16", "zkverifier": "vsc1verifier"} {
 		l2.set("vsc1bridge", k, v)
 	}
+	l2.set("vsc1verifier", "h", "500")
+	l2.set("vsc1verifier", "b-500", tipHeader(time.Now().Add(-2*time.Hour)))
+	lastDrainAt = time.Time{}
+	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
+	if calls := submittedCalls(t, l2); len(calls) != 0 {
+		t.Fatalf("drained on a 2 h old price: %+v", calls)
+	}
+	l2.set("vsc1verifier", "b-500", tipHeader(time.Now().Add(-5*time.Minute)))
 	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
 	calls := submittedCalls(t, l2)
 	if len(calls) != 1 || calls[0].Action != "drainWithdrawalQueue" || calls[0].Payload != `{"max":2}` || calls[0].RcLimit != 16_000 {
 		t.Fatalf("calls %+v, want drainWithdrawalQueue max 2 (8 slots, 6 in flight) at 16k RC", calls)
 	}
+	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
+	if len(submittedCalls(t, l2)) != 1 {
+		t.Fatal("drained twice within a minute")
+	}
+	lastDrainAt = time.Time{}
 	l2.set("vsc1bridge", "np", "18") // full
 	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
 	if len(submittedCalls(t, l2)) != 1 {
 		t.Fatal("drained with every slot in flight")
+	}
+}
+
+// RP-9: a submitted attestation or link run is not sent again until it had
+// time to execute (it used to go out every 12 s tick until then).
+func TestRP9_AttestationsAreNotResentEveryTick(t *testing.T) {
+	l2, sub := poolWorld(t)
+	l2.set("vsc1bridge", "zkverifier", "vsc1verifier")
+	cfg := sub.cfg
+	cp := &Checkpoint{AttestCache: map[uint64]*attestEntry{900: {AccountProof: []string{"0xc0"},
+		Headers: map[uint64]attestedBlock{850: {RLP: "c0", StorageProof: []string{"0xc0"}}}}}}
+	gql := l2.gql(t)
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	first := len(submittedCalls(t, l2))
+	if first != 2 { // attestHistoryRoot + attestHeaders
+		t.Fatalf("%d calls for one attestation, want 2", first)
+	}
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	if got := len(submittedCalls(t, l2)); got != first {
+		t.Fatalf("the attestation went out again right away (%d calls)", got)
+	}
+	cp.AttestSentAt[900] = time.Now().Add(-attestResendAfter - time.Second).Unix()
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	if got := len(submittedCalls(t, l2)); got != first+2 {
+		t.Fatalf("not resent after %s (%d calls)", attestResendAfter, got)
+	}
+}
+
+// RP-1: on mainnet a bot with no checkpoint needs START_BLOCK.
+func TestRP1_MainnetNeedsAStartBlock(t *testing.T) {
+	l2 := newFakeL2()
+	l2.set("vsc1bridge", "zkverifier", "vsc1verifier")
+	l2.set("vsc1verifier", "h", "26000000")
+	cp := &Checkpoint{}
+	if err := startBlock(context.Background(), l2.gql(t), cp, EVMBotConfig{ContractID: "vsc1bridge", NetID: "vsc-mainnet"}); err == nil || cp.LastScannedBlock != 0 {
+		t.Fatalf("mainnet without START_BLOCK started at %d (%v)", cp.LastScannedBlock, err)
 	}
 }
 

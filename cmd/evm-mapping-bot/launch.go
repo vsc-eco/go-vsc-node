@@ -175,6 +175,10 @@ const (
 	maxAttestCache     = 16
 	attestPerCall      = 2 // storage proof + header ~3.6 KB each; 8 KB payload cap
 	linkPerCall        = 6
+	// attestResendAfter / linkResendAfter: how long a submitted attestation
+	// or link run may take to execute before it is sent again.
+	attestResendAfter = 3 * time.Minute
+	linkResendAfter   = 5 * time.Minute
 )
 
 // attestEntry holds EIP-2935 proofs fetched in the state of block F, for the
@@ -462,7 +466,15 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 				"block", x, "tip", tip)
 			continue
 		}
-		linkDown(ctx, rpc, submitter, vid, x, tip)
+		cp.mu.Lock()
+		recent := time.Since(time.Unix(cp.LinkSentAt, 0)) < linkResendAfter
+		if !recent {
+			cp.LinkSentAt = time.Now().Unix()
+		}
+		cp.mu.Unlock()
+		if !recent {
+			linkDown(ctx, rpc, submitter, vid, x, tip)
+		}
 		break // one run per tick
 	}
 }
@@ -472,7 +484,11 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, vid string, f uint64, open []uint64) {
 	cp.mu.Lock()
 	e := cp.AttestCache[f]
+	sentAt := cp.AttestSentAt[f]
 	cp.mu.Unlock()
+	if time.Since(time.Unix(sentAt, 0)) < attestResendAfter {
+		return // the last submission may not have executed yet
+	}
 	var items []map[string]string
 	for _, x := range open {
 		if hb, ok := e.Headers[x]; ok {
@@ -487,6 +503,17 @@ func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter
 	if err != nil {
 		return
 	}
+	cp.mu.Lock()
+	if cp.AttestSentAt == nil {
+		cp.AttestSentAt = map[uint64]int64{}
+	}
+	cp.AttestSentAt[f] = time.Now().Unix()
+	for k := range cp.AttestSentAt {
+		if _, ok := cp.AttestCache[k]; !ok {
+			delete(cp.AttestSentAt, k)
+		}
+	}
+	cp.mu.Unlock()
 	if len(st["hr-"+fk]) != 32 {
 		p, _ := json.Marshal(map[string]any{"block_number": f, "account_proof": joinHexNodes(e.AccountProof)})
 		if _, err := submitter.callContractL2(ctx, vid, "attestHistoryRoot", p, 20_000); err != nil {
@@ -607,9 +634,22 @@ func tipHeaderAge(ctx context.Context, gql *vscGraphQL, cfg EVMBotConfig, tip ui
 
 const maxInFlightWithdrawals = 8
 
+// lastDrainAt: drainWithdrawalQueue is sent at most once per drainEvery.
+var (
+	lastDrainAt time.Time
+	drainEvery  = time.Minute
+)
+
+// drainPricingMaxAge: the bridge prices an issue from the tip header only while
+// it is under an hour old (MaxPricingHeaderAge); older, a drain does nothing.
+var drainPricingMaxAge = 55 * time.Minute
+
 // drainIfQueued issues queued withdrawals into free slots
 // (drainWithdrawalQueue; only that call issues queued ones, ~5k RC each).
 func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, cfg EVMBotConfig) {
+	if time.Since(lastDrainAt) < drainEvery {
+		return
+	}
 	st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np"})
 	if err != nil {
 		return
@@ -625,6 +665,15 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	if q := t - h; q < max {
 		max = q
 	}
+	_, vst, err := verifierState(ctx, gql, cfg.ContractID, []string{"h"})
+	if err != nil {
+		return
+	}
+	tip, _ := strconv.ParseUint(vst["h"], 10, 64)
+	if age := tipHeaderAge(ctx, gql, cfg, tip); age == 0 || age > drainPricingMaxAge {
+		return // no fresh price: the operator is asked for a proof (NEEDS_FILE)
+	}
+	lastDrainAt = time.Now()
 	p, _ := json.Marshal(map[string]any{"max": max})
 	if _, err := submitter.callContractL2(ctx, cfg.ContractID, "drainWithdrawalQueue", p, 6_000*max+4_000); err != nil {
 		slog.Warn("RP-11: drainWithdrawalQueue", "err", err)
@@ -674,6 +723,11 @@ func startBlock(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBot
 		cp.LastScannedBlock = n - 1
 		slog.Info("RP-1: new checkpoint starts at START_BLOCK", "block", n)
 		return nil
+	}
+	// On mainnet a lost checkpoint must not silently skip the deposits made
+	// before the tip: the operator sets START_BLOCK.
+	if cfg.NetID == "vsc-mainnet" {
+		return fmt.Errorf("RP-1: no checkpoint: set START_BLOCK to the first L1 block to scan (on mainnet the bot does not guess)")
 	}
 	_, st, err := verifierState(ctx, gql, cfg.ContractID, []string{"h"})
 	if err != nil {

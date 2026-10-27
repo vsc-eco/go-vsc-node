@@ -289,8 +289,13 @@ type Checkpoint struct {
 	WaitingDeposits map[uint64][]detectedDeposit `json:"waiting_deposits,omitempty"`
 	AttestCache     map[uint64]*attestEntry      `json:"attest_cache,omitempty"`
 	WantProofSince  int64                        `json:"want_proof_since,omitempty"`
-	Version         int                          `json:"version"`
-	mu              sync.Mutex
+	// AttestSentAt / LinkSentAt: when attestations from a root, and a run of
+	// linked headers, were last submitted. An L2 call executes a few blocks
+	// later; resending it every tick until then would burn RC.
+	AttestSentAt map[uint64]int64 `json:"attest_sent_at,omitempty"`
+	LinkSentAt   int64            `json:"link_sent_at,omitempty"`
+	Version      int              `json:"version"`
+	mu           sync.Mutex
 }
 
 // PendingMap is a submitted map call awaiting its on-chain result.
