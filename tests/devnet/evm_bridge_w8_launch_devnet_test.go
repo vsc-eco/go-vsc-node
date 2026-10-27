@@ -79,10 +79,11 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	eth := func(n int64) *big.Int { return new(big.Int).Mul(big.NewInt(n), big.NewInt(1e18)) }
 	usd := func(n int64) *big.Int { return big.NewInt(n * 1_000_000) }
 
-	// RP-8: the bot is NOT registered as a relayer.
+	// RP-8: the bot is NOT registered as a relayer. HBD for RC is kept small
+	// (1 HBD = 1,000 RC; an unmap ~9.4k RC): the waves share the owner's HBD.
 	botKey, _ := ethCrypto.GenerateKey()
 	botDID := dids.NewEthDID(ethCrypto.PubkeyToAddress(botKey.PublicKey).Hex()).String()
-	if err := e.fundDID(botDID, "20000.000"); err != nil {
+	if err := e.fundDID(botDID, "300.000"); err != nil {
 		t.Fatalf("fund bot DID for RC: %v", err)
 	}
 	ownerKey := mustKey(t)
@@ -208,10 +209,10 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	t.Logf("(2c) PASS RP-7 USDC: 7 USDC through MagiDeposit credited %s; the paying Transfer not credited to the wallet, nothing dead-lettered", recipient)
 
 	// (3) RP-11 + GLAM-1: two users withdraw at once.
-	if err := e.fundDID(user, "10000.000"); err != nil {
+	if err := e.fundDID(user, "100.000"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.fundDID(recipient, "10000.000"); err != nil {
+	if err := e.fundDID(recipient, "100.000"); err != nil {
 		t.Fatal(err)
 	}
 	uK, _ := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(depKey)))
