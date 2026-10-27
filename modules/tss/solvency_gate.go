@@ -11,6 +11,7 @@ import (
 
 	"vsc-node/lib/btcclient"
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/common/consensusversion"
 
 	"github.com/ipfs/go-cid"
 )
@@ -108,7 +109,54 @@ func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uin
 	if !tssMgr.vaultRotationV2InForce(bh) || !tssMgr.isBtcVaultKey(keyId) {
 		return false
 	}
-	return skipReshareForSupersededGen(tssMgr.retiringGenSignerSet(bh).ReshareSkipKeyIds, keyId)
+	set := tssMgr.retiringGenSignerSet(bh)
+	inSkip := skipReshareForSupersededGen(set.ReshareSkipKeyIds, keyId)
+	isPending := set.PendingKeyIds[keyId]
+	// Read the check-sig flag ONLY for a pending gen that is in the skip set: the
+	// single case where it can change the decision. FindKey is node-local; this is a
+	// scheduling choice (the sole reader of ReshareSkipKeyIds, reconciled by 2/3 +
+	// retry, never a CID output), so reading it here cannot fork.
+	preActivation := tssMgr.pendingKeyReshareActive(bh)
+	sigVerified := false
+	if preActivation && inSkip && isPending {
+		if k, err := tssMgr.tssKeys.FindKey(keyId); err == nil && k.SignatureVerified {
+			sigVerified = true
+		}
+	}
+	return skipReshareDecision(inSkip, isPending, sigVerified, preActivation)
+}
+
+// pendingKeyReshareActive reports whether VR2-12 is in force at bh
+// (consensusversion.PendingKeyReshareActive on the chain-active version). Gated on
+// a new line because a node that reshares a pending key while its peers still skip
+// it starts a session they never join: the timeout commits a blame and POA-8
+// accusations against honest nodes. Below 0.12.0 every node skips, as before.
+func (tssMgr *TssManager) pendingKeyReshareActive(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.PendingKeyReshareActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
+}
+
+// skipReshareDecision is the pure VR2-12 rule. A key in the superseded skip set is
+// skipped from resharing, EXCEPT a PENDING generation whose BRK-2 check-signature has
+// verified: then it may reshare BEFORE activation. After verification a pending gen has
+// no in-flight sign to collide with (it holds no funds; the check-sig is a one-time
+// event that has landed), so the VR2-09/VR2-10 collision cannot recur. The
+// pre-activation reshare hands the key to a committee before any funds move in
+// (migrateVault still gates on the reshare, and ActivatePendingGeneration now requires
+// it for a rotation), so the operator activates+migrates with no post-activation epoch
+// wait while the OLD generation keeps serving. Superseded gens
+// (retiring/draining/inactive/purged) are never pending, so they stay skipped forever.
+// Below 0.12.0 (preActivation false) a pending gen stays skipped, the VR2-10 rule.
+func skipReshareDecision(inSkipSet, isPending, sigVerified, preActivation bool) bool {
+	if !inSkipSet {
+		return false
+	}
+	if preActivation && isPending && sigVerified {
+		return false
+	}
+	return true
 }
 
 // skipReshareForSupersededGen is the pure L9-1 decision, split out so it is

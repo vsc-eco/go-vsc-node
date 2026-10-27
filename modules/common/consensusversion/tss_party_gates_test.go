@@ -9,6 +9,8 @@ func TestTssPartyGatesActivateAtTwelveTogether(t *testing.T) {
 	gates := map[string]func(Version) bool{
 		"TssAccuseYieldsToFloorActive": TssAccuseYieldsToFloorActive,
 		"PeerIdPoPActive":              PeerIdPoPActive,
+		"PendingKeyReshareActive":      PendingKeyReshareActive,
+		"HivePrefixRecipientActive":    HivePrefixRecipientActive,
 	}
 	for name, gate := range gates {
 		for _, tc := range []struct {

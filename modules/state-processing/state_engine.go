@@ -1455,6 +1455,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						BlockHeight: blockInfo.BlockHeight,
 
+						HivePrefixRecipientFix: consensusversion.HivePrefixRecipientActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)),
+
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
 					}

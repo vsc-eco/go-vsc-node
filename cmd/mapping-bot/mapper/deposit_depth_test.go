@@ -75,6 +75,18 @@ func TestFetchPublicKeys_UsesTheActiveGeneration(t *testing.T) {
 	assert.Equal(t, "02"+strings.Repeat("b1", 32), hex.EncodeToString(primary), "deposit key must be the ACTIVE generation's")
 }
 
+// VR2-12 keeps a new generation PENDING until its first reshare (up to an epoch on
+// mainnet). The live vault is still the active one, so its address is the one handed out.
+func TestFetchPublicKeys_PendingGenerationKeepsTheActiveAddress(t *testing.T) {
+	va := make([]byte, 4)
+	binary.BigEndian.PutUint32(va, 0)
+	reg := append(keyedEntry(0, btcvault.VaultStatusActive, 0xA0), keyedEntry(1, btcvault.VaultStatusPending, 0xB1)...)
+	bot := keyNode(t, map[string]string{"v": hex.EncodeToString(reg), "va": hex.EncodeToString(va)})
+	primary, _, err := bot.FetchPublicKeys(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "02"+strings.Repeat("a0", 32), hex.EncodeToString(primary), "a pending generation must not take deposits")
+}
+
 // A registry whose active pointer names a generation that is not Active hands out
 // no address at all, rather than one for a retiring key.
 func TestFetchPublicKeys_RefusesANonActiveGeneration(t *testing.T) {

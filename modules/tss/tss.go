@@ -1253,6 +1253,8 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				// function of bh + the config BTC-contract prefix), so every node
 				// skips the identical keyId at the identical height → no divergent
 				// session/party-list. Inert until VaultRotationV2Enabled flips.
+				// VR2-12 (0.12.0): a pending gen's skip lifts once its check-sig has
+				// verified, a node-local flag (see shouldSkipReshareForVaultRotation).
 				if tssMgr.shouldSkipReshareForVaultRotation(key.Id, bh) {
 					continue
 				}

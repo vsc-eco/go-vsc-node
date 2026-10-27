@@ -1,6 +1,7 @@
 package state_engine_test
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -396,6 +397,42 @@ func TestDepositMemoRouting(t *testing.T) {
 		})
 		assert.Equal(t, "did:pkh:eip155:1:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", dest)
 	})
+
+	// DEP-PREFIX-1: "to=hive:<name>". Below 0.12.0 the length check counted the prefix, so a
+	// 12-16 character name failed and the fallback prefixed the already-prefixed sender.
+	// Kept byte-identical without the flag so a reindex credits what it credited.
+	prefixed := []struct {
+		memo, legacy, fixed string
+	}{
+		{"to=hive:bob", "hive:bob", "hive:bob"},
+		{"to=hive:abcdefghijk", "hive:abcdefghijk", "hive:abcdefghijk"},
+		{"to=hive:lordbutterfly", "hive:hive:alice", "hive:lordbutterfly"},
+		{"to=hive:vsc.gateway1", "hive:hive:alice", "hive:vsc.gateway1"},
+		{"to=hive:abcdefghijklmnop", "hive:hive:alice", "hive:abcdefghijklmnop"},
+		{"to=hive:abcdefghijklmnopq", "hive:hive:alice", "hive:alice"},
+		{"to=hive:ab", "hive:ab", "hive:alice"}, // a 2-char name: no such Hive account
+		{"to=hive:Bad_Name", "hive:hive:alice", "hive:alice"},
+		{"to=hive:", "hive:hive:alice", "hive:alice"},
+		{"to=hive:abc:def", "hive:abc:def", "hive:alice"}, // not an account name: nobody could spend it
+	}
+	for i, c := range prefixed {
+		for _, fix := range []bool{false, true} {
+			want := c.legacy
+			if fix {
+				want = c.fixed
+			}
+			dest := ls.Deposit(ledgerSystem.Deposit{
+				Id:                     fmt.Sprintf("route-prefix-%d-%v", i, fix),
+				Asset:                  "hbd",
+				Amount:                 50,
+				From:                   "hive:alice",
+				Memo:                   c.memo,
+				BlockHeight:            100,
+				HivePrefixRecipientFix: fix,
+			})
+			assert.Equal(t, want, dest, "memo %q fix=%v", c.memo, fix)
+		}
+	}
 }
 
 // newLedgerEnvWithClaims creates a LedgerSystem backed by the given balance
