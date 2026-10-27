@@ -7,8 +7,11 @@ package main
 //   RP-7  MagiDeposit deposits (an explicit Magi recipient) are mapped
 //   RP-9  the verifier stores headers on demand: the bot asks for the blocks it
 //         needs (attestHistoryRoot + attestHeaders from EIP-2935 proofs fetched
-//         at each newly finalized block, else submitHeaders down from a stored
-//         header) and tells the operator when a proof is needed (NEEDS_FILE)
+//         at each newly finalized block; a block no root covers waits for a
+//         new proof's root, or, when the RPC serves no recent state proofs or
+//         the block is just below the tip, is linked down from the proven block
+//         with submitHeaders) and tells the operator when a proof is needed
+//         (NEEDS_FILE)
 //   RP-11 every in-flight withdrawal is broadcast, confirmed in nonce order, and
 //         queued ones are drained
 
@@ -169,12 +172,12 @@ const (
 	// chainFallbackMax: the most headers the bot links down by parent hash
 	// (submitHeaders, ~3.4k RC each) for one block no EIP-2935 proof covers.
 	chainFallbackMax = uint64(256)
-	// chainFallbackAfter: how long a need waits for an EIP-2935 attestation
-	// before the bot links it down from the proven tip instead.
-	chainFallbackAfter = 20 * time.Minute
-	maxAttestCache     = 16
-	attestPerCall      = 2 // storage proof + header ~3.6 KB each; 8 KB payload cap
-	linkPerCall        = 6
+	// linkNearMax: a needed block at most this far below the proven tip with
+	// no attestation root is linked down at once (a few calls).
+	linkNearMax    = uint64(32)
+	maxAttestCache = 16
+	attestPerCall  = 2 // storage proof + header ~3.6 KB each; 8 KB payload cap
+	linkPerCall    = 6
 	// attestResendAfter / linkResendAfter: how long a submitted attestation
 	// or link run may take to execute before it is sent again.
 	attestResendAfter = 3 * time.Minute
@@ -380,7 +383,8 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 		return
 	}
 	tip, _ := strconv.ParseUint(vst["h"], 10, 64)
-	defer writeNeedsFile(ctx, gql, cp, cfg, tip)
+	wantRoot := false // a needed block below the tip waits for a new proof's root
+	defer func() { writeNeedsFile(ctx, gql, cp, cfg, tip, wantRoot) }()
 	if len(needs) == 0 {
 		cp.mu.Lock()
 		cp.AttestCache = nil
@@ -413,6 +417,10 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 		if !have {
 			if e := prefetchHistoryProofs(rpc, f, open); e != nil {
 				cp.mu.Lock()
+				cp.ProofWindow = 1
+				if e.Err != "" {
+					cp.ProofWindow = -1
+				}
 				if cp.AttestCache == nil {
 					cp.AttestCache = map[uint64]*attestEntry{}
 				}
@@ -441,6 +449,7 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 	}
 	cp.mu.Unlock()
 	sort.Slice(roots, func(i, j int) bool { return roots[i] > roots[j] })
+	covered := map[uint64]bool{}
 	if len(roots) > 0 {
 		rs, err := headersStored(ctx, gql, cfg.ContractID, roots)
 		if err == nil {
@@ -448,17 +457,29 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 				if !rs[f] {
 					continue
 				}
+				cp.mu.Lock()
+				for x := range cp.AttestCache[f].Headers {
+					covered[x] = true
+				}
+				cp.mu.Unlock()
 				attestFromRoot(ctx, gql, submitter, cp, cfg, vid, f, open)
 			}
 		}
 	}
 
-	// Fallback: link down from the proven tip.
+	// A needed block below the tip with no attestation root: with an RPC that
+	// serves recent state proofs, a new proof's root is prefetched and covers
+	// it (cheap); without one, or when it is just below the tip, it is linked
+	// down from the proven block by parent hash (~3.4k RC a header).
+	cp.mu.Lock()
+	window := cp.ProofWindow
+	cp.mu.Unlock()
 	for _, x := range open {
-		cp.mu.Lock()
-		since := cp.HeaderNeeds[x]
-		cp.mu.Unlock()
-		if since == 0 || x >= tip || time.Since(time.Unix(since, 0)) < chainFallbackAfter {
+		if x >= tip || covered[x] {
+			continue
+		}
+		if window != -1 && tip-x > linkNearMax {
+			wantRoot = true
 			continue
 		}
 		if tip-x > chainFallbackMax {
@@ -569,7 +590,7 @@ func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid stri
 // is wanted: a needed header has no stored root above it, or withdrawals wait
 // on a price older than pricingStaleAfter, or one is in flight while the tip
 // header is old (the roll/expiry windows count proven L1 blocks).
-func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, tip uint64) {
+func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, tip uint64, wantRoot bool) {
 	path := os.Getenv("NEEDS_FILE")
 	if path == "" {
 		return
@@ -587,6 +608,9 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 			reasons = append(reasons, "header needed above the proven tip")
 			break
 		}
+	}
+	if wantRoot {
+		reasons = append(reasons, "header needed below the tip with no attestation root (a new proof's root covers it)")
 	}
 	if st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np"}); err == nil {
 		h, _ := strconv.ParseUint(st["wqh"], 10, 64)

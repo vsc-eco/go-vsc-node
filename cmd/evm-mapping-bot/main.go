@@ -294,8 +294,11 @@ type Checkpoint struct {
 	// later; resending it every tick until then would burn RC.
 	AttestSentAt map[uint64]int64 `json:"attest_sent_at,omitempty"`
 	LinkSentAt   int64            `json:"link_sent_at,omitempty"`
-	Version      int              `json:"version"`
-	mu           sync.Mutex
+	// ProofWindow: whether the L1 RPC served the last eth_getProof at a
+	// finalized block (1), refused it (-1), or was not asked yet (0).
+	ProofWindow int `json:"proof_window,omitempty"`
+	Version     int `json:"version"`
+	mu          sync.Mutex
 }
 
 // PendingMap is a submitted map call awaiting its on-chain result.

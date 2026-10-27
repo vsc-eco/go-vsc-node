@@ -325,12 +325,12 @@ func TestRP9_NeedsFileAsksForAProof(t *testing.T) {
 		return m
 	}
 	cp := &Checkpoint{HeaderNeeds: map[uint64]int64{150: time.Now().Unix()}}
-	writeNeedsFile(context.Background(), gql, cp, cfg, 140)
+	writeNeedsFile(context.Background(), gql, cp, cfg, 140, false)
 	if m := read(); m["want_proof"] != true {
 		t.Fatalf("need above the tip: %v", m)
 	}
 	cp.HeaderNeeds = map[uint64]int64{120: 1}
-	writeNeedsFile(context.Background(), gql, cp, cfg, 140)
+	writeNeedsFile(context.Background(), gql, cp, cfg, 140, false)
 	if m := read(); m["want_proof"] != false || cp.WantProofSince != 0 {
 		t.Fatalf("need below the tip (attestable): %v", m)
 	}
@@ -342,7 +342,7 @@ func TestRP9_NeedsFileAsksForAProof(t *testing.T) {
 	}
 	l2.set("vsc1verifier", "b-140", string(hdr))
 	l2.set("vsc1bridge", "wqt", "1")
-	writeNeedsFile(context.Background(), gql, cp, cfg, 140)
+	writeNeedsFile(context.Background(), gql, cp, cfg, 140, false)
 	if m := read(); m["want_proof"] != true {
 		t.Fatalf("queued withdrawal on a 2 h old price: %v", m)
 	}
@@ -362,4 +362,41 @@ func spendJSONNonce(unsignedHex string, nonce uint64) string {
 		UnsignedTxHex: unsignedHex, BlockHeight: 100, VaultAtQueue: "0x00000000000000000000000000000000000000fa"})
 	_ = strconv.Itoa
 	return string(raw)
+}
+
+// RP-9 (RP-6 recovery): a needed block below the tip that no cached root
+// covers (the bot was down when its proof landed) asks for a new proof when
+// the RPC serves recent state proofs; it is linked down only without one.
+func TestRP9_UncoveredBlockBelowTheTipAsksForANewRoot(t *testing.T) {
+	l1 := newFakeL1()
+	l1.block(1000)
+	l2, sub := poolWorld(t)
+	l2.set("vsc1bridge", "zkverifier", "vsc1verifier")
+	l2.set("vsc1verifier", "h", "900")
+	l2.onDemand = true
+	gql := l2.gql(t)
+	path := t.TempDir() + "/needs.json"
+	t.Setenv("NEEDS_FILE", path)
+	read := func() map[string]any {
+		var m map[string]any
+		b, _ := os.ReadFile(path)
+		_ = json.Unmarshal(b, &m)
+		return m
+	}
+	// The RPC served the last proofs; block 700 (200 below the tip) is needed.
+	cp := &Checkpoint{HeaderNeeds: map[uint64]int64{700: time.Now().Unix()}, ProofWindow: 1,
+		AttestCache: map[uint64]*attestEntry{1000: {Err: ""}}} // 1000 already prefetched: no new eth_getProof
+	handleHeaderNeeds(context.Background(), l1.rpc(t), gql, sub, cp, sub.cfg)
+	if m := read(); m["want_proof"] != true {
+		t.Fatalf("an uncovered block 200 below the tip with a working proof RPC: %v, want a proof asked for", m)
+	}
+	if calls := submittedCalls(t, l2); len(calls) != 0 {
+		t.Fatalf("linked down instead of asking for a root: %+v", calls)
+	}
+	// Without a proof window it does not ask (a new root would not help).
+	cp.ProofWindow = -1
+	handleHeaderNeeds(context.Background(), l1.rpc(t), gql, sub, cp, sub.cfg)
+	if m := read(); m["want_proof"] != false {
+		t.Fatalf("no proof window: %v, want no proof asked for (it links down)", m)
+	}
 }
