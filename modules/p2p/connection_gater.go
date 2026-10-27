@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/libp2p/go-libp2p/core/control"
 	libp2pNet "github.com/libp2p/go-libp2p/core/network"
@@ -29,6 +30,15 @@ type p2pConnectionGater struct {
 	mu             sync.RWMutex
 	blockedPeers   map[peer.ID]struct{}
 	blockedSubnets []*net.IPNet
+
+	// P2P-START-1: while starting is set, every connection is refused, in and out.
+	// The host listens and the DHT dials from p2p Init, but bitswap registers its
+	// handler in the datalayer's Init. A peer that connected in between kept a
+	// connection the node's bitswap never learns of (boxo only watches new ones), so
+	// the node could never fetch from that peer; a peer whose first gossipsub stream
+	// failed never sends to it again. P2PServer holds the gate from Init and releases
+	// it in Start, after every plugin's Init has registered its handlers.
+	starting atomic.Bool
 }
 
 func newConnectionGater() *p2pConnectionGater {
@@ -109,6 +119,16 @@ func (g *p2pConnectionGater) applyConfig(peers, subnets []string) (nPeers, nSubn
 	return nPeers, nSubnets, errs
 }
 
+// holdUntilStart refuses every connection until releaseHold (P2P-START-1).
+func (g *p2pConnectionGater) holdUntilStart() {
+	g.starting.Store(true)
+}
+
+// releaseHold lets connections through again and reports whether a hold was on.
+func (g *p2pConnectionGater) releaseHold() bool {
+	return g.starting.Swap(false)
+}
+
 func (g *p2pConnectionGater) isPeerBlocked(p peer.ID) bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -141,19 +161,19 @@ func (g *p2pConnectionGater) isAddrBlocked(addr ma.Multiaddr) bool {
 // methods consult the same allow/deny lists.
 
 func (g *p2pConnectionGater) InterceptPeerDial(p peer.ID) bool {
-	return !g.isPeerBlocked(p)
+	return !g.starting.Load() && !g.isPeerBlocked(p)
 }
 
 func (g *p2pConnectionGater) InterceptAddrDial(p peer.ID, addr ma.Multiaddr) bool {
-	return !g.isPeerBlocked(p) && !g.isAddrBlocked(addr)
+	return !g.starting.Load() && !g.isPeerBlocked(p) && !g.isAddrBlocked(addr)
 }
 
 func (g *p2pConnectionGater) InterceptAccept(cma libp2pNet.ConnMultiaddrs) bool {
-	return !g.isAddrBlocked(cma.RemoteMultiaddr())
+	return !g.starting.Load() && !g.isAddrBlocked(cma.RemoteMultiaddr())
 }
 
 func (g *p2pConnectionGater) InterceptSecured(_ libp2pNet.Direction, p peer.ID, cma libp2pNet.ConnMultiaddrs) bool {
-	return !g.isPeerBlocked(p) && !g.isAddrBlocked(cma.RemoteMultiaddr())
+	return !g.starting.Load() && !g.isPeerBlocked(p) && !g.isAddrBlocked(cma.RemoteMultiaddr())
 }
 
 func (g *p2pConnectionGater) InterceptUpgraded(_ libp2pNet.Conn) (bool, control.DisconnectReason) {
