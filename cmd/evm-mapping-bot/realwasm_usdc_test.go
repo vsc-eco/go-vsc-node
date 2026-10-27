@@ -33,11 +33,16 @@ const rwUSDC = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
 // has passed, returning the execute result.
 func rwRegisterToken(t *testing.T, c rwChain, addr, symbol string) (string, bool) {
 	t.Helper()
-	inner := `{"address":"` + addr + `","symbol":"` + symbol + `","decimals":6,"min_withdrawal":1000000}`
+	return rwRegisterTokenJSON(t, c, `{"address":"`+addr+`","symbol":"`+symbol+`","decimals":6,"min_withdrawal":1000000}`)
+}
+
+// rwRegisterTokenJSON is rwRegisterToken with the whole registerToken payload.
+func rwRegisterTokenJSON(t *testing.T, c rwChain, inner string) (string, bool) {
+	t.Helper()
 	c.ct.Deposit("hive:owner", 1_000_000, ledgerDb.AssetHbd) // RC beyond the free allowance
 	r := rwCall(c.ct, "hive:owner", "propose", []byte(`{"action":"registerToken","payload_hex":"`+hex.EncodeToString([]byte(inner))+`"}`))
 	if !r.Success {
-		t.Fatalf("propose registerToken %s: %s: %s", symbol, r.Err, r.ErrMsg)
+		t.Fatalf("propose registerToken %s: %s: %s", inner, r.Err, r.ErrMsg)
 	}
 	var resp struct {
 		ProposalId uint64 `json:"proposal_id"`
