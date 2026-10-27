@@ -2,7 +2,7 @@ package data_availability_client
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -31,7 +31,23 @@ type DataAvailability struct {
 	dl          *datalayer.DataLayer
 	circuit     dids.PartialBlsCircuit
 	startStatus start_status.StartStatus
+
+	peerWait    time.Duration
+	attemptWait time.Duration
 }
+
+// DA-START-1: the contract deployer asks for its storage proof right after it starts,
+// and a node makes its first connections only at p2p Start (P2P-START-1). A request
+// published before any server was on the topic reached no one, and the deploy failed
+// 15 s later with a bare "context deadline exceeded". RequestProofWithElection now waits
+// (bounded) for peers on the topic, sends the request once more if the first collects
+// too few signatures, and says what it got when it gives up.
+const (
+	defaultProofPeerWait    = 60 * time.Second
+	defaultProofAttemptWait = 15 * time.Second
+	proofRequestAttempts    = 2
+	proofMeshSettle         = 2 * time.Second
+)
 
 var _ a.Plugin = (*DataAvailability)(nil)
 
@@ -42,7 +58,16 @@ func New(p2p *libp2p.P2PServer, conf common.IdentityConfig, sconf systemconfig.S
 		sconf:       sconf,
 		dl:          dl,
 		startStatus: start_status.New(),
+		peerWait:    defaultProofPeerWait,
+		attemptWait: defaultProofAttemptWait,
 	}
+}
+
+// SetProofTimeouts overrides how long a proof request waits for topic peers and for
+// signatures per attempt. For tests only.
+func (d *DataAvailability) SetProofTimeouts(peerWait, attemptWait time.Duration) {
+	d.peerWait = peerWait
+	d.attemptWait = attemptWait
 }
 
 // Init implements aggregate.Plugin.
@@ -102,6 +127,41 @@ func (d *DataAvailability) RequestProof(gqlUrl string, data []byte) (stateEngine
 	return d.RequestProofWithElection(data, election)
 }
 
+// waitForTopicPeers waits until `need` peers are on the topic, at most peerWait. Fewer
+// can still do: the mesh relays the request past direct peers, so it goes out anyway
+// with at least one. None at all is an error. Gossipsub grafts new peers into the mesh
+// on its 1 s heartbeat, and a request published the moment they appear can lose its
+// signature replies, so it then waits proofMeshSettle before returning.
+func (d *DataAvailability) waitForTopicPeers(need int) error {
+	deadline := time.Now().Add(d.peerWait)
+	peers := d.service.TopicPeers()
+	for peers < need && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		peers = d.service.TopicPeers()
+	}
+	if peers == 0 {
+		return fmt.Errorf("no data availability peers after %s: check the bootnodes and that this node can reach them", d.peerWait)
+	}
+	if peers < need {
+		log.Warn("data availability proof: fewer topic peers than signers needed, sending anyway",
+			"topicPeers", peers, "need", need)
+	}
+	time.Sleep(proofMeshSettle)
+	return nil
+}
+
+// awaitSigners reports whether the circuit reaches `need` signers within wait.
+func awaitSigners(circuit dids.PartialBlsCircuit, need int, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for circuit.SignerCount() < need {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return true
+}
+
 func (d *DataAvailability) RequestProofWithElection(data []byte, election elections.ElectionResult) (stateEngine.StorageProof, error) {
 	gen := dids.NewBlsCircuitGenerator(election.MemberKeys())
 	c, err := d.dl.PutRaw(data, common_types.PutRawOptions{})
@@ -113,28 +173,28 @@ func (d *DataAvailability) RequestProofWithElection(data []byte, election electi
 		return stateEngine.StorageProof{}, err
 	}
 	d.circuit = circuit
-	msg1 := data_availability_spec.NewP2pMessage(data_availability_spec.P2pMessageData, data)
-	err = d.service.Send(msg1)
-	if err != nil {
+	need := d.sconf.ConsensusParams().MinSpSigners
+
+	if err := d.waitForTopicPeers(need); err != nil {
 		return stateEngine.StorageProof{}, err
 	}
 
-	ctx, cancel := context.WithTimeoutCause(context.Background(), 15*time.Second, errors.New("data availability proof did not collect enough signatures"))
-	defer cancel()
-
-	t := time.NewTicker(200 * time.Millisecond)
-
-loop:
-	for {
-		select {
-		case <-ctx.Done():
-			log.Warn("data availability proof timed out", "signers", circuit.SignerCount())
-			return stateEngine.StorageProof{}, ctx.Err()
-		case <-t.C:
-			if circuit.SignerCount() >= d.sconf.ConsensusParams().MinSpSigners {
-				break loop
-			}
+	msg := data_availability_spec.NewP2pMessage(data_availability_spec.P2pMessageData, data)
+	for attempt := 1; ; attempt++ {
+		if err := d.service.Send(msg); err != nil {
+			return stateEngine.StorageProof{}, err
 		}
+		if awaitSigners(circuit, need, d.attemptWait) {
+			break
+		}
+		peers := d.service.TopicPeers()
+		if attempt == proofRequestAttempts {
+			return stateEngine.StorageProof{}, fmt.Errorf(
+				"data availability proof collected %d of the %d signatures it needs after %d requests (%d peers on the topic)",
+				circuit.SignerCount(), need, attempt, peers)
+		}
+		log.Warn("data availability proof: too few signatures, sending the request again",
+			"signers", circuit.SignerCount(), "need", need, "topicPeers", peers)
 	}
 
 	finalCircuit, err := circuit.Finalize()
