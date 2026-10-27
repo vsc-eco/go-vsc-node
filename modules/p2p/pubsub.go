@@ -61,6 +61,11 @@ func (p *pubSubService[Msg]) Send(msg Msg) error {
 	return p.topic.Publish(p.ctx, b)
 }
 
+// TopicPeers is how many connected peers are subscribed to this service's topic.
+func (p *pubSubService[Msg]) TopicPeers() int {
+	return len(p.topic.ListPeers())
+}
+
 func (p *pubSubService[Msg]) Context() context.Context {
 	return p.ctx
 }
