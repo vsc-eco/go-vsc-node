@@ -20,9 +20,9 @@
 //     ETH withdrawal"; zero-address "withdrawal to zero
 //     address rejected". (All reject BEFORE the header/balance
 //     checks — the validation guards fire first.)
-//  5. map degen       — bad deposit_type "deposit_type must be 'eth' or 'erc20'";
-//     non-whitelisted-relayer eth "caller is not a whitelisted
-//     relayer".
+//  5. map degen       — bad deposit_type "deposit_type must be 'eth', 'erc20'
+//     or 'contract'"; an eth map by a caller that is not a registered
+//     relayer passes (RP-8: permissionless) and is refused on its proof.
 //
 // Run: go test -tags evm_devnet -run TestEVMBridge_W6Neg ./tests/devnet/ -timeout 40m -v
 package devnet
@@ -248,8 +248,9 @@ func TestEVMBridge_W6Neg_AdminAndNegativeMatrix(t *testing.T) {
 		ok, em := e.outResult(ctx, tx)
 		assertCase("map/bad-deposit-type", ok, em, false, "deposit_type must be")
 	}
-	// eth deposit by a NON-whitelisted relayer (we never registerRelayer the
-	// owner) -> rejected at the relayer gate, BEFORE any proof verification.
+	// RP-8: an eth deposit mapped by a caller that is not a registered relayer
+	// (we never registerRelayer the owner) gets past the removed relayer gate
+	// and is refused on its (bogus) proof: block 1 has no stored header.
 	{
 		payload := `{"tx_data":{"block_height":1,"tx_index":0,"raw_hex":"00","merkle_proof_hex":"00","deposit_type":"eth"},"instructions":[]}`
 		tx, err := e.callOnce(e.ownerNode, e.amID, "map", payload)
@@ -257,7 +258,10 @@ func TestEVMBridge_W6Neg_AdminAndNegativeMatrix(t *testing.T) {
 			t.Fatalf("map(non-relayer-eth): %v", err)
 		}
 		ok, em := e.outResult(ctx, tx)
-		assertCase("map/non-relayer-eth", ok, em, false, "not a whitelisted relayer")
+		if strings.Contains(em, "relayer") {
+			t.Fatalf("[map/non-relayer-eth] refused at a relayer gate (%q); RP-8 made the ETH map permissionless", em)
+		}
+		assertCase("map/non-relayer-eth", ok, em, false, "block header not found")
 	}
 
 	t.Logf("W6Neg PASS — admin bounds + negative matrix: %d/%d cases asserted "+
