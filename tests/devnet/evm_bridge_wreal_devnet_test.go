@@ -65,6 +65,8 @@
 //	F14 (RP-5) a bot handed a mainnet RPC for this Sepolia bridge: it refuses to start.
 //	F15 deposits as legacy (type 0) and access-list (type 1) txs: credited.
 //	F16 a deposit forwarded by a contract (an internal tx, E18): observed.
+//	F17 (RP-3/T5) the operator with a 1-wei-per-PGU price cap: its request goes
+//	    unfulfilled and nothing is paid.
 //	RP-4 with the reserve below its floor, an ETH withdrawal still goes through.
 //
 // It spends real PROVE (two proofs, each capped by --max-proofs 1), so it needs
@@ -888,6 +890,24 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		b, _ := json.Marshal(g2)
 		initVerifier(v2, string(b))
 		noPaidProof("F7", "operator-F7-vkey-mismatch.log", opEnv, opArgsFor(v2, execRPC, 1, false), 15*time.Minute)
+	}
+	// F17 (RP-3/T5): a 1-wei-per-PGU price cap and a 60 s auction: no prover
+	// takes the request, it is cancelled, and nothing is paid (RP-2's limits
+	// hold; an unfulfilled request is free).
+	cheap := append(append([]string{}, opEnv...), "SP1_MAX_PRICE_PER_PGU=1", "SP1_AUCTION_TIMEOUT_SECS=60",
+		"MAGI_PROOF_REQUEST_FILE="+filepath.Join(logDir, "proof-request-F17.json"))
+	f17, _, _ := runOperator(t, ctx, filepath.Join(logDir, "operator-F17-price-cap.log"), cheap, opArgsFor(verifierID, execRPC, 1, false), 15*time.Minute,
+		func(l string) bool { return strings.Contains(l, "operator step failed") })
+	logOp("F17", f17)
+	switch {
+	case len(operatorLines(f17, "received from the Prover Network")) != 0:
+		t.Errorf("F17 FAIL: a proof was bought under a 1-wei price cap")
+	case len(operatorLines(f17, "Prover Network request 0x")) != 0:
+		t.Logf("F17 PASS (RP-3/T5): the 1-wei-capped request went unfulfilled and nothing was paid")
+	case len(operatorLines(f17, "Prover Network request failed")) != 0:
+		t.Logf("F17 PASS (RP-3/T5): the network refused a 1-wei-capped request; nothing was paid")
+	default:
+		t.Errorf("F17 NOT RUN: the operator neither made nor was refused a request (log operator-F17-price-cap.log)")
 	}
 
 	// (4) The bot stores the deposit blocks' headers (EIP-2935 attestation, or
