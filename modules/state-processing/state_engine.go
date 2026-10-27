@@ -2479,6 +2479,7 @@ func (se *StateEngine) ExecuteBatch() {
 			}
 			se.TxOutput[tx.TxId] = TxOutput{Ok: false}
 			se.TxOutIds = append(se.TxOutIds, tx.TxId)
+			se.recordTxFailure(tx.TxId, "transaction could not be decoded: unknown operation type or invalid payload")
 			continue
 		}
 
@@ -2530,6 +2531,7 @@ func (se *StateEngine) ExecuteBatch() {
 				log.Debug("TRANSACTION REVERTING - no required auths")
 				ok = false
 				ledgerSession.Revert()
+				se.recordTxFailure(tx.TxId, opFailure(idx, len(tx.Ops), vscTx.Type(), "no required auths"))
 				break
 			}
 
@@ -2646,6 +2648,9 @@ func (se *StateEngine) ExecuteBatch() {
 				log.Debug("TRANSACTION REVERTING")
 				ok = false
 				ledgerSession.Revert()
+				if result.Ret != "" {
+					se.recordTxFailure(tx.TxId, opFailure(idx, len(tx.Ops), vscTx.Type(), result.Ret))
+				}
 				break
 			}
 		}
@@ -2670,6 +2675,26 @@ func (se *StateEngine) ExecuteBatch() {
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
+}
+
+// recordTxFailure stores why a transaction failed in this node's transaction index,
+// returned by findTransaction (UNSTAKE-REASON-1). A refused op used to leave only
+// status FAILED, so an operator whose consensus_unstake was refused for a bond lock
+// could not see why. Every node executes the batch itself and records the same text.
+// Index only: the oplog, and so the block, still carries just {id, ok}.
+func (se *StateEngine) recordTxFailure(txId, reason string) {
+	if se.txDb == nil {
+		return // harnesses that build a state engine without a transaction index
+	}
+	se.txDb.SetOutput(transactions.SetResultUpdate{Id: txId, Error: &reason})
+}
+
+// opFailure names the failing op when a transaction carries more than one.
+func opFailure(opIdx, opCount int, opType, reason string) string {
+	if opCount > 1 {
+		return fmt.Sprintf("op %d (%s): %s", opIdx, opType, reason)
+	}
+	return reason
 }
 
 // guardedSpendableAssets are the L1-backed balances that must never be

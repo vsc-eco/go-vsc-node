@@ -23,6 +23,8 @@ type SetResultUpdate struct {
 	Id     string
 	Status *TransactionStatus
 	Output *TransactionOutput
+	// Error is why the transaction failed (UNSTAKE-REASON-1).
+	Error *string
 }
 
 type TransactionStatus string
@@ -74,4 +76,8 @@ type TransactionRecord struct {
 
 	FirstSeen time.Time           `json:"first_seen" bson:"first_seen"`
 	Output    []TransactionOutput `json:"output,omitempty" bson:"output,omitempty"`
+	// Error is why the transaction failed: the refusal text of the op that failed
+	// (UNSTAKE-REASON-1). Written by each node when it executes the batch; not part of
+	// the oplog or any block.
+	Error string `json:"error,omitempty" bson:"error,omitempty"`
 }

@@ -155,6 +155,9 @@ func (e *transactions) SetOutput(sOut SetResultUpdate) {
 	if sOut.Status != nil {
 		update["status"] = sOut.Status
 	}
+	if sOut.Error != nil {
+		update["error"] = *sOut.Error
+	}
 
 	e.UpdateOne(ctx, query, bson.M{
 		"$set":  update,

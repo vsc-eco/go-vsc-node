@@ -143,6 +143,12 @@ type TransactionRecord {
   Contract outputs produced by this transaction.
   """
   output: [TransactionOutput!]
+  """
+  Why the transaction failed: the refusal text of the operation that failed (for
+  example a consensus_unstake held by a bond lock). Set when an operation fails, before
+  the status turns FAILED; empty for a transaction that succeeded.
+  """
+  error: String
 }
 
 """
