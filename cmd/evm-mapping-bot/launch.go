@@ -152,6 +152,17 @@ func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detec
 	return deps, paid, nil
 }
 
+// erc20MapPayload is an "erc20" map with a base64 receipt proof whose leaf is
+// the receipt (ERC20-PAYLOAD-1).
+func erc20MapPayload(dep detectedDeposit, proofNodes [][]byte) json.RawMessage {
+	data, _ := json.Marshal(map[string]any{"tx_data": map[string]any{
+		"block_height": dep.BlockHeight, "tx_index": dep.TxIndex, "log_index": dep.LogIndex,
+		"deposit_type": "erc20", "token_address": dep.TokenAddress,
+		"receipt_proof": base64.StdEncoding.EncodeToString(bytes.Join(proofNodes, nil)),
+	}, "instructions": []string{}})
+	return data
+}
+
 // contractMapPayload is a "contract" map: the receipt proof, base64, with the
 // receipt as its leaf (not sent on its own).
 func contractMapPayload(dep detectedDeposit, proofNodes [][]byte) json.RawMessage {

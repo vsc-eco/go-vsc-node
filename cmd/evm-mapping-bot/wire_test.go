@@ -372,6 +372,7 @@ type contractMapParams struct {
 		LogIndex       uint64 `json:"log_index"`
 		TokenAddress   string `json:"token_address"`
 		DepositType    string `json:"deposit_type"`
+		ReceiptProof   string `json:"receipt_proof"`
 	} `json:"tx_data"`
 	Instructions []string `json:"instructions"`
 }
@@ -391,11 +392,14 @@ func TestE4_ERC20MapPayloadIsReceiptProof(t *testing.T) {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		t.Fatalf("the contract cannot decode the bot's map payload: %v", err)
 	}
+	// ERC20-PAYLOAD-1: base64, the receipt taken from the proven leaf, not
+	// sent again as raw_hex.
 	want, _ := c.receipts[dep.TxIndex].MarshalBinary()
-	if p.TxData.RawHex != hex.EncodeToString(want) {
-		t.Fatalf("raw_hex is not the receipt at tx %d:\n got %s\nwant %x", dep.TxIndex, p.TxData.RawHex, want)
+	if p.TxData.RawHex != "" || p.TxData.MerkleProofHex != "" || p.TxData.ReceiptProof == "" {
+		t.Fatalf("erc20 map carries raw_hex=%d chars, merkle_proof_hex=%d chars, receipt_proof=%d chars; want only receipt_proof",
+			len(p.TxData.RawHex), len(p.TxData.MerkleProofHex), len(p.TxData.ReceiptProof))
 	}
-	verifyLeaf(t, "erc20 receipt", c.receiptRoot(), dep.TxIndex, p.TxData.RawHex, p.TxData.MerkleProofHex)
+	verifyLeafB64(t, "erc20 receipt", c.receiptRoot(), dep.TxIndex, want, p.TxData.ReceiptProof)
 	if p.TxData.DepositType != "erc20" || p.TxData.LogIndex != 0 || p.TxData.TokenAddress != dep.TokenAddress {
 		t.Fatalf("erc20 fields: %+v", p.TxData)
 	}

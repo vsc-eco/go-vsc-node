@@ -3608,12 +3608,14 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 		return contractMapPayload(dep, proofNodes)
 	}
 	if dep.DepositType == "erc20" {
-		receipt, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+		_, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
 		if err != nil {
 			slog.Error("erc20 deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
 			return nil
 		}
-		return buildMapPayload(dep, receipt, proofNodes)
+		// ERC20-PAYLOAD-1: base64, the receipt taken from the proof's leaf
+		// (the hex form sent it twice and capped a deposit at ~5 logs).
+		return erc20MapPayload(dep, proofNodes)
 	}
 
 	rawTxs := make([][]byte, len(block.Transactions))
