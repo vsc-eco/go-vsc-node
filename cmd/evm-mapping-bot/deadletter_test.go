@@ -118,39 +118,51 @@ func TestCheckpointVersion1Loads(t *testing.T) {
 	}
 }
 
-// E5: while the verifier has a header gap open, "h" is the proven tip but the
-// blocks above the stored chain's tip ("gapb") have no header until the
-// backfill lands, so a map for a deposit there fails on chain and is
-// dead-lettered. The bot scans only to gapb; the deposit waits for the
-// backfill and is mapped once the gap closes.
-func TestE5_DepositInAnOpenHeaderGapWaitsForTheBackfill(t *testing.T) {
+// RP-9: the verifier stores a header only for blocks the bridge uses. A deposit
+// whose block has no stored header is parked (the scan moves on past it and the
+// block is asked for, NEEDS_FILE), and it is mapped once the header is stored;
+// a later deposit block waits on the same proof, not a proof of its own.
+func TestRP9_DepositWaitsForItsHeaderWithoutStoppingTheScan(t *testing.T) {
 	l1 := newFakeL1()
 	for n := uint64(101); n <= 140; n++ {
 		l1.block(n)
 	}
 	l2, gql, rpc, sub, cfg, vault := bridgeWorld(t, l1, 140)
-	l2.set("vsc1verifier", "gapb", "100")
+	l2.onDemand = true
 	l2.status = func(string) string { return "UNCONFIRMED" }
+	needs := t.TempDir() + "/needs.json"
+	t.Setenv("NEEDS_FILE", needs)
 	dep := ethDeposit(t, l1.block(110), vault, big.NewInt(1e18), nil)
+	dep2 := ethDeposit(t, l1.block(130), vault, big.NewInt(2e18), nil)
 	cp := &Checkpoint{LastScannedBlock: 100, SentWithdrawals: map[string]SentTx{}, BlockRetries: map[uint64]int{}, PendingMaps: map[string]PendingMap{}}
 
 	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
 		t.Fatal(err)
 	}
-	if cp.LastScannedBlock != 100 || len(l2.submitted) != 0 {
-		t.Fatalf("gap open (stored to 100, proven 140): scanned to %d, submitted %d L2 txs; want neither", cp.LastScannedBlock, len(l2.submitted))
+	if cp.LastScannedBlock != 140 || len(l2.submitted) != 0 || len(cp.WaitingDeposits) != 2 {
+		t.Fatalf("headers not stored: scanned to %d, submitted %d, waiting %v; want scanned to 140, both blocks parked, nothing mapped", cp.LastScannedBlock, len(l2.submitted), cp.WaitingDeposits)
+	}
+	if _, ok := cp.HeaderNeeds[110]; !ok {
+		t.Fatalf("header needs %v, want block 110", cp.HeaderNeeds)
+	}
+	if _, ok := cp.HeaderNeeds[130]; !ok {
+		t.Fatalf("header needs %v, want block 130", cp.HeaderNeeds)
 	}
 
-	l2.set("vsc1verifier", "gapb", "") // the backfill met the stored chain
+	// The headers are stored (attested from one proof): both deposits map.
+	l2.set("vsc1verifier", "b-110", strings.Repeat("\x00", 137))
+	l2.set("vsc1verifier", "b-130", strings.Repeat("\x00", 137))
 	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
 		t.Fatal(err)
 	}
-	if cp.LastScannedBlock != 140 || len(l2.submitted) != 1 || len(cp.PendingMaps) != 1 || len(cp.DeadLetters) != 0 {
-		t.Fatalf("gap closed: scanned to %d, submitted %d, pending %+v, dead %+v; want the deposit in 110 mapped", cp.LastScannedBlock, len(l2.submitted), cp.PendingMaps, cp.DeadLetters)
+	if len(cp.WaitingDeposits) != 0 || len(cp.PendingMaps) != 2 || len(cp.HeaderNeeds) != 0 || len(cp.DeadLetters) != 0 {
+		t.Fatalf("headers stored: waiting %v, pending %+v, needs %v, dead %+v; want both deposits mapped", cp.WaitingDeposits, cp.PendingMaps, cp.HeaderNeeds, cp.DeadLetters)
 	}
+	got := map[string]bool{}
 	for _, pm := range cp.PendingMaps {
-		if pm.DepositTx != dep.Hash().Hex() {
-			t.Fatalf("pending map for %s, want %s", pm.DepositTx, dep.Hash().Hex())
-		}
+		got[pm.DepositTx] = true
+	}
+	if !got[dep.Hash().Hex()] || !got[dep2.Hash().Hex()] {
+		t.Fatalf("pending maps %+v, want both deposits", cp.PendingMaps)
 	}
 }

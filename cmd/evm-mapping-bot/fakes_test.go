@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -136,6 +138,10 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 				b = new(big.Int)
 			}
 			result = "0x" + fmt.Sprintf("%064x", b)
+		case "eth_getProof":
+			// As Sepolia's public reth RPC answers for a block below the head.
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32602, "message": "distance to target block exceeds maximum proof window"}})
+			return
 		case "eth_sendRawTransaction":
 			f.sent = append(f.sent, arg0)
 			b, _ := hexutil.Decode(arg0)
@@ -169,6 +175,10 @@ type fakeL2 struct {
 	epoch     uint64               // localNodeInfo.epoch
 	pool      *fakePool            // nil: getAccountNonce counts submissions
 	failState map[string]bool      // contract id -> its state reads return a GraphQL error
+	// onDemand: a verifier stores only the headers set with set() (RP-9). Off,
+	// a contract with "h" also serves a stored header "b-N" for every N <= h,
+	// as the verifier did when it stored every header (old tests).
+	onDemand bool
 }
 
 // fakePool makes the nonce and submissions behave as the node's
@@ -277,9 +287,18 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 		case strings.Contains(req.Query, "getStateByKeys"):
 			out := map[string]string{}
 			st := f.state[fmt.Sprint(req.Variables["contractId"])]
+			tip, _ := strconv.ParseUint(st["h"], 10, 64)
 			for _, k := range req.Variables["keys"].([]any) {
 				if v, ok := st[k.(string)]; ok {
 					out[k.(string)] = v
+					if req.Variables["encoding"] == "hex" {
+						out[k.(string)] = hex.EncodeToString([]byte(v))
+					}
+				} else if n, err := strconv.ParseUint(strings.TrimPrefix(k.(string), "b-"), 10, 64); !f.onDemand && strings.HasPrefix(k.(string), "b-") && err == nil && n <= tip {
+					out[k.(string)] = strings.Repeat("\x00", 137)
+					if req.Variables["encoding"] == "hex" {
+						out[k.(string)] = strings.Repeat("00", 137)
+					}
 				}
 			}
 			data = map[string]any{"getStateByKeys": out}
