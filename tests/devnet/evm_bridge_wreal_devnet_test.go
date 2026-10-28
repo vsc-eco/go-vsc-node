@@ -990,17 +990,23 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	}
 	snap := balances()
 	depBlock := rcEth.BlockNumber.Uint64()
-	mapPayload := func(block, idx uint64, rawHex, proofHex string) string {
-		return fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","deposit_type":"eth"},"instructions":[]}`, block, idx, rawHex, proofHex)
+	mapPayload := func(block, idx uint64, rawHex, proofHex, rcptProofB64 string) string {
+		return fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","receipt_proof":"%s","deposit_type":"eth"},"instructions":[]}`, block, idx, rawHex, proofHex, rcptProofB64)
 	}
 	if depIdx, err := pr.FindTxIndex(ctx, depBlock, rcEth.TxHash); err != nil {
 		t.Errorf("F5/F11 NOT RUN: deposit index: %v", err)
 	} else if rawHex, proofHex, err := pr.TxTrieProof(ctx, depBlock, depIdx); err != nil {
 		t.Errorf("F5/F11 NOT RUN: trie proof (geth decoding of a Sepolia block?): %v", err)
+	} else if _, rcptProofHex, err := pr.ReceiptTrieProof(ctx, depBlock, depIdx); err != nil {
+		t.Errorf("F5/F11 NOT RUN: receipt proof: %v", err)
+	} else if rcptB64, err := b64Proof(rcptProofHex); err != nil {
+		t.Errorf("F5/F11 NOT RUN: receipt proof b64: %v", err)
 	} else {
-		refused("F5-replay", e.amID, "map", mapPayload(depBlock, depIdx, rawHex, proofHex), "")
+		// FAILDEP-1: a real receipt proof, so F5-replay reaches the observed
+		// check (replay) instead of being refused for a missing receipt proof.
+		refused("F5-replay", e.amID, "map", mapPayload(depBlock, depIdx, rawHex, proofHex, rcptB64), "")
 		h, _ := strconv.ParseUint(vState("h")["h"], 10, 64)
-		refused("F11", e.amID, "map", mapPayload(h+1000, depIdx, rawHex, proofHex), "")
+		refused("F11", e.amID, "map", mapPayload(h+1000, depIdx, rawHex, proofHex, rcptB64), "")
 		// Another tx in the same proven block, its real proof, and a raw tx
 		// signed by the user that pays the vault 1 ETH.
 		other := uint64(0)
@@ -1013,9 +1019,9 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 			forged, _ := ethtypes.SignTx(ethtypes.NewTx(&ethtypes.DynamicFeeTx{ChainID: l1.chainID, Nonce: 1 << 20, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(20e9), Gas: 21000, To: &vault, Value: big.NewInt(1e18)}),
 				ethtypes.LatestSignerForChainID(l1.chainID), walletKey)
 			fb, _ := forged.MarshalBinary()
-			refused("F5-forge", e.amID, "map", mapPayload(depBlock, other, hex.EncodeToString(fb), otherProof), "")
+			refused("F5-forge", e.amID, "map", mapPayload(depBlock, other, hex.EncodeToString(fb), otherProof, ""), "")
 		}
-		refused("F5-tamper", e.amID, "map", mapPayload(depBlock, depIdx, flipHex(rawHex), proofHex), "")
+		refused("F5-tamper", e.amID, "map", mapPayload(depBlock, depIdx, flipHex(rawHex), proofHex, ""), "")
 	}
 	devnetSleep(30 * time.Second)
 	if got := balances(); got != snap {

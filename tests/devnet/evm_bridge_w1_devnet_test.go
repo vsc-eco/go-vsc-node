@@ -86,8 +86,17 @@ func TestEVMBridge_W1_DepositETH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build proof: %v", err)
 	}
-	payload := fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","deposit_type":"eth"},"instructions":[]}`,
-		blockM, txIndex, rawHex, proofHex)
+	// FAILDEP-1: ETH maps carry the receipt proof (the tx must have succeeded).
+	_, rcptProofHex, err := anvil.ReceiptTrieProof(ctx, blockM, txIndex)
+	if err != nil {
+		t.Fatalf("build receipt proof: %v", err)
+	}
+	rcptProofB64, err := b64Proof(rcptProofHex)
+	if err != nil {
+		t.Fatalf("receipt proof b64: %v", err)
+	}
+	payload := fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","receipt_proof":"%s","deposit_type":"eth"},"instructions":[]}`,
+		blockM, txIndex, rawHex, proofHex, rcptProofB64)
 	// Single-broadcast: `map` is non-idempotent (no L2 nonce dedup); CallContract's
 	// 3x retry can double-process -> "deposit already processed" with net-zero state.
 	mapTx, err := e.callOnce(e.ownerNode, e.amID, "map", payload)

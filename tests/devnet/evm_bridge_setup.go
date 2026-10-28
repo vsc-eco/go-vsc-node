@@ -558,8 +558,18 @@ func (e *evmBridgeEnv) depositETH(anvil *Anvil, depKey *ecdsa.PrivateKey, vaultA
 	if err != nil {
 		return "", err
 	}
-	payload := fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","deposit_type":"eth"},"instructions":[]}`,
-		blockM, txIndex, rawHex, proofHex)
+	// FAILDEP-1: an ETH map carries the receipt proof so the contract can check
+	// the tx succeeded (a reverted transfer moved nothing).
+	_, rcptProofHex, err := anvil.ReceiptTrieProof(ctx, blockM, txIndex)
+	if err != nil {
+		return "", err
+	}
+	rcptProofB64, err := b64Proof(rcptProofHex)
+	if err != nil {
+		return "", err
+	}
+	payload := fmt.Sprintf(`{"tx_data":{"block_height":%d,"tx_index":%d,"raw_hex":"%s","merkle_proof_hex":"%s","receipt_proof":"%s","deposit_type":"eth"},"instructions":[]}`,
+		blockM, txIndex, rawHex, proofHex, rcptProofB64)
 	if _, err := e.callOnce(e.ownerNode, e.amID, "map", payload); err != nil {
 		return "", fmt.Errorf("map: %w", err)
 	}
