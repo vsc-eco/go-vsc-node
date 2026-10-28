@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -399,5 +400,68 @@ func TestRP9_UncoveredBlockBelowTheTipAsksForANewRoot(t *testing.T) {
 	handleHeaderNeeds(context.Background(), l1.rpc(t), gql, sub, cp, sub.cfg)
 	if m := read(); m["want_proof"] != false {
 		t.Fatalf("no proof window: %v, want no proof asked for (it links down)", m)
+	}
+}
+
+// BOT-START-1: a startup read the RPC or the node refuses (HTTP 429, a
+// GraphQL error) is tried again instead of stopping the bot; a wrong chain
+// still stops it at once.
+func TestBOTSTART1_StartupReadsAreRetried(t *testing.T) {
+	old := startupRetryBase
+	startupRetryBase = 5 * time.Millisecond
+	t.Cleanup(func() { startupRetryBase = old })
+	l2 := newFakeL2()
+	l2.set("vsc1bridge", "chainid", "11155111")
+	chainServer := func(refuse int32, chain string) (*httptest.Server, *atomic.Int32) {
+		var calls atomic.Int32
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if calls.Add(1) <= refuse {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": chain})
+		})), &calls
+	}
+
+	srv, calls := chainServer(3, "0xaa36a7")
+	if err := checkChainID(context.Background(), newEthRPC(srv.URL), l2.gql(t), "vsc1bridge"); err != nil || calls.Load() != 4 {
+		t.Fatalf("three 429s then the right chain: err %v after %d calls; want ok after 4", err, calls.Load())
+	}
+	srv.Close()
+
+	srv, calls = chainServer(0, "0x1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := checkChainID(ctx, newEthRPC(srv.URL), l2.gql(t), "vsc1bridge"); err == nil || !strings.Contains(err.Error(), "RP-5") || calls.Load() != 1 {
+		t.Fatalf("a wrong chain: err %v after %d calls; want RP-5 at once", err, calls.Load())
+	}
+	cancel()
+	srv.Close()
+
+	l2.failState = map[string]bool{"vsc1bridge": true}
+	srv, _ = chainServer(0, "0xaa36a7")
+	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
+	start := time.Now()
+	err := checkChainID(ctx, newEthRPC(srv.URL), l2.gql(t), "vsc1bridge")
+	if err == nil || time.Since(start) < 250*time.Millisecond {
+		t.Fatalf("an unreadable bridge: err %v after %s; want retried until the context ends", err, time.Since(start))
+	}
+	cancel()
+	srv.Close()
+	delete(l2.failState, "vsc1bridge")
+
+	// startBlock: an unreadable verifier tip is tried again; a readable one is used.
+	l2.set("vsc1bridge", "zkverifier", "vsc1verifier")
+	l2.set("vsc1verifier", "h", "140")
+	l2.failState["vsc1verifier"] = true
+	cp := &Checkpoint{}
+	ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
+	start = time.Now()
+	if err := startBlock(ctx, l2.gql(t), cp, EVMBotConfig{ContractID: "vsc1bridge"}); err == nil || time.Since(start) < 250*time.Millisecond {
+		t.Fatalf("an unreadable verifier tip: err %v after %s; want retried until the context ends", err, time.Since(start))
+	}
+	cancel()
+	delete(l2.failState, "vsc1verifier")
+	if err := startBlock(context.Background(), l2.gql(t), cp, EVMBotConfig{ContractID: "vsc1bridge"}); err != nil || cp.LastScannedBlock != 140 {
+		t.Fatalf("a readable verifier tip: err %v, start %d; want 140", err, cp.LastScannedBlock)
 	}
 }

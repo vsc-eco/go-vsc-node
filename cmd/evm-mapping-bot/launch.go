@@ -862,26 +862,55 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 // RP-1 / RP-5: startup
 // ---------------------------------------------------------------------------
 
-// checkChainID refuses an L1 RPC on another chain than the bridge's.
+// startupRetryBase is the first wait before a startup read that failed is
+// tried again; it doubles up to 30 s.
+var startupRetryBase = time.Second
+
+// retryStartup runs step until it succeeds, ctx ends or it fails for good
+// (permanent). BOT-START-1: free RPCs refuse calls now and then (HTTP 429), and
+// one refused read at startup used to stop the bot.
+func retryStartup(ctx context.Context, what string, step func() (permanent bool, err error)) error {
+	wait := startupRetryBase
+	for {
+		permanent, err := step()
+		if err == nil || permanent {
+			return err
+		}
+		slog.Warn("startup: "+what+" failed, trying again", "err", err, "in", wait)
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(wait):
+		}
+		if wait *= 2; wait > 30*time.Second {
+			wait = 30 * time.Second
+		}
+	}
+}
+
+// checkChainID refuses an L1 RPC on another chain than the bridge's. A read
+// that fails is tried again; a wrong chain stops the bot.
 func checkChainID(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, contractID string) error {
-	st, err := gql.fetchContractState(ctx, contractID, []string{"chainid"})
-	if err != nil {
-		return fmt.Errorf("read the bridge's chain id: %w", err)
-	}
-	want, _ := strconv.ParseUint(st["chainid"], 10, 64)
-	if want == 0 {
-		want = 1 // the bridge's chainId() when none is set
-	}
-	raw, err := rpc.call("eth_chainId", "")
-	if err != nil {
-		return fmt.Errorf("eth_chainId: %w", err)
-	}
-	var s string
-	_ = json.Unmarshal(raw, &s)
-	if got := hexToUint64(s); got != want {
-		return fmt.Errorf("RP-5: the L1 RPC serves chain %d, the bridge is chain %d", got, want)
-	}
-	return nil
+	return retryStartup(ctx, "the chain id check", func() (bool, error) {
+		st, err := gql.fetchContractState(ctx, contractID, []string{"chainid"})
+		if err != nil {
+			return false, fmt.Errorf("read the bridge's chain id: %w", err)
+		}
+		want, _ := strconv.ParseUint(st["chainid"], 10, 64)
+		if want == 0 {
+			want = 1 // the bridge's chainId() when none is set
+		}
+		raw, err := rpc.call("eth_chainId", "")
+		if err != nil {
+			return false, fmt.Errorf("eth_chainId: %w", err)
+		}
+		var s string
+		_ = json.Unmarshal(raw, &s)
+		if got := hexToUint64(s); got != want {
+			return true, fmt.Errorf("RP-5: the L1 RPC serves chain %d, the bridge is chain %d", got, want)
+		}
+		return false, nil
+	})
 }
 
 // startBlock sets a fresh checkpoint's scan start: START_BLOCK, else the
@@ -905,9 +934,15 @@ func startBlock(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBot
 	if cfg.NetID == "vsc-mainnet" {
 		return fmt.Errorf("RP-1: no checkpoint: set START_BLOCK to the first L1 block to scan (on mainnet the bot does not guess)")
 	}
-	_, st, err := verifierState(ctx, gql, cfg.ContractID, []string{"h"})
-	if err != nil {
-		return fmt.Errorf("RP-1: no checkpoint and no START_BLOCK, and the verifier tip is unreadable: %w", err)
+	var st map[string]string
+	if err := retryStartup(ctx, "reading the verifier tip", func() (bool, error) {
+		var err error
+		if _, st, err = verifierState(ctx, gql, cfg.ContractID, []string{"h"}); err != nil {
+			return false, fmt.Errorf("RP-1: no checkpoint and no START_BLOCK, and the verifier tip is unreadable: %w", err)
+		}
+		return false, nil
+	}); err != nil {
+		return err
 	}
 	h, _ := strconv.ParseUint(st["h"], 10, 64)
 	if h == 0 {
