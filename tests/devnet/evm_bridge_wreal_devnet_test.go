@@ -1254,6 +1254,10 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if err != nil {
 		t.Errorf("F6 NOT RUN: %v", err)
 	} else {
+		// The queue as it stands: "n" (confirmed count) is written at the first
+		// confirm, so before any it is absent; compare, do not assume "0".
+		queue := func() string { return e.stateStr("n") + "|" + e.stateStr("np") + "|" + e.stateStr("d-0") }
+		before := queue()
 		if other, err := csPayload(0, sE, 0, 0, cryptoPubkeyAddr(attKey).Hex()); err == nil {
 			refused("F6-to", e.amID, "confirmSpend", other, "")
 		}
@@ -1263,8 +1267,8 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		if wrongBlock, err := csPayload(0, sE, -1, 0, ""); err == nil {
 			refused("F6-block", e.amID, "confirmSpend", wrongBlock, "")
 		}
-		if e.stateStr("n") != "0" || e.stateStr("d-0") == "" {
-			t.Errorf("F6 FAIL: forged confirmSpends changed the queue: n=%q d-0=%v", e.stateStr("n"), e.stateStr("d-0") != "")
+		if after := queue(); after != before || e.stateStr("d-0") == "" {
+			t.Errorf("F6 FAIL: forged confirmSpends changed the queue (n|np|d-0): %q -> %q", before, after)
 		}
 	}
 
