@@ -45,14 +45,11 @@ import (
 // was refused for some unrelated reason" (bad amount, POA exit-halt, dead op path),
 // because the same op with the same amount from the same account is accepted later.
 //
-// One deliberate deviation from the written spec, driven by reading the code.
-// ComputeRetiringSignerSet counts a generation as fund-holding while its status is
-// Retiring, Draining OR Inactive (eligibility.go L4-C1), and only PURGED is left
-// out ("the bond-lock / V-A consumers must RELEASE a purged gen's members"). A
-// drain plus one retireVault only reaches Inactive, so the release is measured in
-// two stages: first at Inactive (the spec's step), and, if the bond is still held
-// there, again after the purge grace window has been mined and relayed and gen-0
-// has actually reached Purged. F5-RELEASE records which stage released it.
+// The release is measured in two stages: first at Inactive (the spec's step; the bond
+// lock leaves an Inactive generation out, eligibility.go ExcludeInactive), and, if the
+// bond is still held there (another lock, e.g. the POA exit-halt), again after the
+// purge grace window has been mined and relayed and gen-0 has actually reached Purged.
+// F5-RELEASE records which stage released it.
 //
 //	VAULT_F5_RUN=1 BTC_MAPPING_WASM_PATH=... go test -v -run TestVaultF5ChurnThenSweep -timeout 95m ./tests/devnet/
 func TestVaultF5ChurnThenSweep(t *testing.T) {

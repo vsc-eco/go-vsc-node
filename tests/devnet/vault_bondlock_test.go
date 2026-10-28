@@ -164,15 +164,22 @@ func TestVaultBondLock(t *testing.T) {
 	vstatus(t, d, ctx, 1, cid, "retireVault", "")
 
 	// ── BOND-02: the SAME unstake is now ACCEPTED (bond released). ──
-	// Run 3 (terminal-status instrument): right after drain + retireVault the unstake is
-	// still REFUSED. That is the node's design since L4-C1: Inactive counts as
-	// fund-holding (modules/vaultrotation/eligibility.go), only Purged releases. So the
-	// Inactive probe records the design and the release is measured at Purged.
+	// Right after drain + retireVault gen-0 is Inactive, and the bond lock leaves an
+	// Inactive generation out (ExcludeInactive, modules/vaultrotation/eligibility.go), so
+	// the #11 lock is released here, not at Purged. From 0.7.0 the POA collateral
+	// exit-halt still holds a seated, electable member, so the release is only visible
+	// through an unstake below 0.7 (same reason as BOND-03).
 	inactiveStatus, inactivePending := vfUnstakeVerdict(t, d, ctx, unstakeNode, 3*time.Minute)
 	stInactive := vaultStatusOf(t, d, ctx, cid, 0)
-	rec("BOND-02", "at Inactive the bond is STILL locked by design (L4-C1: Inactive is fund-holding)",
-		inactiveStatus == "FAILED" && inactivePending == 0 && stInactive == 4,
-		fmt.Sprintf("gen-0 status=%s, unstake status=%s (design: FAILED) pending=%d (design: 0)", statusStr(stInactive), inactiveStatus, inactivePending))
+	if v := vfActiveConsensus(d, ctx); v >= 7 {
+		rec("BOND-02", "gen-0 reaches INACTIVE (vault lock released there; unstake N/A under the POA exit-halt)",
+			stInactive == 4,
+			fmt.Sprintf("consensus 0.%d: gen-0 status=%s (want Inactive); unstake status=%s pending=%d is held by the exit-halt, not judged here", v, statusStr(stInactive), inactiveStatus, inactivePending))
+	} else {
+		rec("BOND-02", "consensus_unstake ACCEPTED once the generation is INACTIVE (bond released)",
+			stInactive == 4 && inactiveStatus == "CONFIRMED" && inactivePending > 0,
+			fmt.Sprintf("gen-0 status=%s, unstake status=%s pending=%d", statusStr(stInactive), inactiveStatus, inactivePending))
+	}
 
 	// BOND-03: mine and relay the 144-block purge grace, retire again to Purged, then
 	// the SAME unstake must be ACCEPTED (VR2-14 if it is not).
