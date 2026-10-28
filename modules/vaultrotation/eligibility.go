@@ -156,6 +156,12 @@ type RetiringSignerDeps struct {
 	// IncludeActiveHolders fills ActiveSignerElection (consensus 0.11.0,
 	// consensusversion.ActiveKeyHoldersBoundActive at the decision height).
 	IncludeActiveHolders bool
+	// ExcludeInactive leaves INACTIVE (swept empty) generations out of
+	// SignerElection and KeyIds. Only the bond lock sets it: a member of an
+	// emptied generation's last committee may unstake, as POA-1 allows its
+	// earlier parties. A late deposit turns the generation back to Draining,
+	// which locks again. The tss caller leaves it false, so signing is unchanged.
+	ExcludeInactive bool
 }
 
 // ComputeRetiringSignerSet is the pure, deterministic core: it reads the BTC vault
@@ -264,8 +270,14 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		// just-emptied Inactive gen and escape the #11 bond-lock while still holding
 		// reconstructable shares. Additive + deterministic; V-A signing of an Inactive gen
 		// is independently refused by output_scoping, so this only closes the bond-lock hole.
+		// The bond lock has since opted out (ExcludeInactive): no bond is slashable for a
+		// vault theft, so the hold bought no deterrence and kept the last committee locked
+		// for the whole purge grace (~30 days on mainnet) after every migration.
 		if v.Status != btcvault.VaultStatusRetiring && v.Status != btcvault.VaultStatusDraining &&
 			v.Status != btcvault.VaultStatusInactive {
+			continue
+		}
+		if d.ExcludeInactive && v.Status == btcvault.VaultStatusInactive {
 			continue
 		}
 		elec, accounts, ok := commitmentCommittee(d, keyId)

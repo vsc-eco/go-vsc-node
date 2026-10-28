@@ -112,7 +112,10 @@ func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64)
 		reader := se.btcContractStateReaderAtStrict(btcContract, height, &transient)
 		set := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
 			BtcContract: btcContract,
-			ReadKey:     reader,
+			// An emptied (Inactive) generation no longer holds its last committee's
+			// bond; signing eligibility (the tss caller) still counts it.
+			ExcludeInactive: true,
+			ReadKey:         reader,
 			GetCommitment: func(keyId string) (tss_db.TssCommitment, error) {
 				c, cerr := se.tssCommitments.GetCommitmentByHeight(keyId, height, "reshare", "keygen")
 				if isTransientReadErr(cerr) {

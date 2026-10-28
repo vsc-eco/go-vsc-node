@@ -97,6 +97,63 @@ func TestPoa1_ShareOfAnyEpochOfAFundedGenerationLocksTheBond(t *testing.T) {
 	}
 }
 
+// An emptied (Inactive) generation no longer locks its past parties; Retiring
+// and Draining still do, and a late deposit that turns it back to Draining
+// locks again. Mainnet case: ex-members who held a share of gen 0 months ago
+// are free once gen 0 is swept, not ~30 days later at its purge.
+func TestPoa1_InactiveGenerationReleasesItsPastParties(t *testing.T) {
+	rows := map[string][]tss_db.TssCommitment{
+		vaultKey(0): {{Epoch: 3, Commitment: bits(0, 1, 2)}, {Epoch: 5, Commitment: bits(0, 1)}},
+		vaultKey(1): {{Epoch: 8, Commitment: bits(0, 1)}},
+	}
+	elecs := map[uint64][]string{
+		3: {"a", "b", "exmember"}, // exmember: only in an early epoch of gen 0
+		5: {"a", "b"},
+		8: {"a", "b"},
+	}
+	for _, tc := range []struct {
+		name string
+		gen0 btcvault.VaultStatus
+		acct string
+		want bool
+	}{
+		{"retiring gen0 holds its old party", btcvault.VaultStatusRetiring, "exmember", true},
+		{"draining gen0 holds its old party", btcvault.VaultStatusDraining, "exmember", true},
+		{"inactive gen0 releases its old party", btcvault.VaultStatusInactive, "exmember", false},
+		{"purged gen0 releases its old party", btcvault.VaultStatusPurged, "exmember", false},
+		{"party of the active gen still held", btcvault.VaultStatusInactive, "a", true},
+	} {
+		vaults := []btcvault.Vault{
+			{Generation: 0, Status: tc.gen0},
+			{Generation: 1, Status: btcvault.VaultStatusActive},
+		}
+		got, err := holdCheck(t, vaults, rows, elecs, tc.acct)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: held=%v err=%v, want %v", tc.name, got, err, tc.want)
+		}
+	}
+	// Only Inactive generations left (no Active one): nothing locks, not even a
+	// current member (the funded gate).
+	onlyInactive := []btcvault.Vault{{Generation: 0, Status: btcvault.VaultStatusInactive}}
+	if got, _ := holdCheckWith(t, onlyInactive, rows, elecs, []string{"a"}, "a"); got {
+		t.Fatal("an Inactive-only registry still locks a current member")
+	}
+	// The status set itself: Inactive is still fund-holding everywhere else.
+	if !btcvault.IsFundHoldingStatus(btcvault.VaultStatusInactive) || poaLocksBond(btcvault.VaultStatusInactive) {
+		t.Fatal("poaLocksBond must drop Inactive without changing IsFundHoldingStatus")
+	}
+	for _, s := range []btcvault.VaultStatus{btcvault.VaultStatusActive, btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining} {
+		if !poaLocksBond(s) {
+			t.Fatalf("status %d must lock", s)
+		}
+	}
+	for _, s := range []btcvault.VaultStatus{btcvault.VaultStatusPending, btcvault.VaultStatusPurged} {
+		if poaLocksBond(s) {
+			t.Fatalf("status %d must not lock", s)
+		}
+	}
+}
+
 func TestPoa1_ReadErrorIsReturnedNotDecided(t *testing.T) {
 	got, err := accountInFundedVaultCommittees([]btcvault.Vault{{Generation: 1, Status: btcvault.VaultStatusActive}}, "vsc1BTC", "a", nil,
 		func(string) ([]tss_db.TssCommitment, error) { return nil, errors.New("transient") },

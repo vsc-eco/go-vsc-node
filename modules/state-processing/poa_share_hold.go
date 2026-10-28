@@ -16,9 +16,9 @@ import (
 
 // HeldShareOfFundedVaultOrBlock reports whether the POA-1 bond lock holds
 // account (consensus 0.9.0): while any BTC vault generation is in a
-// fund-holding status (Active, Retiring, Draining or Inactive, whatever its
-// balance), the account is electable, recently active as a witness, in the
-// current committee, or a party of any keygen/reshare of such a generation.
+// bond-locking status (Active, Retiring or Draining, whatever its balance; see
+// poaLocksBond), the account is electable, recently active as a witness, in
+// the current committee, or a party of any keygen/reshare of such a generation.
 // It is a TxResult input, so a read error blocks and retries instead of
 // deciding on one node. A stored row that does not decode is the same on every
 // node, so it decides (hold) instead of retrying forever.
@@ -44,8 +44,8 @@ func (se *StateEngine) HeldShareOfFundedVaultOrBlock(account string, height uint
 
 // heldShareOfFundedVault reads the BTC contract's vault registry, the election
 // active at `height` and the keygen/reshare commitments. "Funded" is the
-// registry status only: the registry carries no balance, and an Active or
-// Inactive generation can receive a deposit at any block while every past
+// registry status only (poaLocksBond): the registry carries no balance, and an
+// Active generation can receive a deposit at any block while every past
 // committee's shares still sign for it.
 //
 // Why the current election and electability too: those accounts are, or are
@@ -61,6 +61,15 @@ func (se *StateEngine) HeldShareOfFundedVaultOrBlock(account string, height uint
 // never resharing (every churn is a fresh keygen and the funds migrate), and
 // keeps a node's bond locked while it is a member of any vault that still holds
 // funds. This is that rule for Magi's reshared generations.
+//
+// Why Inactive releases it: an Inactive generation has been swept empty. Its
+// grace period (mainnet 4320 BTC blocks) exists only so a late deposit to an
+// old address is still credited, and a late deposit turns it back to Draining,
+// which locks again. Holding every past party of the old key for that whole
+// grace kept ex-members who left months ago locked for ~30 days after every
+// migration. The generation's last committee stays locked through the grace by
+// the retiring-member lock (vaultrotation eligibility, L4-C1), which this does
+// not change.
 //
 // Consensus inputs only: the registry at the height, the commitment rows, and
 // the elections they decode against. Never the tss_keys collection (a node
@@ -91,7 +100,7 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 	}
 	funded := false
 	for _, v := range vaults {
-		funded = funded || btcvault.IsFundHoldingStatus(v.Status)
+		funded = funded || poaLocksBond(v.Status)
 	}
 	if !funded {
 		return false, nil
@@ -214,10 +223,18 @@ func (se *StateEngine) electableOrRecentlyActive(account string, height uint64) 
 	return se.hadRecentWitnessActivityE(account, height, se.sconf.ConsensusParams().EffectivePoaExitHalt())
 }
 
+// poaLocksBond is the POA-1 status set: Active, Retiring and Draining. It is
+// btcvault.IsFundHoldingStatus without Inactive (see heldShareOfFundedVault
+// for why). Only the bond lock uses it; reshare skipping, deposit crediting and
+// the retiring-member lock keep counting Inactive as fund-holding.
+func poaLocksBond(s btcvault.VaultStatus) bool {
+	return btcvault.IsFundHoldingStatus(s) && s != btcvault.VaultStatusInactive
+}
+
 // accountInFundedVaultCommittees is the pure core: while any generation is
-// fund-holding, is account a member of the current election (currentMembers),
-// or a party (commitment bitset) of ANY keygen/reshare commitment of a
-// fund-holding generation?
+// bond-locking (poaLocksBond), is account a member of the current election
+// (currentMembers), or a party (commitment bitset) of ANY keygen/reshare
+// commitment of a bond-locking generation?
 func accountInFundedVaultCommittees(
 	vaults []btcvault.Vault,
 	btcContract, account string,
@@ -231,7 +248,7 @@ func accountInFundedVaultCommittees(
 	}
 	funded := false
 	for _, v := range vaults {
-		if btcvault.IsFundHoldingStatus(v.Status) {
+		if poaLocksBond(v.Status) {
 			funded = true
 			break
 		}
@@ -252,7 +269,7 @@ func accountInFundedVaultCommittees(
 }
 
 // fundedVaultPartySet returns every account (normalized) that is a party of
-// any keygen/reshare commitment of a fund-holding generation. A read error is
+// any keygen/reshare commitment of a bond-locking generation. A read error is
 // returned (the caller holds and retries).
 func fundedVaultPartySet(
 	vaults []btcvault.Vault,
@@ -263,7 +280,7 @@ func fundedVaultPartySet(
 	parties := make(map[string]bool)
 	elecCache := make(map[uint64]*elections.ElectionResult)
 	for _, v := range vaults {
-		if !btcvault.IsFundHoldingStatus(v.Status) {
+		if !poaLocksBond(v.Status) {
 			continue
 		}
 		keyId := btcContract + "-" + btcvault.VaultKeyName(v.Generation)

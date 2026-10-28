@@ -978,14 +978,16 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
-	// POA-1 (0.9.0): while any BTC vault generation is in a fund-holding status
-	// (whatever its balance), no unbond while the bonded account is electable,
-	// recently active as a witness, in the current committee, or a party of any
-	// keygen/reshare of such a generation (see HeldShareOfFundedVaultOrBlock).
-	// A reshare keeps the key, so every past committee's share stays usable;
-	// the collateral behind it stays locked until the generation is rotated out
-	// and purged (THORChain: no unbond while active or ready, or while a member
-	// of a vault that still holds funds).
+	// POA-1 (0.9.0): while any BTC vault generation is Active, Retiring or
+	// Draining (whatever its balance), no unbond while the bonded account is
+	// electable, recently active as a witness, in the current committee, or a
+	// party of any keygen/reshare of such a generation (see
+	// HeldShareOfFundedVaultOrBlock). A reshare keeps the key, so every past
+	// committee's share stays usable; the collateral behind it stays locked
+	// until the generation is rotated out and swept empty (Inactive)
+	// (THORChain: no unbond while active or ready, or while a member of a vault
+	// that still holds funds). The refusal text below is unchanged: it is the
+	// tx result, and the devnet POA-1 test matches it.
 	if consensusversion.PoaBondLockedWhileShareFundedActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
 		bonded := tx.From
 		if DelegatedStakeActiveForElection(electionResult) {

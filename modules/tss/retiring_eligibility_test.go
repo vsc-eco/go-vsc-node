@@ -156,6 +156,45 @@ func TestComputeRetiringSignerSet_PurgedSkipsReshareButReleasesBond(t *testing.T
 	}
 }
 
+// The bond lock (ExcludeInactive) leaves an emptied (Inactive) generation's last
+// committee out; the tss caller (flag unset) keeps it, and a Draining generation
+// stays in for both. Reshare skipping is the same either way.
+func TestComputeRetiringSignerSet_InactiveLeftOutOnlyForBondLock(t *testing.T) {
+	gen0KeyId := scopeContract + "-" + btcvault.VaultKeyName(0)
+	for _, tc := range []struct {
+		name    string
+		status  btcvault.VaultStatus
+		exclude bool
+		want    bool
+	}{
+		{"inactive, tss caller", btcvault.VaultStatusInactive, false, true},
+		{"inactive, bond lock", btcvault.VaultStatusInactive, true, false},
+		{"draining, tss caller", btcvault.VaultStatusDraining, false, true},
+		{"draining, bond lock", btcvault.VaultStatusDraining, true, true},
+		{"retiring, bond lock", btcvault.VaultStatusRetiring, true, true},
+	} {
+		reg := marshalRegistry(
+			btcvault.Vault{Generation: 0, Primary: scopePub(1), Backup: scopePub(3), Status: tc.status},
+			btcvault.Vault{Generation: 1, Primary: scopePub(2), Backup: scopePub(3), Status: btcvault.VaultStatusActive},
+		)
+		set := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
+			BtcContract:     scopeContract,
+			ExcludeInactive: tc.exclude,
+			ReadKey:         func(k string) ([]byte, bool) { return reg, k == "v" },
+			GetCommitment: func(string) (tss_db.TssCommitment, error) {
+				return tss_db.TssCommitment{Epoch: 5, Commitment: bitsetB64(0)}, nil
+			},
+			GetElection: func(epoch uint64) *elections.ElectionResult { return vaElection(epoch, "alice") },
+		})
+		if set.Has("alice") != tc.want || set.KeyIds[gen0KeyId] != tc.want {
+			t.Errorf("%s: alice held=%v keyId=%v, want %v", tc.name, set.Has("alice"), set.KeyIds[gen0KeyId], tc.want)
+		}
+		if !set.ReshareSkipKeyIds[gen0KeyId] {
+			t.Errorf("%s: a superseded gen must stay in ReshareSkipKeyIds", tc.name)
+		}
+	}
+}
+
 // TestComputeRetiringSignerSet_CorruptRegistryUnresolvable — F14 (vault-v2 failure
 // state "corrupt or ambiguous vault registry"). A PRESENT but undecodable "v" must
 // come back Unresolvable (the #11 bond-lock reads that as everybody-locked, V-A as a
