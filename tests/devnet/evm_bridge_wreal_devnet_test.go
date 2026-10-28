@@ -942,9 +942,9 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		initVerifier(v2, string(b))
 		noPaidProof("F7", "operator-F7-vkey-mismatch.log", opEnv, opArgsFor(v2, execRPC, 1, false), 15*time.Minute)
 	}
-	// F17 (RP-3/T5): a 1-wei-per-PGU price cap and a 60 s auction: no prover
-	// takes the request, it is cancelled, and nothing is paid (RP-2's limits
-	// hold; an unfulfilled request is free).
+	// F17 (RP-3/T5): a 1-wei-per-PGU price cap and a 60 s auction. RP-2's limit
+	// must reach the request; whether a prover takes it is the market's call
+	// (C4 2026-10-28: one did, in 35 s, for at most 52M PGU x 1 wei).
 	cheap := append(append([]string{}, opEnv...), "SP1_MAX_PRICE_PER_PGU=1", "SP1_AUCTION_TIMEOUT_SECS=60",
 		"MAGI_PROOF_REQUEST_FILE="+filepath.Join(logDir, "proof-request-F17.json"))
 	f17, _, _ := runOperator(t, ctx, filepath.Join(logDir, "operator-F17-price-cap.log"), cheap, opArgsFor(verifierID, execRPC, 1, false), 15*time.Minute,
@@ -952,7 +952,12 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	logOp("F17", f17)
 	switch {
 	case len(operatorLines(f17, "received from the Prover Network")) != 0:
-		t.Errorf("F17 FAIL: a proof was bought under a 1-wei price cap")
+		// The SDK logs the request's cap per billion PGU: 1 wei/PGU = 1e9.
+		if len(operatorLines(f17, "Max price per bPGU: 1000000000 ")) == 0 {
+			t.Errorf("F17 FAIL: a proof was bought and the request did not carry the 1-wei-per-PGU cap")
+		} else {
+			t.Logf("F17 PASS (RP-3/T5): the request carried the 1-wei-per-PGU cap (max cost ~0 PROVE) and a prover took it")
+		}
 	case len(operatorLines(f17, "Prover Network request 0x")) != 0:
 		t.Logf("F17 PASS (RP-3/T5): the 1-wei-capped request went unfulfilled and nothing was paid")
 	case len(operatorLines(f17, "Prover Network request failed")) != 0:
