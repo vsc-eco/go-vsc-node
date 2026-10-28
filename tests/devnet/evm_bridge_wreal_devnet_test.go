@@ -250,20 +250,20 @@ func (s *sepolia) vaultTx(ctx context.Context, vault ethcommon.Address, nonce ui
 	if err != nil {
 		return nil, nil, false
 	}
-	signer := ethtypes.LatestSignerForChainID(s.chainID)
 	for ; *next <= latest; *next++ {
-		blk, err := s.cli.BlockByNumber(ctx, new(big.Int).SetUint64(*next))
+		// sentAt reads the block's JSON: BlockByNumber (go-ethereum v1.14.12)
+		// fails on a block holding an EIP-7702 tx, and phase C5's scan stuck
+		// at block 12012224 reported a mined withdrawal as never sent.
+		tx, ok, err := sentAt(ctx, s.cli, s.rpc, *next, vault, nonce)
 		if err != nil {
 			return nil, nil, false
 		}
-		for _, tx := range blk.Transactions() {
-			if from, err := ethtypes.Sender(signer, tx); err == nil && from == vault && tx.Nonce() == nonce {
-				rc, err := s.cli.TransactionReceipt(ctx, tx.Hash())
-				if err != nil {
-					return nil, nil, false
-				}
-				return tx, rc, true
+		if ok {
+			rc, err := s.cli.TransactionReceipt(ctx, tx.Hash())
+			if err != nil {
+				return nil, nil, false
 			}
+			return tx, rc, true
 		}
 	}
 	return nil, nil, false

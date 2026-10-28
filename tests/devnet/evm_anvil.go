@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	rawdb "github.com/ethereum/go-ethereum/core/rawdb"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
@@ -184,13 +185,83 @@ type AnvilHeader struct {
 	Timestamp    uint64
 }
 
+// blockRaw is block num's header, tx hashes and (with raw) raw txs, read
+// without decoding the txs: go-ethereum v1.14.12 has no EIP-7702 (type 4) tx
+// type, so BlockByNumber fails on any block holding one (live on Sepolia:
+// phase C5's vault scan stopped at block 12012224).
+func blockRaw(ctx context.Context, cli *ethclient.Client, rc *ethrpc.Client, num uint64, raw bool) (*ethtypes.Header, []ethcommon.Hash, [][]byte, error) {
+	h, err := cli.HeaderByNumber(ctx, new(big.Int).SetUint64(num))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("header %d: %w", num, err)
+	}
+	var blk struct {
+		Transactions []ethcommon.Hash `json:"transactions"`
+	}
+	if err := rc.CallContext(ctx, &blk, "eth_getBlockByNumber", hexutil.EncodeUint64(num), false); err != nil {
+		return nil, nil, nil, fmt.Errorf("block %d: %w", num, err)
+	}
+	if !raw {
+		return h, blk.Transactions, nil, nil
+	}
+	raws := make([][]byte, len(blk.Transactions))
+	for i, txh := range blk.Transactions {
+		var b hexutil.Bytes
+		if err := rc.CallContext(ctx, &b, "eth_getRawTransactionByHash", txh); err != nil {
+			return nil, nil, nil, fmt.Errorf("raw tx %d of block %d: %w", i, num, err)
+		}
+		raws[i] = b
+	}
+	return h, blk.Transactions, raws, nil
+}
+
+// encodeReceipt is r's receipt-trie encoding for any tx type: v1.14.12's
+// Receipts.EncodeIndex writes only the type byte for a type it does not know
+// (EIP-7702 type 4). A typed receipt is its type byte then the same RLP.
+func encodeReceipt(r *ethtypes.Receipt) []byte {
+	c := *r
+	if c.Type != ethtypes.LegacyTxType {
+		c.Type = ethtypes.DynamicFeeTxType
+	}
+	var buf bytes.Buffer
+	ethtypes.Receipts{&c}.EncodeIndex(0, &buf)
+	b := buf.Bytes()
+	if r.Type != ethtypes.LegacyTxType {
+		b[0] = r.Type
+	}
+	return b
+}
+
+// sentAt finds the tx `from` sent at `nonce` in block n from the block's JSON
+// (no tx decoding, see blockRaw); ok=false when the block has none.
+func sentAt(ctx context.Context, cli *ethclient.Client, rc *ethrpc.Client, n uint64, from ethcommon.Address, nonce uint64) (*ethtypes.Transaction, bool, error) {
+	var blk struct {
+		Transactions []struct {
+			Hash  ethcommon.Hash    `json:"hash"`
+			From  ethcommon.Address `json:"from"`
+			Nonce hexutil.Uint64    `json:"nonce"`
+		} `json:"transactions"`
+	}
+	if err := rc.CallContext(ctx, &blk, "eth_getBlockByNumber", hexutil.EncodeUint64(n), true); err != nil {
+		return nil, false, err
+	}
+	for _, t := range blk.Transactions {
+		if t.From == from && uint64(t.Nonce) == nonce {
+			tx, _, err := cli.TransactionByHash(ctx, t.Hash)
+			if err != nil {
+				return nil, false, err
+			}
+			return tx, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 // Header reads block `num`'s real header fields for planting.
 func (a *Anvil) Header(ctx context.Context, num uint64) (*AnvilHeader, error) {
-	blk, err := a.cli.BlockByNumber(ctx, new(big.Int).SetUint64(num))
+	h, err := a.cli.HeaderByNumber(ctx, new(big.Int).SetUint64(num))
 	if err != nil {
 		return nil, fmt.Errorf("block %d: %w", num, err)
 	}
-	h := blk.Header()
 	bf := uint64(0)
 	if h.BaseFee != nil {
 		bf = h.BaseFee.Uint64()
@@ -229,25 +300,20 @@ func cryptoPubkeyAddr(key *ecdsa.PrivateKey) ethcommon.Address {
 // trie and asserts its root == the block's real transactionsRoot BEFORE
 // returning, so a format error is caught locally (not on devnet).
 func (a *Anvil) TxTrieProof(ctx context.Context, num, txIndex uint64) (rawHex, proofHex string, err error) {
-	blk, err := a.cli.BlockByNumber(ctx, new(big.Int).SetUint64(num))
+	h, _, txs, err := blockRaw(ctx, a.cli, a.rpc, num, true)
 	if err != nil {
-		return "", "", fmt.Errorf("block %d: %w", num, err)
+		return "", "", err
 	}
 	tr := trie.NewEmpty(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil))
-	txs := blk.Transactions()
 	if txIndex >= uint64(len(txs)) {
 		return "", "", fmt.Errorf("txIndex %d out of range (%d txs)", txIndex, len(txs))
 	}
-	for i, tx := range txs {
+	for i, val := range txs {
 		key, _ := rlp.EncodeToBytes(uint(i))
-		val, mErr := tx.MarshalBinary()
-		if mErr != nil {
-			return "", "", fmt.Errorf("marshal tx %d: %w", i, mErr)
-		}
 		tr.MustUpdate(key, val)
 	}
-	if tr.Hash() != blk.TxHash() {
-		return "", "", fmt.Errorf("reconstructed tx-trie root %s != block txRoot %s", tr.Hash().Hex(), blk.TxHash().Hex())
+	if tr.Hash() != h.TxHash {
+		return "", "", fmt.Errorf("reconstructed tx-trie root %s != block txRoot %s", tr.Hash().Hex(), h.TxHash.Hex())
 	}
 	var proof proofList
 	tkey, _ := rlp.EncodeToBytes(uint(txIndex))
@@ -258,8 +324,7 @@ func (a *Anvil) TxTrieProof(ctx context.Context, num, txIndex uint64) (rawHex, p
 	for _, n := range proof {
 		buf = append(buf, n...)
 	}
-	raw, _ := txs[txIndex].MarshalBinary()
-	return hex.EncodeToString(raw), hex.EncodeToString(buf), nil
+	return hex.EncodeToString(txs[txIndex]), hex.EncodeToString(buf), nil
 }
 
 // ReceiptTrieProof builds the receipt-trie proof for txIndex in block `num`:
@@ -269,34 +334,29 @@ func (a *Anvil) TxTrieProof(ctx context.Context, num, txIndex uint64) (rawHex, p
 // For a plain ETH transfer the receipt has empty logs + all-zero bloom — the
 // CC-1 case (non-stripping receipt encoding must still match the root).
 func (a *Anvil) ReceiptTrieProof(ctx context.Context, num, txIndex uint64) (receiptHex, proofHex string, err error) {
-	blk, err := a.cli.BlockByNumber(ctx, new(big.Int).SetUint64(num))
+	h, hashes, _, err := blockRaw(ctx, a.cli, a.rpc, num, false)
 	if err != nil {
-		return "", "", fmt.Errorf("block %d: %w", num, err)
+		return "", "", err
 	}
-	txs := blk.Transactions()
-	if txIndex >= uint64(len(txs)) {
-		return "", "", fmt.Errorf("txIndex %d out of range (%d txs)", txIndex, len(txs))
+	if txIndex >= uint64(len(hashes)) {
+		return "", "", fmt.Errorf("txIndex %d out of range (%d txs)", txIndex, len(hashes))
 	}
-	receipts := make(ethtypes.Receipts, len(txs))
-	for i, tx := range txs {
-		r, rErr := a.cli.TransactionReceipt(ctx, tx.Hash())
+	receipts := make(ethtypes.Receipts, len(hashes))
+	for i, txh := range hashes {
+		r, rErr := a.cli.TransactionReceipt(ctx, txh)
 		if rErr != nil {
 			return "", "", fmt.Errorf("receipt %d: %w", i, rErr)
 		}
 		receipts[i] = r
 	}
-	encode := func(i int) []byte {
-		var buf bytes.Buffer
-		receipts.EncodeIndex(i, &buf)
-		return buf.Bytes()
-	}
+	encode := func(i int) []byte { return encodeReceipt(receipts[i]) }
 	tr := trie.NewEmpty(triedb.NewDatabase(rawdb.NewMemoryDatabase(), nil))
 	for i := range receipts {
 		key, _ := rlp.EncodeToBytes(uint(i))
 		tr.MustUpdate(key, encode(i))
 	}
-	if tr.Hash() != blk.ReceiptHash() {
-		return "", "", fmt.Errorf("reconstructed receipt-trie root %s != block receiptsRoot %s", tr.Hash().Hex(), blk.ReceiptHash().Hex())
+	if tr.Hash() != h.ReceiptHash {
+		return "", "", fmt.Errorf("reconstructed receipt-trie root %s != block receiptsRoot %s", tr.Hash().Hex(), h.ReceiptHash.Hex())
 	}
 	var proof proofList
 	tkey, _ := rlp.EncodeToBytes(uint(txIndex))
@@ -312,12 +372,12 @@ func (a *Anvil) ReceiptTrieProof(ctx context.Context, num, txIndex uint64) (rece
 
 // FindTxIndex returns the index of txHash within its block.
 func (a *Anvil) FindTxIndex(ctx context.Context, num uint64, txHash ethcommon.Hash) (uint64, error) {
-	blk, err := a.cli.BlockByNumber(ctx, new(big.Int).SetUint64(num))
+	_, hashes, _, err := blockRaw(ctx, a.cli, a.rpc, num, false)
 	if err != nil {
 		return 0, err
 	}
-	for i, tx := range blk.Transactions() {
-		if tx.Hash() == txHash {
+	for i, h := range hashes {
+		if h == txHash {
 			return uint64(i), nil
 		}
 	}
@@ -370,16 +430,13 @@ func (a *Anvil) FindTxFrom(ctx context.Context, from ethcommon.Address, nonce, f
 	if err != nil {
 		return nil, 0, false, err
 	}
-	signer := ethtypes.LatestSignerForChainID(a.ChainID)
 	for n := fromBlock; n <= latest; n++ {
-		blk, err := a.cli.BlockByNumber(ctx, new(big.Int).SetUint64(n))
+		tx, ok, err := sentAt(ctx, a.cli, a.rpc, n, from, nonce)
 		if err != nil {
 			return nil, 0, false, err
 		}
-		for _, tx := range blk.Transactions() {
-			if s, err := ethtypes.Sender(signer, tx); err == nil && s == from && tx.Nonce() == nonce {
-				return tx, n, true, nil
-			}
+		if ok {
+			return tx, n, true, nil
 		}
 	}
 	return nil, 0, false, nil
