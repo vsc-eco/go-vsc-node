@@ -35,7 +35,9 @@ func TestBR2_ALogsFailureHoldsTheBlock(t *testing.T) {
 
 // B-R3: when the contract's height could not be read, the bot scanned up to
 // L1 finalized, past the verifier's stored headers; a map for a block with no
-// header fails on chain and is dead-lettered. It now scans nothing that tick.
+// header fails on chain and is dead-lettered. It now maps nothing that tick:
+// the block is parked (TICKSTALL-1: every deposit block is) and mapped once
+// its header is known to be stored.
 func TestBR3_NoContractHeightNoScan(t *testing.T) {
 	l1 := newFakeL1()
 	l2, gql, rpc, sub, cfg, vault := bridgeWorld(t, l1, 101)
@@ -45,14 +47,14 @@ func TestBR3_NoContractHeightNoScan(t *testing.T) {
 	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
 		t.Fatal(err)
 	}
-	if cp.LastScannedBlock != 100 || len(l2.submitted) != 0 {
-		t.Fatalf("with no contract height: checkpoint %d, %d L2 submissions; want no scan", cp.LastScannedBlock, len(l2.submitted))
+	if len(l2.submitted) != 0 || len(cp.WaitingDeposits[101]) != 1 {
+		t.Fatalf("with no contract height: %d L2 submissions, waiting %v; want the deposit parked, nothing mapped", len(l2.submitted), cp.WaitingDeposits)
 	}
 	l2.failState = nil
 	if err := runOnce(context.Background(), rpc, gql, sub, cp, cfg, "vsc1bridge-primary"); err != nil {
 		t.Fatal(err)
 	}
-	if cp.LastScannedBlock != 101 || len(l2.submitted) != 1 {
-		t.Fatalf("height readable again: checkpoint %d, %d L2 submissions; want the deposit mapped", cp.LastScannedBlock, len(l2.submitted))
+	if cp.LastScannedBlock != 101 || len(l2.submitted) != 1 || len(cp.WaitingDeposits) != 0 {
+		t.Fatalf("height readable again: checkpoint %d, %d L2 submissions, waiting %v; want the deposit mapped", cp.LastScannedBlock, len(l2.submitted), cp.WaitingDeposits)
 	}
 }

@@ -56,7 +56,7 @@ func TestEVMT1_ConfirmSpendFitsThePayloadCap(t *testing.T) {
 	}
 
 	ps := &PendingSpend{Nonce: target, To: to.Hex(), Amount: amount, Asset: "usdc", TokenAddress: token.Hex()}
-	payload, err := buildConfirmSpendPayload(c.rpc(t), c.txs[target].Hash().Hex(), 101, target, ps)
+	payload, err := buildConfirmSpendPayload(context.Background(), c.rpc(t), c.txs[target].Hash().Hex(), 101, target, ps)
 	if err != nil {
 		t.Fatal(err)
 	}

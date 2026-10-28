@@ -117,7 +117,7 @@ func TestRealWasm_RP11_SeveralWithdrawalsInFlightConfirmInOrder(t *testing.T) {
 	chain0, tx0 := rwMine(t, c, ps0, 103, types.ReceiptStatusSuccessful)
 	chain1, tx1 := rwMine(t, c, ps1, 104, types.ReceiptStatusSuccessful)
 	// The second cannot be confirmed before the first.
-	payload, err := buildConfirmSpendPayload(chain1.rpc(t), tx1.Hash().Hex(), 104, 0, ps1)
+	payload, err := buildConfirmSpendPayload(context.Background(), chain1.rpc(t), tx1.Hash().Hex(), 104, 0, ps1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,11 @@ func TestRealWasm_RP7_MagiDepositCreditsTheRecipient(t *testing.T) {
 		&types.Log{Address: dc, Topics: []common.Hash{sig, common.BytesToHash(sender.Bytes()), common.BytesToHash(usdc.Bytes())}, Data: depositData(big.NewInt(7_000_000), "hive:bob")},
 	)
 	rwHeaderAt(c.ct, 105, chain, rwBlockTime)
-	_, nodes, err := receiptTrieProof(chain.rpc(t), []string{tx.Hash().Hex()}, 0)
+	bp, err := fetchBlockProofs(context.Background(), chain.rpc(t), 105, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, nodes, err := bp.receiptProof(0)
 	if err != nil {
 		t.Fatal(err)
 	}

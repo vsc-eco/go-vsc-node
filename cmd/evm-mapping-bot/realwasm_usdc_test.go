@@ -152,7 +152,7 @@ func rwMine(t *testing.T, c rwChain, ps *PendingSpend, n uint64, status uint64) 
 
 func rwConfirm(t *testing.T, c rwChain, chain *fakeChain, tx *types.Transaction, n uint64, ps *PendingSpend) {
 	t.Helper()
-	payload, err := buildConfirmSpendPayload(chain.rpc(t), tx.Hash().Hex(), n, 0, ps)
+	payload, err := buildConfirmSpendPayload(context.Background(), chain.rpc(t), tx.Hash().Hex(), n, 0, ps)
 	if err != nil {
 		t.Fatal(err)
 	}

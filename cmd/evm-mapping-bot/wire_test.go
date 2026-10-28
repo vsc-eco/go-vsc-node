@@ -272,7 +272,7 @@ func checkConfirmSpendWire(t *testing.T, amount *big.Int) {
 	if ps == nil {
 		t.Fatalf("bot refused the contract's PendingSpend: %s", stored)
 	}
-	payload, err := buildConfirmSpendPayload(c.rpc(t), c.txs[0].Hash().Hex(), 101, 0, ps)
+	payload, err := buildConfirmSpendPayload(context.Background(), c.rpc(t), c.txs[0].Hash().Hex(), 101, 0, ps)
 	if err != nil {
 		t.Fatal(err)
 	}

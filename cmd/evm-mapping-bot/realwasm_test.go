@@ -132,7 +132,7 @@ func TestRealWasm_ConfirmSpendClosesWithdrawal(t *testing.T) {
 		if ps == nil {
 			t.Fatalf("%s wei: bot refused the stored PendingSpend", s)
 		}
-		payload, err := buildConfirmSpendPayload(c.rpc(t), c.txs[0].Hash().Hex(), 101, 0, ps)
+		payload, err := buildConfirmSpendPayload(context.Background(), c.rpc(t), c.txs[0].Hash().Hex(), 101, 0, ps)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -174,7 +174,7 @@ func TestRealWasm_ConfirmSpendRefusesHighSVaultSignature(t *testing.T) {
 	})
 	ct.StateSet(rwBridge, "d-0", string(stored))
 	ct.StateSet(rwBridge, "np", "1")
-	payload, err := buildConfirmSpendPayload(c.rpc(t), tx.Hash().Hex(), 101, 0, parsePendingSpend(0, string(stored)))
+	payload, err := buildConfirmSpendPayload(context.Background(), c.rpc(t), tx.Hash().Hex(), 101, 0, parsePendingSpend(0, string(stored)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestRealWasm_D3_StuckWithdrawalIsRolledBack(t *testing.T) {
 	c := &fakeChain{}
 	rolled := c.addTx(t, vaultKey, &types.DynamicFeeTx{Nonce: f.Nonce, GasTipCap: f.GasTipCap, GasFeeCap: f.GasFeeCap, Gas: f.Gas, To: f.To, Value: f.Value})
 	rwHeaderAt(ct, 1301, c, now)
-	payload, err := buildConfirmSpendPayload(c.rpc(t), rolled.Hash().Hex(), 1301, 0, ps)
+	payload, err := buildConfirmSpendPayload(context.Background(), c.rpc(t), rolled.Hash().Hex(), 1301, 0, ps)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -297,8 +297,15 @@ type Checkpoint struct {
 	// ProofWindow: whether the L1 RPC served the last eth_getProof at a
 	// finalized block (1), refused it (-1), or was not asked yet (0).
 	ProofWindow int `json:"proof_window,omitempty"`
-	Version     int `json:"version"`
+	// BlockMapped: the deposits (depositKey) of an unfinished block whose
+	// maps were already submitted, so the block's retry skips them
+	// (TICKSTALL-1). Dropped when the block finishes.
+	BlockMapped map[uint64][]string `json:"block_mapped,omitempty"`
+	Version     int                 `json:"version"`
 	mu          sync.Mutex
+	// depositWork: a deposit was submitted or dead-lettered earlier in this
+	// tick (not saved). A block that then runs out of time is not blamed.
+	depositWork bool
 }
 
 // PendingMap is a submitted map call awaiting its on-chain result.
@@ -333,7 +340,8 @@ const blockRetryAlertThreshold = 10
 // MUST bump this so a future bot refuses to silently consume a stale layout.
 // Version 2 added PendingMaps and DeadLetters; a version 1 file loads as is
 // (the new fields start empty), and a version 1 bot refuses a version 2 file.
-const checkpointVersion = 2
+// Version 3 added BlockMapped; version 1 and 2 files load as is.
+const checkpointVersion = 3
 
 type SentTx struct {
 	SignedTxHex string `json:"signed_tx_hex"`
@@ -422,7 +430,7 @@ func loadCheckpoint(path string) *Checkpoint {
 	}
 	// MED-43: reject an unknown on-disk schema version rather than mis-reading
 	// fields written by an incompatible build.
-	if cp.Version != 0 && cp.Version != 1 && cp.Version != checkpointVersion {
+	if cp.Version != 0 && cp.Version != 1 && cp.Version != 2 && cp.Version != checkpointVersion {
 		slog.Error("checkpoint schema version mismatch — refusing to start",
 			"path", path, "fileVersion", cp.Version, "expected", checkpointVersion)
 		os.Exit(1)
@@ -543,12 +551,21 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 }
 
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
+	return e.callCtx(context.Background(), method, params)
+}
+
+// callCtx is call bounded by ctx: a call still waiting when ctx ends is
+// abandoned (TICKSTALL-1: a block's proof fetch must not outlast the tick).
+func (e *ethRPC) callCtx(ctx context.Context, method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
 	var lastErr error
 	first := int(e.start.Load())
 	for k := range e.urls {
 		i := (first + k) % len(e.urls)
-		res, answered, err := e.callOne(e.urls[i], method, body)
+		res, answered, err := e.callOne(ctx, e.urls[i], method, body)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if answered {
 			if i != first {
 				e.start.Store(int64(i))
@@ -597,8 +614,13 @@ func rpcHosts(urls string) string {
 
 // callOne sends body to url. answered is false when the endpoint gave no
 // usable answer (the caller tries the next one).
-func (e *ethRPC) callOne(url, method, body string) (res json.RawMessage, answered bool, err error) {
-	resp, err := e.client.Post(url, "application/json", strings.NewReader(body))
+func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res json.RawMessage, answered bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		return nil, false, redactURL(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, false, redactURL(err)
 	}
@@ -2046,62 +2068,193 @@ type confirmSpendRequest struct {
 // withdrawal tx at txIndex, and carries the intent fields from the PendingSpend
 // the bot already parsed (ps). The contract uses the same tx_index as the trie
 // key for BOTH proofs, so a single index drives both legs.
-func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
+func buildConfirmSpendPayload(ctx context.Context, rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
 	if ps == nil {
 		return nil, fmt.Errorf("confirmSpend: nil pending spend (intent fields unavailable)")
 	}
-
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, blockHeight))
+	bp, err := fetchBlockProofs(ctx, rpc, blockHeight, true)
 	if err != nil {
-		return nil, fmt.Errorf("fetch block %d for confirmSpend: %w", blockHeight, err)
+		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
-
-	var block struct {
-		Transactions []string `json:"transactions"`
-	}
-	if err := json.Unmarshal(blockData, &block); err != nil {
-		return nil, fmt.Errorf("parse block %d: %w", blockHeight, err)
-	}
-	if txIndex < 0 || txIndex >= len(block.Transactions) {
-		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(block.Transactions))
+	if txIndex < 0 || txIndex >= len(bp.hashes) {
+		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(bp.hashes))
 	}
 
 	// --- Transactions-trie leg: tx_proof (its leaf is the raw typed tx RLP).
-	// Mirrors the deposit path (buildMapPayloadFromRPC): the raw tx bytes
+	// Mirrors the deposit path (buildMapPayloadFrom): the raw tx bytes
 	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
 	// so the reconstructed root matches header.TransactionsRoot. The contract
 	// parses the proven leaf as the withdrawal tx.
-	rawTxs := make([][]byte, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
-		if err != nil {
-			return nil, fmt.Errorf("fetch raw tx %d/%d for confirmSpend: %w", i, len(block.Transactions), err)
-		}
-		var rawHex string
-		if err := json.Unmarshal(rData, &rawHex); err != nil {
-			return nil, fmt.Errorf("parse raw tx %d: %w", i, err)
-		}
-		rawTxs[i] = hexToBytes(rawHex)
-		if rawTxs[i] == nil {
-			return nil, fmt.Errorf("confirmSpend: raw tx %d decoded to nil (RPC returned %q)", i, rawHex)
-		}
+	_, txProofNodes, err := bp.txProof(txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
-	txKeys := make([][]byte, len(rawTxs))
-	for i := range txKeys {
-		txKeys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, txProofNodes, _ := buildMPTProof(txKeys, rawTxs, txIndex)
-	if txProofNodes == nil {
-		return nil, fmt.Errorf("confirmSpend tx proof construction failed: txIndex %d / %d txs", txIndex, len(rawTxs))
-	}
-
 	// --- Receipts-trie leg: receipt_proof (its leaf is the receipt).
-	_, rcptProofNodes, err := receiptTrieProof(rpc, block.Transactions, txIndex)
+	_, rcptProofNodes, err := bp.receiptProof(txIndex)
 	if err != nil {
 		return nil, fmt.Errorf("confirmSpend: %w", err)
 	}
 
 	return confirmSpendPayload(blockHeight, txIndex, txProofNodes, rcptProofNodes, ps)
+}
+
+// blockProofs is what proving a block's txs and receipts takes: its tx hashes
+// and, in block order, the raw txs and the consensus-encoded receipts.
+//
+// TICKSTALL-1: this was fetched again for every deposit of a block and every
+// confirmSpend, one serial RPC call per tx (2N+1 calls for an ETH deposit in
+// an N-tx block: 601 calls, 12 s at 20 ms a call, for 300 txs), and the calls
+// ignored the tick's deadline. A block with a few deposits outlasted the 60 s
+// tick, was retried from its first deposit and never finished, and every
+// later step of the tick ran on the expired context. It is now fetched once
+// per block, proofFetchWorkers calls at a time, within the caller's context.
+type blockProofs struct {
+	hashes   []string
+	raw      [][]byte // nil unless fetched with raw
+	receipts [][]byte
+}
+
+// proofFetchWorkers bounds one block's concurrent RPC calls, like the scan's
+// worker pool (MED-47).
+const proofFetchWorkers = 8
+
+// fetchBlockProofs fetches block height's tx hashes and receipts, and its raw
+// txs when raw is set (an ETH deposit or a confirmSpend proves the tx too).
+func fetchBlockProofs(ctx context.Context, rpc *ethRPC, height uint64, raw bool) (*blockProofs, error) {
+	blockData, err := rpc.callCtx(ctx, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, height))
+	if err != nil {
+		return nil, fmt.Errorf("fetch block %d: %w", height, err)
+	}
+	var block struct {
+		Transactions []string `json:"transactions"`
+	}
+	if err := json.Unmarshal(blockData, &block); err != nil {
+		return nil, fmt.Errorf("parse block %d: %w", height, err)
+	}
+	bp := &blockProofs{hashes: block.Transactions}
+	return bp, bp.fetch(ctx, rpc, raw)
+}
+
+// fetch fills bp's receipts, and its raw txs when raw is set, from its hashes.
+func (bp *blockProofs) fetch(ctx context.Context, rpc *ethRPC, raw bool) error {
+	n := len(bp.hashes)
+	bp.receipts = make([][]byte, n)
+	if raw {
+		bp.raw = make([][]byte, n)
+	}
+	return forEachParallel(ctx, n, proofFetchWorkers, func(i int) error {
+		hash := fmt.Sprintf(`"%s"`, bp.hashes[i])
+		rData, err := rpc.callCtx(ctx, "eth_getTransactionReceipt", hash)
+		if err != nil {
+			return fmt.Errorf("fetch receipt %d/%d: %w", i, n, err)
+		}
+		var r receiptForProof
+		if err := json.Unmarshal(rData, &r); err != nil {
+			return fmt.Errorf("parse receipt %d: %w", i, err)
+		}
+		bp.receipts[i] = encodeReceiptRLP(&r)
+		if !raw {
+			return nil
+		}
+		tData, err := rpc.callCtx(ctx, "eth_getRawTransactionByHash", hash)
+		if err != nil {
+			return fmt.Errorf("fetch raw tx %d/%d: %w", i, n, err)
+		}
+		var rawHex string
+		if err := json.Unmarshal(tData, &rawHex); err != nil {
+			return fmt.Errorf("parse raw tx %d: %w", i, err)
+		}
+		if bp.raw[i] = hexToBytes(rawHex); bp.raw[i] == nil {
+			return fmt.Errorf("raw tx %d decoded to nil (RPC returned %q)", i, rawHex)
+		}
+		return nil
+	})
+}
+
+// txProof is the tx at index i (the trie leaf) and its proof against the
+// block's TransactionsRoot.
+func (bp *blockProofs) txProof(i int) ([]byte, [][]byte, error) {
+	if bp.raw == nil {
+		return nil, nil, errors.New("tx proof: raw txs not fetched")
+	}
+	return trieProof("tx", bp.raw, i)
+}
+
+// receiptProof is the receipt at index i (the trie leaf) and its proof
+// against the block's ReceiptsRoot.
+func (bp *blockProofs) receiptProof(i int) ([]byte, [][]byte, error) {
+	return trieProof("receipt", bp.receipts, i)
+}
+
+func trieProof(what string, values [][]byte, i int) ([]byte, [][]byte, error) {
+	if i < 0 || i >= len(values) {
+		return nil, nil, fmt.Errorf("txIndex %d out of range (block has %d txs)", i, len(values))
+	}
+	keys := make([][]byte, len(values))
+	for k := range keys {
+		keys[k] = rlpEncodeUint64(uint64(k))
+	}
+	_, nodes, leaf := buildMPTProof(keys, values, i)
+	if nodes == nil {
+		return nil, nil, fmt.Errorf("%s proof construction failed: txIndex %d / %d txs", what, i, len(values))
+	}
+	return leaf, nodes, nil
+}
+
+// forEachParallel runs f(0..n-1) on up to workers goroutines and returns the
+// first error, or ctx's once it ends; no new f starts after either. A panic
+// in f (hostile RPC data) is that index's error: recover does not cross
+// goroutines, so it would otherwise kill the bot (C-ER1).
+func forEachParallel(ctx context.Context, n, workers int, f func(i int) error) error {
+	if workers > n {
+		workers = n
+	}
+	var (
+		next  atomic.Int64
+		mu    sync.Mutex
+		first error
+		wg    sync.WaitGroup
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if first == nil {
+			first = err
+		}
+		mu.Unlock()
+	}
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return first != nil
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !failed() && ctx.Err() == nil {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				if err := func() (err error) {
+					defer func() {
+						if r := recover(); r != nil {
+							err = fmt.Errorf("panic at index %d: %v", i, r)
+						}
+					}()
+					return f(i)
+				}(); err != nil {
+					fail(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if first != nil {
+		return first
+	}
+	return ctx.Err()
 }
 
 // confirmSpendPayload encodes a ConfirmSpendRequest from the two proofs' nodes.
@@ -2122,36 +2275,6 @@ func confirmSpendPayload(blockHeight uint64, txIndex int, txProofNodes, rcptProo
 		return nil, fmt.Errorf("confirmSpend marshal: %w", err)
 	}
 	return data, nil
-}
-
-// receiptTrieProof returns the consensus-encoded receipt of the tx at
-// txIndex and its proof against header.ReceiptsRoot, built from the receipts
-// of every tx in the block (txHashes, in block order).
-func receiptTrieProof(rpc *ethRPC, txHashes []string, txIndex int) ([]byte, [][]byte, error) {
-	if txIndex < 0 || txIndex >= len(txHashes) {
-		return nil, nil, fmt.Errorf("txIndex %d out of range (block has %d txs)", txIndex, len(txHashes))
-	}
-	receipts := make([][]byte, len(txHashes))
-	for i, hash := range txHashes {
-		rData, err := rpc.getReceipt(hash)
-		if err != nil {
-			return nil, nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(txHashes), err)
-		}
-		var r receiptForProof
-		if err := json.Unmarshal(rData, &r); err != nil {
-			return nil, nil, fmt.Errorf("parse receipt %d: %w", i, err)
-		}
-		receipts[i] = encodeReceiptRLP(&r)
-	}
-	keys := make([][]byte, len(receipts))
-	for i := range keys {
-		keys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, nodes, target := buildMPTProof(keys, receipts, txIndex)
-	if nodes == nil {
-		return nil, nil, fmt.Errorf("receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(receipts))
-	}
-	return target, nodes, nil
 }
 
 func encodeReceiptRLP(r *receiptForProof) []byte {
@@ -2849,15 +2972,29 @@ func runOnce(
 	// ---------------------------------------------------------------
 	// STEP 2-3: Scan finalized blocks for deposits.
 	// RP-9: the verifier stores a header only for blocks the bridge uses, so
-	// the scan runs to the finalized block; a block with deposits whose header
-	// is not stored yet parks them (handleHeaderNeeds asks for the header).
-	// Blocks without deposits need no header.
+	// the scan runs to the finalized block; a block's deposits are parked
+	// (WaitingDeposits) and mapped once its header is stored (handleHeaderNeeds
+	// asks for it). Blocks without deposits need no header.
+	// TICKSTALL-1: every deposit block is parked, also one whose header is
+	// already stored (it is mapped below in the same tick), so each block is
+	// scanned once: re-scanning an unfinished block every tick cost a receipt
+	// call per deposit and could use up the deposit phase before any mapping.
 	// ---------------------------------------------------------------
 	scanUpTo := finalized
 	const maxBlocksPerTick = 100
 	if scanUpTo > cp.LastScannedBlock+maxBlocksPerTick {
 		scanUpTo = cp.LastScannedBlock + maxBlocksPerTick
 	}
+
+	// TICKSTALL-1: scanning and mapping deposits get at most
+	// depositPhaseBudget of the tick, so the withdrawal, confirmation and
+	// header steps below always run with time left. A block not finished in
+	// time keeps its progress and continues next tick.
+	depCtx, depCancel := context.WithTimeout(ctx, depositPhaseBudget)
+	defer depCancel()
+	cp.mu.Lock()
+	cp.depositWork = false
+	cp.mu.Unlock()
 
 	// MED-47 (EVM-B-M7): scanBlock issues many serial RPC calls per block
 	// (1 eth_getBlockByNumber + N eth_getLogs + per-log receipt lookups). Done
@@ -2867,15 +3004,9 @@ func runOnce(
 	// PREFETCH the scan results concurrently with a bounded worker pool, then
 	// process them below in STRICT block order. The checkpoint-advancement and
 	// stop-at-first-failure semantics are unchanged — only the I/O is parallel.
-	scanResults := scanBlocksParallel(ctx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
+	scanResults := scanBlocksParallel(depCtx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
 
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
 		sr, ok := scanResults[h]
 		if !ok || sr.err != nil {
 			if ok && sr.err != nil {
@@ -2883,52 +3014,32 @@ func runOnce(
 			}
 			break // stop scanning at the first gap/failure; retry next tick
 		}
-		result := sr.result
-
-		if len(result.Deposits) == 0 {
-			cp.mu.Lock()
-			cp.LastScannedBlock = h
-			cp.mu.Unlock()
-			continue
+		if n := len(sr.result.Deposits); n > 0 {
+			slog.Info("deposits detected", "block", h, "count", n)
 		}
-
-		slog.Info("deposits detected", "block", h, "count", len(result.Deposits))
-
-		// RP-9: a block whose header is not stored yet parks its deposits
-		// (mapped by mapWaitingDeposits once the header is stored) and the scan
-		// moves on, so one proof covers every waiting block.
-		if st, err := headersStored(ctx, gql, cfg.ContractID, []uint64{h}); err != nil {
-			break // retry next tick
-		} else if !st[h] {
-			cp.mu.Lock()
+		cp.mu.Lock()
+		if len(sr.result.Deposits) > 0 {
 			if cp.WaitingDeposits == nil {
 				cp.WaitingDeposits = map[uint64][]detectedDeposit{}
 			}
-			cp.WaitingDeposits[h] = result.Deposits
-			cp.LastScannedBlock = h
-			cp.mu.Unlock()
-			noteHeaderNeed(cp, h)
-			continue
+			cp.WaitingDeposits[h] = sr.result.Deposits
 		}
-
-		// ---------------------------------------------------------------
-		// STEP 4: Build proofs and submit map calls.
-		// If ANY deposit fails after retries, do NOT advance the checkpoint.
-		// The entire block will be retried next tick. Re-submissions of
-		// already-processed deposits are harmless — the L2 layer accepts
-		// them and the contract deduplicates via the observed block list.
-		// ---------------------------------------------------------------
-		if mapDeposits(ctx, rpc, submitter, cp, cfg, h, result.Deposits) {
-			break
-		}
-
-		cp.mu.Lock()
 		cp.LastScannedBlock = h
 		cp.mu.Unlock()
 	}
 
-	// RP-9: map the deposits that waited for their block's header.
-	mapWaitingDeposits(ctx, rpc, gql, submitter, cp, cfg)
+	// ---------------------------------------------------------------
+	// STEP 4: Build proofs and submit map calls for the parked blocks whose
+	// header is stored, oldest first. A block whose map fails, or that runs
+	// out of the deposit phase's time, stays parked and continues next tick,
+	// skipping the deposits whose maps were already submitted (TICKSTALL-1). A
+	// re-submission of a processed deposit is harmless — the contract
+	// deduplicates via the observed block list.
+	// ---------------------------------------------------------------
+	mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	// B4: resolve the map calls submitted on earlier ticks.
 	resolvePendingMaps(ctx, gql, cp)
@@ -2957,9 +3068,44 @@ func runOnce(
 // any failed (the block is then retried next tick; re-sending one already
 // processed is harmless, the bridge deduplicates).
 func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, h uint64, deps []detectedDeposit) bool {
-	blockFailed := false
+	// TICKSTALL-1: the block's proof material is fetched once for all its
+	// deposits, and a deposit whose map was submitted on an earlier tick of an
+	// unfinished block is not sent again, so a block that takes several ticks
+	// still finishes.
+	cp.mu.Lock()
+	done := map[string]bool{}
+	for _, k := range cp.BlockMapped[h] {
+		done[k] = true
+	}
+	othersWorked := cp.depositWork
+	cp.mu.Unlock()
+	needRaw := false
 	for _, dep := range deps {
-		payload := buildMapPayloadFromRPC(ctx, rpc, dep, h)
+		if !done[depositKey(dep)] && dep.DepositType == "eth" {
+			needRaw = true
+		}
+	}
+	var bp *blockProofs
+	blockFailed, progressed, noTime := false, false, false
+	for _, dep := range deps {
+		if done[depositKey(dep)] {
+			continue
+		}
+		if ctx.Err() != nil {
+			// Out of time for deposits this tick: the rest wait for the next.
+			// A block given no time at all has not failed.
+			blockFailed, noTime = true, bp == nil && !progressed
+			break
+		}
+		if bp == nil {
+			var err error
+			if bp, err = fetchBlockProofs(ctx, rpc, h, needRaw); err != nil {
+				slog.Error("fetch block for proof", "block", h, "err", err)
+				blockFailed = true
+				break
+			}
+		}
+		payload := buildMapPayloadFrom(bp, dep)
 		if payload == nil {
 			slog.Error("failed to build map payload", "block", h, "tx", dep.TxHash)
 			blockFailed = true
@@ -2971,6 +3117,7 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 		// every later deposit. Dead-letter it and move on.
 		if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
 			cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("map payload is %d bytes as the node counts it, over the node's %d-byte contract-payload cap", n, params.MAX_CONTRACT_PAYLOAD_SIZE))
+			markMapped(cp, h, dep)
 			continue
 		}
 
@@ -2986,13 +3133,25 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 			cp.PendingMaps[txID] = PendingMap{Block: h, DepositTx: dep.TxHash, SubmittedAt: time.Now().Unix()}
 			cp.mu.Unlock()
 		}
+		markMapped(cp, h, dep)
+		progressed = true
 	}
 
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	if !blockFailed {
 		delete(cp.BlockRetries, h)
+		delete(cp.BlockMapped, h)
 		return false
+	}
+	if progressed {
+		// Unfinished but moving: not a stuck block.
+		delete(cp.BlockRetries, h)
+		slog.Info("block's deposits continue next tick", "block", h, "submitted", len(cp.BlockMapped[h]), "deposits", len(deps))
+		return true
+	}
+	if noTime || ctx.Err() != nil && othersWorked {
+		return true // out of time after other blocks' work this tick
 	}
 	cp.BlockRetries[h]++
 	retries := cp.BlockRetries[h]
@@ -3009,8 +3168,26 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 	return true
 }
 
-// mapWaitingDeposits maps the deposits parked for their block's header (RP-9)
-// once it is stored, oldest block first.
+// depositKey names a deposit within its block: its tx and, for a log-based
+// deposit, the log's position in the receipt (ETH deposits have -1).
+func depositKey(d detectedDeposit) string {
+	return strings.ToLower(d.TxHash) + "#" + strconv.Itoa(d.LogIndex)
+}
+
+// markMapped records that dep's map was submitted (or dead-lettered) while its
+// block h is unfinished (TICKSTALL-1).
+func markMapped(cp *Checkpoint, h uint64, dep detectedDeposit) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	if cp.BlockMapped == nil {
+		cp.BlockMapped = map[uint64][]string{}
+	}
+	cp.BlockMapped[h] = append(cp.BlockMapped[h], depositKey(dep))
+	cp.depositWork = true
+}
+
+// mapWaitingDeposits maps the parked deposit blocks whose header is stored,
+// oldest first, and asks for the headers of the others (RP-9).
 func mapWaitingDeposits(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig) {
 	cp.mu.Lock()
 	var blocks []uint64
@@ -3484,7 +3661,7 @@ func handleConfirmations(
 			continue
 		}
 
-		payload, err := buildConfirmSpendPayload(rpc, stx.TxHash, blockNum, txIndex, ps)
+		payload, err := buildConfirmSpendPayload(ctx, rpc, stx.TxHash, blockNum, txIndex, ps)
 		if err != nil {
 			slog.Error("build confirmSpend payload failed", "txHash", stx.TxHash, "err", err)
 			continue
@@ -3526,6 +3703,11 @@ func handleConfirmations(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// depositPhaseBudget: how much of a tick (60 s) scanning and mapping deposits
+// may take; the rest is left for withdrawals, confirmations and headers
+// (TICKSTALL-1).
+var depositPhaseBudget = 30 * time.Second
 
 // mapResultTimeout: a submitted map with no on-chain result after this long is
 // dead-lettered (the L2 pool dropped it, or the node lost it).
@@ -3596,35 +3778,32 @@ func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID st
 }
 
 func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposit, blockHeight uint64) json.RawMessage {
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, blockHeight))
+	bp, err := fetchBlockProofs(ctx, rpc, blockHeight, dep.DepositType == "eth")
 	if err != nil {
 		slog.Error("fetch block for proof", "block", blockHeight, "err", err)
 		return nil
 	}
+	return buildMapPayloadFrom(bp, dep)
+}
 
-	var block struct {
-		Transactions []string `json:"transactions"`
-	}
-	if err := json.Unmarshal(blockData, &block); err != nil {
-		slog.Error("parse block for proof", "block", blockHeight, "err", err)
-		return nil
-	}
-
+// buildMapPayloadFrom builds dep's map payload from its block's proof
+// material (fetched with raw txs for an ETH deposit).
+func buildMapPayloadFrom(bp *blockProofs, dep detectedDeposit) json.RawMessage {
 	// An ERC-20 deposit is proven by its receipt (the Transfer log) against
 	// header.ReceiptsRoot (contract VerifyERC20Deposit); a native ETH deposit
 	// by the transaction against header.TransactionsRoot.
 	if dep.DepositType == "contract" { // RP-7
-		_, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+		_, proofNodes, err := bp.receiptProof(dep.TxIndex)
 		if err != nil {
-			slog.Error("contract deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+			slog.Error("contract deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 			return nil
 		}
 		return contractMapPayload(dep, proofNodes)
 	}
 	if dep.DepositType == "erc20" {
-		_, proofNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+		_, proofNodes, err := bp.receiptProof(dep.TxIndex)
 		if err != nil {
-			slog.Error("erc20 deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+			slog.Error("erc20 deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 			return nil
 		}
 		// ERC20-PAYLOAD-1: base64, the receipt taken from the proof's leaf
@@ -3632,32 +3811,15 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 		return erc20MapPayload(dep, proofNodes)
 	}
 
-	rawTxs := make([][]byte, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
-		if err != nil {
-			slog.Error("fetch raw tx for proof", "block", blockHeight, "tx", i, "err", err)
-			return nil
-		}
-		var rawHex string
-		json.Unmarshal(rData, &rawHex)
-		rawTxs[i] = hexToBytes(rawHex)
-	}
-
-	keys := make([][]byte, len(rawTxs))
-	for i := range keys {
-		keys[i] = rlpEncodeUint64(uint64(i))
-	}
-
-	_, proofNodes, targetRLP := buildMPTProof(keys, rawTxs, dep.TxIndex)
-	if proofNodes == nil {
-		slog.Error("proof construction failed", "block", blockHeight, "txIndex", dep.TxIndex, "txCount", len(rawTxs))
+	targetRLP, proofNodes, err := bp.txProof(dep.TxIndex)
+	if err != nil {
+		slog.Error("eth deposit tx proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 		return nil
 	}
 	// FAILDEP-1: the receipt at the same index proves the transfer succeeded.
-	_, rcptNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+	_, rcptNodes, err := bp.receiptProof(dep.TxIndex)
 	if err != nil {
-		slog.Error("eth deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+		slog.Error("eth deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 		return nil
 	}
 

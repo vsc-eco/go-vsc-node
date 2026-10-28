@@ -145,8 +145,8 @@ func TestEVMBridge_BotResilience(t *testing.T) {
 		t.Fatalf("expected persisted last_scanned_block>0, got 0")
 	}
 	// The bot writes its own schema version (cmd/evm-mapping-bot checkpointVersion).
-	if cpAfterA.Version != 2 {
-		t.Fatalf("expected checkpoint version 2, got %d", cpAfterA.Version)
+	if cpAfterA.Version != 3 {
+		t.Fatalf("expected checkpoint version 3, got %d", cpAfterA.Version)
 	}
 	t.Logf("ASSERT persist: checkpoint at %s has last_scanned_block=%d version=%d", cpPath, savedBlock, cpAfterA.Version)
 
