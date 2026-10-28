@@ -241,3 +241,63 @@ func TestRealWasm_ZK_RP9_SubmitHeadersLinksDown(t *testing.T) {
 		t.Fatalf("submitHeaders moved h to %s", got)
 	}
 }
+
+// rwZkCallAs calls the verifier as caller with its active authority.
+func rwZkCallAs(ct *test_utils.ContractTest, caller, action string, payload []byte) test_utils.ContractTestCallResult {
+	return ct.Call(stateEngine.TxVscCallContract{
+		Self: stateEngine.TxSelf{
+			TxId: "rwzk", BlockId: "block:rw", Index: 1, Timestamp: "2026-10-28T00:00:00",
+			RequiredAuths: []string{caller}, RequiredPostingAuths: []string{},
+		},
+		ContractId: rwZk, Action: action, Payload: payload,
+		RcLimit: 100_000, Intents: []contracts.Intent{}, Caller: caller,
+	})
+}
+
+// A vkey rotation proposal is logged when queued and when cancelled, with
+// account-mapping's admin_proposal format, so a watcher sees it during the
+// 14-day timelock. Only the owner may propose.
+func TestRealWasm_ZK_ProposalsAreLogged(t *testing.T) {
+	ct, _ := rwZkVerifier(t, 100)
+	for k, v := range map[string]string{"vk": "aa", "vr": "bb", "sp1vk": "cc"} {
+		ct.StateSet(rwZk, k, v)
+	}
+	prop := []byte(`{"action":"updateVkey","payload":"{\"groth16_vk\":\"a2\",\"vk_root\":\"b2\",\"sp1_vkey_hash\":\"c2\"}"}`)
+	if r := rwZkCallAs(ct, "hive:mallory", "propose", prop); r.Success {
+		t.Fatal("a non-owner proposed a vkey rotation")
+	}
+	events := func(r test_utils.ContractTestCallResult) []map[string]string {
+		var out []map[string]string
+		for _, o := range r.Logs {
+			for _, l := range o.Logs {
+				if rest, ok := strings.CutPrefix(l, "admin_proposal "); ok {
+					ev := map[string]string{}
+					if err := json.Unmarshal([]byte(rest), &ev); err != nil {
+						t.Fatalf("admin_proposal log is not JSON: %q", l)
+					}
+					out = append(out, ev)
+				}
+			}
+		}
+		return out
+	}
+	r := rwZkCallAs(ct, "hive:owner", "propose", prop)
+	if !r.Success {
+		t.Fatalf("propose: %s: %s", r.Err, r.ErrMsg)
+	}
+	ev := events(r)
+	if len(ev) != 1 || ev[0]["action"] != "updateVkey" || ev[0]["status"] != "0" || ev[0]["proposalId"] != "1" || ev[0]["actor"] != "hive:owner" ||
+		!strings.HasPrefix(ev[0]["payloadHash"], "0x") || len(ev[0]["payloadHash"]) != 66 {
+		t.Fatalf("propose logged %v, want one pending updateVkey event for proposal 1 by hive:owner", ev)
+	}
+	r = rwZkCallAs(ct, "hive:owner", "cancelProposal", []byte(`{"proposal_id":1}`))
+	if !r.Success {
+		t.Fatalf("cancelProposal: %s: %s", r.Err, r.ErrMsg)
+	}
+	if ev2 := events(r); len(ev2) != 1 || ev2[0]["status"] != "2" || ev2[0]["payloadHash"] != ev[0]["payloadHash"] {
+		t.Fatalf("cancel logged %v, want one cancelled event for the same payload", ev2)
+	}
+	if ct.StateGet(rwZk, "vk") != "aa" {
+		t.Fatal("the vkey changed")
+	}
+}
