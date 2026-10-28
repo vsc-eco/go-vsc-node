@@ -1495,6 +1495,17 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 	// Detect ETH deposits: direct transfers to vault
 	for i, tx := range block.Transactions {
 		if strings.ToLower(tx.To) == vaultLower && hexNonZero(tx.Value) {
+			// FAILDEP-1: a reverted transfer is in the block but moved nothing
+			// (Glamsterdam reverts one that creates the vault's account at
+			// 21,000 gas); the bridge refuses it, so it is not a deposit.
+			ok, err := txSucceeded(rpc, tx.Hash)
+			if err != nil {
+				return nil, fmt.Errorf("receipt of %s in block %d: %w", tx.Hash, height, err)
+			}
+			if !ok {
+				slog.Warn("FAILDEP-1: a transfer to the vault reverted on L1; nothing arrived, not mapped", "block", height, "tx", tx.Hash)
+				continue
+			}
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight: height,
 				TxIndex:     i,
@@ -1628,7 +1639,7 @@ func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic s
 // buildMapPayload constructs the JSON for a "map" contract call from a
 // proven trie leaf (the transaction for an ETH deposit, the receipt for an
 // ERC-20 deposit) and its proof nodes.
-func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes [][]byte) json.RawMessage {
+func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes, receiptNodes [][]byte) json.RawMessage {
 	proofHex := ""
 	for _, node := range proofNodes {
 		proofHex += hex.EncodeToString(node)
@@ -1644,6 +1655,9 @@ func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes [][]byte) 
 	if deposit.DepositType == "erc20" {
 		txData["log_index"] = deposit.LogIndex
 		txData["token_address"] = deposit.TokenAddress
+	}
+	if receiptNodes != nil { // FAILDEP-1: base64, the receipt is the leaf
+		txData["receipt_proof"] = base64.StdEncoding.EncodeToString(bytes.Join(receiptNodes, nil))
 	}
 
 	payload := map[string]interface{}{
@@ -3640,8 +3654,29 @@ func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposi
 		slog.Error("proof construction failed", "block", blockHeight, "txIndex", dep.TxIndex, "txCount", len(rawTxs))
 		return nil
 	}
+	// FAILDEP-1: the receipt at the same index proves the transfer succeeded.
+	_, rcptNodes, err := receiptTrieProof(rpc, block.Transactions, dep.TxIndex)
+	if err != nil {
+		slog.Error("eth deposit receipt proof", "block", blockHeight, "txIndex", dep.TxIndex, "err", err)
+		return nil
+	}
 
-	return buildMapPayload(dep, targetRLP, proofNodes)
+	return buildMapPayload(dep, targetRLP, proofNodes, rcptNodes)
+}
+
+// txSucceeded reports whether an L1 tx's receipt has status 1.
+func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
+	data, err := rpc.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
+	if err != nil {
+		return false, err
+	}
+	var r struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.Status == "" {
+		return false, fmt.Errorf("no receipt status for %s", hash)
+	}
+	return hexToUint64(r.Status) == 1, nil
 }
 
 func hexToUint64(s string) uint64 {
