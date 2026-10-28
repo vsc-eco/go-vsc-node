@@ -12,8 +12,10 @@
 //	reorg       a mined withdrawal dropped by a shallow L1 reorg before it is
 //	            final
 //
-// and must end with every deposit credited once, dust not credited, every
-// withdrawal paid once and confirmed, and no custody alarm.
+// with the proving fee set (every credited deposit and every withdrawal pays
+// it to hive:altera.app), and must end with every deposit credited once less
+// the fee, dust not credited, every withdrawal paid once and confirmed, the
+// fee account holding exactly the fees, and no custody alarm.
 //
 // Run: go test -tags evm_devnet -run TestEVMBridge_W9 ./tests/devnet/ -timeout 180m -v
 package devnet
@@ -113,6 +115,14 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 	}
 	if err := e.proposeExecute("registerToken", fmt.Sprintf(`{"address":"%s","symbol":"usdc","decimals":6,"min_withdrawal":1000000}`, usdc.Hex())); err != nil {
 		t.Fatalf("registerToken usdc: %v", err)
+	}
+	// The proving fee: 0.0001 ETH, and 0.05 USDC (the most a 1 USDC minimum
+	// withdrawal allows: half its 0.1 USDC deposit floor).
+	ethFee, usdcFee := big.NewInt(1e14), big.NewInt(50_000)
+	for asset, fee := range map[string]*big.Int{"eth": ethFee, "usdc": usdcFee} {
+		if err := e.proposeExecute("setProofFee", fmt.Sprintf(`{"asset":"%s","amount":"%s"}`, asset, fee)); err != nil {
+			t.Fatalf("setProofFee %s: %v", asset, err)
+		}
 	}
 	e.botAttests = true
 	vault, err := e.tssVault(25 * time.Minute)
@@ -231,9 +241,10 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 	want := map[string]string{}
 	for i, k := range deps {
 		credit := new(big.Int).Div(new(big.Int).Mul(depAmounts[i], big.NewInt(99)), big.NewInt(100)) // 1% to the gas reserve
-		want["a-"+evmDID(cryptoPubkeyAddr(k))+"-eth"] = credit.String()
+		want["a-"+evmDID(cryptoPubkeyAddr(k))+"-eth"] = credit.Sub(credit, ethFee).String()
 	}
-	want["a-"+evmDID(cryptoPubkeyAddr(usdcHolder))+"-usdc"] = "5000000"
+	want["a-"+evmDID(cryptoPubkeyAddr(usdcHolder))+"-usdc"] = new(big.Int).Sub(big.NewInt(5_000_000), usdcFee).String()
+	feeAcct := func(asset string) string { return e.stateStr("a-hive:altera.app-" + asset) }
 	credited := func() bool {
 		for k, v := range want {
 			if e.stateStr(k) != v {
@@ -258,7 +269,10 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 	if got := e.stateStr("a-" + evmDID(cryptoPubkeyAddr(usdcDust)) + "-usdc"); got != "" {
 		t.Fatalf("DUST-1: a USDC deposit below the floor was credited: %s", got)
 	}
-	t.Logf("(1) PASS: every deposit in the busy block credited once, dust not credited (RPCs so far: %s | %s)", rpcA, rpcB)
+	if got, wantEth := feeAcct("eth"), new(big.Int).Mul(ethFee, big.NewInt(3)).String(); got != wantEth || feeAcct("usdc") != usdcFee.String() {
+		t.Fatalf("proving fees after the busy block: eth %q usdc %q; want %s and %s (dust pays none)", got, feeAcct("usdc"), wantEth, usdcFee)
+	}
+	t.Logf("(1) PASS: every deposit in the busy block credited once less the proving fee, dust not credited (RPCs so far: %s | %s)", rpcA, rpcB)
 
 	// (2) Two withdrawals while the L1 base fee spikes above their fee cap; the
 	// bot is killed and restarted meanwhile.
@@ -446,5 +460,9 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 			t.Fatalf("the bot met too little weather to show anything: %s=%d (want >= %d)", k, sum(k), min)
 		}
 	}
-	t.Logf("(4) PASS: every deposit credited once, dust not, every withdrawal paid once and confirmed, queue empty, no custody alarm, no dead letter")
+	// 3 ETH deposits and 3 withdrawals paid the ETH fee; the USDC deposit the USDC one.
+	if got, wantEth := feeAcct("eth"), new(big.Int).Mul(ethFee, big.NewInt(6)).String(); got != wantEth || feeAcct("usdc") != usdcFee.String() {
+		t.Fatalf("proving fees at the end: eth %q usdc %q; want %s and %s", got, feeAcct("usdc"), wantEth, usdcFee)
+	}
+	t.Logf("(4) PASS: every deposit credited once less the proving fee, dust not, every withdrawal paid once and confirmed, altera.app holds exactly the fees, queue empty, no custody alarm, no dead letter")
 }
