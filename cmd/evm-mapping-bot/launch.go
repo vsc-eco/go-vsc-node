@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"vsc-node/modules/common/params"
 )
 
 // ---------------------------------------------------------------------------
@@ -187,8 +189,12 @@ const (
 	// no attestation root is linked down at once (a few calls).
 	linkNearMax    = uint64(32)
 	maxAttestCache = 16
-	attestPerCall  = 2 // storage proof + header ~3.6 KB each; 8 KB payload cap
-	linkPerCall    = 6
+	// attestPerCall / linkPerCall: the most headers in one call (its rc_limit);
+	// fewer go when the payload would pass the node's cap (packHeaders): real
+	// Sepolia headers (Cancun..Glamsterdam fields) are ~1.4 KB of hex each, so
+	// 6 of them made an 8,299-byte submitHeaders the node refuses (LINK-PAYLOAD-1).
+	attestPerCall = 2
+	linkPerCall   = 6
 	// attestResendAfter / linkResendAfter: how long a submitted attestation
 	// or link run may take to execute before it is sent again.
 	attestResendAfter = 3 * time.Minute
@@ -553,16 +559,21 @@ func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter
 			return
 		}
 	}
-	for i := 0; i < len(items); i += attestPerCall {
-		end := i + attestPerCall
-		if end > len(items) {
-			end = len(items)
+	wrap := func(hs []map[string]string) []byte {
+		p, _ := json.Marshal(map[string]any{"root_block": f, "headers": hs})
+		return p
+	}
+	for i := 0; i < len(items); {
+		n := packHeaders(items[i:], attestPerCall, wrap)
+		if n == 0 {
+			slog.Error("RP-9: one attested header is over the node's payload cap", "root", f, "bytes", len(wrap(items[i:i+1])))
+			return
 		}
-		p, _ := json.Marshal(map[string]any{"root_block": f, "headers": items[i:end]})
-		if _, err := submitter.callContractL2(ctx, vid, "attestHeaders", p, 20_000); err != nil {
+		if _, err := submitter.callContractL2(ctx, vid, "attestHeaders", wrap(items[i:i+n]), 20_000); err != nil {
 			slog.Warn("RP-9: attestHeaders", "root", f, "err", err)
 			return
 		}
+		i += n
 	}
 	slog.Info("RP-9: headers attested", "root", f, "count", len(items))
 }
@@ -571,30 +582,54 @@ func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter
 // links to the parent hash the previous one stored).
 func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid string, x, tip uint64) {
 	slog.Warn("RP-9: no EIP-2935 attestation for a needed header; linking down from the proven tip", "block", x, "tip", tip, "headers", tip-x)
-	for top := tip - 1; ; {
-		lo := x
-		if top+1-x > linkPerCall {
-			lo = top + 1 - linkPerCall
+	// Oldest first: hs[i] is block x+i. Each call is the newest run not yet
+	// stored that fits one payload, so its last header is the parent of the
+	// header above it (already stored).
+	hs := make([]map[string]string, 0, tip-x)
+	for n := x; n < tip; n++ {
+		r, err := headerRLP(rpc, n)
+		if err != nil {
+			slog.Warn("RP-9: header RLP for submitHeaders", "block", n, "err", err)
+			return
 		}
-		var hs []map[string]string
-		for n := lo; n <= top; n++ {
-			r, err := headerRLP(rpc, n)
-			if err != nil {
-				slog.Warn("RP-9: header RLP for submitHeaders", "block", n, "err", err)
-				return
-			}
-			hs = append(hs, map[string]string{"rlp_hex": hex.EncodeToString(r)})
+		hs = append(hs, map[string]string{"rlp_hex": hex.EncodeToString(r)})
+	}
+	wrap := func(run []map[string]string) []byte {
+		p, _ := json.Marshal(map[string]any{"headers": run})
+		return p
+	}
+	for end := len(hs); end > 0; {
+		n := packHeadersFromEnd(hs[:end], linkPerCall, wrap)
+		if n == 0 {
+			slog.Error("RP-9: one header is over the node's payload cap", "block", x+uint64(end)-1, "bytes", len(wrap(hs[end-1:end])))
+			return
 		}
-		p, _ := json.Marshal(map[string]any{"headers": hs})
-		if _, err := submitter.callContractL2(ctx, vid, "submitHeaders", p, 30_000); err != nil {
+		lo, top := x+uint64(end-n), x+uint64(end)-1
+		if _, err := submitter.callContractL2(ctx, vid, "submitHeaders", wrap(hs[end-n:end]), 30_000); err != nil {
 			slog.Warn("RP-9: submitHeaders", "from", lo, "to", top, "err", err)
 			return
 		}
-		if lo == x {
-			return
-		}
-		top = lo - 1
+		end -= n
 	}
+}
+
+// packHeaders is how many items from the front fit one call: at most max, and
+// wrap(items[:n]) within the node's contract-payload cap (0: not even one).
+func packHeaders(items []map[string]string, max int, wrap func([]map[string]string) []byte) int {
+	n := 0
+	for n < len(items) && n < max && len(wrap(items[:n+1])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+		n++
+	}
+	return n
+}
+
+// packHeadersFromEnd is packHeaders for a run taken from the end of items.
+func packHeadersFromEnd(items []map[string]string, max int, wrap func([]map[string]string) []byte) int {
+	n := 0
+	for n < len(items) && n < max && len(wrap(items[len(items)-n-1:])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+		n++
+	}
+	return n
 }
 
 // writeNeedsFile tells the operator (magi_operator, NEEDS_FILE) whether a proof
