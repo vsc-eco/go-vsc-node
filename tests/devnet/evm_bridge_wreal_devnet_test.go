@@ -1276,7 +1276,12 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	// for the proof as the bot would (NEEDS_FILE), keeping it fresh.
 	bot.Stop()
 	botB.Stop()
-	if err := l1.waitFinalized(ctx, lastT2, 40*time.Minute); err != nil {
+	// The operator proves to the checkpoint its light-client finality update
+	// names, which can trail the execution layer's finalized tag by up to an
+	// epoch (phase C6: the one paid proof ended 21 blocks short of lastT2). T2
+	// asks at once (no batch window, unlike T1), so it waits two more epochs
+	// for the one proof to cover lastT2; a bot in production would just ask again.
+	if err := l1.waitFinalized(ctx, lastT2+64, 55*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	wantSince := time.Now().Add(-11 * time.Minute).Unix() // wall: the operator reads wall-clock unix time
