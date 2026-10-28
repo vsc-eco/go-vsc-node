@@ -1265,13 +1265,19 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		// confirm, so before any it is absent; compare, do not assume "0".
 		queue := func() string { return e.stateStr("n") + "|" + e.stateStr("np") + "|" + e.stateStr("d-0") }
 		before := queue()
-		if other, err := csPayload(0, sE, 0, 0, cryptoPubkeyAddr(attKey).Hex()); err == nil {
+		if other, err := csPayload(0, sE, 0, 0, cryptoPubkeyAddr(attKey).Hex()); err != nil {
+			t.Errorf("F6-to NOT RUN: %v", err)
+		} else {
 			refused("F6-to", e.amID, "confirmSpend", other, "")
 		}
-		if raised, err := csPayload(0, sE, 0, 1, ""); err == nil {
+		if raised, err := csPayload(0, sE, 0, 1, ""); err != nil {
+			t.Errorf("F6-amount NOT RUN: %v", err)
+		} else {
 			refused("F6-amount", e.amID, "confirmSpend", raised, "")
 		}
-		if wrongBlock, err := csPayload(0, sE, -1, 0, ""); err == nil {
+		if wrongBlock, err := csPayload(0, sE, -1, 0, ""); err != nil {
+			t.Errorf("F6-block NOT RUN: %v", err)
+		} else {
 			refused("F6-block", e.amID, "confirmSpend", wrongBlock, "")
 		}
 		if after := queue(); after != before || e.stateStr("d-0") == "" {
