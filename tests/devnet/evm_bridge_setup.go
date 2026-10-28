@@ -643,7 +643,19 @@ func (e *evmBridgeEnv) plantFinalized(a *Anvil, n uint64) error {
 
 // stateStr reads one bridge state key, "" when absent.
 func (e *evmBridgeEnv) stateStr(key string) string {
-	m, _ := e.d.GetStateByKeys(e.ctx, e.gqlNode, e.amID, []string{key})
+	// A failed read is retried: returned as "", it reads as an absent key (a
+	// zero balance), and phase C5 took one for a moved balance.
+	var m map[string]any
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if m, err = e.d.GetStateByKeys(e.ctx, e.gqlNode, e.amID, []string{key}); err == nil || e.ctx.Err() != nil {
+			break
+		}
+		devnetSleep(2 * time.Second)
+	}
+	if err != nil {
+		e.t.Logf("stateStr %s: read failed: %v", key, err)
+	}
 	if m == nil || m[key] == nil {
 		return ""
 	}
