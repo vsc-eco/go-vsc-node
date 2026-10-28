@@ -2144,7 +2144,7 @@ func (bp *blockProofs) fetch(ctx context.Context, rpc *ethRPC, raw bool) error {
 	}
 	return forEachParallel(ctx, n, proofFetchWorkers, func(i int) error {
 		hash := fmt.Sprintf(`"%s"`, bp.hashes[i])
-		rData, err := rpc.callCtx(ctx, "eth_getTransactionReceipt", hash)
+		rData, err := callRetry(ctx, rpc, "eth_getTransactionReceipt", hash)
 		if err != nil {
 			return fmt.Errorf("fetch receipt %d/%d: %w", i, n, err)
 		}
@@ -2156,7 +2156,7 @@ func (bp *blockProofs) fetch(ctx context.Context, rpc *ethRPC, raw bool) error {
 		if !raw {
 			return nil
 		}
-		tData, err := rpc.callCtx(ctx, "eth_getRawTransactionByHash", hash)
+		tData, err := callRetry(ctx, rpc, "eth_getRawTransactionByHash", hash)
 		if err != nil {
 			return fmt.Errorf("fetch raw tx %d/%d: %w", i, n, err)
 		}
@@ -2200,6 +2200,30 @@ func trieProof(what string, values [][]byte, i int) ([]byte, [][]byte, error) {
 	}
 	return leaf, nodes, nil
 }
+
+// callRetry is callCtx retried a few times after a short pause: one block's
+// proof is hundreds of calls made proofFetchWorkers at a time, and one call a
+// rate-limited RPC refuses (HTTP 429) or drops must not fail the whole fetch.
+func callRetry(ctx context.Context, rpc *ethRPC, method, params string) (json.RawMessage, error) {
+	var err error
+	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(callRetryPauses[attempt-1]):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		var res json.RawMessage
+		if res, err = rpc.callCtx(ctx, method, params); err == nil || ctx.Err() != nil {
+			return res, err
+		}
+	}
+	return nil, err
+}
+
+// callRetryPauses: the pauses before callRetry's retries.
+var callRetryPauses = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
 // forEachParallel runs f(0..n-1) on up to workers goroutines and returns the
 // first error, or ctx's once it ends; no new f starts after either. A panic

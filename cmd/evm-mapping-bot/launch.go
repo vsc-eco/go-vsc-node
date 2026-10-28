@@ -295,7 +295,7 @@ var headerFields = []struct {
 // headerRLP fetches block n's header and encodes it as RLP; the encoding must
 // hash to the block hash the RPC reports.
 func headerRLP(ctx context.Context, rpc *ethRPC, n uint64) ([]byte, error) {
-	raw, err := rpc.callCtx(ctx, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, n))
+	raw, err := callRetry(ctx, rpc, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, n))
 	if err != nil {
 		return nil, err
 	}
