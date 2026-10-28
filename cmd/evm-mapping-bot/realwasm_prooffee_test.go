@@ -60,6 +60,17 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 	if msg, ok := rwSetProofFee(t, c, "eth", "500000000000001"); ok || !strings.Contains(msg, "above half") {
 		t.Fatalf("a fee above half the 0.001 ETH floor: ok=%v %q, want refused", ok, msg)
 	}
+	// Nor can lowering usdc's min_withdrawal leave its fee above the cap: at
+	// 0.5 USDC the floor is 0.05 USDC and the 0.04 USDC fee is over half of it.
+	reRegister := func(minWithdrawal string) (string, bool) {
+		return rwRegisterTokenJSON(t, c, `{"address":"`+rwUSDC+`","symbol":"usdc","decimals":6,"min_withdrawal":`+minWithdrawal+`}`)
+	}
+	if msg, ok := reRegister("500000"); ok || !strings.Contains(msg, "lower the fee first") {
+		t.Fatalf("lowering usdc's min_withdrawal under its fee: ok=%v %q, want refused", ok, msg)
+	}
+	if msg, ok := reRegister("1000000"); !ok {
+		t.Fatalf("re-registering usdc at the minimum its fee fits: %s", msg)
+	}
 	altera := func(asset string) string { return c.ct.StateGet(rwBridge, "a-hive:altera.app-"+asset) }
 	ctx := context.Background()
 
