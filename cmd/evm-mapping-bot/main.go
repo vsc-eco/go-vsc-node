@@ -1458,8 +1458,11 @@ type detectedDeposit struct {
 	TxIndex      int
 	LogIndex     int // -1 for native ETH
 	TxHash       string
-	DepositType  string // "eth" or "erc20"
-	TokenAddress string
+	DepositType  string // "eth", "erc20" or "contract"
+	TokenAddress string // the token (erc20, or a MagiDeposit token deposit)
+	// Amount deposited (wei or token units; nil in a checkpoint from before
+	// DUST-1), checked against the bridge's minimum deposit.
+	Amount *big.Int `json:",omitempty"`
 }
 
 type blockScanResult struct {
@@ -1589,12 +1592,14 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 				slog.Warn("FAILDEP-1: a transfer to the vault reverted on L1; nothing arrived, not mapped", "block", height, "tx", tx.Hash)
 				continue
 			}
+			amount, _ := new(big.Int).SetString(strings.TrimPrefix(tx.Value, "0x"), 16)
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight: height,
 				TxIndex:     i,
 				LogIndex:    -1,
 				TxHash:      tx.Hash,
 				DepositType: "eth",
+				Amount:      amount,
 			})
 		}
 	}
@@ -1618,6 +1623,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			TransactionIndex string `json:"transactionIndex"`
 			TransactionHash  string `json:"transactionHash"`
 			LogIndex         string `json:"logIndex"`
+			Data             string `json:"data"`
 		}
 		if err := json.Unmarshal(logsData, &logs); err != nil {
 			return nil, fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
@@ -1647,6 +1653,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 				TxHash:       log.TransactionHash,
 				DepositType:  "erc20",
 				TokenAddress: tokenAddr,
+				Amount:       new(big.Int).SetBytes(hexToBytes(log.Data)),
 			})
 		}
 	}
@@ -3091,6 +3098,8 @@ func runOnce(
 	// stop-at-first-failure semantics are unchanged — only the I/O is parallel.
 	scanResults := scanBlocksParallel(depCtx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
 
+	var tokenMins map[string]*big.Int
+	minsRead := false
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
 		sr, ok := scanResults[h]
 		if !ok || sr.err != nil {
@@ -3099,15 +3108,22 @@ func runOnce(
 			}
 			break // stop scanning at the first gap/failure; retry next tick
 		}
-		if n := len(sr.result.Deposits); n > 0 {
+		deps := sr.result.Deposits
+		if len(deps) > 0 {
+			if !minsRead {
+				tokenMins, minsRead = tokenDepositMins(depCtx, gql, cfg), true
+			}
+			deps = creditable(deps, tokenMins) // DUST-1
+		}
+		if n := len(deps); n > 0 {
 			slog.Info("deposits detected", "block", h, "count", n)
 		}
 		cp.mu.Lock()
-		if len(sr.result.Deposits) > 0 {
+		if len(deps) > 0 {
 			if cp.WaitingDeposits == nil {
 				cp.WaitingDeposits = map[uint64][]detectedDeposit{}
 			}
-			cp.WaitingDeposits[h] = sr.result.Deposits
+			cp.WaitingDeposits[h] = deps
 		}
 		cp.LastScannedBlock = h
 		cp.mu.Unlock()

@@ -140,18 +140,93 @@ func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detec
 			return nil, nil, fmt.Errorf("MagiDeposit log %s not in receipt %s", lg.LogIndex, lg.TransactionHash)
 		}
 		l := rc.Logs[idx]
+		dep := detectedDeposit{BlockHeight: height, TxIndex: int(hexToUint64(lg.TransactionIndex)), LogIndex: idx,
+			TxHash: lg.TransactionHash, DepositType: "contract"}
+		if data := hexToBytes(l.Data); len(data) >= 32 {
+			dep.Amount = new(big.Int).SetBytes(data[:32])
+		}
 		if len(l.Topics) == 3 {
-			data := hexToBytes(l.Data)
-			if token := topicAddr(l.Topics[2]); token != "" && token != "0x0000000000000000000000000000000000000000" && len(data) >= 32 {
-				if j := pairedTransferIdx(rc.Logs, idx, topicAddr(l.Topics[1]), token, strings.ToLower(vault), new(big.Int).SetBytes(data[:32])); j >= 0 {
+			if token := topicAddr(l.Topics[2]); token != "" && token != "0x0000000000000000000000000000000000000000" && dep.Amount != nil {
+				dep.TokenAddress = token
+				if j := pairedTransferIdx(rc.Logs, idx, topicAddr(l.Topics[1]), token, strings.ToLower(vault), dep.Amount); j >= 0 {
 					paid[strings.ToLower(lg.TransactionHash)+"#"+strconv.Itoa(j)] = true
 				}
 			}
 		}
-		deps = append(deps, detectedDeposit{BlockHeight: height, TxIndex: int(hexToUint64(lg.TransactionIndex)), LogIndex: idx,
-			TxHash: lg.TransactionHash, DepositType: "contract"})
+		deps = append(deps, dep)
 	}
 	return deps, paid, nil
+}
+
+// minETHDeposit mirrors the bridge's MinETHDeposit (account-mapping constants:
+// MinETHWithdrawal / 10, 0.001 ETH; DUST-1); a real-wasm test pins the two.
+var minETHDeposit = big.NewInt(1_000_000_000_000_000)
+
+// tokenDepositMins reads the bridge's minimum deposit of each watched token: a
+// tenth of its min_withdrawal, from its registry record t-{chain}-{address}
+// ("symbol|decimals|min_withdrawal|...", an unset min_withdrawal being the
+// bridge's default 10 USDC). nil when it cannot be read: tokens then go
+// unfiltered and the bridge decides.
+func tokenDepositMins(ctx context.Context, gql *vscGraphQL, cfg EVMBotConfig) map[string]*big.Int {
+	if len(cfg.Tokens) == 0 {
+		return nil
+	}
+	st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"chainid"})
+	if err != nil {
+		return nil
+	}
+	chain := st["chainid"]
+	if chain == "" {
+		chain = "1" // the bridge's chainId() when none is set
+	}
+	keyOf := map[string]string{}
+	var keys []string
+	for addr := range cfg.Tokens {
+		k := "t-" + chain + "-" + strings.TrimPrefix(strings.ToLower(addr), "0x")
+		keyOf[k] = strings.ToLower(addr)
+		keys = append(keys, k)
+	}
+	recs, err := gql.fetchContractState(ctx, cfg.ContractID, keys)
+	if err != nil {
+		return nil
+	}
+	mins := map[string]*big.Int{}
+	for k, addr := range keyOf {
+		f := strings.Split(recs[k], "|")
+		if len(f) < 2 {
+			continue // not registered: the bridge refuses its deposits anyway
+		}
+		minW := int64(10_000_000)
+		if len(f) >= 3 {
+			if v, err := strconv.ParseInt(f[2], 10, 64); err == nil && v > 0 {
+				minW = v
+			}
+		}
+		mins[addr] = big.NewInt(minW / 10)
+	}
+	return mins
+}
+
+// creditable drops the deposits below the bridge's minimum for their asset
+// (DUST-1). The bridge never credits one, as THORChain's observer drops an
+// inbound under its dust threshold before it is observed: mapping it would
+// only spend RC, its block's header and maybe a paid proof. A deposit whose
+// amount or token floor is unknown is kept; the bridge decides.
+func creditable(deps []detectedDeposit, tokenMins map[string]*big.Int) []detectedDeposit {
+	kept := deps[:0:0]
+	for _, d := range deps {
+		min := minETHDeposit
+		if d.TokenAddress != "" {
+			min = tokenMins[strings.ToLower(d.TokenAddress)]
+		}
+		if d.Amount != nil && min != nil && d.Amount.Cmp(min) < 0 {
+			slog.Info("DUST-1: deposit below the bridge's minimum, not credited and not mapped",
+				"block", d.BlockHeight, "tx", d.TxHash, "type", d.DepositType, "token", d.TokenAddress, "amount", d.Amount, "min", min)
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
 
 // erc20MapPayload is an "erc20" map with a base64 receipt proof whose leaf is

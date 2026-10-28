@@ -35,15 +35,15 @@ func ethDeposit(t *testing.T, c *fakeChain, to common.Address, value *big.Int, d
 	return c.addTx(t, key, &types.DynamicFeeTx{GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000 + uint64(16*len(data)), To: &to, Value: value, Data: data})
 }
 
-// B6: a deposit whose map payload is over the node's contract-payload cap (1 wei
-// with 4 KB of calldata, which anyone can send) used to fail on every retry and
-// hold its block, so no later deposit was ever mapped. It is dead-lettered and
-// the scan moves on.
+// B6: a deposit whose map payload is over the node's contract-payload cap (the
+// minimum deposit with 4 KB of calldata, which anyone can send) used to fail on
+// every retry and hold its block, so no later deposit was ever mapped. It is
+// dead-lettered and the scan moves on. (A 1-wei one is now dust, DUST-1.)
 func TestB6_OversizeDepositDoesNotHoldLaterDeposits(t *testing.T) {
 	l1 := newFakeL1()
 	l2, gql, rpc, sub, cfg, vault := bridgeWorld(t, l1, 102)
 	l2.status = func(string) string { return "UNCONFIRMED" } // keep the map pending so the test can see it
-	attack := ethDeposit(t, l1.block(101), vault, big.NewInt(1), make([]byte, 4000))
+	attack := ethDeposit(t, l1.block(101), vault, minETHDeposit, make([]byte, 4000))
 	user := ethDeposit(t, l1.block(102), vault, big.NewInt(1e18), nil)
 	cp := &Checkpoint{LastScannedBlock: 100, SentWithdrawals: map[string]SentTx{}, BlockRetries: map[uint64]int{}, PendingMaps: map[string]PendingMap{}}
 
