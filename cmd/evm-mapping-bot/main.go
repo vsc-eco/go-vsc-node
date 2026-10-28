@@ -1080,13 +1080,13 @@ func (s *l2Submitter) callContractL2(
 	// MAX_CONTRACT_PAYLOAD_SIZE (state-processing, checked before execution),
 	// which is below the pool's MAX_TX_SIZE checked further down. Refuse it here
 	// and log it, rather than submit a call that cannot succeed.
-	if len(payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+	if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
 		slog.Error("contract call payload exceeds the node's payload cap",
 			"action", action,
-			"payload_size", len(payload),
+			"payload_size", n,
 			"limit", params.MAX_CONTRACT_PAYLOAD_SIZE,
 		)
-		return "", fmt.Errorf("%w: %s payload is %d bytes (limit %d)", errPayloadTooLarge, action, len(payload), params.MAX_CONTRACT_PAYLOAD_SIZE)
+		return "", fmt.Errorf("%w: %s payload is %d bytes as the node counts it (limit %d)", errPayloadTooLarge, action, n, params.MAX_CONTRACT_PAYLOAD_SIZE)
 	}
 
 	// Serialize concurrent L2 submissions for nonce ordering.
@@ -2969,8 +2969,8 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 		// be submitted, on any retry. Anyone can make one (a 1-wei deposit
 		// with ~2 KB of calldata), so holding the block for it would stop
 		// every later deposit. Dead-letter it and move on.
-		if len(payload) > params.MAX_CONTRACT_PAYLOAD_SIZE {
-			cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("map payload is %d bytes, over the node's %d-byte contract-payload cap", len(payload), params.MAX_CONTRACT_PAYLOAD_SIZE))
+		if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
+			cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("map payload is %d bytes as the node counts it, over the node's %d-byte contract-payload cap", n, params.MAX_CONTRACT_PAYLOAD_SIZE))
 			continue
 		}
 
@@ -3677,6 +3677,20 @@ func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
 		return false, fmt.Errorf("no receipt status for %s", hash)
 	}
 	return hexToUint64(r.Status) == 1, nil
+}
+
+// nodePayloadSize is a contract-call payload's size as the node checks it
+// against MAX_CONTRACT_PAYLOAD_SIZE. The node keeps the payload as a
+// json.RawMessage decoded from the call's CBOR string (transaction-pool
+// DecodeTxCbor -> go-ipld-cbor MarshalJSON, encoding/json), so it counts the
+// JSON string literal: two quotes more, and one backslash per '"' or '\\'.
+// Six real Sepolia headers were 8,187 raw and 8,215 to the node (phase C4).
+func nodePayloadSize(payload []byte) int {
+	b, err := json.Marshal(string(payload))
+	if err != nil {
+		return len(payload)
+	}
+	return len(b)
 }
 
 func hexToUint64(s string) uint64 {

@@ -82,12 +82,14 @@ func TestEVMT1_CallOverThePayloadCapIsRefused(t *testing.T) {
 	// No GraphQL endpoints: a call that gets past the size check fails at the
 	// nonce fetch instead, with a different error.
 	s := &l2Submitter{gql: &vscGraphQL{}}
-	payloadOf := func(n int) json.RawMessage { return json.RawMessage(`"` + strings.Repeat("a", n-2) + `"`) }
+	// payloadOf(n) is n bytes as the node counts them (nodePayloadSize: the
+	// JSON string literal, so n-2 plain characters).
+	payloadOf := func(n int) json.RawMessage { return json.RawMessage(strings.Repeat("a", n-2)) }
 
 	over := payloadOf(params.MAX_CONTRACT_PAYLOAD_SIZE + 1)
 	_, err := s.callContractL2(context.Background(), "vsc1bridge", "confirmSpend", over, 0)
 	if !errors.Is(err, errPayloadTooLarge) {
-		t.Fatalf("payload of %d bytes: err = %v, want errPayloadTooLarge", len(over), err)
+		t.Fatalf("payload of %d bytes to the node: err = %v, want errPayloadTooLarge", nodePayloadSize(over), err)
 	}
 	if !strings.Contains(err.Error(), "confirmSpend") {
 		t.Fatalf("error does not name the action: %v", err)
@@ -95,6 +97,6 @@ func TestEVMT1_CallOverThePayloadCapIsRefused(t *testing.T) {
 
 	atCap := payloadOf(params.MAX_CONTRACT_PAYLOAD_SIZE)
 	if _, err := s.callContractL2(context.Background(), "vsc1bridge", "confirmSpend", atCap, 0); errors.Is(err, errPayloadTooLarge) {
-		t.Fatalf("payload of exactly %d bytes was refused; the node accepts it", len(atCap))
+		t.Fatalf("payload of exactly %d bytes to the node was refused; the node accepts it", nodePayloadSize(atCap))
 	}
 }

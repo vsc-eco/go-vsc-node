@@ -614,10 +614,11 @@ func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid stri
 }
 
 // packHeaders is how many items from the front fit one call: at most max, and
-// wrap(items[:n]) within the node's contract-payload cap (0: not even one).
+// wrap(items[:n]) within the node's contract-payload cap as the node counts it
+// (nodePayloadSize; 0: not even one).
 func packHeaders(items []map[string]string, max int, wrap func([]map[string]string) []byte) int {
 	n := 0
-	for n < len(items) && n < max && len(wrap(items[:n+1])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+	for n < len(items) && n < max && nodePayloadSize(wrap(items[:n+1])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
 		n++
 	}
 	return n
@@ -626,7 +627,7 @@ func packHeaders(items []map[string]string, max int, wrap func([]map[string]stri
 // packHeadersFromEnd is packHeaders for a run taken from the end of items.
 func packHeadersFromEnd(items []map[string]string, max int, wrap func([]map[string]string) []byte) int {
 	n := 0
-	for n < len(items) && n < max && len(wrap(items[len(items)-n-1:])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+	for n < len(items) && n < max && nodePayloadSize(wrap(items[len(items)-n-1:])) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
 		n++
 	}
 	return n
