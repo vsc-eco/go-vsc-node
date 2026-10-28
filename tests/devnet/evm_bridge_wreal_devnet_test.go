@@ -990,8 +990,26 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		user, wantUser, mdRecipient, wantMd, wantGr, attested, linked, rcFrozen(botDID)-botRC0)
 
 	// F5 / F11: forged and replayed deposits from the malicious relayer.
+	// One read of the three keys, retried: e.stateStr turns a failed read into
+	// "", which phase C5 reported as a moved balance (0.02475 ETH -> "") while
+	// every node still held it.
 	balances := func() string {
-		return e.stateStr("a-"+user+"-eth") + "|" + e.stateStr("a-"+user+"-usdc") + "|" + e.stateStr("gr")
+		keys := []string{"a-" + user + "-eth", "a-" + user + "-usdc", "gr"}
+		var err error
+		for attempt := 0; attempt < 5; attempt++ {
+			var m map[string]any
+			if m, err = e.d.GetStateByKeys(ctx, e.gqlNode, e.amID, keys); err == nil {
+				out := make([]string, len(keys))
+				for i, k := range keys {
+					if m[k] != nil {
+						out[i] = fmt.Sprintf("%v", m[k])
+					}
+				}
+				return strings.Join(out, "|")
+			}
+			devnetSleep(3 * time.Second)
+		}
+		return "read failed: " + err.Error()
 	}
 	snap := balances()
 	depBlock := rcEth.BlockNumber.Uint64()
