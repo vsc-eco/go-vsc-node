@@ -217,8 +217,9 @@ func TestRP11_DrainFillsTheFreeSlots(t *testing.T) {
 	l2.set("vsc1verifier", "b-500", tipHeader(time.Now().Add(-5*time.Minute)))
 	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
 	calls := submittedCalls(t, l2)
-	if len(calls) != 1 || calls[0].Action != "drainWithdrawalQueue" || calls[0].Payload != `{"max":2}` || calls[0].RcLimit != 16_000 {
-		t.Fatalf("calls %+v, want drainWithdrawalQueue max 2 (8 slots, 6 in flight) at 16k RC", calls)
+	// 16k for two issues, plus room to refund the 5 queued (QFREEZE-1).
+	if len(calls) != 1 || calls[0].Action != "drainWithdrawalQueue" || calls[0].Payload != `{"max":2}` || calls[0].RcLimit != 16_000+5*drainRefundRC {
+		t.Fatalf("calls %+v, want drainWithdrawalQueue max 2 (8 slots, 6 in flight) at 16k RC + 5 refunds", calls)
 	}
 	drainIfQueued(context.Background(), l2.gql(t), sub, sub.cfg)
 	if len(submittedCalls(t, l2)) != 1 {

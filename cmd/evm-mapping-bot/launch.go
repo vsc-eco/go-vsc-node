@@ -719,6 +719,14 @@ func tipHeaderAge(ctx context.Context, gql *vscGraphQL, cfg EVMBotConfig, tip ui
 
 const maxInFlightWithdrawals = 8
 
+// drainScanMax is the contract's MaxDrainScan: the most queued entries one
+// drain issues or refunds. drainRefundRC is the RC a refund costs, with margin
+// (1,235 measured on the real wasm).
+const (
+	drainScanMax  = 32
+	drainRefundRC = 1_400
+)
+
 // lastDrainAt: drainWithdrawalQueue is sent at most once per drainEvery.
 var (
 	lastDrainAt time.Time
@@ -760,7 +768,15 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	}
 	lastDrainAt = time.Now()
 	p, _ := json.Marshal(map[string]any{"max": max})
-	if _, err := submitter.callContractL2(ctx, cfg.ContractID, "drainWithdrawalQueue", p, 6_000*max+4_000); err != nil {
+	// QFREEZE-1: a drain also refunds the queued withdrawals the current price
+	// cannot pay (at most the contract's MaxDrainScan per call), ~1,235 RC each
+	// on the real wasm. Without room for them, a drain with one free slot (10k
+	// RC) ran out, reverted, and refunded nothing.
+	refunds := t - h
+	if refunds > drainScanMax {
+		refunds = drainScanMax
+	}
+	if _, err := submitter.callContractL2(ctx, cfg.ContractID, "drainWithdrawalQueue", p, 6_000*max+4_000+drainRefundRC*refunds); err != nil {
 		slog.Warn("RP-11: drainWithdrawalQueue", "err", err)
 		return
 	}
