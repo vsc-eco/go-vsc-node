@@ -891,6 +891,67 @@ func (g *vscGraphQL) fetchTransactionStatus(ctx context.Context, txID string) (s
 	return parsed.FindTransaction[0].Status, nil
 }
 
+// fetchTransactionError returns the contract error a FAILED transaction ended
+// with: its result in the contract output of the block that ran it ("" when
+// none is recorded).
+func (g *vscGraphQL) fetchTransactionError(ctx context.Context, txID string) (string, error) {
+	data, err := g.query(ctx,
+		`query FindTransaction($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				output { id }
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byId": txID}},
+	)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Output []struct {
+				ID string `json:"id"`
+			} `json:"output"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("decode transaction: %w", err)
+	}
+	if len(parsed.FindTransaction) == 0 {
+		return "", fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
+	}
+	for _, o := range parsed.FindTransaction[0].Output {
+		raw, err := g.query(ctx, `query($c: String!) { getDagByCID(cidString: $c) }`, map[string]interface{}{"c": o.ID})
+		if err != nil {
+			return "", err
+		}
+		var dag struct {
+			GetDagByCID string `json:"getDagByCID"`
+		}
+		var out struct {
+			Inputs  []string `json:"inputs"`
+			Results []struct {
+				ErrMsg string `json:"errMsg"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(raw, &dag); err != nil {
+			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+		}
+		if err := json.Unmarshal([]byte(dag.GetDagByCID), &out); err != nil {
+			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+		}
+		for i, in := range out.Inputs {
+			if in == txID && i < len(out.Results) {
+				return out.Results[i].ErrMsg, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// errAlreadyProcessed is the bridge's refusal of a deposit it has credited
+// (account-mapping ErrAlreadyObserved).
+const errAlreadyProcessed = "deposit already processed"
+
 // errTxNotFound: the node holds no transaction with that id. Right after a
 // submission that can be gossip; much later the transaction is gone (the pool
 // deletes one that loses its nonce to another).
@@ -3755,7 +3816,24 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 		case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
 			slog.Info("map confirmed on chain", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
 		case err == nil && status == "FAILED":
-			cp.deadLetter(pm.Block, pm.DepositTx, txID, "map failed on chain")
+			// DEADLETTER-DUP: a map that failed because the deposit was already
+			// credited (another mapper's map landed first, RP-8, or this bot's
+			// own earlier one) is done, not dead. Phase C5: with two bots, every
+			// deposit was dead-lettered by the one that lost, and /health stayed
+			// unhealthy.
+			msg, merr := gql.fetchTransactionError(ctx, txID)
+			if merr != nil && time.Since(time.Unix(pm.SubmittedAt, 0)) <= mapResultTimeout {
+				continue // the failure's reason is not readable yet
+			}
+			if strings.Contains(msg, errAlreadyProcessed) {
+				slog.Info("map not needed: the deposit was already credited", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+				break
+			}
+			reason := "map failed on chain"
+			if msg != "" {
+				reason += ": " + msg
+			}
+			cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)
 		case time.Since(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout:
 			cp.deadLetter(pm.Block, pm.DepositTx, txID, fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err))
 		default:

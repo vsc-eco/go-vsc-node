@@ -168,6 +168,7 @@ type fakeL2 struct {
 	sigs      map[string]string            // sighash hex -> DER hex
 	submitted [][]byte                     // signed L2 txs, decoded from base64
 	status    func(txID string) string     // nil: every tx is CONFIRMED
+	errMsg    func(txID string) string     // a tx's contract error in its block output (nil: none)
 	nonce     uint64
 	keys      map[string][2]string // TSS key id -> {status, public key}
 	rc        map[string]int64     // getAccountRC by account (absent: no record)
@@ -372,11 +373,23 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				data = map[string]any{"findTransaction": list}
 				break
 			}
+			if strings.Contains(req.Query, "output") {
+				data = map[string]any{"findTransaction": []map[string]any{{"output": []map[string]string{{"id": "out-" + id}}}}}
+				break
+			}
 			st := "CONFIRMED"
 			if f.status != nil {
 				st = f.status(id)
 			}
 			data = map[string]any{"findTransaction": []map[string]string{{"status": st}}}
+		case strings.Contains(req.Query, "getDagByCID"):
+			id := strings.TrimPrefix(fmt.Sprint(req.Variables["c"]), "out-")
+			msg := ""
+			if f.errMsg != nil {
+				msg = f.errMsg(id)
+			}
+			out, _ := json.Marshal(map[string]any{"inputs": []string{"other", id}, "results": []map[string]any{{"ok": true}, {"ok": msg == "", "errMsg": msg}}})
+			data = map[string]any{"getDagByCID": string(out)}
 		default:
 			t.Errorf("fakeL2: unexpected query %.60s", req.Query)
 		}
