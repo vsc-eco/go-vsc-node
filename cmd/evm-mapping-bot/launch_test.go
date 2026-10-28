@@ -123,7 +123,7 @@ func TestRP9_HeaderRLPFromJSON(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": block})
 		}))
-		got, err := headerRLP(newEthRPC(srv.URL), 1)
+		got, err := headerRLP(context.Background(), newEthRPC(srv.URL), 1)
 		if err != nil || "0x"+hex.EncodeToString(got) != f.RLP {
 			t.Fatalf("%s: headerRLP err %v, matches %v", net, err, "0x"+hex.EncodeToString(got) == f.RLP)
 		}
@@ -131,7 +131,7 @@ func TestRP9_HeaderRLPFromJSON(t *testing.T) {
 		block["slotNumber"], block["futureField"] = nil, "0x01"
 		delete(block, "slotNumber")
 		if net == "sepolia" {
-			if _, err := headerRLP(newEthRPC(srv.URL), 1); err == nil {
+			if _, err := headerRLP(context.Background(), newEthRPC(srv.URL), 1); err == nil {
 				t.Fatalf("%s: a header missing a field was encoded", net)
 			}
 		}

@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	gethrlp "github.com/ethereum/go-ethereum/rlp"
 )
 
 // slowRPC delays every L1 RPC call and counts the calls and the most in flight
@@ -360,5 +365,163 @@ func TestTICKSTALL1_DepositBlockIsScannedOnce(t *testing.T) {
 	}
 	if n := mc.n.Load(); n != 1 || len(cp.WaitingDeposits[102]) != 3 || cp.BlockRetries[102] != 3 {
 		t.Fatalf("block 102 scanned %d times, waiting %v, retries %v; want one scan, its 3 deposits parked, 3 failed ticks", n, cp.WaitingDeposits, cp.BlockRetries)
+	}
+}
+
+// TICKSTALL-1 (sibling): the EIP-2935 prefetch runs at every new finalized
+// block and fetched one header per needed block serially, so a backlog after
+// an operator outage could outlast every tick. It is parallel and bounded by
+// ctx; headers not fetched in time are left for a later root.
+func TestTICKSTALL1_HistoryPrefetchIsParallelAndBounded(t *testing.T) {
+	raw, err := os.ReadFile("testdata/headers.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx map[string]struct {
+		Block map[string]any `json:"block"`
+	}
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	block := fx["sepolia"].Block
+	const needs = 40
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var result any = block // every header request: one real Sepolia header
+		if req.Method == "eth_getProof" {
+			sp := make([]map[string]any, needs)
+			for i := range sp {
+				sp[i] = map[string]any{"proof": []string{"0xc0"}}
+			}
+			result = map[string]any{"accountProof": []string{"0xc0"}, "storageProof": sp}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
+	}))
+	defer srv.Close()
+	const f = uint64(10_000)
+	var open []uint64
+	for i := uint64(0); i < needs; i++ {
+		open = append(open, f-100+i)
+	}
+
+	slow := &slowRPC{delay: 10 * time.Millisecond}
+	rpc := newEthRPC(srv.URL)
+	rpc.client.Transport = slow
+	e := prefetchHistoryProofs(context.Background(), rpc, f, open)
+	if e == nil || e.Err != "" || len(e.Headers) != needs || slow.peak.Load() < 2 {
+		t.Fatalf("prefetch: %+v headers %d, peak in flight %d; want all %d, fetched in parallel", e, len(e.Headers), slow.peak.Load(), needs)
+	}
+
+	// Header calls that hang: the prefetch returns at its deadline, abandoning
+	// the calls in flight, with the headers left for a later root.
+	rpc.client.Transport = &slowMethod{method: "eth_getBlockByNumber", delay: 3 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	t0 := time.Now()
+	e = prefetchHistoryProofs(ctx, rpc, f, open)
+	if el := time.Since(t0); el > time.Second || e == nil || len(e.Headers) == needs {
+		t.Fatalf("prefetch past its deadline: %s, %d headers; want it cut short with some left for a later root", el, len(e.Headers))
+	}
+}
+
+// slowMethod delays only the L1 RPC requests for method.
+type slowMethod struct {
+	method string
+	delay  time.Duration
+}
+
+func (m *slowMethod) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if strings.Contains(string(body), `"`+m.method+`"`) {
+		select {
+		case <-time.After(m.delay):
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+// TICKSTALL-1 (sibling): linkDown fetches the run's headers in parallel and
+// still sends every block x..tip-1 exactly once, newest run first, each run
+// contiguous (each links to the parent hash the run above it stored).
+func TestTICKSTALL1_LinkDownSendsEveryHeaderNewestFirst(t *testing.T) {
+	const x, tip = uint64(500), uint64(520)
+	byNum := map[uint64]map[string]any{}
+	numOf := map[string]uint64{}
+	parent := common.Hash{}
+	for n := x; n < tip; n++ {
+		zero, root := uint64(0), common.HexToHash("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
+		h := &types.Header{ParentHash: parent, Number: new(big.Int).SetUint64(n), GasLimit: 30_000_000, Time: 1_700_000_000 + n,
+			Difficulty: new(big.Int), BaseFee: big.NewInt(1e9), WithdrawalsHash: &root, BlobGasUsed: &zero, ExcessBlobGas: &zero, ParentBeaconRoot: &root,
+			UncleHash: types.EmptyUncleHash, Root: root, TxHash: root, ReceiptHash: root}
+		j, _ := json.Marshal(h)
+		var m map[string]any
+		_ = json.Unmarshal(j, &m)
+		byNum[n] = m
+		rlpb, _ := gethrlp.EncodeToBytes(h)
+		numOf[hex.EncodeToString(rlpb)] = n
+		parent = h.Hash()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Params []json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var hexN string
+		_ = json.Unmarshal(req.Params[0], &hexN)
+		n, _ := strconv.ParseUint(strings.TrimPrefix(hexN, "0x"), 16, 64)
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": byNum[n]})
+	}))
+	defer srv.Close()
+	slow := &slowRPC{delay: 5 * time.Millisecond}
+	rpc := newEthRPC(srv.URL)
+	rpc.client.Transport = slow
+	l2 := newFakeL2()
+	bk, _ := ethCrypto.GenerateKey()
+	cfg := EVMBotConfig{ContractID: "vsc1bridge", NetID: "vsc-devnet", RcLimit: 10000}
+	sub := &l2Submitter{ethKey: bk, did: dids.NewEthDID(ethCrypto.PubkeyToAddress(bk.PublicKey).Hex()), gql: l2.gql(t), cfg: cfg}
+
+	linkDown(context.Background(), rpc, sub, "vsc1verifier", x, tip)
+
+	calls := submittedCalls(t, l2)
+	seen := map[uint64]int{}
+	prevLow := tip
+	for _, c := range calls {
+		var p struct {
+			Headers []struct {
+				RLP string `json:"rlp_hex"`
+			} `json:"headers"`
+		}
+		if c.Action != "submitHeaders" || json.Unmarshal([]byte(c.Payload), &p) != nil || len(p.Headers) == 0 {
+			t.Fatalf("unexpected call %s %q", c.Action, c.Payload)
+		}
+		lo := numOf[p.Headers[0].RLP]
+		for i, h := range p.Headers {
+			n, ok := numOf[h.RLP]
+			if !ok || n != lo+uint64(i) {
+				t.Fatalf("run starting at %d: header %d is block %d (known %v); want a contiguous run", lo, i, n, ok)
+			}
+			seen[n]++
+		}
+		if top := lo + uint64(len(p.Headers)) - 1; top != prevLow-1 {
+			t.Fatalf("run %d..%d is not the one just below the previous run (from %d)", lo, top, prevLow)
+		}
+		prevLow = lo
+	}
+	if prevLow != x || len(seen) != int(tip-x) {
+		t.Fatalf("sent %d distinct blocks down to %d; want every block %d..%d", len(seen), prevLow, x, tip-1)
+	}
+	for n, k := range seen {
+		if k != 1 {
+			t.Fatalf("block %d sent %d times", n, k)
+		}
+	}
+	if slow.peak.Load() < 2 {
+		t.Fatalf("headers fetched one at a time (peak %d in flight)", slow.peak.Load())
 	}
 }

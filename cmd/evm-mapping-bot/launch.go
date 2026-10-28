@@ -294,8 +294,8 @@ var headerFields = []struct {
 
 // headerRLP fetches block n's header and encodes it as RLP; the encoding must
 // hash to the block hash the RPC reports.
-func headerRLP(rpc *ethRPC, n uint64) ([]byte, error) {
-	raw, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, n))
+func headerRLP(ctx context.Context, rpc *ethRPC, n uint64) ([]byte, error) {
+	raw, err := rpc.callCtx(ctx, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, n))
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +333,11 @@ func headerRLP(rpc *ethRPC, n uint64) ([]byte, error) {
 // history contract's account proof and the storage proofs of the needed blocks
 // in F's window. It must run while the RPC still serves F's state (geth: 128
 // blocks), which is why it runs as soon as F is finalized.
-func prefetchHistoryProofs(rpc *ethRPC, f uint64, needs []uint64) *attestEntry {
+// TICKSTALL-1: the needed blocks' headers are fetched proofFetchWorkers at a
+// time within ctx (it runs again at every new F, so a serial fetch of a large
+// backlog could outlast every tick); a header not fetched in time is left out
+// and attested from a later root.
+func prefetchHistoryProofs(ctx context.Context, rpc *ethRPC, f uint64, needs []uint64) *attestEntry {
 	e := &attestEntry{Headers: map[uint64]attestedBlock{}, FetchedAt: time.Now().Unix()}
 	var slots []string
 	var xs []uint64
@@ -346,7 +350,7 @@ func prefetchHistoryProofs(rpc *ethRPC, f uint64, needs []uint64) *attestEntry {
 	if len(xs) == 0 {
 		return nil
 	}
-	raw, err := rpc.call("eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, historyContract, strings.Join(slots, ","), f))
+	raw, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, historyContract, strings.Join(slots, ","), f))
 	if err != nil {
 		e.Err = err.Error()
 		slog.Warn("RP-9: eth_getProof at a finalized block failed (the RPC must serve recent state); headers fall back to submitHeaders",
@@ -364,13 +368,20 @@ func prefetchHistoryProofs(rpc *ethRPC, f uint64, needs []uint64) *attestEntry {
 		return e
 	}
 	e.AccountProof = p.AccountProof
-	for i, x := range xs {
-		rlp, err := headerRLP(rpc, x)
+	rlps := make([][]byte, len(xs))
+	_ = forEachParallel(ctx, len(xs), proofFetchWorkers, func(i int) error {
+		rlp, err := headerRLP(ctx, rpc, xs[i])
 		if err != nil {
-			slog.Warn("RP-9: header RLP", "block", x, "err", err)
-			continue
+			slog.Warn("RP-9: header RLP", "block", xs[i], "err", err)
+			return nil
 		}
-		e.Headers[x] = attestedBlock{RLP: hex.EncodeToString(rlp), StorageProof: p.StorageProof[i].Proof}
+		rlps[i] = rlp
+		return nil
+	})
+	for i, x := range xs {
+		if rlps[i] != nil {
+			e.Headers[x] = attestedBlock{RLP: hex.EncodeToString(rlps[i]), StorageProof: p.StorageProof[i].Proof}
+		}
 	}
 	return e
 }
@@ -432,7 +443,7 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 		_, have := cp.AttestCache[f]
 		cp.mu.Unlock()
 		if !have {
-			if e := prefetchHistoryProofs(rpc, f, open); e != nil {
+			if e := prefetchHistoryProofs(ctx, rpc, f, open); e != nil {
 				cp.mu.Lock()
 				cp.ProofWindow = 1
 				if e.Err != "" {
@@ -585,14 +596,17 @@ func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid stri
 	// Oldest first: hs[i] is block x+i. Each call is the newest run not yet
 	// stored that fits one payload, so its last header is the parent of the
 	// header above it (already stored).
-	hs := make([]map[string]string, 0, tip-x)
-	for n := x; n < tip; n++ {
-		r, err := headerRLP(rpc, n)
+	hs := make([]map[string]string, tip-x)
+	if err := forEachParallel(ctx, len(hs), proofFetchWorkers, func(i int) error {
+		r, err := headerRLP(ctx, rpc, x+uint64(i))
 		if err != nil {
-			slog.Warn("RP-9: header RLP for submitHeaders", "block", n, "err", err)
-			return
+			return fmt.Errorf("block %d: %w", x+uint64(i), err)
 		}
-		hs = append(hs, map[string]string{"rlp_hex": hex.EncodeToString(r)})
+		hs[i] = map[string]string{"rlp_hex": hex.EncodeToString(r)}
+		return nil
+	}); err != nil {
+		slog.Warn("RP-9: header RLP for submitHeaders", "err", err)
+		return
 	}
 	wrap := func(run []map[string]string) []byte {
 		p, _ := json.Marshal(map[string]any{"headers": run})
