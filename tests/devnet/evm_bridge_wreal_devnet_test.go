@@ -524,18 +524,6 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		return out.E.Epoch
 	}
 	stakedEpoch = currentEpoch()
-	heaviest := func(el *ElectionInfo) (string, float64) {
-		best, bw := "", uint64(0)
-		for i, m := range el.Members {
-			if i < len(el.Weights) && el.Weights[i] > bw {
-				best, bw = m, el.Weights[i]
-			}
-		}
-		if el.TotalWeight == 0 {
-			return best, 0
-		}
-		return best, float64(bw) / float64(el.TotalWeight)
-	}
 	var weighted *ElectionInfo
 	if err := pollUntil(ctx, 15*time.Minute, func() bool {
 		el, err := d.GetElectionGQL(ctx, 1, currentEpoch())
@@ -546,7 +534,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		return true
 	}); err != nil {
 		t.Errorf("M1 NOT RUN: no election after the stakes (epoch %d): %v", stakedEpoch, err)
-	} else if who, share := heaviest(weighted); share*float64(len(weighted.Members)) > 1.0001 {
+	} else if who, share, flat := committeeHeaviest(weighted); !flat {
 		t.Errorf("M1 FAIL: stake moved the POA committee's weight (%s holds %.0f%%): %+v", who, share*100, weighted)
 	} else {
 		t.Logf("M1 PASS: the stakes left the POA committee flat in epoch %d: members %v weights %v (total %d)", weighted.Epoch, weighted.Members, weighted.Weights, weighted.TotalWeight)
@@ -1265,21 +1253,13 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		// confirm, so before any it is absent; compare, do not assume "0".
 		queue := func() string { return e.stateStr("n") + "|" + e.stateStr("np") + "|" + e.stateStr("d-0") }
 		before := queue()
-		if other, err := csPayload(0, sE, 0, 0, cryptoPubkeyAddr(attKey).Hex()); err != nil {
-			t.Errorf("F6-to NOT RUN: %v", err)
-		} else {
-			refused("F6-to", e.amID, "confirmSpend", other, "")
-		}
-		if raised, err := csPayload(0, sE, 0, 1, ""); err != nil {
-			t.Errorf("F6-amount NOT RUN: %v", err)
-		} else {
-			refused("F6-amount", e.amID, "confirmSpend", raised, "")
-		}
-		if wrongBlock, err := csPayload(0, sE, -1, 0, ""); err != nil {
-			t.Errorf("F6-block NOT RUN: %v", err)
-		} else {
-			refused("F6-block", e.amID, "confirmSpend", wrongBlock, "")
-		}
+		try := func(id, payload string) { refused(id, e.amID, "confirmSpend", payload, "") }
+		p, err := csPayload(0, sE, 0, 0, cryptoPubkeyAddr(attKey).Hex())
+		forgedVariant(t, "F6-to", p, err, try)
+		p, err = csPayload(0, sE, 0, 1, "")
+		forgedVariant(t, "F6-amount", p, err, try)
+		p, err = csPayload(0, sE, -1, 0, "")
+		forgedVariant(t, "F6-block", p, err, try)
 		if after := queue(); after != before || e.stateStr("d-0") == "" {
 			t.Errorf("F6 FAIL: forged confirmSpends changed the queue (n|np|d-0): %q -> %q", before, after)
 		}
@@ -1454,4 +1434,31 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		t.Logf("M3 %s: %d log lines; '429' %d, 'rate limit' %d, 'scan block failed' %d, 'timeout' %d",
 			name, len(b.Logs()), strings.Count(l, "429"), strings.Count(l, "rate limit"), strings.Count(l, "scan block failed"), strings.Count(l, "timeout"))
 	}
+}
+
+// committeeHeaviest is the election's heaviest member, its share of the total
+// weight, and whether every member weighs the same (a POA committee). An
+// election without a total is not flat: it cannot be read as one.
+func committeeHeaviest(el *ElectionInfo) (who string, share float64, flat bool) {
+	var best uint64
+	for i, m := range el.Members {
+		if i < len(el.Weights) && el.Weights[i] > best {
+			who, best = m, el.Weights[i]
+		}
+	}
+	if el.TotalWeight == 0 || len(el.Members) == 0 {
+		return who, 0, false
+	}
+	share = float64(best) / float64(el.TotalWeight)
+	return who, share, share*float64(len(el.Members)) <= 1.0001
+}
+
+// forgedVariant runs one forged call through try, or reports it NOT RUN when
+// its payload could not be built, so a skipped check never passes silently.
+func forgedVariant(t interface{ Errorf(string, ...any) }, id, payload string, err error, try func(id, payload string)) {
+	if err != nil {
+		t.Errorf("%s NOT RUN: %v", id, err)
+		return
+	}
+	try(id, payload)
 }
