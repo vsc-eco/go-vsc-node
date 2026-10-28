@@ -33,6 +33,7 @@ type BotConfig struct {
 	HealthAddr string // HEALTH_ADDR: serve GET /health here (with alarms checked every 10s)
 	StartBlock string // START_BLOCK for a new checkpoint (default 1: an anvil chain is short)
 	NeedsFile  string // NEEDS_FILE: where the bot asks the operator for a proof (RP-9)
+	RcLimit    string // RC_LIMIT (default 5000000; the bot's own default is 10000); the DID must hold at least this much RC
 }
 
 // Bot is a running bot process with captured logs.
@@ -48,6 +49,9 @@ func StartBot(t *testing.T, ctx context.Context, cfg BotConfig) *Bot {
 	if cfg.Checkpoint == "" {
 		cfg.Checkpoint = filepath.Join(t.TempDir(), "evm-bot-checkpoint.json")
 	}
+	if cfg.RcLimit == "" {
+		cfg.RcLimit = "5000000"
+	}
 	cmd := exec.CommandContext(ctx, evmBotBin)
 	cmd.Env = append(os.Environ(),
 		"ETH_RPC="+cfg.EthRPC,
@@ -56,7 +60,7 @@ func StartBot(t *testing.T, ctx context.Context, cfg BotConfig) *Bot {
 		"BOT_ETH_PRIVKEY="+cfg.EthPrivHex,
 		"NET_ID=vsc-devnet",
 		"NETWORK=testnet",
-		"RC_LIMIT=5000000",
+		"RC_LIMIT="+cfg.RcLimit,
 		"CHECKPOINT_FILE="+cfg.Checkpoint,
 	)
 	if cfg.VaultAddr != "" { // optional: the bot takes the vault from the TSS key and refuses a different one

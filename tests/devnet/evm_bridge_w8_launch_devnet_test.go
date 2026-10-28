@@ -65,6 +65,9 @@ func sendValue(ctx context.Context, a *Anvil, key *ecdsa.PrivateKey, to ethcommo
 	return a.waitReceipt(ctx, tx.Hash(), 30*time.Second)
 }
 
+// w8UnmapRC is the rc_limit of W8's unmaps: an unmapETH uses ~9.4k RC.
+const w8UnmapRC = 50_000
+
 func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("devnet")
@@ -80,7 +83,10 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	usd := func(n int64) *big.Int { return big.NewInt(n * 1_000_000) }
 
 	// RP-8: the bot is NOT registered as a relayer. HBD for RC is kept small
-	// (1 HBD = 1,000 RC; an unmap ~9.4k RC): the waves share the owner's HBD.
+	// (1 HBD = 1,000 RC): the waves share the owner's HBD. So this wave runs
+	// the bot at its production RC_LIMIT (10,000; its header and drain calls
+	// set their own) and unmaps at 50,000 (~9.4k used), not the harness's
+	// 5,000,000, which a node refuses unless the caller holds 5,000 HBD.
 	botKey, _ := ethCrypto.GenerateKey()
 	botDID := dids.NewEthDID(ethCrypto.PubkeyToAddress(botKey.PublicKey).Hex()).String()
 	if err := e.fundDID(botDID, "300.000"); err != nil {
@@ -110,6 +116,7 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	bot := StartBot(t, ctx, BotConfig{
 		EthRPC: anvil.URL, ContractID: e.amID, Tokens: usdc.Hex(),
 		GraphQLURL: e.d.GQLEndpoint(e.gqlNode), EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey)),
+		RcLimit: "10000",
 	})
 	t.Cleanup(bot.Stop)
 	botLogs := func() string { return strings.Join(bot.Logs(), "\n") }
@@ -218,10 +225,10 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 	uK, _ := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(depKey)))
 	rK, _ := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(recipKey)))
 	to1, to2 := cryptoPubkeyAddr(mustKey(t)), cryptoPubkeyAddr(mustKey(t))
-	if _, err := e.d.CallContractEvm(ctx, e.gqlNode, uK, e.amID, "unmapETH", fmt.Sprintf(`{"to":"%s","amount":"1000000000000000000","asset":"eth"}`, to1.Hex()), 5000000); err != nil {
+	if _, err := e.d.CallContractEvm(ctx, e.gqlNode, uK, e.amID, "unmapETH", fmt.Sprintf(`{"to":"%s","amount":"1000000000000000000","asset":"eth"}`, to1.Hex()), w8UnmapRC); err != nil {
 		t.Fatalf("unmapETH user: %v", err)
 	}
-	if _, err := e.d.CallContractEvm(ctx, e.gqlNode, rK, e.amID, "unmapETH", fmt.Sprintf(`{"to":"%s","amount":"500000000000000000","asset":"eth","gas_limit":100000}`, to2.Hex()), 5000000); err != nil {
+	if _, err := e.d.CallContractEvm(ctx, e.gqlNode, rK, e.amID, "unmapETH", fmt.Sprintf(`{"to":"%s","amount":"500000000000000000","asset":"eth","gas_limit":100000}`, to2.Hex()), w8UnmapRC); err != nil {
 		t.Fatalf("unmapETH recipient: %v", err)
 	}
 	if err := pollUntil(ctx, evmL2Wait, func() bool { return e.stateStr("np") == "2" && e.stateStr("d-1") != "" }); err != nil {
