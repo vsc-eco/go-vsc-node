@@ -34,8 +34,11 @@
 //
 // Operations shaped like mainnet's (rollout notes, 10-18 weights):
 //
-//	M1  a stake-weighted committee shaped like mainnet's (30/27/20/13/10% for
-//	    v4vapp 24.5, magi-team-node 22.7, tibfox 16.6, ...), the heaviest on node 4.
+//	M1  stake shaped like mainnet's (node 4 the heaviest, v4vapp's role, node 1
+//	    the lightest). At 0.13 a committee of ratified POA seats carries one unit
+//	    per seat whatever the stake (PoaFlatWeightActive, 0.7), so the next
+//	    election must stay flat. Mainnet's weights follow stake today (largest
+//	    seat ~25% on 10-28) only because its seats are not yet gated.
 //	M2  the vault key reshares each epoch while deposits and withdrawals run;
 //	    its address never changes.
 //	M3  two honest bots overlap (as during a bot move), both on a public RPC;
@@ -59,8 +62,8 @@
 //	F10 the confirming bot lists a dead RPC first: it fails over, and does not
 //	    send the vault's withdrawals again.
 //	F11 a deposit claimed in a block above the proven height: refused.
-//	F12 the heaviest node (node 4, ~30% of the weight, mainnet's v4vapp role)
-//	    down while the TSS signs the withdrawals; the chain and TSS carry on; it rejoins.
+//	F12 node 4 (mainnet's v4vapp role, its heaviest stake) down while the TSS
+//	    signs the withdrawals; the chain and TSS carry on; it rejoins.
 //	F13 the operator handed a mainnet execution RPC: no paid proof.
 //	F14 (RP-5) a bot handed a mainnet RPC for this Sepolia bridge: it refuses to start.
 //	F15 deposits as legacy (type 0) and access-list (type 1) txs: credited.
@@ -488,9 +491,11 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// M1: a committee weighted like mainnet's. Every witness starts at 2000;
-	// node 4 becomes the heaviest (v4vapp's role), node 1 (the owner) the lightest.
+	// M1: stake like mainnet's. Every witness starts at 2000; node 4 becomes
+	// the heaviest (v4vapp's role), node 1 (the owner) the lightest. The POA
+	// seats keep the committee's weight flat (one unit a seat) all the same.
 	extra := map[int]int64{4: 4000, 3: 3400, 2: 2000, 5: 600}
+	stakedEpoch := uint64(0)
 	for n, amt := range extra {
 		a := fmt.Sprintf("%d.000", amt)
 		if _, err := d.Deposit(ctx, n, a, "hive"); err != nil {
@@ -518,6 +523,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 		_ = d.gqlQuery(ctx, 1, `{ electionByBlockHeight { epoch } }`, nil, &out)
 		return out.E.Epoch
 	}
+	stakedEpoch = currentEpoch()
 	heaviest := func(el *ElectionInfo) (string, float64) {
 		best, bw := "", uint64(0)
 		for i, m := range el.Members {
@@ -533,16 +539,17 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	var weighted *ElectionInfo
 	if err := pollUntil(ctx, 15*time.Minute, func() bool {
 		el, err := d.GetElectionGQL(ctx, 1, currentEpoch())
-		if err != nil || el == nil {
+		if err != nil || el == nil || el.Epoch <= stakedEpoch {
 			return false
 		}
-		who, share := heaviest(el)
 		weighted = el
-		return who == d.witnessAccount(4) && share > 0.25
+		return true
 	}); err != nil {
-		t.Errorf("M1 NOT APPLIED: the election never weighted node 4 heaviest: %+v", weighted)
+		t.Errorf("M1 NOT RUN: no election after the stakes (epoch %d): %v", stakedEpoch, err)
+	} else if who, share := heaviest(weighted); share*float64(len(weighted.Members)) > 1.0001 {
+		t.Errorf("M1 FAIL: stake moved the POA committee's weight (%s holds %.0f%%): %+v", who, share*100, weighted)
 	} else {
-		t.Logf("M1 PASS: mainnet-shaped committee in epoch %d: members %v weights %v (total %d)", weighted.Epoch, weighted.Members, weighted.Weights, weighted.TotalWeight)
+		t.Logf("M1 PASS: the stakes left the POA committee flat in epoch %d: members %v weights %v (total %d)", weighted.Epoch, weighted.Members, weighted.Weights, weighted.TotalWeight)
 	}
 
 	e := &evmBridgeEnv{t: t, ctx: ctx, d: d, ownerNode: 1, gqlNode: 2, propID: 1, ownerAcct: "hive:magi.test1"}
