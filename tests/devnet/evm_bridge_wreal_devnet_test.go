@@ -152,9 +152,24 @@ func (s *sepolia) proofs(url string) *Anvil {
 	return &Anvil{URL: url, ChainID: s.chainID, cli: s.cli, rpc: s.rpc}
 }
 
+// fees returns a 1 gwei tip and a fee cap of twice the live base fee plus the
+// tip. The node refuses a tx unless the wallet holds gas x cap + value, so the
+// cap must follow the base fee: a fixed 20 gwei cap on the 2.2M-gas MagiDeposit
+// deploy (GLAM-1) asked for 0.055 ETH of a wallet that paid 0.002.
+func (s *sepolia) fees(ctx context.Context) (tip, feeCap *big.Int, err error) {
+	h, err := s.cli.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	if h.BaseFee == nil {
+		return nil, nil, fmt.Errorf("block %d has no base fee", h.Number)
+	}
+	tip = big.NewInt(1e9)
+	return tip, new(big.Int).Add(new(big.Int).Mul(h.BaseFee, big.NewInt(2)), tip), nil
+}
+
 // sendTx signs txdata (nonce and chain id filled in) with key and waits for
-// its receipt. Sepolia's base fee is tiny, so 1 gwei tips under a 20 gwei cap
-// always land.
+// its receipt.
 func (s *sepolia) sendTx(ctx context.Context, key *ecdsa.PrivateKey, build func(nonce uint64) ethtypes.TxData) (*ethtypes.Receipt, error) {
 	nonce, err := s.cli.PendingNonceAt(ctx, cryptoPubkeyAddr(key))
 	if err != nil {
@@ -179,8 +194,12 @@ func (s *sepolia) sendTx(ctx context.Context, key *ecdsa.PrivateKey, build func(
 }
 
 func (s *sepolia) send(ctx context.Context, key *ecdsa.PrivateKey, to ethcommon.Address, value *big.Int, data []byte, gas uint64) (*ethtypes.Receipt, error) {
+	tip, feeCap, err := s.fees(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("fees: %w", err)
+	}
 	return s.sendTx(ctx, key, func(n uint64) ethtypes.TxData {
-		return &ethtypes.DynamicFeeTx{ChainID: s.chainID, Nonce: n, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(20e9), Gas: gas, To: &to, Value: value, Data: data}
+		return &ethtypes.DynamicFeeTx{ChainID: s.chainID, Nonce: n, GasTipCap: tip, GasFeeCap: feeCap, Gas: gas, To: &to, Value: value, Data: data}
 	})
 }
 
@@ -432,7 +451,15 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	needEth := new(big.Int).Add(reserveDep, userDep)
 	needEth.Add(needEth, new(big.Int).Mul(smallDep, big.NewInt(3)))
 	needEth.Add(needEth, mdDep)
-	needEth.Add(needEth, big.NewInt(4_000_000_000_000_000)) // + 0.004 ETH of gas (MagiDeposit's deploy, a new vault account)
+	// + the gas of every wallet tx at today's fee cap: MagiDeposit's deploy is
+	// about 2.8M with margin under Glamsterdam, the first deposit to the new
+	// vault account about 0.26M, the rest about 1M together.
+	const walletGas = 5_000_000
+	_, feeCap, err := l1.fees(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needEth.Add(needEth, new(big.Int).Mul(feeCap, big.NewInt(walletGas)))
 	if ethBal.Cmp(needEth) < 0 || usdcBal.Cmp(big.NewInt(2_000_000)) < 0 {
 		t.Fatalf("Sepolia wallet %s holds %s wei and %s USDC units; needs %s wei and 2000000", wallet.Hex(), ethBal, usdcBal, needEth)
 	}
@@ -711,21 +738,11 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 
 	// (2) Sepolia deposits. Gas from eth_estimateGas (GLAM-1): the first one
 	// creates the vault's account, which Sepolia prices far above 21,000.
+	// Funds sent to the vault stay with this devnet's TSS key and are gone with
+	// it if the run fails, so the gas-only deploy goes first and the value
+	// sends only start once the wallet is known to cover all of them.
 	toReserve := []byte("to_reserve=1")
-	rcRes, err := l1.send(ctx, walletKey, vault, reserveDep, toReserve, estimate(wallet, vault, reserveDep, toReserve))
-	if err != nil || rcRes.Status != 1 {
-		t.Fatalf("reserve deposit: %v %+v", err, rcRes)
-	}
-	t.Logf("GLAM-1 MEASURED: the first deposit to the new vault account used %d gas", rcRes.GasUsed)
-	rcEth, err := l1.send(ctx, walletKey, vault, userDep, nil, estimate(wallet, vault, userDep, nil))
-	if err != nil || rcEth.Status != 1 {
-		t.Fatalf("ETH deposit: %v %+v", err, rcEth)
-	}
 	usdcDep := usdcCall("transfer(address,uint256)", vault, big.NewInt(2_000_000))
-	rcUsdc, err := l1.send(ctx, walletKey, usdcAddr, new(big.Int), usdcDep, estimate(wallet, usdcAddr, nil, usdcDep))
-	if err != nil || rcUsdc.Status != 1 {
-		t.Fatalf("USDC deposit: %v %+v", err, rcUsdc)
-	}
 	// RP-7: MagiDeposit for this vault (CREATE2 through the deterministic
 	// deployment proxy), and a deposit through it for another recipient.
 	mdHex, err := os.ReadFile(evmArtifact(t, "EVM_MAGI_DEPOSIT_HEX"))
@@ -737,11 +754,45 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if rc, err := l1.send(ctx, walletKey, create2Deployer, new(big.Int), mdDeploy, estimate(wallet, create2Deployer, nil, mdDeploy)); err != nil || rc.Status != 1 {
 		t.Fatalf("deploy MagiDeposit: %v %+v", err, rc)
 	} else {
-		t.Logf("MagiDeposit deployed for the vault: %d gas", rc.GasUsed)
+		t.Logf("GLAM-1 MEASURED: MagiDeposit deployed for the vault: %d gas", rc.GasUsed)
 	}
 	dc := ethCrypto.CreateAddress2(create2Deployer, [32]byte{}, ethCrypto.Keccak256(mdInit))
 	mdRecipient := evmDID(cryptoPubkeyAddr(mustKey(t)))
 	mdCall := depositCalldata("deposit(string)", nil, mdRecipient)
+	{
+		// Upper bounds: before the reserve deposit every send to the vault is
+		// priced as creating its account. F15's two 21,000-gas deposits and
+		// F16's creation tx come later.
+		const laterGas = 2*21_000 + 400_000
+		gas := estimate(wallet, vault, reserveDep, toReserve) + estimate(wallet, vault, userDep, nil) +
+			estimate(wallet, usdcAddr, nil, usdcDep) + estimate(wallet, dc, mdDep, mdCall) + laterGas
+		_, feeCap, err := l1.fees(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		need := new(big.Int).Mul(feeCap, new(big.Int).SetUint64(gas))
+		need.Add(need, new(big.Int).Add(new(big.Int).Add(reserveDep, userDep), new(big.Int).Add(mdDep, new(big.Int).Mul(smallDep, big.NewInt(3)))))
+		bal, err := l1.cli.BalanceAt(ctx, wallet, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bal.Cmp(need) < 0 {
+			t.Fatalf("Sepolia wallet %s holds %s wei after the deploy; the deposits need %s at today's fees: nothing sent to the vault", wallet.Hex(), bal, need)
+		}
+	}
+	rcRes, err := l1.send(ctx, walletKey, vault, reserveDep, toReserve, estimate(wallet, vault, reserveDep, toReserve))
+	if err != nil || rcRes.Status != 1 {
+		t.Fatalf("reserve deposit: %v %+v", err, rcRes)
+	}
+	t.Logf("GLAM-1 MEASURED: the first deposit to the new vault account used %d gas", rcRes.GasUsed)
+	rcEth, err := l1.send(ctx, walletKey, vault, userDep, nil, estimate(wallet, vault, userDep, nil))
+	if err != nil || rcEth.Status != 1 {
+		t.Fatalf("ETH deposit: %v %+v", err, rcEth)
+	}
+	rcUsdc, err := l1.send(ctx, walletKey, usdcAddr, new(big.Int), usdcDep, estimate(wallet, usdcAddr, nil, usdcDep))
+	if err != nil || rcUsdc.Status != 1 {
+		t.Fatalf("USDC deposit: %v %+v", err, rcUsdc)
+	}
 	rcMd, err := l1.send(ctx, walletKey, dc, mdDep, mdCall, estimate(wallet, dc, mdDep, mdCall))
 	if err != nil || rcMd.Status != 1 {
 		t.Fatalf("MagiDeposit deposit: %v %+v", err, rcMd)
@@ -1110,9 +1161,19 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	// init code: CALL(gas, vault, callvalue, 0, 0, 0, 0); STOP (deploys no code).
 	initCode := append(append(ethcommon.FromHex("0x600060006000600034"+"73"), vault.Bytes()...), ethcommon.FromHex("0x5af15000")...)
 	vaultBefore, _ := l1.cli.BalanceAt(ctx, vault, nil)
-	rcFwd, err := l1.sendTx(ctx, walletKey, func(n uint64) ethtypes.TxData {
-		return &ethtypes.DynamicFeeTx{ChainID: l1.chainID, Nonce: n, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(20e9), Gas: 120_000, Value: smallDep, Data: initCode}
-	})
+	// The tx creates an account at its contract address, which Sepolia prices
+	// far above the old 120,000 (GLAM-1): estimate it.
+	var rcFwd *ethtypes.Receipt
+	fwdGas, err := l1.cli.EstimateGas(ctx, ethereum.CallMsg{From: wallet, Value: smallDep, Data: initCode})
+	tip, feeCap, ferr := l1.fees(ctx)
+	if err == nil {
+		err = ferr
+	}
+	if err == nil {
+		rcFwd, err = l1.sendTx(ctx, walletKey, func(n uint64) ethtypes.TxData {
+			return &ethtypes.DynamicFeeTx{ChainID: l1.chainID, Nonce: n, GasTipCap: tip, GasFeeCap: feeCap, Gas: fwdGas + fwdGas/4, Value: smallDep, Data: initCode}
+		})
+	}
 	fwdOK := err == nil && rcFwd.Status == 1
 	if vaultAfter, _ := l1.cli.BalanceAt(ctx, vault, nil); !fwdOK || vaultBefore == nil || vaultAfter == nil || new(big.Int).Sub(vaultAfter, vaultBefore).Cmp(smallDep) != 0 {
 		t.Errorf("F16 NOT RUN: the forwarding creation tx did not move %s wei to the vault (%v %+v)", smallDep, err, rcFwd)
