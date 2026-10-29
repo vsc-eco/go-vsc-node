@@ -27,6 +27,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName
 	kv("SOURCE_DIR", cfg.SourceDir)
 	kv("HAF_IMAGE", cfg.HAFImage)
 	kv("MONGO_IMAGE", cfg.MongoImage)
+	kv("MONGO_MEMORY", cfg.MongoMemory)
 	kv("HAF_DATA_DIR", hafDataDir)
 	kv("DEVNET_DATA_DIR", devnetDir)
 	kv("HIVE_PORT", fmt.Sprint(cfg.HivePort))

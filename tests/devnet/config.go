@@ -43,6 +43,14 @@ type Config struct {
 	HAFImage string
 	// MongoImage is the Docker image for MongoDB.
 	MongoImage string
+	// MongoMemory is the shared MongoDB container's memory limit (docker
+	// notation, e.g. "4G"). Empty keeps the compose default of 1G; 16 nodes
+	// creating their indexes at once exhaust 1G and the container drops them.
+	MongoMemory string
+	// StartBatch starts the magi nodes this many at a time, 20 s apart (0 = all
+	// at once). Sixteen nodes creating their indexes together crashed MongoDB
+	// 8.0.17 (signal 11 in createIndexes); batches keep that DDL apart.
+	StartBatch int
 	// SourceDir is the absolute path to the go-vsc-node repo root.
 	SourceDir string
 	// GenesisNode is which node runs the genesis election (1-indexed).

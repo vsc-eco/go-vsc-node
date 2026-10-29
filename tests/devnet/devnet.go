@@ -267,8 +267,18 @@ func (d *Devnet) Start(ctx context.Context) error {
 		names[i] = fmt.Sprintf("magi-%d", i+1)
 	}
 	names[d.cfg.Nodes] = "feed-publisher"
-	if err := d.compose(ctx, append([]string{"up", "-d"}, names...)...); err != nil {
-		return fmt.Errorf("starting magi nodes: %w", err)
+	batch := d.cfg.StartBatch
+	if batch <= 0 || batch >= len(names) {
+		batch = len(names)
+	}
+	for i := 0; i < len(names); i += batch {
+		end := min(i+batch, len(names))
+		if err := d.compose(ctx, append([]string{"up", "-d"}, names[i:end]...)...); err != nil {
+			return fmt.Errorf("starting magi nodes: %w", err)
+		}
+		if end < len(names) {
+			time.Sleep(20 * time.Second) // wall: let this batch create its indexes first
+		}
 	}
 
 	// Give nodes time to initialize and connect to each other

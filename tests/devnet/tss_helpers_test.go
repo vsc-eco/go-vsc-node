@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -152,9 +153,21 @@ func insertTssKey(t *testing.T, mongoURI string, keyId string, algo string) {
 	client, _ := connectMongo(t, mongoURI)
 	defer client.Disconnect(ctx)
 	// Insert into ALL node databases (magi-1 through magi-N).
-	// The devnet-setup default prefix is "magi".
+	// The devnet-setup default prefix is "magi". magi-1..10 as before, plus every
+	// other magi-N that exists (a 16-node devnet: nodes 11-16 never saw the key
+	// and never joined the keygen).
+	dbNames := make([]string, 0, 16)
 	for n := 1; n <= 10; n++ {
-		dbName := fmt.Sprintf("magi-%d", n)
+		dbNames = append(dbNames, fmt.Sprintf("magi-%d", n))
+	}
+	if more, err := client.ListDatabaseNames(ctx, bson.M{"name": bson.M{"$regex": "^magi-[0-9]+$"}}); err == nil {
+		for _, name := range more {
+			if !slices.Contains(dbNames, name) {
+				dbNames = append(dbNames, name)
+			}
+		}
+	}
+	for _, dbName := range dbNames {
 		coll := client.Database(dbName).Collection("tss_keys")
 		_, err := coll.UpdateOne(ctx,
 			bson.M{"id": keyId},
