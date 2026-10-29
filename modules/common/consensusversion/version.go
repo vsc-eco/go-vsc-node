@@ -140,7 +140,11 @@ import (
 //     before activation (PendingKeyReshareActive), and a deposit memo naming
 //     "hive:<account>" is checked on the account name (HivePrefixRecipientActive). A new
 //     line because the testnet already runs 0.11.0. Until 0.12.0 is chain-active
-//     every rule is inert and old and new binaries interoperate.
+//     every rule is inert and old and new binaries interoperate. Added after the
+//     testnet reached 0.12.0: POA-8 accusation exclusions stack to two
+//     (TssAccuseStackActive), so testnet nodes take that build together: while
+//     an accusation is live the two builds can pick different parties, form
+//     different sessions and both fail until every node runs the same build.
 const (
 	currentMajor        uint64 = 0
 	currentConsensus    uint64 = 12
