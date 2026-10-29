@@ -52,10 +52,16 @@ services:
       interval: 10s
       retries: 5
       timeout: 5s
+    # One MongoDB holds every node's database; at 16 nodes its WiredTiger files
+    # ran past the default open-file limit (EMFILE, then a fatal assertion).
+    ulimits:
+      nofile:
+        soft: 64000
+        hard: 64000
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: ${MONGO_MEMORY:-1G}
 
   hafah-install:
     image: ${HAFAH_IMAGE}
