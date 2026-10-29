@@ -2347,8 +2347,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// POA-8 (0.9.0): leave out the party that more than 2/3 of the
 			// committee could not get messages from in an earlier failed
 			// attempt at this key since its last rotation (accuse.go). Inputs
-			// are on-chain statements plus the lists above; at most one party,
-			// and never below threshold+1 of the old committee that would run.
+			// are on-chain statements plus the lists above; at most one party
+			// (two from 0.12.0, TssAccuseStackActive), and never below
+			// threshold+1 of the old committee that would run.
 			var accusedOut map[string]bool
 			if consensusversion.TssPerAccusedBlameActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
 				if counts := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock); len(counts) > 0 {
@@ -2361,7 +2362,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					// P8 (0.12.0): never let an exclusion starve the new side below
 					// what the reshare needs; the ban-yield below uses the same minimum.
 					newMin := accuseNewMin(minReshareVer, len(currentElection.Members))
-					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut, newMin)
+					stack := consensusversion.TssAccuseStackActive(minReshareVer)
+					commitedMembers, newParticipants, accusedOut = applyAccusedExclusions(commitedMembers, newParticipants, counts, fullOldCommitteeSize, alreadyOut, newMin, stack)
 					for a := range accusedOut {
 						excludedNodes = append(excludedNodes, a)
 					}

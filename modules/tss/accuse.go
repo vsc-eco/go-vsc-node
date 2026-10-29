@@ -45,7 +45,8 @@ import (
 //   - at most ONE party is left out per reshare (accuseMaxExclusions): the same
 //     exposure as one honest node being offline at a rotation, and it does not
 //     build up, because the next rotation draws its committee from the full
-//     election again;
+//     election again. From 0.12.0 (TssAccuseStackActive) at most TWO, and never
+//     below either committee's minimum (selectAccusedExclusionsStacked);
 //   - btss error culprits are never accused (old party 0's round-1 message is
 //     the SSID reference, so a bad party 0 gets party 1 blamed by everyone);
 //   - it is its own commitment type: blame scoring, bans, the 33% blame rule,
@@ -54,6 +55,11 @@ const accuseTypeReshare = "reshare_accuse"
 
 // accuseMaxExclusions caps how many accused parties one reshare leaves out.
 const accuseMaxExclusions = 1
+
+// accuseMaxExclusionsStacked is the cap from 0.12.0 (TssAccuseStackActive): the
+// accused parties of a key's rotation stack up to two, so two members that attest
+// and then fail are both out by the third attempt.
+const accuseMaxExclusionsStacked = 2
 
 // accusePerOp bounds the accusations one broadcast carries, in a single extra
 // custom_json op in its own transaction: Hive caps a custom_json at 8192 bytes
@@ -223,7 +229,9 @@ func (tssMgr *TssManager) reshareAccusedCounts(keyId string, bh, lastCommitHeigh
 // and then withhold keep every session failing (the exclusion alternates
 // between them). And any blamed or banned member of the current election
 // switches exclusions off (alreadyOut >= 1), for every key while a ban lasts,
-// so a long ban also turns withholder recovery off.
+// so a long ban also turns withholder recovery off. From 0.12.0 the selection
+// is selectAccusedExclusionsStacked, which lifts the first limit to two
+// parties and the second to one.
 func selectAccusedExclusions(counts map[string]int, oldMembers []string, oldMin, alreadyOut int) map[string]bool {
 	inOld := make(map[string]bool, len(oldMembers))
 	for _, m := range oldMembers {
@@ -258,6 +266,71 @@ func selectAccusedExclusions(counts map[string]int, oldMembers []string, oldMin,
 				break
 			}
 			slots--
+		}
+		out[a] = true
+	}
+	return out
+}
+
+// selectAccusedExclusionsStacked is selectAccusedExclusions from 0.12.0
+// (TssAccuseStackActive). Same order (most-named first, ties by account) and
+// the same stop at the old committee's minimum, with three changes:
+//   - up to accuseMaxExclusionsStacked parties, minus alreadyOut, so the accused
+//     of one rotation stack (one row lands per failed session, so they are added
+//     one attempt at a time);
+//   - an accused party on neither list (not ready, blamed or banned) takes no
+//     slot: it is out already, and counting it let a node that stopped attesting
+//     keep a failing one in;
+//   - it also stops where the next party would take the new committee below
+//     newMin (0 = no minimum), instead of applyAccusedExclusions dropping every
+//     exclusion afterwards, so a party that fits stays out.
+//
+// It never removes less from either list than selectAccusedExclusions does for
+// the same inputs. Deterministic for identical inputs.
+func selectAccusedExclusionsStacked(counts map[string]int, oldMembers, newMembers []string, oldMin, newMin, alreadyOut int) map[string]bool {
+	inOld := make(map[string]bool, len(oldMembers))
+	for _, m := range oldMembers {
+		inOld[m] = true
+	}
+	inNew := make(map[string]bool, len(newMembers))
+	for _, m := range newMembers {
+		inNew[m] = true
+	}
+	order := make([]string, 0, len(counts))
+	for a, c := range counts {
+		if c > 0 {
+			order = append(order, a)
+		}
+	}
+	sort.Slice(order, func(i, j int) bool {
+		if counts[order[i]] != counts[order[j]] {
+			return counts[order[i]] > counts[order[j]]
+		}
+		return order[i] < order[j]
+	})
+	oldSlots := len(oldMembers) - oldMin
+	newSlots := len(newMembers)
+	if newMin > 0 {
+		newSlots = len(newMembers) - newMin
+	}
+	out := make(map[string]bool)
+	for _, a := range order {
+		if len(out)+alreadyOut >= accuseMaxExclusionsStacked {
+			break
+		}
+		if !inOld[a] && !inNew[a] {
+			continue
+		}
+		if (inOld[a] && oldSlots <= 0) || (inNew[a] && newSlots <= 0) {
+			// As in selectAccusedExclusions: never fall through to a
+			// less-named party once a more-named one cannot be left out.
+			break
+		}
+		if inOld[a] {
+			oldSlots--
+		}
+		if inNew[a] {
+			newSlots--
 		}
 		out[a] = true
 	}
@@ -389,13 +462,25 @@ func (tssMgr *TssManager) blsSignCommitment(c tss_helpers.BaseCommitment) (strin
 // is dropped: the reshare would be refused anyway, and only a successful one
 // clears the accusation, so leaving the party out would block the key for the
 // whole blame window. Same rule as the old side: nobody is left out instead.
-func applyAccusedExclusions(oldList, newList []Participant, counts map[string]int, fullOldSize, alreadyOut, newMin int) (keepOld, keepNew []Participant, out map[string]bool) {
+//
+// stack (TssAccuseStackActive) selects with selectAccusedExclusionsStacked,
+// which already stops at newMin; the check below then only fires when the new
+// side was short before any exclusion, where the reshare is refused anyway.
+func applyAccusedExclusions(oldList, newList []Participant, counts map[string]int, fullOldSize, alreadyOut, newMin int, stack bool) (keepOld, keepNew []Participant, out map[string]bool) {
 	oldAccounts := make([]string, 0, len(oldList))
 	for _, p := range oldList {
 		oldAccounts = append(oldAccounts, p.Account)
 	}
 	oldThreshold, _ := tss_helpers.GetThreshold(fullOldSize)
-	out = selectAccusedExclusions(counts, oldAccounts, oldThreshold+1, alreadyOut)
+	if stack {
+		newAccounts := make([]string, 0, len(newList))
+		for _, p := range newList {
+			newAccounts = append(newAccounts, p.Account)
+		}
+		out = selectAccusedExclusionsStacked(counts, oldAccounts, newAccounts, oldThreshold+1, newMin, alreadyOut)
+	} else {
+		out = selectAccusedExclusions(counts, oldAccounts, oldThreshold+1, alreadyOut)
+	}
 	keepOld = make([]Participant, 0, len(oldList))
 	for _, p := range oldList {
 		if !out[p.Account] {

@@ -50,11 +50,11 @@ func TestP8_AccuseNewMin(t *testing.T) {
 func TestP8_FourMemberCommitteeAccusationNoLongerBlocksTheReshare(t *testing.T) {
 	members := p8Members(4)
 	counts := map[string]int{"m03": 1} // the accused (tibfox on testnet)
-	_, keepNew, out := applyAccusedExclusions(members, members, counts, 4, 0, accuseNewMin(p8Before, 4))
+	_, keepNew, out := applyAccusedExclusions(members, members, counts, 4, 0, accuseNewMin(p8Before, 4), consensusversion.TssAccuseStackActive(p8Before))
 	assert.True(t, out["m03"], "0.11: the accused is left out")
 	assert.True(t, floorRefuses(p8Before, 4, len(keepNew)), "0.11: and the floor refuses the reshare (the wedge)")
 
-	_, keepNew, out = applyAccusedExclusions(members, members, counts, 4, 0, accuseNewMin(p8After, 4))
+	_, keepNew, out = applyAccusedExclusions(members, members, counts, 4, 0, accuseNewMin(p8After, 4), consensusversion.TssAccuseStackActive(p8After))
 	assert.Empty(t, out, "0.12: the exclusion yields, nobody is left out")
 	assert.Len(t, keepNew, 4)
 	assert.False(t, floorRefuses(p8After, 4, len(keepNew)), "0.12: the reshare can run")
@@ -65,7 +65,7 @@ func TestP8_ExclusionStillAppliesWhereItFits(t *testing.T) {
 	for _, n := range []int{3, 5, 6, 7, 13, 19} {
 		members := p8Members(n)
 		counts := map[string]int{members[n-1].Account: 1}
-		_, keepNew, out := applyAccusedExclusions(members, members, counts, n, 0, accuseNewMin(p8After, n))
+		_, keepNew, out := applyAccusedExclusions(members, members, counts, n, 0, accuseNewMin(p8After, n), consensusversion.TssAccuseStackActive(p8After))
 		assert.True(t, out[members[n-1].Account], "n=%d: the accused is still left out", n)
 		assert.Len(t, keepNew, n-1, "n=%d", n)
 		assert.False(t, floorRefuses(p8After, n, len(keepNew)), "n=%d: and the reshare is not refused", n)
@@ -76,9 +76,9 @@ func TestP8_ExclusionStillAppliesWhereItFits(t *testing.T) {
 func TestP8_ZeroMinimumKeepsTheOldBehaviour(t *testing.T) {
 	members := p8Members(4)
 	counts := map[string]int{"m03": 2}
-	_, keepNew, out := applyAccusedExclusions(members, members, counts, 4, 0, 0)
+	_, keepNew, out := applyAccusedExclusions(members, members, counts, 4, 0, 0, false)
 	assert.Equal(t, map[string]bool{"m03": true}, out)
 	assert.Len(t, keepNew, 3)
-	_, _, out = applyAccusedExclusions(members, members, counts, 4, 1, accuseNewMin(p8After, 4))
+	_, _, out = applyAccusedExclusions(members, members, counts, 4, 1, accuseNewMin(p8After, 4), consensusversion.TssAccuseStackActive(p8After))
 	assert.Empty(t, out, "blame/ban already left someone out: POA-8 adds nothing (unchanged)")
 }

@@ -728,6 +728,24 @@ func TssAccuseYieldsToFloorActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// TssAccuseStackActive reports whether POA-8 accusation exclusions stack within a
+// key's rotation: up to two accused parties stay out of the retries instead of one,
+// an accused party already off both lists (not ready, blamed, banned) takes no
+// slot, and the selection stops where the next party would take either committee
+// below its minimum. With one exclusion, two members that attest ready and then
+// fail kept every attempt failing (the exclusion alternated between them); on
+// mainnet (0.3 blames, epochs 1898-2203) 18 epochs had exactly two such members
+// in a reshare the floor allows. The cost: a member that starves one honest party
+// per attempt gets that party accused (never itself), so it can keep two honest
+// parties out instead of one. Signers needed once it lets the key land: 10 of 16
+// either way, 10 of 17 (11 before), 11 of 18 (12 before), 12 of 19 either way;
+// never below the threshold floor. On the 0.12.0 line with the rest of the batch;
+// the testnet already runs 0.12.0, so its nodes move to this build together
+// (builds disagree whenever an accusation is live, not only with two).
+func TssAccuseStackActive(active Version) bool {
+	return Version0_12_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS

@@ -11,6 +11,7 @@ func TestTssPartyGatesActivateAtTwelveTogether(t *testing.T) {
 		"PeerIdPoPActive":              PeerIdPoPActive,
 		"PendingKeyReshareActive":      PendingKeyReshareActive,
 		"HivePrefixRecipientActive":    HivePrefixRecipientActive,
+		"TssAccuseStackActive":         TssAccuseStackActive,
 	}
 	for name, gate := range gates {
 		for _, tc := range []struct {

@@ -253,7 +253,7 @@ func TestPoa8_FramedExclusionsDoNotAddUp(t *testing.T) {
 	for _, framed := range names[10:16] { // six honest seats, one statement each
 		counts[framed] = 1
 	}
-	keepOld, keepNew, out := applyAccusedExclusions(participants, participants, counts, len(names), 0, 0)
+	keepOld, keepNew, out := applyAccusedExclusions(participants, participants, counts, len(names), 0, 0, false)
 	require.Len(t, out, 1)
 	assert.Len(t, keepOld, 18)
 	assert.Len(t, keepNew, 18)
