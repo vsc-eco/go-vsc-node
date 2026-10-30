@@ -555,10 +555,11 @@ func fetchVaultInfo(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, cont
 // SentSweep is a sweep the bot broadcast: every signed version it sent (any of
 // them may mine) and the confirmSweep submitted for it.
 type SentSweep struct {
-	TxHashes    []string `json:"tx_hashes"`
-	SentAt      int64    `json:"sent_at"`
-	ConfirmTxId string   `json:"confirm_tx_id,omitempty"`
-	NextTryAt   int64    `json:"next_try_at,omitempty"`
+	TxHashes        []string `json:"tx_hashes"`
+	SentAt          int64    `json:"sent_at"`
+	LastBroadcastAt int64    `json:"last_broadcast_at,omitempty"`
+	ConfirmTxId     string   `json:"confirm_tx_id,omitempty"`
+	NextTryAt       int64    `json:"next_try_at,omitempty"`
 }
 
 // lowestOpenNonce is the lowest nonce among gen's open sweeps.
@@ -613,7 +614,11 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 		return
 	}
 
-	// Broadcast each signed version not yet sent.
+	// Broadcast each signed version not yet sent; while none has mined, re-post
+	// them every rebroadcastInterval, as an unmined withdrawal (B8): a shallow
+	// reorg or a mempool that dropped the tx would otherwise leave the sweep
+	// waiting for a re-drive (32 L1 blocks and a new signature).
+	repost := len(ss.TxHashes) > 0 && time.Since(time.Unix(ss.LastBroadcastAt, 0)) >= rebroadcastInterval && !sweepMined(rpc, ss.TxHashes)
 	digests := make([]string, len(r.Versions))
 	for i, v := range r.Versions {
 		digests[i], _ = computeSighash(v.Unsigned)
@@ -637,17 +642,20 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			continue
 		}
 		hash := strings.ToLower(ethCrypto.Keccak256Hash(hexToBytes(signed)).Hex())
-		if !containsStr(ss.TxHashes, hash) {
+		if known := containsStr(ss.TxHashes, hash); !known || repost {
 			if _, err := rpc.broadcastTx(signed); err != nil && !strings.Contains(strings.ToLower(err.Error()), "known") {
 				slog.Warn("sweep broadcast failed", "sweep", key, "err", err)
 				continue
 			}
-			ss.TxHashes = append(ss.TxHashes, hash)
+			if !known {
+				ss.TxHashes = append(ss.TxHashes, hash)
+			}
 			if ss.SentAt == 0 {
 				ss.SentAt = time.Now().Unix()
 			}
+			ss.LastBroadcastAt = time.Now().Unix()
 			save()
-			slog.Info("sweep broadcast", "sweep", key, "asset", r.Asset, "tx", hash)
+			slog.Info("sweep broadcast", "sweep", key, "asset", r.Asset, "tx", hash, "repost", known)
 		}
 	}
 
@@ -719,6 +727,16 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			}
 		}
 	}
+}
+
+// sweepMined reports whether any of hashes has a receipt.
+func sweepMined(rpc *ethRPC, hashes []string) bool {
+	for _, h := range hashes {
+		if rc, err := rpc.getReceipt(h); err == nil && rc != nil && string(rc) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 func containsStr(list []string, s string) bool {

@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"vsc-node/lib/btcvault"
 
@@ -192,5 +193,49 @@ func TestA01Bot_HealthWatchesEveryLiveKey(t *testing.T) {
 	}
 	if got := (EVMBotConfig{}).healthKeys("vsc1b-primary"); len(got) != 1 || got[0] != "vsc1b-primary" {
 		t.Fatalf("no registry: %v", got)
+	}
+}
+
+// A sweep that has not mined is re-posted every rebroadcastInterval (as an
+// unmined withdrawal, B8): after a shallow reorg or a mempool drop it would
+// otherwise wait for a re-drive. A recent send or a mined sweep is left alone.
+func TestA01Bot_UnminedSweepIsReposted(t *testing.T) {
+	succ := common.HexToAddress(rotAddr(2))
+	unsigned := rotUnsigned(succ, big.NewInt(5), nil)
+	sh, _ := computeSighash(unsigned)
+	view, _ := decodeVaultView("vsc1bridge", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining}, rotEntry{1, 2, btcvault.VaultStatusActive})))
+	rec := sweepRecord{Gen: 0, Nonce: 7, Asset: "eth", Versions: []sweepVersion{{Unsigned: unsigned}}}
+	run := func(lastSent time.Time, mined bool) int {
+		t.Helper()
+		l1, l2 := newFakeL1(), newFakeL2()
+		l2.sigs[sh] = tssSigWith(t, rotKey(1), unsigned)
+		rpc, gql := l1.rpc(t), l2.gql(t)
+		cp := &Checkpoint{SentSweeps: map[string]SentSweep{}}
+		driveSweep(context.Background(), rpc, gql, nil, cp, EVMBotConfig{ContractID: "vsc1bridge"}, view, rec, false)
+		if len(l1.sent) != 1 {
+			t.Fatalf("first drive: %d broadcasts", len(l1.sent))
+		}
+		ss := cp.SentSweeps["0-7"]
+		ss.LastBroadcastAt = lastSent.Unix()
+		cp.SentSweeps["0-7"] = ss
+		if mined {
+			b, _ := hex.DecodeString(strings.TrimPrefix(l1.sent[0], "0x"))
+			var tx types.Transaction
+			_ = tx.UnmarshalBinary(b)
+			c := l1.block(50)
+			c.txs, c.receipts = append(c.txs, &tx), append(c.receipts, &types.Receipt{Type: 2, Status: 1, TxHash: tx.Hash()})
+			l1.finalized = 0 // not final yet: the bot waits, no confirm
+		}
+		driveSweep(context.Background(), rpc, gql, nil, cp, EVMBotConfig{ContractID: "vsc1bridge"}, view, rec, false)
+		return len(l1.sent) - 1
+	}
+	if n := run(time.Now().Add(-time.Hour), false); n != 1 {
+		t.Fatalf("unmined for an hour: %d re-posts, want 1", n)
+	}
+	if n := run(time.Now(), false); n != 0 {
+		t.Fatalf("just sent: %d re-posts, want 0", n)
+	}
+	if n := run(time.Now().Add(-time.Hour), true); n != 0 {
+		t.Fatalf("mined: %d re-posts, want 0", n)
 	}
 }
