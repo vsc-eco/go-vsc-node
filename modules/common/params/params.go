@@ -1162,6 +1162,20 @@ func (o OracleParams) HasZKVerifier(symbol string) bool {
 	return ok
 }
 
+// EvmBridgeContractIds returns the id of each EVM bridge contract that is a
+// consensus input at height (its EvmBridgeFromHeight is set and <= height),
+// sorted so every node iterates them in one order.
+func (o OracleParams) EvmBridgeContractIds(height uint64) []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for sym, c := range o.EvmBridgeContracts {
+		if from, ok := o.EvmBridgeFromHeight[sym]; c != "" && ok && from <= height {
+			ids = append(ids, c)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // EvmVaultKeyIds returns the TSS key id of each EVM bridge's vault
 // (<contract id>-primary) that is a consensus input at height (its
 // EvmBridgeFromHeight is set and <= height), sorted so every node iterates

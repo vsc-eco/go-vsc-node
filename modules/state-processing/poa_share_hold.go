@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"vsc-node/lib/btcvault"
 	"vsc-node/modules/common/consensusversion"
@@ -80,10 +81,26 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 	if se.sconf == nil || se.tssCommitments == nil || se.electionDb == nil || height == 0 {
 		return false, nil
 	}
-	evmFunded, evmHolders, err := se.evmVaultHolders(height)
+	evmRegs, err := se.evmVaultRegistries(height)
 	if err != nil {
 		return true, err
 	}
+	registered := map[string]bool{}
+	evmRegFunded := false
+	for _, r := range evmRegs {
+		registered[r.contract] = true
+		if r.corrupt {
+			return true, nil // present but undecodable: fail closed, as for BTC
+		}
+		for _, v := range r.vaults {
+			evmRegFunded = evmRegFunded || poaLocksBond(v.Status)
+		}
+	}
+	evmFunded, evmHolders, err := se.evmVaultHolders(height, registered)
+	if err != nil {
+		return true, err
+	}
+	evmFunded = evmFunded || evmRegFunded
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
 	var rawV []byte
 	var vaults []btcvault.Vault
@@ -137,10 +154,20 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 	if evmHolders[who] {
 		return true, nil
 	}
+	// A01: every keygen/reshare party of a funded EVM generation, the BTC rule.
+	for _, r := range evmRegs {
+		parties, perr := se.fundedVaultParties(r.contract, btcvault.EvmVaultKeyBase, r.raw, r.vaults, height-1)
+		if perr != nil {
+			return true, perr
+		}
+		if parties[who] {
+			return true, nil
+		}
+	}
 	if !btcFunded {
 		return false, nil
 	}
-	parties, err := se.fundedVaultParties(btcContract, rawV, vaults, height-1)
+	parties, err := se.fundedVaultParties(btcContract, btcvault.BtcVaultKeyBase, rawV, vaults, height-1)
 	if err != nil {
 		return true, err
 	}
@@ -161,7 +188,10 @@ func (se *StateEngine) heldShareOfFundedVault(account string, height uint64) (bo
 // readiness-eligible (vaultrotation.ComputeRetiringSignerSet), so nobody signs
 // for the vault with a released bond. Retiring older shares is the key
 // rotation's job (C3).
-func (se *StateEngine) evmVaultHolders(height uint64) (bool, map[string]bool, error) {
+//
+// A01: a bridge with a vault registry (registered) is held by its registry
+// instead, every party of every funded generation as for BTC, and is skipped.
+func (se *StateEngine) evmVaultHolders(height uint64, registered map[string]bool) (bool, map[string]bool, error) {
 	keys := se.sconf.OracleParams().EvmVaultKeyIds(height)
 	if len(keys) == 0 || !consensusversion.EvmVaultCustodyActive(se.ActiveConsensusVersion(height)) {
 		return false, nil, nil
@@ -169,6 +199,9 @@ func (se *StateEngine) evmVaultHolders(height uint64) (bool, map[string]bool, er
 	funded := false
 	holders := map[string]bool{}
 	for _, keyId := range keys {
+		if registered[strings.TrimSuffix(keyId, "-"+btcvault.EvmVaultKeyBase)] {
+			continue
+		}
 		c, err := se.tssCommitments.GetCommitmentByHeight(keyId, height, "reshare", "keygen")
 		if err != nil {
 			if isTransientReadErr(err) {
@@ -214,9 +247,9 @@ type poaPartyMemo struct {
 // writer is the vsc.tss_commitment handler, and a late row can carry an older
 // block height). Election members are cached per epoch: an election is
 // written once.
-func (se *StateEngine) fundedVaultParties(btcContract string, rawV []byte, vaults []btcvault.Vault, below uint64) (map[string]bool, error) {
+func (se *StateEngine) fundedVaultParties(btcContract, base string, rawV []byte, vaults []btcvault.Vault, below uint64) (map[string]bool, error) {
 	sum := sha256.Sum256(rawV)
-	key := fmt.Sprintf("%s|%d|%d|%x", btcContract, below, se.tssCommitWrites.Load(), sum)
+	key := fmt.Sprintf("%s|%s|%d|%d|%x", btcContract, base, below, se.tssCommitWrites.Load(), sum)
 	se.poaCacheMu.Lock()
 	if se.poaPartyMemo.key == key && se.poaPartyMemo.parties != nil {
 		parties := se.poaPartyMemo.parties
@@ -225,7 +258,7 @@ func (se *StateEngine) fundedVaultParties(btcContract string, rawV []byte, vault
 	}
 	se.poaCacheMu.Unlock()
 
-	parties, err := fundedVaultPartySet(vaults, btcContract,
+	parties, err := fundedVaultPartySet(vaults, btcContract, base,
 		func(keyId string) ([]tss_db.TssCommitment, error) {
 			rows, err := se.tssCommitments.FindCommitmentsSimple(&keyId, []string{"keygen", "reshare"}, nil, nil, &below, 0)
 			if err != nil && isTransientReadErr(err) {
@@ -323,7 +356,7 @@ func accountInFundedVaultCommittees(
 			return true, nil
 		}
 	}
-	parties, err := fundedVaultPartySet(vaults, btcContract, listCommits, getElection)
+	parties, err := fundedVaultPartySet(vaults, btcContract, btcvault.BtcVaultKeyBase, listCommits, getElection)
 	if err != nil {
 		return true, err
 	}
@@ -336,6 +369,7 @@ func accountInFundedVaultCommittees(
 func fundedVaultPartySet(
 	vaults []btcvault.Vault,
 	btcContract string,
+	base string,
 	listCommits func(keyId string) ([]tss_db.TssCommitment, error),
 	getElection func(epoch uint64) (*elections.ElectionResult, error),
 ) (map[string]bool, error) {
@@ -345,7 +379,7 @@ func fundedVaultPartySet(
 		if !poaLocksBond(v.Status) {
 			continue
 		}
-		keyId := btcContract + "-" + btcvault.VaultKeyName(v.Generation)
+		keyId := btcContract + "-" + btcvault.VaultKeyNameFor(base, v.Generation)
 		rows, err := listCommits(keyId)
 		if err != nil {
 			return nil, fmt.Errorf("commitments of %s: %w", keyId, err)
@@ -374,4 +408,32 @@ func fundedVaultPartySet(
 		}
 	}
 	return parties, nil
+}
+
+// evmVaultRegistry is a rotating EVM vault's registry at a height (A01).
+type evmVaultRegistry struct {
+	contract string
+	raw      []byte
+	vaults   []btcvault.Vault
+	corrupt  bool
+}
+
+// evmVaultRegistries reads the vault registry of every EVM bridge whose vault
+// rolls keys at height (consensus 0.13.0). A bridge with no registry yet is
+// left out (its key is held by the C2 newest-holders rule).
+func (se *StateEngine) evmVaultRegistries(height uint64) ([]evmVaultRegistry, error) {
+	var out []evmVaultRegistry
+	for _, c := range se.evmRotatingContracts(height) {
+		var transient error
+		raw, ok := se.btcContractStateReaderAtStrict(c, height, &transient)("v")
+		if transient != nil {
+			return nil, transient
+		}
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		vs, err := btcvault.UnmarshalVaultRegistry(raw)
+		out = append(out, evmVaultRegistry{contract: c, raw: raw, vaults: vs, corrupt: err != nil})
+	}
+	return out, nil
 }

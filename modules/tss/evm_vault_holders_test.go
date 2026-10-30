@@ -123,10 +123,12 @@ func (c evmCommitments) GetCommitmentByHeight(keyId string, _ uint64, _ ...strin
 type countingOutputs struct {
 	contracts.ContractState
 	reads int
+	ids   []string
 }
 
-func (c *countingOutputs) GetLastOutput(string, uint64) (contracts.ContractOutput, error) {
+func (c *countingOutputs) GetLastOutput(id string, _ uint64) (contracts.ContractOutput, error) {
 	c.reads++
+	c.ids = append(c.ids, id)
 	return contracts.ContractOutput{}, mongo.ErrNoDocuments
 }
 
@@ -164,8 +166,10 @@ func TestRetiringGenSignerSet_EvmOnlyNetwork(t *testing.T) {
 	if !set.HasReadiness("carol") || !set.HasReadiness("dave") || set.HasReadiness("alice") {
 		t.Fatalf("0.13.0: want carol and dave eligible, got %v", set.ActiveSignerElection)
 	}
-	if outputs.reads != 0 {
-		t.Fatalf("an EVM-only height read a contract output %d times (no BTC contract to read)", outputs.reads)
+	// A01 (0.13.0): the EVM bridge's vault registry is read, once; never a BTC
+	// contract (there is none). With no registry yet the C1 holders still apply.
+	if outputs.reads != 1 || outputs.ids[0] != evmBridge {
+		t.Fatalf("an EVM-only height read contract outputs %v, want only the EVM bridge's registry", outputs.ids)
 	}
 	if !mgr.retiringGenSignerSetCached(1000).HasReadiness("dave") {
 		t.Fatal("the cached accessor (gossip receive path) must see the EVM holders too")

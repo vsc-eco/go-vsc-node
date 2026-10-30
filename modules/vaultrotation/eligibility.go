@@ -18,6 +18,7 @@ package vaultrotation
 import (
 	"encoding/base64"
 	"math/big"
+	"strings"
 
 	"vsc-node/lib/btcvault"
 	"vsc-node/modules/db/vsc/elections"
@@ -172,6 +173,20 @@ type RetiringSignerDeps struct {
 	// only its newest holders carry live shares the readiness set must reach.
 	EvmVaultKeyIds         []string
 	IncludeEvmVaultHolders bool
+	// EvmRegistries are the EVM bridges' vault registries (A01, consensus
+	// 0.13.0, consensusversion.EvmVaultRotationActive). Each is read exactly as
+	// the BTC registry, with its own key-name base ("primary"). A contract
+	// listed here with a present "v" is driven by its registry; its
+	// EvmVaultKeyIds newest-holders entry (C1) then no longer applies.
+	EvmRegistries []RegistrySource
+}
+
+// RegistrySource is a rotating vault's contract, its key-name base and a
+// reader of its committed state at the height.
+type RegistrySource struct {
+	Contract string
+	Base     string
+	ReadKey  func(key string) ([]byte, bool)
 }
 
 // ComputeRetiringSignerSet is the pure, deterministic core: it reads the BTC vault
@@ -189,10 +204,22 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		ReshareSkipKeyIds:     map[string]bool{},
 		ReadinessWidened:      d.IncludeActiveHolders || d.IncludeEvmVaultHolders,
 	}
+	// A01: the EVM bridges with a registry are driven by it, like BTC.
+	registered := map[string]bool{}
+	for _, r := range d.EvmRegistries {
+		if raw, ok := r.ReadKey("v"); ok && len(raw) > 0 {
+			registered[r.Contract] = true
+			addRegistry(&out, d, r.Contract, r.Base, raw, d.IncludeEvmVaultHolders)
+		}
+	}
 	// C1 (0.13.0): before the BTC registry, which may be absent. Readiness only;
 	// none of this reaches SignerElection / KeyIds (the #11 retiring bond lock).
+	// A bridge whose registry is present is covered above.
 	if d.IncludeEvmVaultHolders {
 		for _, keyId := range d.EvmVaultKeyIds {
+			if registered[strings.TrimSuffix(keyId, "-"+btcvault.EvmVaultKeyBase)] {
+				continue
+			}
 			if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
 				for _, account := range accounts {
 					out.ActiveSignerElection[account] = elec
@@ -207,19 +234,28 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 	if !ok || len(rawV) == 0 {
 		return out
 	}
+	addRegistry(&out, d, d.BtcContract, btcvault.BtcVaultKeyBase, rawV, d.IncludeActiveHolders)
+	return out
+}
+
+// addRegistry folds one vault registry into out: reshare-skip for every
+// non-active generation, readiness for a pending generation's keygen committee,
+// the active generation's holders when includeActive, and the committee of every
+// retiring/draining/inactive generation for signing and the #11 bond lock.
+func addRegistry(out *RetiringSignerSet, d RetiringSignerDeps, contract, base string, rawV []byte, includeActive bool) {
 	vaults, err := btcvault.UnmarshalVaultRegistry(rawV)
 	if err != nil {
 		// L8-01 (FULL-PRUNED): "v" PRESENT but undecodable = corrupt committed state.
 		// Fail CLOSED (match output_scoping's resolveVaultView, which refuses all keysigns)
 		// by signalling Unresolvable — the #11 bond-lock reads it as everybody-locked
 		// rather than releasing bonds on an empty set. Deterministic (same "v" everywhere).
-		// The absent-"v" case above stays empty+resolvable (pre-rotation, nobody locked).
+		// The absent-"v" case stays empty+resolvable (pre-rotation, nobody locked).
 		out.Unresolvable = true
-		return out
+		return
 	}
 	for i := range vaults {
 		v := vaults[i]
-		keyId := d.BtcContract + "-" + btcvault.VaultKeyName(v.Generation)
+		keyId := contract + "-" + btcvault.VaultKeyNameFor(base, v.Generation)
 
 		// Reshare-skip: any NON-ACTIVE generation must be skipped by the reshare loop —
 		// retiring/draining/inactive AND the terminal PURGED. This closes the purged-key
@@ -275,7 +311,7 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		// commitment), so a holder that leaves the election can still sign and
 		// hand the key on.
 		if v.Status == btcvault.VaultStatusActive {
-			if d.IncludeActiveHolders {
+			if includeActive {
 				if elec, accounts, ok := commitmentCommittee(d, keyId); ok {
 					for _, account := range accounts {
 						out.ActiveSignerElection[account] = elec
@@ -314,7 +350,6 @@ func ComputeRetiringSignerSet(d RetiringSignerDeps) RetiringSignerSet {
 		}
 		out.KeyIds[keyId] = true
 	}
-	return out
 }
 
 // commitmentCommittee resolves a keyId's keygen/reshare commitment to the election

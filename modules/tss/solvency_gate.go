@@ -106,7 +106,9 @@ func (tssMgr *TssManager) isBtcVaultKey(keyId string) bool {
 // vault_rotation_gate.go; never the bare pin, or the TSS half would stay inert
 // after a floor-only activation while the contract-execution half goes live).
 func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uint64) bool {
-	if !tssMgr.vaultRotationV2InForce(bh) || !tssMgr.isBtcVaultKey(keyId) {
+	// A01: an EVM bridge's vault generations follow the same rule from 0.13.0.
+	_, evmKey := tssMgr.evmRotatingKey(keyId, bh)
+	if !evmKey && (!tssMgr.vaultRotationV2InForce(bh) || !tssMgr.isBtcVaultKey(keyId)) {
 		return false
 	}
 	set := tssMgr.retiringGenSignerSet(bh)

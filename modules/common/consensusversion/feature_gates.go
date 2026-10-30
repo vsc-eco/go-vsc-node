@@ -825,6 +825,18 @@ func EvmVaultCustodyActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// EvmVaultRotationActive (0.13.0, A01): the EVM bridge's vault rolls keys like
+// the BTC vault. Each EVM bridge contract's vault registry ("v", the BTC layout,
+// keys "primary"/"primaryv<N>") drives the same rules as the BTC registry: a
+// superseded generation is not reshared and signs only sweeps that pay the
+// active generation (output scoping), the parties of every keygen/reshare of a
+// funded generation keep their bonds locked (POA-1), and a pending
+// generation's check signature is enqueued and marked (BRK-2). Resolve `active`
+// at the decision height.
+func EvmVaultRotationActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.

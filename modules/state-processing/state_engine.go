@@ -336,15 +336,23 @@ func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) (
 	// version costs an election read, and the overwhelming majority of calls here
 	// are for keys that are not BTC vault keys at all.
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
-	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
-		return nil, false
-	}
-	if !se.vaultRotationV2InForce(bh) {
-		return nil, false
-	}
-	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
-	if !ok {
-		return nil, false
+	var gen uint32
+	if btcContract != "" && strings.HasPrefix(keyId, btcContract+"-") {
+		if !se.vaultRotationV2InForce(bh) {
+			return nil, false
+		}
+		g, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+		if !ok {
+			return nil, false
+		}
+		gen = g
+	} else {
+		// A01: an EVM bridge's vault generation (0.13.0) proves its key the same way.
+		g, ok := se.evmVaultGenOfKey(keyId, bh)
+		if !ok {
+			return nil, false
+		}
+		gen = g
 	}
 	pub, err := hex.DecodeString(pubKeyHex)
 	if err != nil || len(pub) != 33 {
@@ -4069,4 +4077,22 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 		out = append(out, acct)
 	}
 	return out
+}
+
+// evmVaultGenOfKey parses keyId as a rotating EVM vault's generation key at bh
+// ("<contract>-primary" or "-primaryv<N>"). The contract list is checked first
+// (local and cheap), the consensus version only for a matching key.
+func (se *StateEngine) evmVaultGenOfKey(keyId string, bh uint64) (uint32, bool) {
+	if se.sconf == nil {
+		return 0, false
+	}
+	for _, c := range se.sconf.OracleParams().EvmBridgeContractIds(bh) {
+		if g, ok := btcvault.VaultGenFromKeyIdFor(c, btcvault.EvmVaultKeyBase, keyId); ok {
+			if !consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(bh)) {
+				return 0, false
+			}
+			return g, true
+		}
+	}
+	return 0, false
 }

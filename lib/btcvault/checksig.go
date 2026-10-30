@@ -72,6 +72,12 @@ func CheckSigMessage(keyId string, gen uint32, pubkey []byte) []byte {
 // call this with their own BTC contract id so M binds the identical gen on every
 // node.
 func VaultGenFromKeyId(contractId, keyId string) (uint32, bool) {
+	return VaultGenFromKeyIdFor(contractId, BtcVaultKeyBase, keyId)
+}
+
+// VaultGenFromKeyIdFor is VaultGenFromKeyId for a vault whose generation 0 key
+// is base.
+func VaultGenFromKeyIdFor(contractId, base, keyId string) (uint32, bool) {
 	if contractId == "" {
 		return 0, false
 	}
@@ -79,7 +85,7 @@ func VaultGenFromKeyId(contractId, keyId string) (uint32, bool) {
 	if !strings.HasPrefix(keyId, prefix) {
 		return 0, false
 	}
-	return VaultGenFromKeyName(keyId[len(prefix):])
+	return VaultGenFromKeyNameFor(base, keyId[len(prefix):])
 }
 
 // VaultGenFromKeyName is the strict inverse of VaultKeyName: "main" =>
@@ -89,10 +95,16 @@ func VaultGenFromKeyId(contractId, keyId string) (uint32, bool) {
 // never emits a leading zero and encodes generation 0 as "main", never
 // "mainv0".
 func VaultGenFromKeyName(name string) (uint32, bool) {
-	if name == "main" {
+	return VaultGenFromKeyNameFor(BtcVaultKeyBase, name)
+}
+
+// VaultGenFromKeyNameFor is VaultGenFromKeyName for a vault whose generation 0
+// key is base: the exact inverse of VaultKeyNameFor(base, gen).
+func VaultGenFromKeyNameFor(base, name string) (uint32, bool) {
+	if name == base {
 		return 0, true
 	}
-	const p = "mainv"
+	p := base + "v"
 	if !strings.HasPrefix(name, p) {
 		return 0, false
 	}
