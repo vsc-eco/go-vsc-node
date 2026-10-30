@@ -74,3 +74,58 @@ func TestPinnedVersionFloorExcludesOldCode(t *testing.T) {
 		t.Fatal("upgraded 0.1.0 must meet a 0.1 floor")
 	}
 }
+
+// VaultRotationV2Enabled must be a pure, deterministic function of config +
+// blockHeight: INERT (always false) when the activation height is 0 — the safe
+// default on every network today, the property that lets the binary dark-launch
+// — and, once pinned, disabled strictly BELOW the height and enabled at/above it
+// (mirrors BondInclusionActive; a height at/below an already-processed block
+// would diverge live-vs-reindex, hence the strictly-above deploy rule).
+func TestVaultRotationV2Enabled(t *testing.T) {
+	inert := ConsensusParams{VaultRotationV2ActivationHeight: 0}
+	for _, bh := range []uint64{0, 1, 100, 1 << 40} {
+		if inert.VaultRotationV2Enabled(bh) {
+			t.Fatalf("activation height 0 must be inert, but enabled at bh=%d", bh)
+		}
+	}
+
+	cp := ConsensusParams{VaultRotationV2ActivationHeight: 100}
+	cases := []struct {
+		bh   uint64
+		want bool
+	}{
+		{0, false}, {99, false}, {100, true}, {101, true}, {1 << 40, true},
+	}
+	for _, tc := range cases {
+		if got := cp.VaultRotationV2Enabled(tc.bh); got != tc.want {
+			t.Fatalf("VaultRotationV2Enabled(bh=%d) with activation=100 = %v, want %v", tc.bh, got, tc.want)
+		}
+	}
+}
+
+// EffectiveMaxNewMembers gates the churn cap on an activation height so a rolling
+// binary upgrade can't split the election member set: the cap is INERT (0) until a
+// height is pinned and reached, then the configured value applies. Mirrors
+// VaultRotationV2Enabled/BondInclusionActive (pruned-methodology, 4-lens fix).
+func TestEffectiveMaxNewMembers(t *testing.T) {
+	// Inert: no activation height → cap disabled at every height, whatever the value.
+	inert := ConsensusParams{MaxNewMembersPerElection: 5, MaxNewMembersActivationHeight: 0}
+	for _, bh := range []uint64{0, 1, 100, 1 << 40} {
+		if inert.MaxNewMembersActive(bh) || inert.EffectiveMaxNewMembers(bh) != 0 {
+			t.Fatalf("cap must be inert with activation height 0, but active at bh=%d", bh)
+		}
+	}
+	// Gated: the value is in force only at/after the pinned height.
+	cp := ConsensusParams{MaxNewMembersPerElection: 3, MaxNewMembersActivationHeight: 100}
+	cases := []struct {
+		bh   uint64
+		want int
+	}{
+		{0, 0}, {99, 0}, {100, 3}, {101, 3}, {1 << 40, 3},
+	}
+	for _, tc := range cases {
+		if got := cp.EffectiveMaxNewMembers(tc.bh); got != tc.want {
+			t.Fatalf("EffectiveMaxNewMembers(bh=%d) value=3 height=100 = %d, want %d", tc.bh, got, tc.want)
+		}
+	}
+}

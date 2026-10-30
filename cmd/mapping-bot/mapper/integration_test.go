@@ -32,7 +32,7 @@ func (c *testBotConfig) HttpPort() uint16   { return 0 }
 func (c *testBotConfig) SignApiKey() string { return "" }
 func (c *testBotConfig) OpsApiKey() string  { return "" }
 func (c *testBotConfig) FilePath() string   { return "" }
-func (c *testBotConfig) RcLimit() uint      { return 10000 }
+func (c *testBotConfig) RcLimit() uint64    { return 10000 }
 
 // newTestBotWithMocks creates a Bot wired to all mock dependencies.
 // Returns the bot and all mocks so the caller can inspect/configure them.
@@ -64,6 +64,7 @@ func newTestBotWithMocks() (
 		Caller:  caller,
 		StateDB: state,
 		AddrDB:  addr,
+		InstrDB: newMockInstructionStore(),
 	}
 	return
 }
@@ -367,6 +368,8 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 	gql.lastHeight = "1000"
 	// The mock caller returns "mock-tx-id"; tell the mock GQL it's confirmed.
 	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
+	// The contract still lists the spend as pending (it has not settled yet).
+	gql.txSpends = map[string]*contractinterface.SigningData{"txConfirm1": {}}
 
 	// Add a sent tx to the state store
 	sigHash := make([]byte, 32)
@@ -411,7 +414,8 @@ func TestHandleConfirmations_EndToEnd(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleConfirmations_NotYetConfirmed(t *testing.T) {
-	bot, _, caller, state, _, chainClient := newTestBotWithMocks()
+	bot, gql, caller, state, _, chainClient := newTestBotWithMocks()
+	gql.lastHeight = "1000"
 
 	sigHash := make([]byte, 32)
 	sigHash[0] = 0xCC
@@ -687,6 +691,7 @@ func TestHandleConfirmations_MultipleTransactions(t *testing.T) {
 	gql.txStatuses = map[string]string{"mock-tx-id": "CONFIRMED"}
 
 	// Add two sent transactions
+	gql.txSpends = map[string]*contractinterface.SigningData{"txA": {}, "txB": {}}
 	for _, txID := range []string{"txA", "txB"} {
 		sigHash := make([]byte, 32)
 		sigHash[0] = txID[2] // use last char as distinguisher

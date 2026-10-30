@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
@@ -13,6 +14,7 @@ import (
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -49,7 +51,7 @@ type TxVscCallContract struct {
 	ContractId string             `json:"contract_id"`
 	Action     string             `json:"action"`
 	Payload    json.RawMessage    `json:"payload"`
-	RcLimit    uint               `json:"rc_limit"`
+	RcLimit    uint64             `json:"rc_limit"`
 	Intents    []contracts.Intent `json:"intents"`
 }
 
@@ -109,13 +111,23 @@ func (t TxVscCallContract) ExecuteTx(
 		return errorToTxResult(fmt.Errorf("minimum RC requirement is not met. RCs available: %d", availableGas), 100)
 	}
 
-	gas := min(uint(availableGas), t.RcLimit)
+	gas := min(uint64(availableGas), t.RcLimit)
 
-	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC
-	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	// Cap gas to prevent overflow when multiplied by CYCLE_GAS_PER_RC.
+	// uint64 (not platform-dependent uint) so the bound is identical on
+	// every node regardless of architecture.
+	const maxGas = ^uint64(0) / params.CYCLE_GAS_PER_RC
 	if gas > maxGas {
 		gas = maxGas
 	}
+
+	// gasCycles is the cycle-denominated gas budget. The uint64->uint
+	// narrowing is forced by WasmEdge's gas meter (SetCostLimit/GetTotalCost
+	// are uint) and is sound under two invariants: (1) nodes only run on
+	// 64-bit, where uint == uint64, so the cast is lossless; (2) the maxGas
+	// cap above keeps gas*CYCLE_GAS_PER_RC within uint64, so the multiply
+	// cannot overflow.
+	gasCycles := uint(gas * params.CYCLE_GAS_PER_RC)
 
 	var caller string = t.Caller
 	if caller == "" {
@@ -134,6 +146,12 @@ func (t TxVscCallContract) ExecuteTx(
 	// ensure entrypoint contract is appended to outputs regardless of state access or logs
 	callSession.GetContractSession(t.ContractId)
 
+	// Resolve the chain-active consensus version ONCE. Two gates below read it, and
+	// it costs an election lookup, so resolving it per-gate would double that on
+	// every contract call — and would leave two reads that could, in principle,
+	// disagree.
+	activeVersion := se.ActiveConsensusVersion(t.Self.BlockHeight)
+
 	ctxValue := contract_execution_context.New(contract_execution_context.Environment{
 		ContractId:           t.ContractId,
 		ContractOwner:        info.Owner,
@@ -149,14 +167,36 @@ func (t TxVscCallContract) ExecuteTx(
 		Sender:               caller,
 		Intents:              t.Intents,
 		PendulumOracle:       se.PendulumOracleEnv(),
-	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gasCycles, ledgerSession, callSession, 0,
 		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
 		// Gate try/catch inter-contract calls on the chain-active consensus version
 		// (deterministic, height-addressable) so the new semantics activate only at
 		// a coordinated version floor.
 		contract_execution_context.WithTryCatch(
-			se.ActiveConsensusVersion(t.Self.BlockHeight).MeetsConsensusMin(consensusversion.TryCatchICCVersion),
+			activeVersion.MeetsConsensusMin(consensusversion.TryCatchICCVersion),
 		),
+		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on
+		// vault-rotation-v2 so the contract-execution output FORMAT changes only at a
+		// coordinated activation (fork-safe rolling deploy; byte-identical when off).
+		// This is the one v2 gate whose result feeds HASHED contract state, so the
+		// conditional-field-emission discipline matters here: when off, the field is
+		// ABSENT rather than present-and-empty.
+		//
+		// se is the StateEngine interface here, so the config is read through
+		// SystemConfig() rather than the concrete sconf field.
+		contract_execution_context.WithVaultRotationV2(
+			se.SystemConfig() != nil &&
+				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
+		),
+		// 0.11.0: TssGetKey reports whether a key has been reshared since its
+		// keygen, gated the same way so the output format changes at one height.
+		contract_execution_context.WithKeyReshared(
+			se.SystemConfig() != nil &&
+				KeyCustodyInForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
+		),
+		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
+		// coordinated height and history re-executes unchanged.
+		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -177,7 +217,7 @@ func (t TxVscCallContract) ExecuteTx(
 		hex.EncodeToString(code),
 	)
 
-	res := w.Execute(wasmCtx, gas*params.CYCLE_GAS_PER_RC, t.Action, payload, info.Runtime)
+	res := w.Execute(wasmCtx, gasCycles, t.Action, payload, info.Runtime)
 
 	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
 	// overflow for any realistic gas value (denom = 100_000). Floored at the
@@ -457,17 +497,15 @@ func (t *TxVSCWithdraw) ExecuteTx(
 		}
 	}
 
-	parameter, _ := json.Marshal(params)
 	ledgerResult := ledgerSession.Withdraw(params)
 
-	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult, "parameterJson", string(parameter))
+	log.Debug("ExecuteTx Result", "params", params, "result", ledgerResult)
 	return TxResult{
 		Success: ledgerResult.Ok,
 		Ret:     ledgerResult.Msg,
 		RcUsed:  200,
 	}
 }
-
 func (tx *TxVSCWithdraw) ToData() map[string]interface{} {
 	return map[string]interface{}{
 		"from":   tx.From,
@@ -725,6 +763,27 @@ func (tx *TxConsensusStake) ExecuteTx(
 		}
 	}
 
+	// Consensus 0.5.0 gate: record a per-delegator edge so the delegator (not the
+	// node) can reclaim this stake. Pre-activation (or pre-genesis) → legacy path.
+	stakeElec, stakeElecFound := se.GetElectionInfoOrBlock(tx.Self.BlockHeight)
+	delegated := stakeElecFound && DelegatedStakeActiveForElection(stakeElec)
+
+	// Consensus 0.5.0: a node must opt in to receive third-party delegation.
+	// When `from != to` (someone other than the operator staking to this node),
+	// the target node's published mode must allow delegation; a Deactivated node
+	// (the default until the operator announces otherwise) rejects it. The
+	// operator's own self-stake (from == to) is always allowed, and unstaking an
+	// existing delegation is never gated (see TxConsensusUnstake). Pre-0.5.0 the
+	// mode is inert and this check is skipped.
+	if delegated && tx.From != tx.To &&
+		!delegationmode.AllowsDelegation(se.NodeDelegationMode(tx.To, tx.Self.BlockHeight)) {
+		return TxResult{
+			Success: false,
+			Ret:     "node does not accept delegations",
+			RcUsed:  100,
+		}
+	}
+
 	params := ledgerSystem.ConsensusParams{
 		Id:          MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:        tx.From,
@@ -732,6 +791,7 @@ func (tx *TxConsensusStake) ExecuteTx(
 		Amount:      amount,
 		BlockHeight: tx.Self.BlockHeight,
 		Type:        "stake",
+		Delegated:   delegated,
 	}
 
 	ledgerResult := ledgerSession.ConsensusStake(params)
@@ -824,6 +884,53 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
+	// #11 bond-lock-until-drained: a witness whose committee holds a fund-holding
+	// retiring/draining BTC-vault key's shares cannot unstake its consensus bond
+	// until that generation is drained — otherwise the churning old committee banks
+	// its keygen reward, leaves, and drops the retiring key below threshold so the
+	// migration can never sign (C-A/V-A permanent freeze, no attacker). Deterministic
+	// (consensus state at height, via the same predicate as tss signing eligibility);
+	// inert unless vault-rotation-v2 is chain-active AND a retiring gen exists → the
+	// gate is byte-identical / never fires on mainnet today. The member re-submits
+	// after the migration drains its generation.
+	if se.IsBondLockedRetiringMember(tx.From, tx.Self.BlockHeight) {
+		return TxResult{
+			Success: false,
+			Ret:     "consensus bond is locked: your committee holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
+			RcUsed:  50,
+		}
+	}
+
+	// POA collateral exit-halt (B1). A seat that still holds threshold BTC
+	// shares — or left the set less than PoaExitHaltBlocks ago — cannot walk its
+	// collateral out. That window is what makes the bond a deterrent rather than
+	// a formality: theft cannot be prevented (a threshold signature confirms on
+	// Bitcoin in ~10 minutes whatever Magi does), so it is deterred by
+	// collateral the thief cannot extract before the theft is detected.
+	//
+	// This composes with, and never replaces, the 5-epoch unstake maturity
+	// below: the two are a MAX, enforced again at payout-release time so an
+	// unstake submitted just BEFORE exiting cannot slip out just after.
+	//
+	// Inert below consensus 0.7.0 and for any account with no seat.
+	//
+	// POA-10: the verdict and its text are the TxResult, so the reads block and
+	// retry on an error (PoaExitHaltOrBlock) instead of holding on the one node
+	// that failed to read. Error-free outcomes are unchanged.
+	if halted, release, armed := se.PoaExitHaltOrBlock(tx.From, tx.Self.BlockHeight); halted {
+		// Two shapes of hold: (a) still an electable witness — no fixed release,
+		// the operator must stop being electable (disable its witness) before the
+		// clock starts; (b) winding down — a concrete release height exists.
+		var msg string
+		if armed {
+			msg = "consensus bond is locked: POA collateral exit-halt runs until block " +
+				strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+		} else {
+			msg = "consensus bond is locked: POA collateral exit-halt. Your seat is still an electable committee candidate. Disable your witness so it can no longer be elected; the halt then expires a fixed number of blocks later"
+		}
+		return TxResult{Success: false, Ret: msg, RcUsed: 50}
+	}
+
 	// review4 HIGH #96 (fail-stop): the unstake lock epoch comes from an
 	// election read. The prior read swallowed the DB error and returned a
 	// zero-value epoch, so a transient failure on one node would lock the
@@ -842,6 +949,59 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		}
 	}
 
+	// POA-5 (0.9.0): in the delegated era the unstake debits the NODE's bond
+	// (tx.To), not the signer's. The two checks above test tx.From, which for a
+	// delegator is the wrong account, so an unseated delegator (an operator's own
+	// alt, say) could pull collateral out from under a halted seat. Apply the same
+	// two locks to the bonded node. A self-unstake (from == to) is already covered
+	// above; below 0.9.0 nothing changes.
+	if tx.To != tx.From && DelegatedStakeActiveForElection(electionResult) &&
+		consensusversion.PoaHaltOnBondedNodeActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
+		if se.IsBondLockedRetiringMember(tx.To, tx.Self.BlockHeight) {
+			return TxResult{
+				Success: false,
+				Ret:     "consensus bond is locked: the node you delegated to holds a retiring BTC vault key that is not yet drained; retry the unstake after its migration completes",
+				RcUsed:  50,
+			}
+		}
+		// Blocking reads: this verdict and its text are the TxResult, so a read
+		// error must not decide it on one node alone.
+		if halted, release, armed := se.PoaExitHaltOrBlock(tx.To, tx.Self.BlockHeight); halted {
+			var msg string
+			if armed {
+				msg = "consensus bond is locked: the node you delegated to is under the POA collateral exit-halt until block " +
+					strconv.FormatUint(release, 10) + "; retry the unstake at or after that height"
+			} else {
+				msg = "consensus bond is locked: the node you delegated to holds a POA seat and is still an electable committee candidate; its collateral, including delegated stake, stays locked until it stops being electable and the exit-halt expires"
+			}
+			return TxResult{Success: false, Ret: msg, RcUsed: 50}
+		}
+	}
+
+	// POA-1 (0.9.0): while any BTC vault generation is Active, Retiring or
+	// Draining (whatever its balance), no unbond while the bonded account is
+	// electable, recently active as a witness, in the current committee, or a
+	// party of any keygen/reshare of such a generation (see
+	// HeldShareOfFundedVaultOrBlock). A reshare keeps the key, so every past
+	// committee's share stays usable; the collateral behind it stays locked
+	// until the generation is rotated out and swept empty (Inactive)
+	// (THORChain: no unbond while active or ready, or while a member of a vault
+	// that still holds funds). The refusal text below is unchanged: it is the
+	// tx result, and the devnet POA-1 test matches it.
+	if consensusversion.PoaBondLockedWhileShareFundedActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) {
+		bonded := tx.From
+		if DelegatedStakeActiveForElection(electionResult) {
+			bonded = tx.To
+		}
+		if se.HeldShareOfFundedVaultOrBlock(bonded, tx.Self.BlockHeight) {
+			msg := "consensus bond is locked: this node is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that is not yet purged; it frees once its witness has been disabled for the exit-halt window and every such generation has been rotated out and purged"
+			if bonded != tx.From {
+				msg = "consensus bond is locked: the node you delegated to is electable, recently active as a witness, in the current committee, or holds a share of a BTC vault generation that is not yet purged; retry once it has left and every such generation has been rotated out and purged"
+			}
+			return TxResult{Success: false, Ret: msg, RcUsed: 50}
+		}
+	}
+
 	params := ledgerSystem.ConsensusParams{
 		Id:            MakeTxId(tx.Self.TxId, tx.Self.OpIndex),
 		From:          tx.From,
@@ -849,7 +1009,11 @@ func (tx *TxConsensusUnstake) ExecuteTx(
 		Amount:        amount,
 		BlockHeight:   tx.Self.BlockHeight,
 		Type:          "unstake",
-		ElectionEpoch: electionResult.Epoch + 5,
+		ElectionEpoch: electionResult.Epoch + params.CONSENSUS_UNSTAKE_LOCK_EPOCHS,
+		// Consensus 0.5.0 gate (reuses the election already read above for the
+		// lock epoch): authorize against the signer's delegation edge + debit the
+		// node bond + return HIVE to the delegator. Pre-activation → legacy path.
+		Delegated: DelegatedStakeActiveForElection(electionResult),
 	}
 	ledgerResult := ledgerSession.ConsensusUnstake(params)
 
@@ -1110,17 +1274,12 @@ func (oplog *Oplog) ExecuteTx(se *StateEngine) {
 	})
 
 	for _, v := range oplog.Outputs {
-		ledgerOps := make([]ledgerSystem.OpLogEvent, 0)
-		for _, v2 := range v.LedgerIdx {
-			ledgerOps = append(ledgerOps, oplog.LedgerOps[v2])
-		}
 		status := transactions.TransactionStatusConfirmed
 		if !v.Ok {
 			status = transactions.TransactionStatusFailed
 		}
 		se.txDb.SetOutput(transactions.SetResultUpdate{
 			Id:     v.Id,
-			Ledger: &ledgerOps,
 			Status: &status,
 		})
 	}
@@ -1209,19 +1368,39 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 	return txId
 }
 
-func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) {
+// Ingest records the transaction in the pool and returns the resolved op list
+// plus the resolve error, so the caller (TxProposeBlock.ExecuteTx) reuses the
+// resolution instead of decoding the tx a second time. An invalid tx (err !=
+// nil) is still recorded — with no ops — so it is queryable and reaches a
+// terminal status. It is marked FAILED later via the oplog round-trip driven by
+// ExecuteBatch's TxPacket.Invalid branch, exactly as every other tx's status is
+// finalized. Resolving zero ops here never means "success": empty Ops on an
+// invalid tx ride the FAILED path. Resolve op builds against the version active
+// at the anchored height (same height used for execution in ExecuteBatch and by
+// the caller) so the indexed op types match what actually executes (e.g. F14
+// unstake_hbd direction).
+func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) ([]VSCTransaction, error) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	// data := make(map[string]interface{})
-	txs := tx.ToTransaction()
+	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
+	if txs == nil {
+		txs = make([]VSCTransaction, 0)
+	}
 
 	opTypes := make([]string, 0)
 	opTypesM := make(map[string]bool, 0)
 	opList := make([]transactions.TransactionOperation, 0)
 
 	for idx, v := range txs {
+		// Defense-in-depth: ToTransaction never emits a nil VSCTransaction (it
+		// returns an error instead), but guard here too — v.Type() on a nil
+		// interface is the panic that halted every node in the devnet PoC.
+		if v == nil {
+			continue
+		}
 		op := transactions.TransactionOperation{
 			Type: v.Type(),
 			Data: v.ToData(),
@@ -1248,17 +1427,28 @@ func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSe
 		OpTypes:        opTypes,
 		Ops:            opList,
 		//Transaction is a VSC transaction
-		Type:   "vsc",
-		Ledger: make([]ledgerSystem.OpLogEvent, 0),
+		Type: "vsc",
 	})
 
+	return txs, resolveErr
 }
 
 func (tx *OffchainTransaction) TxSelf() TxSelf {
 	return tx.Self
 }
 
-func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
+// ToTransaction resolves the offchain op list into executable VSCTransactions.
+// It returns an error the moment any op cannot be executed exactly as submitted
+// — an unknown op.Type, or an F4/F21 CBOR decode failure on the (fully
+// attacker-controlled) op.Payload. A non-nil error means the ENTIRE transaction
+// must fail: callers record it FAILED with no op executed (see TxPacket.Invalid
+// and the early-fail branch in ExecuteBatch) rather than partially applying it
+// or — the old bug — silently dropping the op and reporting a CONFIRMED no-op.
+//
+// Determinism: invalidity is a pure function of the content-addressed tx bytes
+// (op.Type string match + CBOR decodability), so every node either resolves the
+// identical op list or fails the identical tx, producing the same block CID.
+func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error) {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
 
@@ -1272,7 +1462,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				NetId: tx.Headers.NetId,
 			}
 			callTx.Self.OpIndex = idx
-			transactionpool.DecodeTxCbor(op, &callTx)
+			if err := transactionpool.DecodeTxCbor(op, &callTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = callTx
 		case "transfer":
@@ -1280,7 +1472,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
-			transactionpool.DecodeTxCbor(op, &transferTx)
+			if err := transactionpool.DecodeTxCbor(op, &transferTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = transferTx
 		case "withdraw":
@@ -1288,7 +1482,9 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
-			transactionpool.DecodeTxCbor(op, &withdrawTx)
+			if err := transactionpool.DecodeTxCbor(op, &withdrawTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &withdrawTx
 		case "stake_hbd":
@@ -1298,25 +1494,66 @@ func (tx *OffchainTransaction) ToTransaction() []VSCTransaction {
 				NetId: tx.Headers.NetId,
 			}
 
-			transactionpool.DecodeTxCbor(op, &stakeTx)
+			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &stakeTx
 		case "unstake_hbd":
-			stakeTx := TxStakeHbd{
-				Self: self,
+			// F14: correct the offchain unstake_hbd direction, version-gated on the
+			// 0.4.0 consensus line (UnstakeHbdDirectionFixActive). Below the line this
+			// case built TxStakeHbd (identical to "stake_hbd"), so an offchain
+			// unstake_hbd STAKED funds instead of releasing them — the wrong
+			// direction. Correcting it changes ledger state on a VALID input, so it
+			// must flip network-wide only once the floor reaches 0.4.0; activeVersion
+			// is resolved by the caller from the op's anchored height
+			// (ActiveConsensusVersion), on-chain and identical on every node, so a
+			// full reindex reproduces historical ledger state. At/above 0.4.0, build
+			// the dedicated TxUnstakeHbd, whose ExecuteTx calls ledgerSession.Unstake.
+			// (The L1 vsc.unstake_hbd path was already correct; only this offchain
+			// path was wrong.)
+			if consensusversion.UnstakeHbdDirectionFixActive(activeVersion) {
+				unstakeTx := TxUnstakeHbd{
+					Self:  self,
+					NetId: tx.Headers.NetId,
+				}
 
+				if err := transactionpool.DecodeTxCbor(op, &unstakeTx); err != nil {
+					return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+				}
+
+				vtx = &unstakeTx
+				break
+			}
+
+			stakeTx := TxStakeHbd{
+				Self:  self,
 				NetId: tx.Headers.NetId,
 			}
 
-			transactionpool.DecodeTxCbor(op, &stakeTx)
+			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
+				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
+			}
 
 			vtx = &stakeTx
+		default:
+			// F4: an unknown op.Type previously left vtx as a nil VSCTransaction
+			// interface, dereferenced (v.Type()) in Ingest/ExecuteBatch and
+			// panicking ProcessBlock on every ingesting node (unprivileged,
+			// network-wide chain halt, devnet-confirmed). An unknown op cannot be
+			// executed as submitted, so fail the entire tx deterministically.
+			return nil, fmt.Errorf("op %d: unknown op type %q", idx, op.Type)
 		}
 
+		// Defense-in-depth: a known case that forgets to set vtx must still fail
+		// the tx, never silently drop the op (a nil here is what halts the chain).
+		if vtx == nil {
+			return nil, fmt.Errorf("op %d (%q): nil transaction produced", idx, op.Type)
+		}
 		output = append(output, vtx)
 	}
 
-	return output
+	return output, nil
 }
 
 func (tx *OffchainTransaction) Type() string {
@@ -1340,5 +1577,9 @@ type VSCTransaction interface {
 
 type VscTxContainer interface {
 	Type() string //Hive, offchain
-	ToTransaction() []VSCTransaction
+	// ToTransaction resolves the offchain op list into executable VSCTransactions.
+	// activeVersion is the chain-active consensus version at the tx's anchored
+	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
+	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
+	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
 }

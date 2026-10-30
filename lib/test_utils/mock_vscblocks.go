@@ -11,8 +11,9 @@ type MockVscBlocksDb struct {
 	Blocks []vscBlocks.VscHeaderRecord
 }
 
-func (m *MockVscBlocksDb) StoreHeader(header vscBlocks.VscHeaderRecord) {
+func (m *MockVscBlocksDb) StoreHeader(header vscBlocks.VscHeaderRecord) error {
 	m.Blocks = append(m.Blocks, header)
+	return nil
 }
 
 func (m *MockVscBlocksDb) GetBlockByHeight(height uint64) (*vscBlocks.VscHeaderRecord, error) {

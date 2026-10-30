@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -591,6 +592,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 			//Store
 			se.electionDb.StoreElection(elecResult)
+			se.onElectionStored(elecResult)
 		}
 	} else {
 		//Validate normally
@@ -651,29 +653,58 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 		verified, includedDids, err := blsCircuit.Verify()
 
-		totalWeight := uint64(0)
-		if len(prevElection.Weights) == 0 {
-			totalWeight = uint64(len(prevElection.Members))
+		// B13: fold the signing weight with duplicate seats collapsed.
+		//
+		// This fold walks the BIT VECTOR by member index, and a duplicated BLS key
+		// sets BOTH of its bits — aggregateSignaturesFrom matches the one honest
+		// signature at every index holding that DID — so both seats' weights were
+		// summed for a single signature. Because the same duplicate also inflates
+		// totalWeight, and hence the minimum, the leverage here is less than 1:1
+		// and genuinely self-limiting; that is why this site alone matches the
+		// "bounded margin erosion" framing. It is still wrong, and it decides
+		// whether an election is RATIFIED.
+		//
+		// Gated on the PRIOR ratified election's version — the same source
+		// MinimalRequiredElectionVotes already reads — so the verdict is
+		// deterministic for every node replaying this height, and historical
+		// ratifications keep their original outcome below the line.
+		memberKeys := make([]string, len(prevElection.Members))
+		for i, m := range prevElection.Members {
+			memberKeys[i] = m.Key
+		}
+		foldWeights := prevElection.Weights
+		if len(foldWeights) == 0 {
+			// Legacy elections carry no weights: every member counts one.
+			foldWeights = make([]uint64, len(prevElection.Members))
+			for i := range foldWeights {
+				foldWeights[i] = 1
+			}
+		}
+
+		bv := blsCircuit.RawBitVector()
+		var includedByBit []dids.BlsDID
+		for idx := range prevElection.Members {
+			if bv.Bit(idx) == 1 {
+				includedByBit = append(includedByBit, dids.BlsDID(prevElection.Members[idx].Key))
+			}
+		}
+
+		var realWeight, totalWeight uint64
+		if consensusversion.BlsWeightDedupActive(elections.ResultVersion(*prevElection)) {
+			realWeight, totalWeight, _ = dids.FoldSignedWeight(memberKeys, foldWeights, includedByBit)
 		} else {
-			for _, v := range prevElection.Weights {
-				totalWeight = totalWeight + v
+			for _, v := range foldWeights {
+				totalWeight += v
+			}
+			for idx := range prevElection.Members {
+				if bv.Bit(idx) == 1 {
+					realWeight += foldWeights[idx]
+				}
 			}
 		}
 
 		blocksLastElection := tx.Self.BlockHeight - prevElection.BlockHeight
 		minimums := elections.MinimalRequiredElectionVotes(blocksLastElection, totalWeight, elections.ResultVersion(*prevElection))
-
-		realWeight := uint64(0)
-		bv := blsCircuit.RawBitVector()
-		for idx := range prevElection.Members {
-			if bv.Bit(idx) == 1 {
-				if len(prevElection.Weights) == 0 {
-					realWeight += 1
-				} else {
-					realWeight += prevElection.Weights[idx]
-				}
-			}
-		}
 		log.Verbose("election verify",
 			"epoch", tx.Epoch,
 			"verified", verified,
@@ -703,6 +734,34 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
+
+			// GV4-3 fix (defense-in-depth, mirrors the proposer's MinMembers abort
+			// in election-proposer.go HoldElection). The signer-quorum check above
+			// proves the PREVIOUS committee approved this result, but nothing has
+			// validated the NEW committee's size. A sub-MinMembers (e.g. empty)
+			// Members list would be persisted here and then drive
+			// consensus.GenerateSchedule into witnessList[slot % 0] — an integer
+			// divide-by-zero that panic-crashes every validating node (full chain
+			// halt). Reject before StoreElection so the prior committee stays in
+			// charge and the chain keeps producing; the next proposer retries.
+			// A sub-MinMembers election is never valid, so this can never reject a
+			// legitimate election. Version-gated on the 0.4.0 consensus line
+			// (MinMembersGuardActive): the accept/reject decision flips network-wide
+			// only once the election floor reaches 0.4.0, resolved deterministically
+			// from the version ACTIVE at this election's submit height
+			// (ActiveConsensusVersion(tx.Self.BlockHeight) — the outgoing committee's
+			// ResultVersion, on-chain and identical on every node). Below the line the
+			// reject is inert so replay of pre-activation history (mainnet has valid
+			// pre-raise 7-member elections) is byte-identical.
+			if consensusversion.MinMembersGuardActive(se.ActiveConsensusVersion(tx.Self.BlockHeight)) &&
+				len(elecResult.Members) < se.sconf.ConsensusParams().MinMembers {
+				log.Warn("election rejected: sub-MinMembers committee",
+					"epoch", tx.Epoch,
+					"members", len(elecResult.Members),
+					"min_members", se.sconf.ConsensusParams().MinMembers,
+					"proposer", elecResult.Proposer)
+				return
+			}
 
 			// Apply inlined pendulum settlement BEFORE StoreElection so
 			// validatePendulumSettlement's GetElectionByHeight(SnapshotRangeTo)
@@ -772,6 +831,22 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err := se.electionDb.StoreElection(elecResult); err != nil {
 				log.Error("failed to store election", "epoch", tx.Epoch, "err", err)
 			}
+			// The election may have become active (or changed) at this height —
+			// drop the key-lifecycle deprecation gate, the schedule memo and the
+			// height election cache, and refresh the latest-election mirror the
+			// schedule memo's hit check compares against, so the next block
+			// resolves the fresh state.
+			se.onElectionStored(elecResult)
+
+			// POA seat maintenance runs off the RATIFIED election, at the one
+			// point every node executes exactly once per epoch from identical
+			// inputs. It seeds the seat registry on first activation (so the
+			// seat gate can never activate against an empty registry and empty
+			// the committee) and records which seats were in the set and which
+			// just left — the "when did this account leave" fact the collateral
+			// exit-halt is counted from, which exists nowhere else in the
+			// codebase. Inert unless the POA batch is active.
+			se.applyPoaSeatMaintenance(elecResult, prevElection, tx.Self.BlockHeight)
 			log.Info("election processed",
 				"epoch", tx.Epoch,
 				"proposer", elecResult.Proposer,
@@ -779,6 +854,13 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 				"new_weight", sumWeights(elecResult.Weights, len(elecResult.Members)),
 				"participation", fmt.Sprintf("%d/%d", realWeight, totalWeight),
 			)
+
+			// Garbage-collect consensus-version proposals against the now-canonical
+			// floor: drop adopted/sub-floor, hard-expired, and no-traction candidates,
+			// and clear an adopted recovery override (deterministic — pure function of
+			// this ratified election + the proposal set). Replaces the never-called
+			// ClearScheduledActivation.
+			se.PruneVersionProposalsAfterElection(elecResult)
 		} else {
 			log.Debug("election failed verification", "epoch", tx.Epoch, "verified", verified, "realWeight", realWeight, "minWeight", minimums)
 		}
@@ -924,7 +1006,7 @@ func (t *TxProposeBlock) Validate(se *StateEngine) bool {
 // ValidateDetailed mirrors Validate but exposes the skip-vs-invalid
 // distinction needed by the principal-slash detectors.
 func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcome {
-	elecResult, err := se.electionDb.GetElectionByHeight(t.Self.BlockHeight)
+	elecResult, err := se.electionAtHeight(t.Self.BlockHeight)
 	if err != nil {
 		// Election lookup failure is environmental, not fault of producer.
 		return BlockValidationOutcome{Kind: BlockSkip, Reason: "election lookup failed: " + err.Error()}
@@ -987,7 +1069,11 @@ func (t *TxProposeBlock) ValidateDetailed(se *StateEngine) BlockValidationOutcom
 		return BlockValidationOutcome{Kind: BlockInvalid, Reason: "BLS aggregate failed verification"}
 	}
 
-	signingScore, total := elections.CalculateSigningScore(circuit, elecResult)
+	// B13: gate the duplicate-key collapse on the version the election that
+	// SEATED this committee was ratified under, so every node validating this
+	// block — and every reindex of it — reaches the identical verdict.
+	signingScore, total := elections.CalculateSigningScore(circuit, elecResult,
+		consensusversion.BlsWeightDedupActive(elections.ResultVersion(elecResult)))
 	t.SigningScore = signingScore
 	t.SigningTotal = total
 
@@ -1029,7 +1115,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 
 	slotInfo := CalculateSlotInfo(t.Self.BlockHeight)
 
-	se.vscBlocks.StoreHeader(vscBlocks.VscHeaderRecord{
+	header := vscBlocks.VscHeaderRecord{
 		Id: t.Self.TxId,
 
 		MerkleRoot: blockContentC.MerkleRoot,
@@ -1050,13 +1136,33 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 		}{
 			Size: uint64(len(jsonBytes)),
 		},
-		Ts:        t.Self.Timestamp,
-		DebugData: blockContentC,
+		Ts: t.Self.Timestamp,
+	}
+	// Fail-stop: a header write that one node drops while its peers keep theirs
+	// changes what later slots read back (the oplog start height), so retry
+	// until it lands. A duplicate slot cannot occur here: the produce_block
+	// handler applies one block per slot.
+	blockingRetry("StoreHeader "+t.Self.TxId, func() error {
+		err := se.vscBlocks.StoreHeader(header)
+		if mongo.IsDuplicateKeyError(err) {
+			log.Error("block header for an already-filled slot not stored", "id", t.Self.TxId, "slot_height", header.SlotHeight, "err", err)
+			return nil
+		}
+		return err
 	})
 
 	se.logMagiBlock(t, &blockContentC, slotInfo.StartHeight, start)
 
 	txsToInjest := make([]TxPacket, 0)
+	// Transaction ids already handled in this block, so a producer cannot list
+	// the same transaction twice to run its contract writes more than once.
+	// Consensus 0.10.0 rule (see below): inert until then, so history
+	// re-executes unchanged.
+	seenTxIds := make(map[string]bool)
+	skipHandled := consensusversion.ApplySkipsHandledTxActive(se.ActiveConsensusVersion(t.Self.BlockHeight))
+	// Account nonces as they stood before this block (SetNonce runs after the
+	// loop), read once per signer set.
+	blockStartNonces := make(map[string]uint64)
 
 	nonceUpdates := make(map[string]uint64)
 
@@ -1103,7 +1209,52 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				continue
 			}
 
-			tx.Ingest(se, t.Self.TxId, TxSelf{
+			// Run each transaction at most once. A transaction a prior block
+			// already included is no longer pending in the local index, and one
+			// listed twice in this block is caught by seenTxIds. Ledger operations
+			// dedupe on their own id, but contract state writes do not, so without
+			// this a repeated transaction re-applies its contract state. Both
+			// conditions are a pure function of already-applied on-chain state, so
+			// every node skips the identical set and the block stays deterministic.
+			if skipHandled {
+				txId := tx.Cid().String()
+				if seenTxIds[txId] {
+					log.Warn("skipping transaction listed twice in one block", "id", txId, "idx", idx)
+					continue
+				}
+				seenTxIds[txId] = true
+				rec := se.txRecord(txId)
+				ownBlock := rec != nil && includedByThisBlock(rec, t.Self.TxId)
+				if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed && !ownBlock {
+					log.Warn("skipping transaction a prior block already handled", "id", txId, "status", rec.Status, "idx", idx)
+					continue
+				}
+				// The nonce rule the pool and an honest producer already apply: a
+				// transaction whose nonce is below its signers' account nonce is
+				// stale (superseded or already used) and must not run. Without it a
+				// producer could run a signed transaction that was never included
+				// and has since been superseded, and its nonce would set the account
+				// nonce back (SetNonce stores this block's highest nonce + 1). A node
+				// re-processing its own block after a restart has already advanced
+				// the nonce, hence ownBlock.
+				if !ownBlock && len(tx.Headers.RequiredAuths) > 0 {
+					keyId := transactionpool.HashKeyAuths(tx.Headers.RequiredAuths)
+					accountNonce, ok := blockStartNonces[keyId]
+					if !ok {
+						accountNonce = se.storedNonce(keyId)
+						blockStartNonces[keyId] = accountNonce
+					}
+					if tx.Headers.Nonce < accountNonce {
+						log.Warn("skipping transaction with a nonce below its account nonce", "id", txId, "nonce", tx.Headers.Nonce, "accountNonce", accountNonce, "idx", idx)
+						continue
+					}
+				}
+			}
+
+			// Ingest records the tx in the pool and returns the already-resolved
+			// op list + resolve error (resolution runs once, against the version
+			// active at this block's height — deterministic on-chain).
+			txs, txErr := tx.Ingest(se, t.Self.TxId, TxSelf{
 				BlockId:     t.Self.BlockId,
 				BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 				//
@@ -1126,11 +1277,25 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			}
 			confirmedNonces[keyId].Nonces[tx.Headers.Nonce] = true
 
-			txs := tx.ToTransaction()
-			txsToInjest = append(txsToInjest, TxPacket{
-				TxId: tx.Cid().String(),
-				Ops:  txs,
-			})
+			if txErr != nil {
+				// The tx contains an op that can't be executed exactly as
+				// submitted (unknown type / undecodable payload). Fail the WHOLE
+				// tx: execute no op, mark it FAILED, and charge the payer a fixed
+				// RC. Deterministic — every node hits the identical resolve error
+				// (RequiredAuths is non-empty here, guaranteed by the guard above).
+				log.Warn("offchain tx invalid; failing entire tx",
+					"id", tx.Cid().String(), "err", txErr)
+				txsToInjest = append(txsToInjest, TxPacket{
+					TxId:    tx.Cid().String(),
+					Invalid: true,
+					Payer:   tx.Headers.RequiredAuths[0],
+				})
+			} else {
+				txsToInjest = append(txsToInjest, TxPacket{
+					TxId: tx.Cid().String(),
+					Ops:  txs,
+				})
+			}
 		} else if txContainer.Type() == "output" {
 			contractOutput, err := txContainer.AsContractOutput()
 			if err != nil {
@@ -1172,7 +1337,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	for k, v := range nonceUpdates {
-		se.nonceDb.SetNonce(k, v+1)
+		// Fail-stop: from consensus 0.10 the account nonce is read back when a
+		// block is applied, so a write one node drops while its peers keep
+		// theirs would change which transactions that node runs.
+		blockingRetry("SetNonce "+k, func() error {
+			return se.nonceDb.SetNonce(k, v+1)
+		})
 	}
 
 	for _, info := range confirmedNonces {
@@ -1184,6 +1354,50 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 	}
 
 	se.TxBatch = append(txsToInjest, se.TxBatch...)
+}
+
+// includedByThisBlock reports whether rec was marked included by the block
+// carried in L1 transaction blockTxId. That happens when a node re-processes
+// the same block after a restart: the earlier pass already wrote INCLUDED, but
+// the results it computed lived in memory and were lost, so the transaction
+// must run again to rebuild them. Any other block listing the transaction
+// comes from a different L1 transaction.
+func includedByThisBlock(rec *transactions.TransactionRecord, blockTxId string) bool {
+	return rec.Status == transactions.TransactionStatusIncluded &&
+		rec.AnchoredId != nil && *rec.AnchoredId == blockTxId
+}
+
+// txRecord reads txId's record for the apply path, nil when none exists. A read
+// error is retried until it clears: a node that read nil on a transient error
+// would run a transaction its peers skip as already handled.
+func (se *StateEngine) txRecord(txId string) *transactions.TransactionRecord {
+	var rec *transactions.TransactionRecord
+	blockingRetry("GetTransaction "+txId, func() error {
+		var err error
+		rec, err = se.txDb.GetTransactionErr(txId)
+		return err
+	})
+	return rec
+}
+
+// storedNonce returns the account nonce stored for keyId, 0 when none is stored
+// yet. Any other read error is retried until it clears: a node that read 0 on a
+// transient error would run a stale transaction its peers skip.
+func (se *StateEngine) storedNonce(keyId string) uint64 {
+	var nonce uint64
+	blockingRetry("GetNonce "+keyId, func() error {
+		rec, err := se.nonceDb.GetNonce(keyId)
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			nonce = 0
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		nonce = rec.Nonce
+		return nil
+	})
+	return nonce
 }
 
 type SignedBlockHeader struct {

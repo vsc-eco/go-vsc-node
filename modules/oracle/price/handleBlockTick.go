@@ -10,6 +10,7 @@ import (
 	"time"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/oracle/p2p"
+	"vsc-node/modules/oracle/threadsafe"
 )
 
 const float64Epsilon = 1e-9
@@ -204,6 +205,11 @@ func (p *priceBlockProducer) validateSignedBlock(block *p2p.OracleBlock) error {
 
 	// TODO: validate signature
 	return nil
+}
+
+// TODO: implement submission of the signed block to the oracle contract.
+func (p *priceBlockProducer) SubmitToContract(block *p2p.OracleBlock) error {
+	return errors.New("not implemented")
 }
 
 // price block witness

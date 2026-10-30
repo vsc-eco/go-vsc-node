@@ -3,6 +3,7 @@ package ledgerSystem
 import (
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 	ledger_db "vsc-node/modules/db/vsc/ledger"
 )
@@ -98,6 +99,12 @@ type LedgerState struct {
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
 	VirtualLedger map[string][]LedgerUpdate
+	// vlMu guards VirtualLedger. Block processing writes it, while read-only
+	// GraphQL queries read it from their own goroutines through a ledger session
+	// (getConsensusDelegation, simulateContractCalls). A concurrent map read and
+	// write is a fatal runtime error that recover() cannot catch, so without the
+	// lock an unauthenticated query flood could crash the node.
+	vlMu sync.RWMutex
 
 	//Live calculated gateway balances on the fly
 	//Use last saved balance as the starting data
@@ -143,7 +150,9 @@ func (le *LedgerState) Export() struct {
 }
 
 func (state *LedgerState) Flush() {
+	state.vlMu.Lock()
 	state.VirtualLedger = make(map[string][]LedgerUpdate)
+	state.vlMu.Unlock()
 	state.Oplog = make([]OpLogEvent, 0)
 
 	//qq: should this be cleared when flushing?
@@ -175,6 +184,7 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 
 	//le.Ls.log.Debug("getBalance le.VirtualLedger["+account+"]", le.VirtualLedger[account], blockHeight)
 
+	state.vlMu.RLock()
 	for _, v := range state.VirtualLedger[account] {
 		//Must be ledger ops with height below or equal to the current block height
 		//Current block height ledger ops are recently executed
@@ -182,7 +192,17 @@ func (state *LedgerState) SnapshotForAccount(account string, blockHeight uint64,
 			bal += v.Amount
 		}
 	}
+	state.vlMu.RUnlock()
 	return bal
+}
+
+// DropVirtual removes the entries of account's virtual ledger for which drop
+// returns true, under the same lock readers take. slices.DeleteFunc compacts the
+// slice in place, so a reader iterating it unlocked could see shifted entries.
+func (state *LedgerState) DropVirtual(account string, drop func(LedgerUpdate) bool) {
+	state.vlMu.Lock()
+	state.VirtualLedger[account] = slices.DeleteFunc(state.VirtualLedger[account], drop)
+	state.vlMu.Unlock()
 }
 
 // GetBalance returns the spendable balance of asset for account as of blockHeight:
@@ -227,7 +247,31 @@ func (ls *LedgerState) GetBalance(account string, blockHeight uint64, asset stri
 	case "hbd_savings":
 		base = balRecord.HBD_SAVINGS
 	case "hive_consensus":
+		// Develop's CRIT-1 path: take the snapshot bond as the base and fall
+		// through to the general sum-all-records-minus-meta fold below, which
+		// nets consensus_stake/unstake and the safety-slash debit/re-credit rows
+		// (none of which are protocol-meta) — superseding the older explicit
+		// OpType allow-list while keeping the same result.
 		base = balRecord.HIVE_CONSENSUS
+	case AssetDelegation, AssetDelegationTotal:
+		// Virtual delegation balances (consensus 0.5.0+):
+		//   AssetDelegation      — `account` is DelegationEdgeKey(from,to); net of
+		//                          consensus_stake/unstake on that edge.
+		//   AssetDelegationTotal — `account` is the node; gross sum of edges to it,
+		//                          NOT reduced by slashing (bond/total = solvency).
+		// Both always summed from height 0: their owners are never snapshotted into
+		// a BalanceRecord (no typed column), so there is no base to add.
+		// GV-H1: fail-stop this read. The prior `ledgerResults, _ :=` +
+		// `range *ledgerResults` panicked on the nil slice GetLedgerRange returns
+		// on a Mongo fault (and a partial read would fork this node from peers).
+		// ledgerRangeOrBlock blocks until the read succeeds and returns non-nil.
+		balAdjust := int64(0)
+		for _, v := range ls.ledgerRangeOrBlock(
+			account, 0, blockHeight, asset, []string{"consensus_stake", "consensus_unstake"},
+		) {
+			balAdjust += v.Amount
+		}
+		return balAdjust
 	default:
 		return 0
 	}

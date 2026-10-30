@@ -58,17 +58,17 @@ func (m *MockConsensusState) Upsert(_ context.Context, state consensus_state.Cha
 	return nil
 }
 
-func (m *MockConsensusState) SetScheduledActivation(_ context.Context, s *consensus_state.ScheduledActivation) error {
+func (m *MockConsensusState) SetVersionProposals(_ context.Context, props []consensus_state.VersionProposal) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.ScheduledActivation = s
+	m.S.VersionProposals = props
 	return nil
 }
 
-func (m *MockConsensusState) ClearScheduledActivation(_ context.Context) error {
+func (m *MockConsensusState) SetForcedActivation(_ context.Context, s *consensus_state.VersionProposal) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.ScheduledActivation = nil
+	m.S.ForcedActivation = s
 	return nil
 }
 
@@ -79,10 +79,26 @@ func (m *MockConsensusState) SetProcessingSuspended(_ context.Context, suspended
 	return nil
 }
 
-func (m *MockConsensusState) SetForcedActivationAndClearSuspension(_ context.Context, s *consensus_state.ScheduledActivation) error {
+func (m *MockConsensusState) SetBtcKeysignHalt(_ context.Context, halted bool, height uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.S.ScheduledActivation = s
+	m.S.BtcKeysignHalted = halted
+	m.S.BtcKeysignHaltHeight = height
+	return nil
+}
+
+func (m *MockConsensusState) SetBtcTheftHalt(_ context.Context, halted bool, height uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.BtcTheftHalted = halted
+	m.S.BtcTheftHaltHeight = height
+	return nil
+}
+
+func (m *MockConsensusState) SetForcedActivationAndClearSuspension(_ context.Context, s *consensus_state.VersionProposal) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.ForcedActivation = s
 	m.S.ProcessingSuspended = false
 	return nil
 }

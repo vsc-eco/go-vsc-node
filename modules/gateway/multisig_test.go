@@ -23,7 +23,7 @@ var MS_TEST_KEY = ""
 func KeyPairFromBytes(privKey []byte) *hivego.KeyPair {
 	prvKey, pubKey := secp256k1.PrivKeyFromBytes(privKey)
 
-	return &hivego.KeyPair{prvKey, pubKey}
+	return &hivego.KeyPair{PrivateKey: prvKey, PublicKey: pubKey}
 }
 
 func hash256(data []byte) []byte {

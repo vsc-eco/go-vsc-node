@@ -3,8 +3,8 @@
 //
 // On a HAF devnet, initminer is the sole Hive witness and produces all blocks,
 // so its feed is trusted as soon as the 4-block minimum in the window is met.
-// The feed expires after ~100 blocks (~5 min at 3 s/block); publishing every
-// 240 s keeps it alive with comfortable headroom.
+// A feed stays fresh for the FeedTracker's FeedFreshnessBlocks (1200 blocks,
+// about an hour at 3 s/block); publishing every 240 s keeps it well inside that.
 //
 // All configuration is read from the data-dir:
 //   - config/identityConfig.json  — publisher account name + active key WIF
@@ -13,12 +13,18 @@
 //
 // devnet-setup populates the first two; feedPublisherConfig.json is written
 // with defaults on first startup if not already present.
+//
+// FEED_PUBLISHER_INTERVAL_BLOCKS, when set, paces publishing in Hive blocks
+// instead of IntervalSeconds. The devnet sets it so a feed is as many blocks old
+// under the harness's fast blocks as at the real 3 s cadence.
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"vsc-node/modules/common"
@@ -63,8 +69,17 @@ func main() {
 	op.ExchangeRate.Base = fp.Base
 	op.ExchangeRate.Quote = fp.Quote
 	interval := time.Duration(fp.IntervalSeconds) * time.Second
+	everyBlocks, err := intervalBlocksFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "feed-publisher:", err)
+		os.Exit(1)
+	}
 
-	fmt.Printf("feed-publisher: %s/%s from %s every %s\n", fp.Base, fp.Quote, id.HiveUsername, interval)
+	if everyBlocks > 0 {
+		fmt.Printf("feed-publisher: %s/%s from %s every %d blocks\n", fp.Base, fp.Quote, id.HiveUsername, everyBlocks)
+	} else {
+		fmt.Printf("feed-publisher: %s/%s from %s every %s\n", fp.Base, fp.Quote, id.HiveUsername, interval)
+	}
 
 	for {
 		client := hivego.NewHiveRpc(uris)
@@ -76,6 +91,57 @@ func main() {
 		} else {
 			fmt.Printf("feed-publisher: tx=%s\n", txID)
 		}
-		time.Sleep(interval)
+		if everyBlocks > 0 {
+			waitBlocks(func() (uint64, error) { return headBlock(client) }, everyBlocks, 250*time.Millisecond)
+		} else {
+			time.Sleep(interval)
+		}
+	}
+}
+
+// intervalBlocksFromEnv reads FEED_PUBLISHER_INTERVAL_BLOCKS (0 when unset).
+func intervalBlocksFromEnv() (uint64, error) {
+	v := os.Getenv("FEED_PUBLISHER_INTERVAL_BLOCKS")
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n == 0 {
+		return 0, fmt.Errorf("FEED_PUBLISHER_INTERVAL_BLOCKS=%q: want a positive block count", v)
+	}
+	return n, nil
+}
+
+func headBlock(client *hivego.HiveRpcNode) (uint64, error) {
+	raw, err := client.GetDynamicGlobalProps()
+	if err != nil {
+		return 0, err
+	}
+	var props struct {
+		HeadBlockNumber uint64 `json:"head_block_number"`
+	}
+	if err := json.Unmarshal(raw, &props); err != nil {
+		return 0, err
+	}
+	return props.HeadBlockNumber, nil
+}
+
+// waitBlocks returns once the head is n blocks past where it was when called,
+// retrying head reads that fail.
+func waitBlocks(head func() (uint64, error), n uint64, poll time.Duration) {
+	var start uint64
+	for {
+		h, err := head()
+		if err == nil {
+			start = h
+			break
+		}
+		time.Sleep(poll)
+	}
+	for {
+		time.Sleep(poll)
+		if h, err := head(); err == nil && h >= start+n {
+			return
+		}
 	}
 }

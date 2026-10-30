@@ -87,8 +87,8 @@ install: all
 # picked up by `make test` automatically.
 #
 # NON_HOST_PACKAGES never run under either target: the wasm-guest packages under
-# modules/wasm/e2e/go_wasm are built for the wasm target (build-excluded on the
-# host) and modules/oracle/price is WIP that does not compile.
+# modules/wasm/e2e/go_wasm are built for the wasm target (their own nested
+# go.mod excludes them on the host).
 
 empty :=
 space := $(empty) $(empty)
@@ -103,13 +103,11 @@ SLOW_PACKAGES := \
 	modules/hive/streamer \
 	modules/block-producer \
 	modules/state-processing \
-	modules/wasm/e2e \
 	modules/e2e \
 	cmd/mapping-bot/mapper \
 	cmd/zk-tx-signer
 
-NON_HOST_PACKAGES := \
-	modules/oracle/price
+NON_HOST_PACKAGES :=
 
 # --- Known-failing exclusions (TEMPORARY — remove each entry once fixed) --------
 # These currently fail and are excluded from BOTH `make test` and `make test-full`
@@ -126,25 +124,29 @@ KNOWN_FAILING_PACKAGES := \
 	modules/hive/streamer \
 	modules/p2p
 
-# Individual tests in otherwise-passing packages, skipped via `go test -skip`:
-#   TestFuzzAll  - modules/wasm/e2e: shared-account RC exhaustion across subtests
-#   TestBasicP2P - modules/data-availability: gossipsub mesh delivery in harness
-# NOTE: keep this non-empty; `go test -skip ''` would skip every test.
-KNOWN_FAILING_TESTS := TestFuzzAll|TestBasicP2P
+# Individual tests in otherwise-passing packages, skipped via `go test -skip`.
+# Empty again: TestBasicP2P (modules/data-availability) was skipped for gossipsub
+# dropping every pubsub message in the mocknet harness; fixed by defaulting the
+# p2p config's pubsub buffer size/concurrency limit when SetOptions leaves them 0.
+# NOTE: when this is empty, SKIP and SLOW_SKIP omit the failing-test pattern
+# entirely — an empty alternation in `go test -skip` would match every test.
+KNOWN_FAILING_TESTS :=
 # -------------------------------------------------------------------------------
 
 # grep -E fragments matching the `go list` output (vsc-node/<pkg>).
 SLOW_RE    := ^vsc-node/($(subst $(space),|,$(strip $(SLOW_PACKAGES))))$$
 # Excluded from both targets: non-host packages + currently known-failing packages.
 EXCLUDE_RE := ^vsc-node/($(subst $(space),|,$(strip $(NON_HOST_PACKAGES) $(KNOWN_FAILING_PACKAGES))))$$|^vsc-node/modules/wasm/e2e/go_wasm($$|/)
+# Pipe-joined -skip pattern for known-failing tests (empty when the list is).
+FAILING_TESTS_PAT := $(subst $(space),|,$(strip $(KNOWN_FAILING_TESTS)))
 # -skip flag (only added when there are known-failing tests to skip).
-SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(KNOWN_FAILING_TESTS)',)
+SKIP := $(if $(strip $(KNOWN_FAILING_TESTS)),-skip '$(FAILING_TESTS_PAT)',)
 
 # The node-wide regression test (and its bring-up smoke test) are far longer than
 # the 30m slow budget and are run deliberately via `make test-regression`. Skip
 # them in the test-full slow phase so that target stays bounded and green.
 REGRESSION_TEST := TestFullNetworkRegression
-SLOW_SKIP := -skip '$(KNOWN_FAILING_TESTS)|$(REGRESSION_TEST)|TestRegressionBringup'
+SLOW_SKIP := -skip '$(if $(strip $(KNOWN_FAILING_TESTS)),$(FAILING_TESTS_PAT)|,)$(REGRESSION_TEST)|TestRegressionBringup'
 
 # Set V=1 to stream `go test -v` output (useful for the long regression run).
 V ?=
@@ -171,6 +173,16 @@ LIST_TEST_PKGS := go list -e -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPa
 # `ok` could reflect a stale run — undesirable for a deliberate test invocation.
 GO_TEST := go test -count=1
 
+# On macOS the `go` tool strips DYLD_LIBRARY_PATH from test binaries, so a
+# cgo-linked test binary cannot locate libwasmedge at runtime unless the rpath
+# is embedded at link time. Add it when a local WasmEdge install exists.
+WASMEDGE_LIB_DIR := $(HOME)/.wasmedge/lib
+ifeq ($(wildcard $(WASMEDGE_LIB_DIR)/libwasmedge.dylib),)
+GO_TEST := $(GO_TEST)
+else
+GO_TEST := CGO_LDFLAGS="-Wl,-rpath,$(WASMEDGE_LIB_DIR)" $(GO_TEST)
+endif
+
 # Quick unit tests across the whole repo. Intended to stay under ~5 minutes.
 test:
 	@echo "==> Quick tests (target < 5 min)"
@@ -191,9 +203,13 @@ test-full:
 # is active), deploys/calls contracts incl. TSS, and injects recoverable faults
 # at every stage. Deliberately run; excluded from `make test`/`make test-full`.
 # Requires Docker. Pass V=1 for streaming `-v` output:  make test-regression V=1
+# DEVNET_BUDGET_CAP must stay BELOW -timeout: the test's own context has to expire
+# first, or Go's runner panics with a goroutine dump and the test never prints a
+# verdict. This target asks for 120m internally, so the cap is raised from its 75m
+# default here rather than left to be silently truncated. Change the two together.
 test-regression:
 	@echo "==> Node-wide regression (TestFullNetworkRegression, ~70-110 min)"
-	$(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
+	DEVNET_BUDGET_CAP=120m $(GO_TEST) $(VERBOSE) -timeout 130m -run '^$(REGRESSION_TEST)$$' ./tests/devnet
 
 # In-process devnet e2e tests (TestE2E, TestPostEVM). Opt-in via E2E_DEVNET
 # because they spin up a multi-node devnet backed by MongoDB; they self-skip

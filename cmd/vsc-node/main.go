@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"path"
+	"syscall"
 	"time"
 
 	cbortypes "vsc-node/lib/cbor-types"
@@ -15,6 +17,7 @@ import (
 	blockproducer "vsc-node/modules/block-producer"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
@@ -26,6 +29,7 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
+	"vsc-node/modules/db/vsc/poaseats"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -35,6 +39,7 @@ import (
 	"vsc-node/modules/gateway"
 	"vsc-node/modules/gql"
 	"vsc-node/modules/gql/gqlgen"
+	"vsc-node/modules/haf"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
 	"vsc-node/modules/hive/streamer"
 	"vsc-node/modules/oracle"
@@ -66,12 +71,33 @@ func main() {
 		startPprofServer(args.pprofAddr)
 	}
 
+	// All node configuration lives in one aggregate so every config file is
+	// loaded from disk (or seeded) exactly once, up front, before any code
+	// below reads a value from it (Hive URIs, HAF URI, identity key, ...).
 	dbConf := db.NewDbConfig(args.dataDir)
 	p2pConf := p2pInterface.NewConfig(args.dataDir)
 	gqlConf := gql.NewGqlConfig(args.dataDir)
 	oracleConf := oracle.NewOracleConfig(args.dataDir)
 	hiveApiUrl := streamer.NewHiveConfig(args.dataDir)
-	hiveApiUrlErr := hiveApiUrl.Init()
+	identityConfig := common.NewIdentityConfig(args.dataDir)
+
+	configs := aggregate.New([]aggregate.Plugin{
+		dbConf,
+		p2pConf,
+		identityConfig,
+		gqlConf,
+		oracleConf,
+		hiveApiUrl,
+	})
+	if err := configs.Init(); err != nil {
+		log.Error("failed to initialize config", "err", err)
+		os.Exit(1)
+	}
+
+	if args.isInit {
+		log.Info("config initialized", "path", args.dataDir)
+		return
+	}
 
 	hiveURIs := hiveApiUrl.Get().HiveURIs
 
@@ -79,12 +105,33 @@ func main() {
 
 	dbImpl := db.New(dbConf)
 	vscDb := vsc.New(dbImpl, dbConf)
-	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex)
 	hiveBlocks, err := hive_blocks.New(vscDb)
 	witnessDb := witnesses.New(vscDb)
 	vscBlocks := vscBlocks.New(vscDb)
 	witnessesDb := witnesses.New(vscDb)
 	electionDb := elections.New(vscDb)
+	// Reindex gate: the usual REINDEX_ID/force path PLUS a consensus-version-lag
+	// trigger — if the binary that last processed up to the head was BELOW the
+	// chain-active version there (a version-adoption laggard that diverged locally),
+	// and this binary can handle it, replay history from genesis under the correct
+	// rules. ChainActiveAt reads the on-chain election active at the head.
+	runningVer := consensusversion.RunningVersion()
+	reindexDb := db.NewReindex(vscDb.DbInstance, args.forceReindex, &db.VersionReindex{
+		RunningMajor:     runningVer.Major,
+		RunningConsensus: runningVer.Consensus,
+		// Query the elections collection directly off the (already-connected)
+		// DbInstance rather than via electionDb.GetElectionByHeight: this callback
+		// runs inside reindexDb.Init(), which the aggregate sequences BEFORE the
+		// electionDb plugin Init that binds its mongo handle — using electionDb here
+		// dereferences a nil collection and panics the node on restart.
+		ChainActiveAt: func(blockHeight uint64) (uint64, uint64, bool) {
+			v, ok := elections.ChainActiveVersionAt(vscDb.DbInstance, blockHeight)
+			if !ok {
+				return 0, 0, false
+			}
+			return v.Major, v.Consensus, true
+		},
+	})
 	contractDb := contracts.New(vscDb)
 	txDb := transactions.New(vscDb)
 	ledgerDbImpl := ledgerDb.New(vscDb)
@@ -98,6 +145,9 @@ func main() {
 	tssCommitments := tss_db.NewCommitments(vscDb)
 	tssRequests := tss_db.NewRequests(vscDb)
 	governanceDb := governance_db.New(vscDb)
+	// POA seat registry — the on-chain allowlist of vetted operator accounts
+	// eligible for election. Inert until the consensus floor reaches 0.7.0.
+	poaSeatsDb := poaseats.New(vscDb)
 	pendulumSettlementsDb := pendulum_settlements.New(vscDb)
 	consensusStateDb := consensus_state.New(vscDb)
 	sysConfig := systemconfig.FromNetwork(args.network)
@@ -116,9 +166,6 @@ func main() {
 	if err != nil {
 		log.Error("startup error", "err", err)
 		os.Exit(1)
-	} else if hiveApiUrlErr != nil {
-		log.Error("failed to parse Hive API config", "err", hiveApiUrlErr)
-		os.Exit(1)
 	}
 
 	// choose the source
@@ -134,21 +181,75 @@ func main() {
 	}
 
 	stBlock := sysConfig.StartHeight()
-	streamerPlugin := streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
-
-	identityConfig := common.NewIdentityConfig(args.dataDir)
-	// Load the identity config from disk BEFORE reading it. NewIdentityConfig
-	// only seeds in-memory defaults (HiveActiveKey == "ADD_YOUR_PRIVATE_WIF");
-	// the on-disk key is not read until Config.Init(). Without this explicit
-	// load, the HasPrivateKey() check below always observed the placeholder and
-	// returned false, so bp/oracle/ep/multisig/tss/announcements were never
-	// registered even on witnesses with a valid key. identityConfig is also in
-	// the aggregate plugin list and gets Init'd again by a.Run(); Config.Init()
-	// is idempotent (re-opens and re-unmarshals the same file), so that is safe.
-	if err := identityConfig.Init(); err != nil {
-		log.Error("failed to load identity config", "err", err)
-		os.Exit(1)
+	// Block source: a non-empty HafDbURI in dbConfig switches block ingestion
+	// to the local HAF database (hive.irreversible_*_view) and mongo keeps
+	// only the graphql timestamp shims + cursor metadata. Otherwise the
+	// classic Hive API streamer stores a filtered copy of every block.
+	var blockSource hive_blocks.HiveBlocks = hiveBlocks
+	var streamerPlugin aggregate.Plugin
+	var hafSource *haf.Source
+	if hafURI := dbConf.GetHafDbURI(); hafURI != "" {
+		hafSource, err = haf.New(hafURI, hiveBlocks, filters, vFilters, stBlock)
+		if err != nil {
+			log.Error("failed to init HAF block source", "err", err)
+			os.Exit(1)
+		}
+		blockSource = hafSource
+		streamerPlugin = hafSource
+		log.Info("block source", "source", "haf")
+	} else {
+		// Devnet block pacemaker (tests/devnet FastBlocks): the streamer otherwise
+		// refreshes the real head once a minute and assumes one block per 3s in
+		// between, so a node could never see blocks produced faster than that.
+		// Against the local devnet hived there is no rate limit to respect.
+		if sysConfig.NetId() == "vsc-devnet" {
+			if v := os.Getenv("VSC_DEVNET_HEAD_POLL"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.HeadBlockCheckPollIntervalBeforeFirstUpdate = every
+					streamer.HeadBlockCheckPollIntervalOnceUpdated = every
+					log.Info("devnet head poll interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_HEAD_POLL", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_STREAM_SLEEP"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.StreamIdleSleep = every
+					streamer.StreamAheadSleep = every
+					// Polled heads make the one-block-per-3s guess redundant, and its
+					// overshoot is what sends the loop into StreamAheadSleep.
+					streamer.HeadGuessInterval = 24 * time.Hour
+					log.Info("devnet stream loop sleep", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_STREAM_SLEEP", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_CHECKPOINT"); v != "" {
+				// The persisted last-processed block is what the devnet harness
+				// waits on; once a second is a third of a 3s block but ten fast ones.
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					streamer.CheckpointInterval = every
+					log.Info("devnet last-processed checkpoint interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_CHECKPOINT", "value", v, "err", err)
+				}
+			}
+			if v := os.Getenv("VSC_DEVNET_BLOCK_POLL"); v != "" {
+				if every, err := time.ParseDuration(v); err == nil && every > 0 {
+					hive_blocks.ListenPollInterval = every
+					log.Info("devnet stored-block poll interval", "every", every)
+				} else {
+					log.Error("ignoring invalid VSC_DEVNET_BLOCK_POLL", "value", v, "err", err)
+				}
+			}
+		}
+		streamerPlugin = streamer.NewStreamer(hiveRpcClient, hiveBlocks, filters, vFilters, &stBlock) // optional starting block #
+		log.Info("block source", "source", "hive_api")
 	}
+
+	// identityConfig was loaded from disk by the configs aggregate above, so the
+	// on-disk Hive WIF is visible here (HasPrivateKey would otherwise only see
+	// the in-memory "ADD_YOUR_PRIVATE_WIF" placeholder).
 	hasPrivateKey := identityConfig.HasPrivateKey()
 
 	hiveCreator := hive.LiveTransactionCreator{
@@ -193,7 +294,7 @@ func main() {
 		txDb,
 		ledgerDbImpl,
 		balanceDb,
-		hiveBlocks,
+		blockSource,
 		interestClaims,
 		vscBlocks,
 		actionsDb,
@@ -203,6 +304,7 @@ func main() {
 		tssCommitments,
 		tssRequests,
 		governanceDb,
+		poaSeatsDb,
 		pendulumSettlementsDb,
 		consensusStateDb,
 		wasm,
@@ -219,6 +321,7 @@ func main() {
 		p2p,
 		witnessesDb,
 		electionDb,
+		poaSeatsDb,
 		vscBlocks,
 		balanceDb,
 		da,
@@ -231,7 +334,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, da, identityConfig, rcSystem, se)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
@@ -249,9 +352,13 @@ func main() {
 		hiveRpcClient,
 	)
 
-	sr := streamer.NewStreamReader(hiveBlocks, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
+	sr := streamer.NewStreamReader(blockSource, blockConsumer.ProcessBlock, se.SaveBlockHeight, stBlock)
 
-	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), false)
+	// sync: a key share counts as saved, and the node then signs the commitment
+	// naming it a holder, only once the write is on disk. Without it a crash or
+	// power loss right after a keygen/reshare can lose the share. Writes here are
+	// rare (one per key per keygen/reshare).
+	flatDb, err := flatfs.CreateOrOpen(path.Join(args.dataDir, "tss-keys"), flatfs.Prefix(1), true)
 	if err != nil {
 		panic(err)
 	}
@@ -269,6 +376,8 @@ func main() {
 		sysConfig,
 		flatDb,
 		&hiveCreator,
+		contractState,
+		da,
 	)
 
 	gqlManager := gql.New(gqlgen.NewExecutableSchema(gqlgen.Config{Complexity: gql.NewComplexityRoot(), Resolvers: &gqlgen.Resolver{
@@ -281,7 +390,7 @@ func main() {
 		Transactions:   txDb,
 		Nonces:         nonceDb,
 		Rc:             rcDb,
-		HiveBlocks:     hiveBlocks,
+		HiveBlocks:     blockSource,
 		StateEngine:    se,
 		Da:             da,
 		Contracts:      contractDb,
@@ -294,16 +403,51 @@ func main() {
 		ChainOracle:    oracle.ChainOracle(),
 	}}), gqlConf)
 
+	if sysConfig.NetId() == "vsc-devnet" {
+		// Quiescence probe for the devnet block pacemaker (tests/devnet FastBlocks):
+		// the harness produces the next Hive block only once every node reports
+		// nothing in flight. Read-only, and never registered off devnet.
+		gqlManager.SetDevnetStatus(func() any {
+			ceremony, signing, background := tssMgr.InFlightCounts()
+			// How promptly this node learns of new Hive blocks: the pacemaker
+			// refuses to speed up a node that would not see the blocks in time.
+			headPoll := streamer.HeadBlockCheckPollIntervalOnceUpdated
+			if hafSource != nil {
+				headPoll = haf.PollInterval
+			}
+			// Connected libp2p peers: a node still (re)connecting after a restart
+			// reports idle but would miss gossip a live chain gives it time for.
+			// Gossip convergence: transactions stored and readiness attestations held.
+			var txSeen int64 = -1
+			if c, ok := txDb.(interface{ CountVscTransactions() (int64, error) }); ok {
+				if n, err := c.CountVscTransactions(); err == nil {
+					txSeen = n
+				}
+			}
+			return map[string]any{
+				"tx_seen":          txSeen,
+				"tss_attestations": tssMgr.HeldAttestations(),
+				"peers":            len(p2p.Peers()),
+				"head_poll_ms":     headPoll.Milliseconds(),
+				"block_poll_ms":    hive_blocks.ListenPollInterval.Milliseconds(),
+				"stream_sleep_ms":  streamer.StreamIdleSleep.Milliseconds(),
+				"checkpoint_ms":    streamer.CheckpointInterval.Milliseconds(),
+				"processed":        blockConsumer.ProcessedHeight(),
+				"async_ticks":      blockConsumer.AsyncTicksInFlight(),
+				"tss_ceremony":     ceremony,
+				"tss_signing":      signing,
+				"tss_background":   background,
+				"bp_busy":          bp.Busy(),
+				"ep_busy":          ep.Busy(),
+				"gateway_bg":       multisig.InFlight(),
+				"oracle_bg":        oracle.ChainRelaysInFlight(),
+			}
+		})
+	}
+
 	plugins := make([]aggregate.Plugin, 0)
 
 	plugins = append(plugins,
-		//Configuration init
-		dbConf,
-		p2pConf,
-		identityConfig,
-		gqlConf,
-		oracleConf,
-
 		//DB plugin initialization
 		dbImpl,
 		vscDb,
@@ -321,6 +465,7 @@ func main() {
 		balanceDb,
 		rcDb,
 		nonceDb,
+		poaSeatsDb,
 		interestClaims,
 		contractState,
 		tssKeys,
@@ -355,20 +500,51 @@ func main() {
 		plugins,
 	)
 
-	if args.isInit {
-		log.Info("initializing config")
-		configs := aggregate.New([]aggregate.Plugin{
-			dbConf,
-			p2pConf,
-			identityConfig,
-			gqlConf,
-			oracleConf,
-			hiveApiUrl,
+	// SIGINT/SIGTERM → graceful shutdown. Run() is the sole exit
+	// authority: RequestShutdown flags the request and cancels the
+	// aggregate ctx; Run's race-wait returns, Run stops every
+	// plugin in reverse order and returns nil → main exits 0, so
+	// supervisors see a clean stop, not a crash. A second signal
+	// and a 30s timer are backstops against a hung shutdown (the
+	// drain below is bounded at 10s; a clean teardown — gql's 5s
+	// Shutdown cap plus the streamer's bounded store/stream/tracker
+	// waits — normally completes in well under a second since every
+	// loop observes the stop context immediately).
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+
+	go func() {
+		sig := <-sigs
+		log.Info("shutdown signal received; waiting for the current block to finish processing", "signal", sig.String())
+
+		// Second signal forces an immediate exit.
+		go func() {
+			sig := <-sigs
+			log.Error("second shutdown signal received; forcing immediate exit", "signal", sig.String())
+			os.Exit(1)
+		}()
+
+		// Hung-teardown backstop.
+		time.AfterFunc(30*time.Second, func() {
+			log.Error("graceful shutdown timed out after 30s; forcing exit")
+			os.Exit(1)
 		})
-		err = configs.Init()
-	} else {
-		err = a.Run()
-	}
+
+		// Quiesce the block pipeline BEFORE any plugin teardown:
+		// sr.Stop() cancels the block feed and then waits (bounded by
+		// streamer.StopDrainTimeout) for the state engine to finish the
+		// in-flight block — the listener's ProcessBlock runs to
+		// completion, DB writes included — so plugins are never torn
+		// down under a mid-block state write and the last-processed
+		// cursor is checkpointed for a minimal-replay restart.
+		sr.Stop()
+		log.Info("block processing quiesced; proceeding with shutdown", "processedHeight", se.LastProcessedHeight())
+
+		a.RequestShutdown()
+	}()
+
+	err = a.Run()
 	if err != nil {
 		log.Error("startup failure", "err", err)
 		os.Exit(1)

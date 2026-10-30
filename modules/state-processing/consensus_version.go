@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
 )
@@ -20,14 +21,19 @@ func isRecoveryAllowlistedCustomJSON(id string) bool {
 }
 
 func (se *StateEngine) refreshChainConsensusCache() {
-	var next consensus_state.ChainConsensusState
-	if se.consensusState != nil {
-		if st, err := se.consensusState.Get(context.Background()); err == nil {
-			next = st
-		}
+	if se.consensusState == nil {
+		return
+	}
+	st, err := se.consensusState.Get(context.Background())
+	if err != nil {
+		// Fail CLOSED: a transient consensus-state read error must NOT silently reset
+		// the safety flags (BtcKeysignHalted / ProcessingSuspended) to their zero
+		// value — retain the last-known cache and retry next block
+		// (pruned-methodology F1: halt read-path fail-open).
+		return
 	}
 	se.chainConsensusMu.Lock()
-	se.chainConsensusCache = next
+	se.chainConsensusCache = st
 	se.chainConsensusMu.Unlock()
 }
 
@@ -37,41 +43,327 @@ func (se *StateEngine) chainProcessingSuspended() bool {
 	return se.chainConsensusCache.ProcessingSuspended
 }
 
+// BtcKeysignHalted reports whether the governance multisig has frozen BTC TSS
+// keysign via vsc.tss_halt (Build Map §5b). Read by the TSS solvency gate
+// through the GetScheduler interface. Mirrors chainProcessingSuspended's cache
+// read — deterministic once the halt op has been processed on every node.
+func (se *StateEngine) BtcKeysignHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.BtcKeysignHalted
+}
+
+// BtcTheftHalted reports whether the BTC mapping contract's deterministic theft-halt flag
+// ("th", M1.1b SPV-proven auto-trip) is set, mirrored into the consensus cache each block by
+// refreshBtcTheftHalt. Read by the TSS solvency gate through GetScheduler — a set flag freezes
+// BTC keysign exactly like the governance vsc.tss_halt flag. Deterministic once the tripping
+// contract output has been processed on every node.
+func (se *StateEngine) BtcTheftHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.BtcTheftHalted
+}
+
+// refreshBtcTheftHalt mirrors the BTC mapping contract's "th" theft-halt flag into the
+// consensus cache each block (M1.1b, Design C — the anti-theft auto-trip's node consumer).
+// DETERMINISTIC: every node reads the SAME committed contract output at `height` and writes
+// the identical consensus_state. FAIL-SAFE: a transient per-node datalayer/Mongo blip KEEPS
+// the last cached value (never resets the safety flag; a rare per-node lag is harmless — the
+// keysign gate needs 100% of parties, so a node that missed the halt just stalls the sign,
+// never forks). Writes consensus_state only on a CHANGE (no per-block write). The gate then
+// reads the mirrored bool with zero I/O — as robust as the governance flag.
+func (se *StateEngine) refreshBtcTheftHalt(height uint64) {
+	if se.consensusState == nil || !se.btcKeysignHaltActive(height) {
+		return
+	}
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" {
+		return // no BTC contract on this network → nothing to mirror
+	}
+	var transient error
+	read := se.btcContractStateReaderAtStrict(btcContract, height, &transient)
+	// "th" == btc-mapping-contract constants.BtcTheftHaltKey (a contract-owned key; the node
+	// reads it by literal, as it does "s"/"v"). Set by reportUnauthorizedSpend, cleared by
+	// clearTheftHalt.
+	raw, found := read("th")
+	if transient != nil {
+		// Per-node datalayer/Mongo blip → KEEP the last value, retry next block (mirrors
+		// refreshChainConsensusCache's fail-closed). Never un-halt on a transient error.
+		return
+	}
+	// Any non-empty "th" is a halt. ★ CROSS-REPO LOCK-STEP (M1.1b council L-3): this relies
+	// on the contract CLEARING by DELETION (clearTheftHalt → StateDeleteObject("th") → absent
+	// → found=false). If the contract ever "cleared" by writing "0"/"false", this would read
+	// len>0 and stay HALTED — which fails SAFE (toward the halt, governance-recoverable, never
+	// toward signing), but the two repos MUST keep "clear ⇒ key absent."
+	halted := found && len(raw) > 0
+	se.chainConsensusMu.RLock()
+	cur := se.chainConsensusCache.BtcTheftHalted
+	se.chainConsensusMu.RUnlock()
+	if halted == cur {
+		return // unchanged → no consensus_state write
+	}
+	h := uint64(0)
+	if halted {
+		h = height
+	}
+	if err := se.consensusState.SetBtcTheftHalt(context.Background(), halted, h); err != nil {
+		// ERROR: this node did NOT apply the theft-halt mirror update; it may keep signing
+		// while others freeze (a self-healing stall, not a fork) until a later block succeeds.
+		log.Error("M1.1b: SetBtcTheftHalt FAILED — theft-halt mirror not updated on this node",
+			"halted", halted, "height", height, "err", err)
+		return
+	}
+	se.refreshChainConsensusCache()
+}
+
+// btcKeysignHaltActive reports whether the BTC keysign halts (vsc.tss_halt and the
+// "th" theft-flag mirror) are in force at height: from the 0.7.0 line
+// (consensusversion.BtcKeysignHaltActive). Below it neither is applied, as on the
+// 0.3.0 build. Without an election store there is no active version, so neither.
+func (se *StateEngine) btcKeysignHaltActive(height uint64) bool {
+	if se.electionDb == nil {
+		return false
+	}
+	return consensusversion.BtcKeysignHaltActive(se.ActiveConsensusVersion(height))
+}
+
 // ProcessingSuspendedForPool is used by the transaction pool to reject offchain txs.
 func (se *StateEngine) ProcessingSuspendedForPool() bool {
 	return se.chainProcessingSuspended()
 }
 
-// scheduledActivation returns a copy of the cached pending schedule (or nil).
-func (se *StateEngine) scheduledActivation() *consensus_state.ScheduledActivation {
+// forcedActivation returns a copy of the cached recovery override (or nil).
+func (se *StateEngine) forcedActivation() *consensus_state.VersionProposal {
 	se.chainConsensusMu.RLock()
 	defer se.chainConsensusMu.RUnlock()
-	if se.chainConsensusCache.ScheduledActivation == nil {
+	if se.chainConsensusCache.ForcedActivation == nil {
 		return nil
 	}
-	s := *se.chainConsensusCache.ScheduledActivation
+	s := *se.chainConsensusCache.ForcedActivation
 	return &s
 }
 
-// ScheduledActivationForHeight returns the pending schedule only if it was recorded before
-// blk. This makes the read a pure function of blk so all signers regenerating an election at
-// the same height resolve the identical version (and CID), regardless of later proposals.
-func (se *StateEngine) ScheduledActivationForHeight(blk uint64) *consensus_state.ScheduledActivation {
-	s := se.scheduledActivation()
+// versionProposals returns a copy of the cached normal-proposal set.
+func (se *StateEngine) versionProposals() []consensus_state.VersionProposal {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	if len(se.chainConsensusCache.VersionProposals) == 0 {
+		return nil
+	}
+	out := make([]consensus_state.VersionProposal, len(se.chainConsensusCache.VersionProposals))
+	copy(out, se.chainConsensusCache.VersionProposals)
+	return out
+}
+
+// ForcedActivationForHeight returns the recovery override only if it was recorded
+// before blk. Height-addressable so all signers resolve the identical floor → CID.
+func (se *StateEngine) ForcedActivationForHeight(blk uint64) *consensus_state.VersionProposal {
+	s := se.forcedActivation()
 	if s == nil || s.BlockHeight >= blk {
 		return nil
 	}
 	return s
 }
 
+// VersionProposalsForHeight returns the candidate proposals recorded before blk
+// (height-addressable). Expiry is NOT applied here — the election builder evaluates
+// liveness against the election epoch deterministically.
+func (se *StateEngine) VersionProposalsForHeight(blk uint64) []consensus_state.VersionProposal {
+	all := se.versionProposals()
+	out := all[:0]
+	for _, p := range all {
+		if p.BlockHeight < blk {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// upsertVersionProposal writes p into the proposal set keyed by proposer (one slot
+// each, replacing any prior entry from the same proposer) and persists. The state
+// engine processes blocks serially, so this read-modify-write is race-free.
+func (se *StateEngine) upsertVersionProposal(p consensus_state.VersionProposal) {
+	props := se.versionProposals()
+	replaced := false
+	for i := range props {
+		if props[i].Proposer == p.Proposer {
+			props[i] = p
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		props = append(props, p)
+	}
+	if err := se.consensusState.SetVersionProposals(context.Background(), props); err != nil {
+		log.Warn("SetVersionProposals failed", "err", err)
+		return
+	}
+	se.refreshChainConsensusCache()
+}
+
+// electionAtHeight returns the election active at `height`, memoizing the
+// exact-height result so repeated in-block reads (per-tx ActiveConsensusVersion,
+// etc.) hit the cache instead of the DB. Safe for concurrent readers (mutex);
+// onElectionStored clears the entry so an election stored mid-block is picked
+// up by subsequent reads at the same height.
+func (se *StateEngine) electionAtHeight(height uint64) (elections.ElectionResult, error) {
+	se.electionCacheMu.Lock()
+	defer se.electionCacheMu.Unlock()
+	if se.electionCacheHit && se.electionCacheHeight == height {
+		return se.electionCacheResult, nil
+	}
+	result, err := se.electionDb.GetElectionByHeight(height)
+	if err != nil {
+		return result, err
+	}
+	se.electionCacheResult = result
+	se.electionCacheHeight = height
+	se.electionCacheHit = true
+	return result, nil
+}
+
+// onElectionStored records that a new election was persisted: the produce-block
+// schedule memo is dropped (a mid-round election changes the schedule for later
+// slots), the height election cache is cleared, and the latest-election mirror
+// (which the schedule memo's hit check compares its election against) is
+// refreshed so it never lags the DB. Called from the vsc.election_result
+// handler. Harmless when nothing was actually written; if the store itself
+// failed, the mirror may describe a phantom latest, which only degrades
+// schedule-memo hits into recomputes (still correct) until the next successful
+// store.
+func (se *StateEngine) onElectionStored(elecResult elections.ElectionResult) {
+	se.scheduleRoundStart = 0
+	se.scheduleCached = nil
+	se.latestElectionEpoch = elecResult.Epoch
+	se.latestElectionBh = elecResult.BlockHeight
+	se.latestElectionSeeded = true
+	se.electionCacheMu.Lock()
+	se.electionCacheHit = false
+	se.electionCacheMu.Unlock()
+}
+
 // ActiveConsensusVersion returns the chain-active consensus triple at a block height,
 // sourced purely from the on-chain election (deterministic and height-addressable).
+//
+// ★ FAIL-STOP, NOT FAIL-OPEN. This previously returned the zero Version on ANY read
+// error, which silently reported "consensus 0.0.0" and therefore turned EVERY gate
+// resolved through it OFF for that block on that node alone. Those gates are not
+// cosmetic: IsPoaExitHalted (poa_seats.go) resolves through here and decides whether
+// a consensus bond payout is HELD (state_engine.go, transactions.go). So a single
+// transient Mongo blip on one node made it release a bond its peers refused — a
+// divergent, fund-moving TxResult with no error surfaced anywhere. Silent one-node
+// ledger divergence is the worst failure mode available; a stall is strictly better.
+//
+// The transient/deterministic split is load-bearing IN BOTH DIRECTIONS, and copies
+// the reasoning already written at bond_lock.go isTransientReadErr:
+//
+//   - mongo.ErrNoDocuments is a DETERMINISTIC absence. GetElectionByHeight queries
+//     block_height $lt height, so before the first election is processed EVERY block
+//     legitimately has no election below it. Retrying that would wedge every node at
+//     genesis, forever, on every network. It must return the zero Version, which is
+//     the correct pre-genesis answer.
+//   - ANY OTHER error is a per-node infra blip. Retrying is what prevents the fork.
+//
+// Callers on API/display paths must NOT use this; see displayActiveConsensusVersion.
 func (se *StateEngine) ActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
-	elec, err := se.electionDb.GetElectionByHeight(blockHeight)
+	var elec elections.ElectionResult
+	var found bool
+	blockingRetry("ActiveConsensusVersion.GetElectionByHeight", func() error {
+		e, err := se.electionDb.GetElectionByHeight(blockHeight)
+		if err != nil {
+			if isTransientReadErr(err) {
+				return err // blip: block and retry rather than diverge
+			}
+			// Deterministic absence: no election below this height yet.
+			found = false
+			return nil
+		}
+		elec, found = e, true
+		return nil
+	})
+	if !found {
+		return consensusversion.Version{}
+	}
+	return elections.ResultVersion(elec)
+}
+
+// displayActiveConsensusVersion is the NON-BLOCKING variant for API/display paths.
+// It deliberately keeps the old fail-open behaviour: a display value is not a
+// consensus decision, and blocking an API handler on a DB blip is its own outage.
+// Never use this on a path that affects state.
+func (se *StateEngine) displayActiveConsensusVersion(blockHeight uint64) consensusversion.Version {
+	elec, err := se.electionAtHeight(blockHeight)
 	if err != nil {
 		return consensusversion.Version{}
 	}
 	return elections.ResultVersion(elec)
+}
+
+// VaultRotationV2InForce is the SINGLE definition of "is the BTC
+// vault-rotation-v2 batch active at this height", shared by every gate site so
+// they can never drift apart. Two nodes disagreeing here compute different
+// contract-execution output and different block CIDs, which is a stall, so the
+// answer has to come from one place.
+//
+// Two inputs, deliberately:
+//
+//   - the chain-active consensus version (the attested election floor). This is
+//     the intended mainnet path: the floor cannot rise to 0.8.0 until a
+//     stake-supermajority attests it is RUNNING code that implements the batch, so
+//     a laggard fails to drag the floor up rather than silently diverging across a
+//     rolling upgrade. That is the whole reason this batch moved off a bare height.
+//
+//   - ConsensusParams.VaultRotationV2ActivationHeight, retained as an override,
+//     exactly as PoaChurnCapActive leaves MaxNewMembersActivationHeight
+//     authoritative. It is what keeps ephemeral networks working: a fresh-genesis
+//     devnet has no stored election, so ActiveConsensusVersion returns 0.0.0 and a
+//     floor-only gate would be INERT at block 1 — where the height pin is true
+//     immediately. The pin is 0 (disabled) on all four shipped networks and must
+//     stay 0 on mainnet, where the attested floor is the only intended path.
+func VaultRotationV2InForce(cp params.ConsensusParams, blockHeight uint64, active consensusversion.Version) bool {
+	return cp.VaultRotationV2Enabled(blockHeight) || consensusversion.VaultRotationV2Active(active)
+}
+
+// KeyCustodyInForce reports whether the 0.11.0 key-custody rules are in force at
+// this height (TssGetKey's reshared field; active-key holders signing outside
+// the election). Same two inputs as VaultRotationV2InForce: the chain-active
+// version, and the vault-rotation-v2 height pin, so an ephemeral network that
+// pins vault rotation (a fresh devnet has no floor to raise) runs the custody
+// rules with it. The pin is 0 on every shipped network.
+func KeyCustodyInForce(cp params.ConsensusParams, blockHeight uint64, active consensusversion.Version) bool {
+	return cp.VaultRotationV2Enabled(blockHeight) || consensusversion.KeyResharedFlagActive(active)
+}
+
+// vaultRotationV2InForce is the StateEngine-side form. It short-circuits on the
+// height pin so a pinned ephemeral network never pays for the election read that
+// resolving the chain-active version costs.
+func (se *StateEngine) vaultRotationV2InForce(blockHeight uint64) bool {
+	if se.sconf == nil {
+		return false
+	}
+	cp := se.sconf.ConsensusParams()
+	if cp.VaultRotationV2Enabled(blockHeight) {
+		return true
+	}
+	return VaultRotationV2InForce(cp, blockHeight, se.ActiveConsensusVersion(blockHeight))
+}
+
+// delegatedStakeActive reports whether per-delegator consensus stake/unstake
+// semantics are in force at this height (the v0.5.0 batch — see
+// consensusversion.DelegatedStakeActive). Below the line the legacy
+// hive_consensus-holder unstake path runs byte-identically. Sourced from
+// ActiveConsensusVersion (on-chain election) so every node agrees.
+func (se *StateEngine) delegatedStakeActive(blockHeight uint64) bool {
+	return consensusversion.DelegatedStakeActive(se.ActiveConsensusVersion(blockHeight))
+}
+
+// DelegatedStakeActiveForElection is the same 0.5.0 gate evaluated against an
+// already-read election, for the consensus_stake/unstake tx handlers which hold
+// an ElectionResult from the StateEngine interface's fail-stop election read.
+func DelegatedStakeActiveForElection(elec elections.ElectionResult) bool {
+	return consensusversion.DelegatedStakeActive(elections.ResultVersion(elec))
 }
 
 // TssMinimumConsensusVersion implements the tss.GetScheduler extension: the minimum
@@ -90,7 +382,7 @@ func (se *StateEngine) ElectionMinimumVersion(e *elections.ElectionResult) conse
 
 // DisplayConsensusVersion returns the string to show in APIs: provisional during suspended recovery.
 func (se *StateEngine) DisplayConsensusVersion() string {
-	active := se.ActiveConsensusVersion(uint64(se.BlockHeight))
+	active := se.displayActiveConsensusVersion(uint64(se.BlockHeight))
 	if se.chainProcessingSuspended() {
 		return consensusversion.FormatProvisional(active)
 	}
@@ -113,9 +405,14 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 		return
 	}
 	proposer := firstHiveAuth(tx.Self.RequiredAuths)
+	if proposer == "" {
+		return
+	}
+	// Proposer must be a current committee member. Normalize the "hive:" prefix on
+	// both sides so a prefixed member still matches the bare auth account.
 	found := false
 	for _, m := range elec.Members {
-		if m.Account == proposer {
+		if strings.TrimPrefix(m.Account, "hive:") == proposer {
 			found = true
 			break
 		}
@@ -128,6 +425,23 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	if target.Cmp(elections.ResultVersion(elec)) <= 0 {
 		return
 	}
+	// Self-version gate: a proposer may only propose up to the version it is
+	// ANNOUNCING (i.e. running) — "upgrade your node before proposing it to the
+	// network." Read the proposer's witness record at this height; reject if its
+	// announced triple does not meet the target. Deterministic (on-chain witness
+	// record at a fixed height, identical on every node). A read error drops the op
+	// (like the election read above); a missing record skips the gate — a real
+	// committee member always has an announcement, so this only relaxes test paths.
+	if se.witnessDb != nil {
+		bh := tx.Self.BlockHeight
+		w, werr := se.witnessDb.GetWitnessAtHeight(proposer, &bh)
+		if werr != nil {
+			return
+		}
+		if w != nil && !w.ConsensusVersionTriple().MeetsConsensusMin(target) {
+			return
+		}
+	}
 	// Activation epoch: default to the next epoch; reject targets aimed at the past/current.
 	activationEpoch := tx.ActivationEpoch
 	if activationEpoch == 0 {
@@ -136,24 +450,20 @@ func (se *StateEngine) executeProposeConsensusVersion(tx *TxProposeConsensusVers
 	if activationEpoch <= elec.Epoch {
 		return
 	}
-	// Monotone replace: only a strictly-higher target supersedes an existing schedule.
-	if existing := se.scheduledActivation(); existing != nil && target.Cmp(existing.Target()) <= 0 {
-		return
-	}
-	s := &consensus_state.ScheduledActivation{
-		TargetMajor:     target.Major,
-		TargetConsensus: target.Consensus,
+	// One candidate slot per proposer (re-proposing replaces your own). There is no
+	// "strictly higher than the standing schedule" rule, so a high junk target can no
+	// longer block a legitimate lower one — each candidate is adopted (or not) by the
+	// readiness guard on its own merits, and garbage-collected at expiry / no-traction.
+	se.upsertVersionProposal(consensus_state.VersionProposal{
+		Target:          target,
 		ActivationEpoch: activationEpoch,
+		CreationEpoch:   elec.Epoch,
+		ExpiryEpoch:     elec.Epoch + se.sconf.ConsensusParams().VersionProposalExpiry(),
 		Forced:          false,
 		Proposer:        proposer,
 		TxId:            tx.Self.TxId,
 		BlockHeight:     tx.Self.BlockHeight,
-	}
-	if err := se.consensusState.SetScheduledActivation(context.Background(), s); err != nil {
-		log.Warn("SetScheduledActivation failed", "err", err)
-		return
-	}
-	se.refreshChainConsensusCache()
+	})
 }
 
 func (se *StateEngine) executeRecoverySuspend(tx *TxRecoverySuspend) {
@@ -212,10 +522,10 @@ func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersio
 		return
 	}
 	target := coordinationTarget(consensusversion.Version{Major: tx.Major, Consensus: tx.Consensus})
-	s := &consensus_state.ScheduledActivation{
-		TargetMajor:     target.Major,
-		TargetConsensus: target.Consensus,
+	s := &consensus_state.VersionProposal{
+		Target:          target,
 		ActivationEpoch: elec.Epoch + 1,
+		CreationEpoch:   elec.Epoch,
 		Forced:          true,
 		Proposer:        firstHiveAuth(tx.Self.RequiredAuths),
 		TxId:            tx.Self.TxId,
@@ -226,6 +536,108 @@ func (se *StateEngine) executeRecoveryRequireVersion(tx *TxRecoveryRequireVersio
 		return
 	}
 	se.refreshChainConsensusCache()
+}
+
+// PruneVersionProposalsAfterElection garbage-collects the candidate set + recovery
+// override once a ratified election makes a new floor canonical. It drops proposals
+// that are adopted/sub-floor (target <= floor), past their hard deadline
+// (expiryEpoch <= epoch), or have no traction beyond their own proposer past the
+// fast-fail window. Deterministic: it reads only the ratified election (members,
+// weights, per-member announced versions) + the proposal set, so every node prunes
+// identically. This is the wiring that replaces the never-called ClearScheduledActivation.
+func (se *StateEngine) PruneVersionProposalsAfterElection(elec elections.ElectionResult) {
+	if se.consensusState == nil {
+		return
+	}
+	floor := elections.ResultVersion(elec)
+	epoch := elec.Epoch
+	fastFail := se.sconf.ConsensusParams().VersionProposalFastFail()
+
+	// Clear the recovery override once it has been adopted (target <= floor).
+	if f := se.forcedActivation(); f != nil && f.Target.Cmp(floor) <= 0 {
+		if err := se.consensusState.SetForcedActivation(context.Background(), nil); err != nil {
+			log.Warn("clear forced activation failed", "err", err)
+		} else {
+			se.refreshChainConsensusCache()
+		}
+	}
+
+	props := se.versionProposals()
+	if len(props) == 0 {
+		return
+	}
+	kept := props[:0]
+	changed := false
+	for _, p := range props {
+		drop := false
+		switch {
+		case p.Target.Cmp(floor) <= 0: // adopted or sub-floor → auto-cancel
+			drop = true
+		case p.ExpiryEpoch != 0 && epoch >= p.ExpiryEpoch: // hard deadline
+			drop = true
+		case fastFail > 0 && epoch >= p.CreationEpoch+fastFail &&
+			versionProposalReadyWeight(elec, p.Target) <= electionMemberWeightOf(elec, p.Proposer):
+			drop = true // no traction beyond the proposer
+		}
+		if drop {
+			changed = true
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if !changed {
+		return
+	}
+	if err := se.consensusState.SetVersionProposals(context.Background(), kept); err != nil {
+		log.Warn("prune version proposals failed", "err", err)
+		return
+	}
+	se.refreshChainConsensusCache()
+}
+
+// versionProposalReadyWeight sums the election weight of members whose announced
+// version meets target — the same readiness basis the election proposer uses.
+func versionProposalReadyWeight(elec elections.ElectionResult, target consensusversion.Version) uint64 {
+	// B13: seats sharing a BLS key are one signing entity and get one seat's
+	// weight, first occurrence winning — the same rule dids.FoldSignedWeight
+	// applies. Members arrive account-sorted, so first-wins is the
+	// lexicographically-first account. Gated on the version this election was
+	// ratified under: this weight prunes version proposals from consensus state,
+	// so an ungated change would drop different proposals on a reindex.
+	dedup := consensusversion.BlsWeightDedupActive(elections.ResultVersion(elec))
+	seen := make(map[string]bool, len(elec.Members))
+	var total uint64
+	for i, m := range elec.Members {
+		if dedup {
+			if seen[m.Key] {
+				continue
+			}
+			seen[m.Key] = true
+		}
+		if elections.MemberConsensusVersion(m, elec).MeetsConsensusMin(target) {
+			total += electionWeightAt(elec, i)
+		}
+	}
+	return total
+}
+
+// electionMemberWeightOf returns account's election weight (0 if not a member).
+func electionMemberWeightOf(elec elections.ElectionResult, account string) uint64 {
+	acct := strings.TrimPrefix(account, "hive:")
+	for i, m := range elec.Members {
+		if strings.TrimPrefix(m.Account, "hive:") == acct {
+			return electionWeightAt(elec, i)
+		}
+	}
+	return 0
+}
+
+// electionWeightAt returns Weights[i], or 1 for an unweighted election.
+func electionWeightAt(elec elections.ElectionResult, i int) uint64 {
+	if len(elec.Weights) == len(elec.Members) && i < len(elec.Weights) {
+		return elec.Weights[i]
+	}
+	return 1
 }
 
 func firstHiveAuth(auths []string) string {

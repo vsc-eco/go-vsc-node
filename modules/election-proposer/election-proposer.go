@@ -24,10 +24,12 @@ import (
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/consensus_state"
 	"vsc-node/modules/db/vsc/elections"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
+	"vsc-node/modules/db/vsc/poaseats"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 	"vsc-node/modules/db/vsc/witnesses"
 	blockconsumer "vsc-node/modules/hive/block-consumer"
@@ -56,6 +58,12 @@ type electionProposer struct {
 	elections elections.Elections
 	balanceDb ledgerDb.Balances
 	vscBlocks vscBlocks.VscBlocks
+
+	// poaSeats is the POA seat registry consulted when restricting candidacy to
+	// ratified seats. Nil on harnesses that do not wire POA — every read site
+	// treats nil as "gate inert", which keeps pre-POA candidacy behaviour rather
+	// than deleting every candidate.
+	poaSeats poaseats.PoaSeats
 
 	da *datalayer.DataLayer
 
@@ -121,6 +129,7 @@ func New(
 	p2p *libp2p.P2PServer,
 	witnesses witnesses.Witnesses,
 	elections elections.Elections,
+	poaSeats poaseats.PoaSeats,
 	vscBlocks vscBlocks.VscBlocks,
 	balanceDb ledgerDb.Balances,
 	da *datalayer.DataLayer,
@@ -135,6 +144,7 @@ func New(
 		p2p:                 p2p,
 		witnesses:           witnesses,
 		elections:           elections,
+		poaSeats:            poaSeats,
 		vscBlocks:           vscBlocks,
 		balanceDb:           balanceDb,
 		da:                  da,
@@ -418,6 +428,182 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 // rebuild the whole network) only in lockstep.
 const banSystemEnabled = false
 
+// resolveVersionFloor computes the consensus-version floor advance for an election.
+// A recovery override (forced) takes precedence and bypasses the stake-readiness
+// guard; otherwise the floor rises to the HIGHEST candidate target the committee is
+// stake-ready for (readiness is monotonic non-increasing in target) that also keeps
+// the outgoing TSS committee above reshare quorum (H-3/C-2). A junk high target
+// simply never clears readiness, so it cannot block a legitimate lower candidate.
+// Returns the (possibly unchanged) floor. Pure function of its inputs ⇒ every signer
+// reaches the identical result → identical committee CID (Constraint 3).
+//
+// proposals/forced are expected pre-filtered to those recorded before this block
+// (height-addressable). num/den is the stake-readiness fraction (default 4/5).
+func resolveVersionFloor(
+	floor consensusversion.Version,
+	newEpoch uint64,
+	blockHeight uint64,
+	forced *consensus_state.VersionProposal,
+	proposals []consensus_state.VersionProposal,
+	witnessList []witnesses.Witness,
+	weightMap map[string]uint64,
+	previousElection *elections.ElectionResult,
+	num, den int64,
+) consensusversion.Version {
+	return resolveVersionFloorWithPrev(floor, newEpoch, blockHeight, forced, proposals,
+		witnessList, witnessList, weightMap, previousElection, num, den)
+}
+
+// resolveVersionFloorWithPrev is resolveVersionFloor with the outgoing-committee
+// check (H-3/C-2) reading versions from prevCandidates instead of witnessList.
+// At 0.9.0 the readiness ratio runs over the seats (POA-9) while the previous
+// committee can hold top-up members that are candidates but not seats; judging
+// them from the seats-only list counted them not ready and held a floor rise
+// back one epoch.
+func resolveVersionFloorWithPrev(
+	floor consensusversion.Version,
+	newEpoch uint64,
+	blockHeight uint64,
+	forced *consensus_state.VersionProposal,
+	proposals []consensus_state.VersionProposal,
+	witnessList []witnesses.Witness,
+	prevCandidates []witnesses.Witness,
+	weightMap map[string]uint64,
+	previousElection *elections.ElectionResult,
+	num, den int64,
+) consensusversion.Version {
+	// stakeReady: >= num/den of committee STAKE announces a version meeting target.
+	//
+	// B13: seats sharing a consensus BLS key collapse to one. Without this, the
+	// metric that decides whether it is safe to RAISE the version floor is itself
+	// manipulable by the very bug a floor rise would fix — an attacker seating a
+	// copy of an honest witness's key gets a second vote on readiness, on both
+	// sides of the ratio, with their own announced version deciding whether it
+	// counts as ready. Ties break on the lexicographically-smallest account rather
+	// than on slice position, so the verdict does not depend on the order the
+	// witness list happens to arrive in; every proposer regenerating this election
+	// must reach the identical result or the election CIDs diverge.
+	//
+	// Gated on the PRIOR ratified election's version, like every other fold in this
+	// change: resolveVersionFloor's output is part of the election, so flipping it
+	// ungated would change historical elections on a reindex. The rise TO the line
+	// is therefore computed under the old fold — acceptable only because a live
+	// check confirmed all 19 mainnet witnesses hold distinct consensus keys, so
+	// there is nothing for the old fold to double-count.
+	dedupSeats := previousElection != nil &&
+		consensusversion.BlsWeightDedupActive(elections.ResultVersion(*previousElection))
+	stakeReady := func(target consensusversion.Version) bool {
+		var totalWeight, readyWeight uint64
+		counted := make(map[dids.BlsDID]string, len(witnessList))
+		if dedupSeats {
+			// First pass: pick the winning account per key, order-independently.
+			for _, w := range witnessList {
+				key, err := w.ConsensusKey()
+				if err != nil {
+					continue // an unreadable key cannot vouch for readiness
+				}
+				if held, seen := counted[key]; !seen || w.Account < held {
+					counted[key] = w.Account
+				}
+			}
+		}
+		for _, w := range witnessList {
+			if dedupSeats {
+				key, err := w.ConsensusKey()
+				if err != nil || counted[key] != w.Account {
+					continue
+				}
+			}
+			wt := weightMap[w.Account]
+			totalWeight += wt
+			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
+				readyWeight += wt
+			}
+		}
+		return totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num
+	}
+
+	// H-3/C-2 (TSS vault-freeze prevention): the stake guard only proves the NEW
+	// committee is ready. The OUTGOING committee holds the outstanding TSS key shares,
+	// and both signing AND resharing are gated by this same floor (tss.go:1104/1310) —
+	// advancing past the outgoing committee's readiness can filter its share-holders
+	// below threshold, freezing the vault. Additionally require the previous committee
+	// to retain threshold+1 (= ceil(2N/3) = (2N+2)/3, the GetThreshold+1 quorum)
+	// members meeting target. A prev member no longer a candidate, or not on target,
+	// counts not-ready — which can only BLOCK the advance. Skipped at genesis.
+	prevReadyAt := func(target consensusversion.Version) bool {
+		if previousElection == nil || len(previousElection.Members) == 0 {
+			return true
+		}
+		candidateVer := make(map[string]consensusversion.Version, len(prevCandidates))
+		for _, w := range prevCandidates {
+			candidateVer[w.Account] = w.ConsensusVersionTriple()
+		}
+		prevReady := 0
+		for _, m := range previousElection.Members {
+			acct := strings.TrimPrefix(m.Account, "hive:")
+			if v, ok := candidateVer[acct]; ok && v.MeetsConsensusMin(target) {
+				prevReady++
+			}
+		}
+		prevQuorum := (2*len(previousElection.Members) + 2) / 3
+		if prevReady < prevQuorum {
+			log.Warn("H-3/C-2: deferring version-floor advance — outgoing committee below TSS-reshare quorum at target",
+				"block_height", blockHeight, "prev_ready", prevReady, "prev_quorum", prevQuorum, "target", target.Format())
+			return false
+		}
+		return true
+	}
+
+	// Recovery override first: applies past its activation epoch and bypasses the
+	// STAKE-READINESS guard — that is its purpose, dragging a network past witnesses
+	// that will not upgrade.
+	//
+	// It no longer bypasses H-3/C-2. Readiness is a willingness question an operator
+	// may legitimately overrule; outgoing-committee quorum is not. Signing AND
+	// resharing are both gated on this floor, so forcing the advance past the
+	// outgoing committee filters its share-holders below reshare threshold and
+	// freezes the vault — and no subsequent override recovers it, because the shares
+	// needed to reshare are precisely the ones the advance filtered out. The pin
+	// relocated that footgun rather than removing it; honouring the quorum guard
+	// removes it.
+	//
+	// Version-gated (ForcedFloorRespectsQuorumActive, resolved from the PRIOR
+	// ratified election exactly like dedupSeats above): this function's output is
+	// part of the election, so changing which floor a forced proposal yields would
+	// alter historical elections on a reindex and diverge the CID. Below the line the
+	// original bypass-both behaviour is byte-identical.
+	if forced != nil && newEpoch >= forced.ActivationEpoch && forced.Target.Cmp(floor) > 0 {
+		forcedQuorumGated := previousElection != nil &&
+			consensusversion.ForcedFloorRespectsQuorumActive(elections.ResultVersion(*previousElection))
+		if !forcedQuorumGated || prevReadyAt(forced.Target) {
+			return forced.Target
+		}
+		log.Warn("forced version-floor advance deferred: outgoing committee is below TSS-reshare quorum at the pinned target",
+			"block_height", blockHeight, "target", forced.Target.Format(),
+			"note", "upgrade the outgoing committee; forcing past this would freeze the vault, not recover it")
+	}
+
+	// Highest live candidate meeting BOTH guards.
+	best := floor
+	for _, p := range proposals {
+		target := p.Target
+		if newEpoch < p.ActivationEpoch || target.Cmp(floor) <= 0 {
+			continue
+		}
+		if p.ExpiryEpoch != 0 && newEpoch >= p.ExpiryEpoch {
+			continue // expired
+		}
+		if target.Cmp(best) <= 0 {
+			continue // can't improve on the best so far
+		}
+		if stakeReady(target) && prevReadyAt(target) {
+			best = target
+		}
+	}
+	return best
+}
+
 func (e *electionProposer) GenerateFullElection(
 	witnessList []witnesses.Witness,
 	previousEpoch uint64,
@@ -460,60 +646,190 @@ func (e *electionProposer) GenerateFullElection(
 	// Pure functions of the on-chain witness records ⇒ identical committee/CID on
 	// every node and signer (Constraint 3). The members loop below still skips an
 	// unparseable consensus key as a final safety net.
+	// ★ EVALUATED ALWAYS, ENFORCED ONLY WHEN THE GATE IS ON.
+	//
+	// The exclusion set is computed on every election regardless of
+	// WitnessKeyStrictActive, and DELETIONS happen only when it is true. While
+	// the gate is off this changes nothing an election carries — same members,
+	// same weights, same CID — but it makes the one number nobody has answerable
+	// from the logs of a running fleet: how many witnesses this gate WOULD drop,
+	// and which.
+	//
+	// That number is not optional. The gate was disabled in June because turning
+	// it on starved the mainnet committee below the floor and halted elections at
+	// epoch 1699. The proposed fixes for that all begin with "count the survivors
+	// first", and there is currently no way to count them without either running
+	// the gate (the thing that halted the chain) or reading keys off-chain by
+	// hand. Shadow evaluation is the instrument; enabling the gate is a decision
+	// that must be made FROM its readings, not before them.
+	//
+	// COST, measured rather than assumed (BenchmarkEvaluateKeyAdmission): ~2.5 ms
+	// per candidate, dominated by BLS verification — 124 ms for a 50-witness
+	// list. It is paid once per election on the proposer and once on each signer
+	// that regenerates the election, not per block, so it does not touch the
+	// block-production path.
+	keyExclusions := evaluateKeyAdmission(witnessList)
+	if len(keyExclusions) > 0 {
+		enforced := consensusversion.WitnessKeyStrictActive(prevVersion)
+		accounts := make([]string, 0, len(keyExclusions))
+		for _, x := range keyExclusions {
+			accounts = append(accounts, x.Account+"("+x.Reason+")")
+			log.Warn("H-6 key admission: witness fails proof-of-possession",
+				"account", x.Account, "reason", x.Reason, "enforced", enforced,
+				"err", x.Err)
+		}
+		log.Warn("H-6 key admission summary",
+			"block_height", blockHeight,
+			"candidates", len(witnessList),
+			"would_exclude", len(keyExclusions),
+			"would_remain", len(witnessList)-len(keyExclusions),
+			"enforced", enforced,
+			"min_members", e.sconf.ConsensusParams().MinMembers,
+			"accounts", strings.Join(accounts, ","))
+	}
+
 	if consensusversion.WitnessKeyStrictActive(prevVersion) {
-		seenConsensusKeys := make(map[string]string, len(witnessList))
-		seenGatewayKeys := make(map[string]string, len(witnessList))
+		drop := make(map[string]struct{}, len(keyExclusions))
+		for _, x := range keyExclusions {
+			drop[x.Account] = struct{}{}
+		}
 		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
-			if popErr := w.VerifyConsensusPoP(); popErr != nil {
-				log.Warn("H-6: excluding witness with invalid consensus-key PoP",
-					"account", w.Account, "err", popErr)
-				return true
-			}
-			key, keyErr := w.ConsensusKey()
-			if keyErr != nil {
-				log.Warn("H-6: excluding witness with unparseable consensus key",
-					"account", w.Account, "err", keyErr)
-				return true
-			}
-			ks := key.String()
-			if first, dup := seenConsensusKeys[ks]; dup {
-				log.Warn("H-6: excluding witness with duplicate consensus key",
-					"account", w.Account, "kept", first)
-				return true
-			}
-			// Gateway-key strict admission (audit H-6, gateway companion): the
-			// gateway key is an unauthenticated announced string unless its
-			// proof-of-possession verifies. Without this, a distinct elected node
-			// could announce ANOTHER member's public gateway key and wedge gateway
-			// rotation with a duplicate key_auth (Hive rejects duplicate keys).
-			//   (c) EXCLUDE any witness whose gateway-key PoP is missing/invalid —
-			//       it has not proven it holds the announced gateway key.
-			//   (d) DEDUPE by gateway key. With a valid PoP a duplicate implies a
-			//       copied seed (also caught by the consensus-key dedup above for
-			//       the normal derivation); this still covers a shared gateway key
-			//       paired with distinct consensus keys. Keep the
-			//       account-lexicographically-first (witnessList is account-sorted).
-			// Pure function of the on-chain witness record ⇒ identical committee/CID
-			// on every node (Constraint 3). After this gate every elected member
-			// provably holds a unique gateway key, so the committee size and the
-			// gateway multisig's signer count track the same population.
-			if popErr := w.VerifyGatewayKeyPoP(); popErr != nil {
-				log.Warn("H-6: excluding witness with invalid gateway-key PoP",
-					"account", w.Account, "err", popErr)
-				return true
-			}
-			if first, dup := seenGatewayKeys[w.GatewayKey]; dup {
-				log.Warn("H-6: excluding witness with duplicate gateway key",
-					"account", w.Account, "kept", first)
-				return true
-			}
-			seenConsensusKeys[ks] = w.Account
-			seenGatewayKeys[w.GatewayKey] = w.Account
-			return false
+			_, excluded := drop[w.Account]
+			return excluded
 		})
 	}
 
+	// Fetched before the POA seat gate below: the gate's starvation floor is
+	// computed against the PRIOR committee size, the same basis the bond floor
+	// guard uses.
 	previousElection := e.elections.GetElection(previousEpoch)
+
+	// ───── POA seat gate (A1) ─────
+	//
+	// Candidacy is restricted to accounts holding a ratified POA seat. Without
+	// it, entry is permissionless: any Hive account can announce itself a
+	// witness, and enough HIVE_CONSENSUS stake is the only remaining gate.
+	//
+	// PLACEMENT IS LOAD-BEARING. This runs BEFORE the stake/bond loop, the churn
+	// cap and the bond floor guard, so the floor guard is still the LAST
+	// membership-shrinking step and can still backfill incumbents if the seated
+	// set comes up short. A membership gate placed after the floor guard is
+	// exactly the shape that starved the mainnet committee at epoch 1699 (H-6
+	// strict key admission, still disabled today).
+	//
+	// THREE INDEPENDENT SAFETY LAYERS, all required:
+	//   1. version-gated on the PRIOR ratified election's version, so the gate
+	//      bites one full epoch after the floor crosses 0.7.0;
+	//   2. INERT while the registry is empty — bootstrap seeding fills it from
+	//      the incumbent committee at the first ratified election after
+	//      activation (state-processing/poa_seats.go), so an empty registry
+	//      means "not seeded yet", never "nobody is eligible";
+	//   3. FAIL-STOP on a read error — returning an error aborts this election
+	//      attempt and the next slot retries, rather than proceeding with a
+	//      partial seat set and deleting legitimate candidates.
+	// ★ THE POA RULES BIND TO WHAT THE GATE ACTUALLY DID, NOT TO WHETHER A DB
+	// HANDLE IS NON-NIL.
+	//
+	// This flag is the single fact the flat-weight and churn-cap rules below
+	// read. It is set in exactly one place — the branch that really applies the
+	// seat filter — so the restriction (only seated accounts may be elected) and
+	// the benefit (every seat weighs the same) can no longer come apart. They
+	// used to: `poaActive` re-derived its own verdict from
+	// `PoaFlatWeightActive(prevVersion) && e.poaSeats != nil`, which is true
+	// whenever the registry is merely WIRED, while the gate below has two
+	// reachable paths on which it declines to filter anything (an empty registry
+	// and the starvation refusal). On either of those the old predicate still
+	// said yes, producing the regime this file's own comments call strictly
+	// worse than either it sits between: candidacy back to "anyone with
+	// MinStake", but every such candidate carrying a full seat's weight — so
+	// committee weight is bought at MinStake per seat, cheaper than the
+	// stake-weighting POA replaced and free of the vetting POA adds.
+	poaSeatGateApplied := false
+
+	// 0.9.0 (POA-2, POA-9): the seat decision is taken after the stake and
+	// version filters, on the candidates that survive them (see "POA seat gate,
+	// decided on the survivors" below). poaGateSeats carries the seat set there.
+	var poaGateSeats map[string]struct{}
+
+	if consensusversion.PoaSeatGateActive(prevVersion) && e.poaSeats != nil {
+		seats, seatErr := e.poaSeats.GetSeatsAtHeight(blockHeight)
+		if seatErr != nil {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("poa seat gate: registry read failed at %d: %w", blockHeight, seatErr)
+		}
+		if len(seats) == 0 {
+			log.Error("poa seat gate ACTIVE but the seat registry is EMPTY — gate inert this election; expecting bootstrap seeding at the next ratified election",
+				"block_height", blockHeight)
+		} else {
+			seatSet := make(map[string]struct{}, len(seats))
+			for _, s := range seats {
+				seatSet[s.Account] = struct{}{}
+			}
+			// Compute the gated list SPECULATIVELY first, so the starvation
+			// guard below can decline to apply it.
+			gated := slices.DeleteFunc(slices.Clone(witnessList), func(w witnesses.Witness) bool {
+				// Witness accounts are bare; seat accounts are normalised on
+				// write. Normalising here too means a future change to either
+				// convention cannot silently empty the committee.
+				_, seated := seatSet[poaseats.NormalizeAccount(w.Account)]
+				return !seated
+			})
+
+			// ★ STARVATION GUARD. Everything else about this gate is a reason to
+			// believe it will not empty the committee; this is the check that
+			// makes it true regardless of whether those reasons hold.
+			//
+			// It exists because the failure it prevents has already happened
+			// once: the structurally identical H-6 key-admission gate starved the
+			// mainnet committee below the floor at epoch 1699 and halted
+			// elections, and is still disabled today. A gate cannot be allowed to
+			// be the thing that stops block production, so if applying it would
+			// drop the committee under the floor that gateway rotation (>=8
+			// keys), TSS signability and a valid election all require, it is NOT
+			// applied at all — the election proceeds ungated and loudly, which
+			// costs one epoch of permissionless candidacy instead of a stalled
+			// chain.
+			//
+			// The concrete case this catches: a bootstrap that seeded only part
+			// of the committee leaves a registry that is non-empty (so the
+			// empty-registry guard above does not fire) but far too small.
+			// MinMembers, NOT bondCommitteeFloor. bondCommitteeFloor folds in the
+			// hardcoded 8-key gateway floor, which is right for the bond guard but
+			// wrong here: on a 3-node devnet it exceeds the whole network, so the
+			// gate could never apply anywhere and POA would be untestable. Mainnet
+			// already pins MinMembers to 8 *because* of that gateway floor (see the
+			// H-5 note in system-config), so using MinMembers gives 8 on mainnet
+			// and 3 on the test nets — the correct bar on each. MinMembers is also
+			// precisely the bar whose violation aborts HoldElection and stalls the
+			// epoch, which is the outcome this guard exists to prevent.
+			floor := e.sconf.ConsensusParams().MinMembers
+			if consensusversion.PoaStarvationTopUpActive(prevVersion) {
+				// 0.9.0: judged here, on candidates that may still lose their stake
+				// or version below, a seat set that passed this check could come out
+				// under MinMembers and stall the epoch (POA-9). Keep the list whole
+				// and decide on the survivors instead.
+				poaGateSeats = seatSet
+			} else if len(gated) < floor {
+				log.Error("poa seat gate REFUSED: applying it would starve the committee below the floor — election proceeds UNGATED this epoch. The seat registry is short (likely a partial bootstrap); resolve it before the consensus floor rises further",
+					"block_height", blockHeight,
+					"seats", len(seats),
+					"candidates", len(witnessList),
+					"after_gate", len(gated),
+					"floor", floor)
+			} else {
+				before := len(witnessList)
+				witnessList = gated
+				poaSeatGateApplied = true
+				if dropped := before - len(witnessList); dropped > 0 {
+					log.Info("poa seat gate excluded unseated candidates",
+						"block_height", blockHeight,
+						"seats", len(seats),
+						"candidates_before", before,
+						"excluded", dropped)
+				}
+			}
+		}
+	}
 
 	var etype string
 	var firstElection bool
@@ -714,6 +1030,40 @@ func (e *electionProposer) GenerateFullElection(
 	if nodesWithStake >= uint64(e.sconf.ConsensusParams().MinMembers) || etype == "staked" {
 		pType = "staked"
 		weightMap = stakedMap
+
+		// ───── POA flat seat-weight (A3) ─────
+		//
+		// Every ratified seat carries exactly one unit. Stake keeps every other
+		// role it has — the MinStake eligibility floor, the maturity window, the
+		// established-member grace, and being the slashable bond — but it stops
+		// being consensus WEIGHT. That is the whole point: with weight tracking
+		// stake 1:1, an account holding >=2/3 of stake holds >=2/3 of forging
+		// weight and of the gateway multisig, which is the capture vector POA
+		// exists to close. Flat weight makes "2/3" mean 14 seats of 20.
+		//
+		// This is not a novel code path: pType=="initial" already gives every
+		// member a flat DEFAULT_NEW_NODE_WEIGHT today, and every downstream
+		// consumer is a ratio rule over whatever weights the election carries —
+		// none parse weight VALUES. TSS keygen/keysign thresholds are member
+		// COUNT based (tss_helpers.GetThreshold) and are untouched.
+		//
+		// pType deliberately stays "staked": it is consensus-visible (part of
+		// ElectionData and therefore of the CID) and feeds elections.ResultVersion,
+		// so inventing a third value would ripple into election validation for no
+		// benefit.
+		//
+		// At 0.9.0 the seat decision is taken further down, on the survivors,
+		// and for a staked election it always applies (the gate, or the capped
+		// top-up), so the flat weight is decided here on that commitment; the
+		// survivors block then records it in poaSeatGateApplied for the churn
+		// cap and the weight rules below.
+		if e.poaActive(prevVersion, poaSeatGateApplied || poaGateSeats != nil) {
+			flat := make(map[string]uint64, len(stakedMap))
+			for account := range stakedMap {
+				flat[account] = params.PoaSeatWeight
+			}
+			weightMap = flat
+		}
 	} else {
 		pType = "initial"
 		weightMap = defaultWeightMap
@@ -746,80 +1096,139 @@ func (e *electionProposer) GenerateFullElection(
 		})
 	}
 
-	// Epoch-scheduled version switch with stake-readiness guard. Resolved here (at the
-	// ratified election checkpoint) rather than via a live singleton, so every signer
-	// regenerating this election at the same height computes the identical floor → CID.
-	// The schedule is read height-addressably (ScheduledActivationForHeight) for purity.
-	var schedule *consensus_state.ScheduledActivation
+	// Consensus-version floor advance, from the bounded candidate set + recovery
+	// override, both read height-addressably (VersionProposalsForHeight /
+	// ForcedActivationForHeight) so every signer regenerating this election computes
+	// the identical floor → CID. resolveVersionFloor is a pure function (unit-tested
+	// in version_floor_test.go) so the consensus-critical decision is reproducible.
 	if e.se != nil {
-		schedule = e.se.ScheduledActivationForHeight(blockHeight)
-	}
-	if schedule != nil &&
-		newEpoch >= schedule.ActivationEpoch && schedule.Target().Cmp(floor) > 0 {
-		target := schedule.Target()
-		var totalWeight, readyWeight uint64
-		for _, w := range witnessList {
-			wt := weightMap[w.Account]
-			totalWeight += wt
-			if w.ConsensusVersionTriple().MeetsConsensusMin(target) {
-				readyWeight += wt
-			}
-		}
-		num, den := int64(
-			e.sconf.ConsensusParams().ConsensusVersionActivationNum,
-		), int64(
-			e.sconf.ConsensusParams().ConsensusVersionActivationDen,
-		)
+		num, den := int64(e.sconf.ConsensusParams().ConsensusVersionActivationNum),
+			int64(e.sconf.ConsensusParams().ConsensusVersionActivationDen)
 		if num <= 0 || den <= 0 {
 			num, den = 4, 5 // default 80%
 		}
-
-		// H-3/C-2 (TSS vault-freeze prevention): the 80% guard above only proves
-		// the NEW committee is ready for the target. But the OUTGOING committee
-		// holds the outstanding TSS key shares, and BOTH signing AND resharing
-		// those keys are gated by this same version floor (tss.go:1104/1310) — so
-		// advancing the floor past the outgoing committee's readiness can filter
-		// its share-holders below threshold, freezing the BTC/ETH/DASH vault
-		// (can't sign, can't reshare to hand off). Additionally require the
-		// previous committee to retain threshold+1 (= ceil(2N/3), the
-		// GetThreshold+1 quorum) members that meet the target. Conservative +
-		// deterministic: a previous member who is no longer a current candidate,
-		// or isn't on the target version, counts as not-ready — which can only
-		// BLOCK the advance (the floor simply waits another epoch; a delayed
-		// version upgrade is never a custody freeze). Skipped at genesis (no
-		// previous committee) and when Forced (recovery override accepts the
-		// risk explicitly). Pure function of previousElection (on-chain) + the
-		// deterministic candidate set + compile-time target ⇒ identical on every
-		// signer (Constraint 3).
-		prevCommitteeReady := true
-		if !schedule.Forced && previousElection != nil && len(previousElection.Members) > 0 {
-			candidateVer := make(map[string]consensusversion.Version, len(witnessList))
-			for _, w := range witnessList {
-				candidateVer[w.Account] = w.ConsensusVersionTriple()
-			}
-			prevReady := 0
-			for _, m := range previousElection.Members {
-				acct := strings.TrimPrefix(m.Account, "hive:")
-				if v, ok := candidateVer[acct]; ok && v.MeetsConsensusMin(target) {
-					prevReady++
-				}
-			}
-			// threshold+1 = ceil(2N/3) = (2N+2)/3 (matches tss_helpers.GetThreshold(N)+1).
-			prevQuorum := (2*len(previousElection.Members) + 2) / 3
-			if prevReady < prevQuorum {
-				prevCommitteeReady = false
-				log.Warn("H-3/C-2: deferring version-floor advance — outgoing committee below TSS-reshare quorum at target",
-					"block_height", blockHeight, "prev_ready", prevReady, "prev_quorum", prevQuorum, "target", target.Format())
-			}
-		}
-
-		// Integer-only comparison: readyWeight/totalWeight >= num/den.
-		if schedule.Forced || (prevCommitteeReady && totalWeight > 0 && int64(readyWeight)*den >= int64(totalWeight)*num) {
-			floor = target
+		// POA-9 (0.9.0): with the seat decision deferred, the list can still hold
+		// unseated stakers here. Readiness is computed over the seats whenever
+		// enough of them are left to form the committee, as it was when the gate
+		// ran first, so unseated witnesses cannot hold back (or pad) a floor rise.
+		readinessList := poaReadinessList(witnessList, poaGateSeats, e.sconf.ConsensusParams().MinMembers)
+		// The outgoing-committee check reads the whole candidate list: top-up
+		// members of the previous committee hold shares but are not seats.
+		if nf := resolveVersionFloorWithPrev(floor, newEpoch, blockHeight,
+			e.se.ForcedActivationForHeight(blockHeight), e.se.VersionProposalsForHeight(blockHeight),
+			readinessList, witnessList, weightMap, previousElection, num, den); nf.Cmp(floor) > 0 {
+			floor = nf
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				return !w.ConsensusVersionTriple().MeetsConsensusMin(floor)
 			})
 		}
+	}
+
+	// POA seat gate, decided on the survivors (0.9.0: POA-2, POA-9). Runs after
+	// the stake pass and both version-floor deletes, so it judges exactly the
+	// candidates that can be seated, and before the churn cap and the bond floor
+	// guard.
+	//   - Enough seats survive (>= MinMembers): the gate applies. Every unseated
+	//     candidate is dropped, from the floor guard's snapshot too, so the guard
+	//     cannot re-seat an unseated account.
+	//   - Too few seats survive: every seat is kept and unseated candidates are
+	//     admitted only up to MinMembers, members of the previous committee first
+	//     (they already hold key shares), then by matured stake (raw stake when
+	//     the maturity gate is off), ties by account name. The churn cap cannot
+	//     defer a top-up member (the committee is exactly at MinMembers). The
+	//     floor guard below cannot add anyone back under POA: it re-seats at
+	//     min(balance, previous weight), and a flat seat weight
+	//     (params.PoaSeatWeight = 1) is below MinStake on every network with
+	//     MinStake > 1, so the committee stays at MinMembers.
+	//   - "initial" elections (no staked committee yet) with too few seats stay
+	//     ungated, as before 0.9.0.
+	if poaGateSeats != nil {
+		gateFloor := e.sconf.ConsensusParams().MinMembers
+		seatedEligible := 0
+		for _, w := range witnessList {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				seatedEligible++
+			}
+		}
+		if seatedEligible >= gateFloor {
+			before := len(witnessList)
+			isUnseated := func(w witnesses.Witness) bool {
+				_, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]
+				return !seated
+			}
+			for _, w := range witnessList {
+				if isUnseated(w) {
+					delete(weightMap, w.Account)
+				}
+			}
+			witnessList = slices.DeleteFunc(witnessList, isUnseated)
+			bondPreGate = slices.DeleteFunc(bondPreGate, isUnseated)
+			poaSeatGateApplied = true
+			if dropped := before - len(witnessList); dropped > 0 {
+				log.Info("poa seat gate excluded unseated candidates",
+					"block_height", blockHeight,
+					"seated_eligible", seatedEligible,
+					"excluded", dropped)
+			}
+		} else if pType != "staked" {
+			log.Error("poa seat gate REFUSED on an initial election: too few seats, election proceeds UNGATED this epoch",
+				"block_height", blockHeight, "seated_eligible", seatedEligible, "floor", gateFloor)
+		}
+	}
+	if poaGateSeats != nil && pType == "staked" && len(witnessList) > 0 && poaSeatedCount(witnessList, poaGateSeats) < e.sconf.ConsensusParams().MinMembers {
+		topUpFloor := e.sconf.ConsensusParams().MinMembers
+		seatedEligible := 0
+		unseated := make([]string, 0, len(witnessList))
+		rank := make(map[string]int64, len(witnessList))
+		for _, w := range witnessList {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				seatedEligible++
+				continue
+			}
+			unseated = append(unseated, w.Account)
+			if bondMatured != nil {
+				rank[w.Account] = bondMatured[w.Account]
+			} else {
+				rank[w.Account] = int64(stakedMap[w.Account])
+			}
+		}
+		// Members of the previous committee first: they already hold key shares,
+		// so keeping them adds no new signer, and it stops a well-funded newcomer
+		// from displacing them (the churn cap cannot defer anyone here, because
+		// the committee is exactly at MinMembers).
+		incumbent := make(map[string]bool)
+		if previousElection != nil {
+			for _, m := range previousElection.Members {
+				incumbent[strings.TrimPrefix(m.Account, "hive:")] = true
+			}
+		}
+		keep := selectPoaTopUp(unseated, incumbent, rank, topUpFloor-seatedEligible)
+		// The top-up is the seat filter applied with a bounded exception (at most
+		// MinMembers minus the seats, incumbents first), so the seat rules hold.
+		poaSeatGateApplied = true
+		witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
+			if _, seated := poaGateSeats[poaseats.NormalizeAccount(w.Account)]; seated {
+				return false
+			}
+			_, admitted := keep[w.Account]
+			return !admitted
+		})
+		for _, acct := range unseated {
+			if _, admitted := keep[acct]; !admitted {
+				delete(weightMap, acct)
+			}
+		}
+		admitted := make([]string, 0, len(keep))
+		for acct := range keep {
+			admitted = append(admitted, acct)
+		}
+		slices.Sort(admitted)
+		log.Warn("poa starvation top-up admitted unseated candidates up to the floor",
+			"block_height", blockHeight,
+			"floor", topUpFloor,
+			"seated_eligible", seatedEligible,
+			"unseated_candidates", len(unseated),
+			"admitted", strings.Join(admitted, ","))
 	}
 
 	// Bond churn cap (audit F6 / THORChain NumberOfNewNodesPerChurn): the
@@ -836,8 +1245,48 @@ func (e *electionProposer) GenerateFullElection(
 	// on-chain previous election; ranking is the already-computed effective
 	// values; cap is compile-time. Inert unless bondActive, staked, cap>0, and
 	// there is a previous election (genesis/bootstrap has no "new" concept).
-	if bondActive && pType == "staked" && previousElection != nil &&
-		e.sconf.ConsensusParams().MaxNewMembersPerElection > 0 {
+	effMaxNew := e.sconf.ConsensusParams().EffectiveMaxNewMembers(blockHeight)
+
+	// ───── POA churn-cap activation (A4) ─────
+	//
+	// The cap above is DEAD CODE on every shipped network: EffectiveMaxNewMembers
+	// requires MaxNewMembersActivationHeight to be pinned and reached, and it is
+	// 0 everywhere — including mainnet, where MaxNewMembersPerElection is 1 but
+	// the height is unset. (Four devnet tests set the cap value and assert on it
+	// while the height stays 0, so they exercise an inert cap.)
+	//
+	// POA activates it off the version gate instead of pinning a height. That
+	// removes the mis-pin footgun documented on the field itself: a bare value
+	// lets old-binary (cap=0) and new-binary (cap=N) nodes compute DIFFERENT
+	// member sets for the same election, which breaks BLS aggregation and stalls
+	// the epoch. A version gate cannot desynchronise that way, because the floor
+	// only rises once a supermajority attests to running the code.
+	//
+	// A pinned MaxNewMembersActivationHeight still wins where present: this only
+	// supplies a cap when the height-gated path yields none.
+	// The churn cap resolves through its OWN version gate rather than through
+	// poaActive. PoaChurnCapActive had no functional call site at all — the cap
+	// reached production only via poaActive — so the two could drift apart
+	// silently. Keeping the `poaSeatGateApplied` conjunct is deliberate: the cap
+	// rate-limits SEATS entering the committee, which is only a coherent notion
+	// while the seat filter is actually being applied.
+	poaChurn := consensusversion.PoaChurnCapActive(prevVersion) && poaSeatGateApplied
+	// The transition election has no seats to gate on: bootstrap seats the
+	// committee before it once it is ratified, so its newcomers get no seat and
+	// leave at the next election. Cap how many can enter it, as in any POA election.
+	if !consensusversion.PoaChurnCapActive(prevVersion) && consensusversion.PoaTransitionChurnCapActive(floor) {
+		poaChurn = true
+	}
+	if poaChurn && effMaxNew == 0 {
+		effMaxNew = e.sconf.ConsensusParams().EffectivePoaMaxNewMembers()
+	}
+
+	// The pre-existing guard also required bondActive, because the cap was
+	// meaningful only alongside the bond maturity gate. Under POA the cap is
+	// meaningful on its own — it rate-limits SEATS entering the committee, which
+	// is what makes a suspicious admission wave visible and reactable instead of
+	// atomic — so POA admits it independently of bondActive.
+	if (bondActive || poaChurn) && pType == "staked" && previousElection != nil && effMaxNew > 0 {
 		prevMembers := make(map[string]struct{}, len(previousElection.Members))
 		for _, m := range previousElection.Members {
 			prevMembers[strings.TrimPrefix(m.Account, "hive:")] = struct{}{}
@@ -865,7 +1314,24 @@ func (e *electionProposer) GenerateFullElection(
 				effective: bondMatured[w.Account],
 			})
 		}
-		churnedOut := selectChurnedOut(newEntrants, e.sconf.ConsensusParams().MaxNewMembersPerElection)
+		churnedOut := selectChurnedOut(newEntrants, effMaxNew)
+
+		// ★ The seat gate's starvation guard runs BEFORE this block, so it
+		// cannot see what the churn cap is about to remove. Deferring entrants
+		// here can therefore re-shrink a committee the guard just approved, back
+		// under MinMembers — which turns "one epoch of open candidacy" into the
+		// stalled epoch the guard exists to prevent. Deferring an entrant is
+		// always safe to SKIP (they simply join this election instead of the
+		// next), so when the cap would breach the floor, it yields.
+		if minMembers := e.sconf.ConsensusParams().MinMembers; len(witnessList)-len(churnedOut) < minMembers {
+			log.Error("poa/bond churn cap SKIPPED this election: deferring these entrants would drop the committee below MinMembers, which stalls the epoch. Admitting them instead — the cap is a rate limit, not a safety property",
+				"block_height", blockHeight,
+				"candidates", len(witnessList),
+				"would_defer", len(churnedOut),
+				"min_members", minMembers)
+			churnedOut = nil
+		}
+
 		if len(churnedOut) > 0 {
 			witnessList = slices.DeleteFunc(witnessList, func(w witnesses.Witness) bool {
 				_, drop := churnedOut[w.Account]
@@ -878,7 +1344,7 @@ func (e *electionProposer) GenerateFullElection(
 			slices.Sort(deferred)
 			log.Info("bond churn cap deferred new members",
 				"block_height", blockHeight,
-				"cap", e.sconf.ConsensusParams().MaxNewMembersPerElection,
+				"cap", effMaxNew,
 				"new_entrants", len(newEntrants),
 				"deferred", strings.Join(deferred, ","))
 		}
@@ -955,7 +1421,18 @@ func (e *electionProposer) GenerateFullElection(
 			selected := selectBondBackfill(cands, bondFloor-len(witnessList))
 			for _, c := range selected {
 				witnessList = append(witnessList, c.witness)
-				weightMap[c.witness.Account] = c.weight
+				// A backfilled incumbent is a seat like any other. Under POA it
+				// must carry the SAME flat weight as everyone else: seating it
+				// at its stake-derived weight would reintroduce a
+				// stake-proportional member into an otherwise flat committee —
+				// a single member whose weight could dwarf every other seat
+				// combined, i.e. the exact capture vector A3 removes, restored
+				// through the liveness patch.
+				if e.poaActive(prevVersion, poaSeatGateApplied) {
+					weightMap[c.witness.Account] = params.PoaSeatWeight
+				} else {
+					weightMap[c.witness.Account] = c.weight
+				}
 			}
 			if len(selected) > 0 {
 				// Restore the deterministic account ordering the members array
@@ -988,6 +1465,15 @@ func (e *electionProposer) GenerateFullElection(
 
 	distWeight := computeRequiredMemberWeight(totalOptionalWeight, uint64(len(REQUIRED_ELECTION_MEMBERS)))
 
+	// REQUIRED_ELECTION_MEMBERS is empty today, so distWeight is inert — but it
+	// is a weight computed as a SHARE OF THE TOTAL, which under flat seat-weight
+	// would hand a required member many times a normal seat's weight the moment
+	// the list is ever populated. Flattening it here means POA's one-seat-one-vote
+	// property cannot be quietly undone later by adding a required member.
+	if e.poaActive(prevVersion, poaSeatGateApplied) {
+		distWeight = params.PoaSeatWeight
+	}
+
 	// review2 MEDIUM #66: a witness consensus key comes from untrusted L1
 	// account data; a single malformed key must not panic (crash) every
 	// proposer. Deterministically skip the witness instead — all nodes
@@ -1009,6 +1495,43 @@ func (e *electionProposer) GenerateFullElection(
 			MemberConsensus:     t.Consensus,
 			MemberNonConsensus:  t.NonConsensus,
 		})
+	}
+
+	// ★ THE SIGNABILITY FLOOR IS OBSERVED, NOT ENFORCED — YET.
+	//
+	// bondCommitteeFloor is the size below which a committee cannot do its job
+	// even though the election is perfectly valid: under 8 keys the gateway
+	// multisig rotation is silently SKIPPED (multisig.go keyRotation), and under
+	// ceil(2·prevN/3)+1 too few prior share-holders remain seated for the
+	// outstanding TSS keys to stay signable, so reshares strand. MinMembers, the
+	// bar HoldElection actually aborts on, is lower than both.
+	//
+	// Nothing checks it today. The bond floor guard above works toward it on a
+	// best-effort basis and then returns without ever asking whether it got
+	// there, so a committee in the window between MinMembers and this floor is
+	// emitted silently — and the first symptom is a gateway that will not rotate,
+	// which, with the vsc.dao owner backstop already removed from the mainnet
+	// gateway account, has no on-chain recovery.
+	//
+	// This is deliberately a LOG, not a refusal. Refusing here would make the
+	// check itself the thing that stalls the epoch, and on a 3-node devnet the
+	// floor (8) exceeds the whole network, so a refusal would fire permanently
+	// on every test network while never having been exercised on one. Enforcement
+	// belongs behind a version gate and behind a precondition that the PREVIOUS
+	// committee already cleared the floor, so it can only ever refuse to be the
+	// election that regresses a healthy network. Measure first.
+	if previousElection != nil {
+		signFloor := bondCommitteeFloor(e.sconf.ConsensusParams().MinMembers, len(previousElection.Members))
+		if len(members) < signFloor {
+			log.Error("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
+				"block_height", blockHeight,
+				"members", len(members),
+				"signability_floor", signFloor,
+				"min_members", e.sconf.ConsensusParams().MinMembers,
+				"gateway_key_floor", bondGatewayKeyFloor,
+				"prev_members", len(previousElection.Members),
+				"prev_cleared_floor", len(previousElection.Members) >= signFloor)
+		}
 	}
 
 	weights := make([]uint64, len(members))
@@ -1085,6 +1608,17 @@ func (e *electionProposer) GenerateFullElection(
 			)
 		}
 
+		// Consensus 0.5.0: per-delegator reward split for share-mode nodes.
+		// Read at the SAME blockHeight as the bonds so every signer's re-derive
+		// (against rec.SnapshotRangeTo == blockHeight) sees identical edges. A
+		// transient read failure aborts the election attempt rather than
+		// composing a settlement against a partial delegation view.
+		shareDelegations, sdOk := e.se.PendulumShareDelegations(settlementMembers, blockHeight)
+		if !sdOk {
+			return elections.ElectionHeader{}, elections.ElectionData{},
+				fmt.Errorf("pendulum settlement: share-delegation read unavailable")
+		}
+
 		rec, composeErr := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
 			Epoch:               previousEpoch,
 			PrevEpoch:           prevSettled,
@@ -1093,6 +1627,7 @@ func (e *electionProposer) GenerateFullElection(
 			CommitteeBonds:      bonds,
 			BucketBalanceHBD:    bucket,
 			ReductionsByAccount: reductions,
+			ShareDelegations:    shareDelegations,
 		})
 		if composeErr != nil {
 			return elections.ElectionHeader{}, elections.ElectionData{},
@@ -1152,11 +1687,7 @@ func canonicalElectionAnchor(prevBlockHeight uint64, electionInterval uint64) ui
 	return ((target + cadence - 1) / cadence) * cadence
 }
 
-type ElectionOptions struct {
-	OverrideMinimumMemberCount int
-}
-
-func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions) error {
+func (ep *electionProposer) HoldElection(blk uint64) error {
 	if ep.signingInfo != nil {
 		log.Warn("election already in progress; skipping new attempt", "block_height", blk)
 		return errors.New("election already in progress")
@@ -1249,12 +1780,14 @@ func (ep *electionProposer) HoldElection(blk uint64, options ...ElectionOptions)
 
 		// console.log("electionData - holding election", electionData)
 
-		var minimumMemberCount int
-		if len(options) > 0 {
-			minimumMemberCount = options[0].OverrideMinimumMemberCount
-		} else {
-			minimumMemberCount = ep.sconf.ConsensusParams().MinMembers
-		}
+		// ★ NO OVERRIDE. This bar used to be settable through an ElectionOptions
+		// argument, and because Go zero-values a struct field, ANY caller that
+		// passed ElectionOptions{} without naming the field set the minimum to 0
+		// — silently deleting the proposer's only defence against proposing a
+		// committee too small to sign, rotate the gateway multisig, or hold the
+		// TSS shares. Nothing in the repository ever passed it, so the field was
+		// pure downside: an opt-out from a safety floor, reachable by omission.
+		minimumMemberCount := ep.sconf.ConsensusParams().MinMembers
 
 		if len(electionData.Members) < minimumMemberCount {
 			log.Warn("election minimum member count not met",
@@ -1640,6 +2173,15 @@ func (ep *electionProposer) makeElection(epoch uint64) (elections.ElectionHeader
 	return ep.GenerateElectionAtBlock(anchorBh)
 }
 
+// Busy reports whether this node is collecting election signatures. The
+// broadcast that follows runs inside the async election tick, which the block
+// consumer counts separately. Read-only; used by the devnet block pacemaker.
+func (ep *electionProposer) Busy() bool {
+	ep.sigMu.Lock()
+	defer ep.sigMu.Unlock()
+	return ep.sigRunning
+}
+
 func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
 	if ep.signingInfo == nil {
 		return 0, errors.New("no block signing info")
@@ -1658,10 +2200,15 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 		ep.sigMu.Unlock()
 	}()
 
-	weightTotal := uint64(0)
-	for _, weight := range election.Weights {
-		weightTotal += weight
+	// B13: fold weight through the canonical primitive so this collector measures
+	// quorum the same way the chain does, with duplicate seats collapsed to one.
+	memberKeys := make([]string, len(election.Members))
+	accountSeat := make(map[string]dids.BlsDID, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+		accountSeat[m.Account] = dids.BlsDID(m.Key)
 	}
+	_, weightTotal, _ := dids.FoldSignedWeight(memberKeys, election.Weights, nil)
 
 	end := make(chan struct{})
 
@@ -1678,6 +2225,8 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 
 	var err error
 	var signedWeight uint64
+	var included []dids.BlsDID
+	signedDIDs := make(map[dids.BlsDID]bool)
 	go func() {
 		signedWeight = 0
 
@@ -1723,14 +2272,22 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 			sigStr := signResp.Sig
 			account := signResp.Account
 
-			var member dids.Member
-			var index int
-			for i, data := range election.Members {
-				if data.Account == account {
-					member = dids.BlsDID(data.Key)
-					index = i
-					break
-				}
+			// B13: the account is a self-declared field on an unauthenticated
+			// message — gossipsub authenticates the libp2p PEER, not the claimed
+			// account — so it may only SELECT which seat is being claimed. From
+			// there the verifying key is the identity, and weight is folded
+			// through the canonical primitive.
+			//
+			// Two defects closed here. There was no dedup at all, so a seat whose
+			// BLS key duplicates an honest witness's could re-emit the identical
+			// signature bytes under its own label and be credited again — no
+			// private key, no cooperation, since AddAndVerify checks the
+			// cryptography rather than the sender. And `index` defaulted to 0 for
+			// an account that matched NO member, so an unrecognised sender was
+			// credited member 0's weight.
+			member, seated := accountSeat[account]
+			if !seated || signedDIDs[member] {
+				continue
 			}
 
 			c := *circuit
@@ -1744,12 +2301,13 @@ func (ep *electionProposer) waitForSigs(ctx context.Context, election *elections
 					"account", account,
 					"err", err)
 			} else if added {
-				signedWeight += election.Weights[index]
+				signedDIDs[member] = true
+				included = append(included, member)
+				signedWeight, _, _ = dids.FoldSignedWeight(memberKeys, election.Weights, included)
 				log.Verbose("signature aggregated",
 					"block_height", block,
 					"epoch", epoch,
 					"account", account,
-					"added_weight", election.Weights[index],
 					"signed_weight", signedWeight,
 					"weight_required", weightRequired)
 			} else {
@@ -1804,4 +2362,162 @@ func resultJoin[T any](results ...result.Result[T]) (res result.Result[[]T]) {
 		}
 	}
 	return res
+}
+
+// keyAdmissionExclusion is one witness the H-6 key-admission rules reject, with
+// the reason, so the set can be logged and counted while the gate is off.
+type keyAdmissionExclusion struct {
+	Account string
+	Reason  string
+	Err     error
+}
+
+// evaluateKeyAdmission returns the witnesses H-6 would exclude, in candidate
+// order, WITHOUT mutating the list.
+//
+// One implementation, two consumers: the shadow log and the enforcing delete
+// both read this, so the number an operator sees while the gate is off is
+// exactly the number that will be dropped when it is turned on. A separate
+// "estimate" would be a second implementation of a consensus rule, and the
+// first time the two disagreed would be the moment the estimate was being
+// trusted to decide whether it is safe to enable.
+//
+// Pure function of the on-chain witness records (both verifiers are
+// state/time/RNG free), so every node reaches the identical verdict — which is
+// what makes it safe to gate election membership on. Dedupe keeps the
+// account-lexicographically-first entry, matching the candidate ordering the
+// caller supplies.
+func evaluateKeyAdmission(witnessList []witnesses.Witness) []keyAdmissionExclusion {
+	var excluded []keyAdmissionExclusion
+	seenConsensusKeys := make(map[string]string, len(witnessList))
+	seenGatewayKeys := make(map[string]string, len(witnessList))
+
+	for i := range witnessList {
+		w := witnessList[i]
+		if popErr := w.VerifyConsensusPoP(); popErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "invalid consensus-key PoP", popErr})
+			continue
+		}
+		key, keyErr := w.ConsensusKey()
+		if keyErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "unparseable consensus key", keyErr})
+			continue
+		}
+		ks := key.String()
+		if first, dup := seenConsensusKeys[ks]; dup {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "duplicate consensus key, kept " + first, nil})
+			continue
+		}
+		// Gateway-key strict admission (audit H-6, gateway companion): the
+		// gateway key is an unauthenticated announced string unless its
+		// proof-of-possession verifies. Without this, a distinct elected node
+		// could announce ANOTHER member's public gateway key and wedge gateway
+		// rotation with a duplicate key_auth (Hive rejects duplicate keys).
+		//   (c) EXCLUDE any witness whose gateway-key PoP is missing/invalid —
+		//       it has not proven it holds the announced gateway key.
+		//   (d) DEDUPE by gateway key. With a valid PoP a duplicate implies a
+		//       copied seed (also caught by the consensus-key dedup above for
+		//       the normal derivation); this still covers a shared gateway key
+		//       paired with distinct consensus keys.
+		// After this gate every elected member provably holds a unique gateway
+		// key, so the committee size and the gateway multisig's signer count
+		// track the same population.
+		if popErr := w.VerifyGatewayKeyPoP(); popErr != nil {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "invalid gateway-key PoP", popErr})
+			continue
+		}
+		if first, dup := seenGatewayKeys[w.GatewayKey]; dup {
+			excluded = append(excluded, keyAdmissionExclusion{w.Account, "duplicate gateway key, kept " + first, nil})
+			continue
+		}
+		seenConsensusKeys[ks] = w.Account
+		seenGatewayKeys[w.GatewayKey] = w.Account
+	}
+	return excluded
+}
+
+// poaActive reports whether the POA election rules apply: the batch is active AND
+// the seat gate above actually applied the seat filter to this election.
+//
+// The second half used to be `e.poaSeats != nil`, i.e. "this node has a registry
+// wired". That is a question about the process, not about the election, and the
+// two answers differ on every path where the gate declines to filter. Taking the
+// caller's observation instead means the predicate cannot disagree with what
+// happened a few hundred lines above it.
+//
+// ★ THE REGISTRY CHECK IS NOT DEFENSIVE BOILERPLATE. Flat seat-weight without
+// the seat gate is strictly WORSE than either regime it sits between: candidacy
+// reverts to "anyone with MinStake", but every such candidate then carries the
+// same weight as a vetted operator — so an attacker buys committee weight at
+// MinStake per seat instead of proportionally, which is cheaper than the
+// stake-weighting POA replaced AND free of the vetting POA adds. Gating every
+// POA election rule on the same condition means the rules can only ever apply as
+// a set: either this node has a registry and enforces seats and flat weight
+// together, or it applies neither and behaves exactly as it does today.
+func (e *electionProposer) poaActive(prevVersion consensusversion.Version, seatGateApplied bool) bool {
+	return consensusversion.PoaFlatWeightActive(prevVersion) && seatGateApplied
+}
+
+// poaReadinessList is the candidate list the version-floor readiness ratio is
+// computed over (POA-9, 0.9.0): the seats when at least minMembers of them are
+// candidates (the gate will apply), otherwise every candidate. seats == nil
+// (gate not deferred) returns the list unchanged.
+func poaReadinessList(list []witnesses.Witness, seats map[string]struct{}, minMembers int) []witnesses.Witness {
+	if seats == nil {
+		return list
+	}
+	if seated := poaSeatedOnly(list, seats); len(seated) >= minMembers {
+		return seated
+	}
+	return list
+}
+
+// poaSeatedOnly returns the candidates that hold a seat, in list order.
+func poaSeatedOnly(list []witnesses.Witness, seats map[string]struct{}) []witnesses.Witness {
+	return slices.DeleteFunc(slices.Clone(list), func(w witnesses.Witness) bool {
+		_, seated := seats[poaseats.NormalizeAccount(w.Account)]
+		return !seated
+	})
+}
+
+// poaSeatedCount counts the candidates that hold a seat.
+func poaSeatedCount(list []witnesses.Witness, seats map[string]struct{}) int {
+	n := 0
+	for _, w := range list {
+		if _, seated := seats[poaseats.NormalizeAccount(w.Account)]; seated {
+			n++
+		}
+	}
+	return n
+}
+
+// selectPoaTopUp picks the unseated candidates admitted to a starved committee:
+// the `need` best, where members of the previous committee come first, then
+// higher rank (matured stake), then account name, so every signer selects the
+// identical set. need <= 0 admits nobody.
+func selectPoaTopUp(unseated []string, incumbent map[string]bool, rank map[string]int64, need int) map[string]struct{} {
+	out := make(map[string]struct{})
+	if need <= 0 {
+		return out
+	}
+	sorted := slices.Clone(unseated)
+	slices.SortFunc(sorted, func(a, b string) int {
+		if incumbent[a] != incumbent[b] {
+			if incumbent[a] {
+				return -1
+			}
+			return 1
+		}
+		if rank[a] != rank[b] {
+			if rank[a] > rank[b] {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	for i := 0; i < len(sorted) && i < need; i++ {
+		out[sorted[i]] = struct{}{}
+	}
+	return out
 }

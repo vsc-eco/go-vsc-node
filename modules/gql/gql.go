@@ -2,6 +2,7 @@ package gql
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -46,6 +47,14 @@ type gqlManager struct {
 	startPromise *promise.Promise[any]
 	conf         GqlConfig
 	schema       graphql.ExecutableSchema
+	// devnetStatus, when set, serves GET /devnet/quiescence for the devnet block
+	// pacemaker. main sets it only on vsc-devnet, so no other network has the route.
+	devnetStatus func() any
+}
+
+// SetDevnetStatus registers the devnet quiescence probe. Call before Init.
+func (g *gqlManager) SetDevnetStatus(status func() any) {
+	g.devnetStatus = status
 }
 
 // ===== interface assertion =====
@@ -98,6 +107,13 @@ func (g *gqlManager) Init() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	if g.devnetStatus != nil {
+		mux.HandleFunc("GET /devnet/quiescence", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(g.devnetStatus())
+		})
+	}
 
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"},

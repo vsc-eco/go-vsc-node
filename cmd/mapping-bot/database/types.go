@@ -29,6 +29,12 @@ type AddressStore struct {
 	collection *mongo.Collection
 }
 
+// InstructionStore holds the deposit instructions the bot watches (see
+// instructions.go): the durable record from which every deposit address is derived.
+type InstructionStore struct {
+	collection *mongo.Collection
+}
+
 // StateStore handles block height and transaction tracking
 type StateStore struct {
 	heightCollection *mongo.Collection
@@ -37,10 +43,20 @@ type StateStore struct {
 
 // Database represents the complete database with organized sub-stores
 type Database struct {
-	client    *mongo.Client
-	Addresses *AddressStore
-	State     *StateStore
-	FailedTxs *FailedTxStore
+	client       *mongo.Client
+	Addresses    *AddressStore
+	Instructions *InstructionStore
+	State        *StateStore
+	FailedTxs    *FailedTxStore
+}
+
+// DepositInstruction is one instruction the bot watches deposits for. Requests
+// renew lastRequestedAt; a mapped deposit sets lastDepositAt, which keeps it forever.
+type DepositInstruction struct {
+	Instruction      string     `bson:"_id"`
+	FirstRequestedAt time.Time  `bson:"firstRequestedAt"`
+	LastRequestedAt  time.Time  `bson:"lastRequestedAt"`
+	LastDepositAt    *time.Time `bson:"lastDepositAt,omitempty"`
 }
 
 // AddressMapping represents a chain address to VSC instruction mapping document.

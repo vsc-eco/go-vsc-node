@@ -104,4 +104,9 @@ type ChainConfig struct {
 	ChainParams *chaincfg.Params
 	// DefaultDbName is the default MongoDB database name for this chain.
 	DefaultDbName string
+	// ConfirmationsRequired mirrors the mapping contract's MinConfirmations: the
+	// depth (contract header tip - mined height) a block needs before the
+	// contract accepts a deposit (map) or settles a spend (confirmSpend) from it.
+	// 0 = as soon as the contract holds the block.
+	ConfirmationsRequired uint64
 }

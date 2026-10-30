@@ -4,29 +4,68 @@ import "vsc-node/modules/common/consensusversion"
 
 const singletonID = "singleton"
 
-// ChainConsensusState is persisted chain-global recovery state plus the pending
-// epoch-scheduled version switch. The *active* consensus version is NOT stored here —
-// it is a pure function of the on-chain election (elections.ResultVersion). This record
-// only holds (a) the recovery halt flag and (b) the scheduled switch awaiting its
-// activation epoch + stake-readiness guard, both consumed deterministically at election build.
+// ChainConsensusState is persisted chain-global recovery state plus the bounded set
+// of pending consensus-version proposals. The *active* consensus version is NOT stored
+// here — it is a pure function of the on-chain election (elections.ResultVersion). This
+// record only holds (a) the recovery halt flag, (b) the recovery-multisig forced override,
+// and (c) the normal candidate proposals awaiting their activation epoch + stake-readiness
+// guard, all consumed deterministically at election build.
 type ChainConsensusState struct {
 	ID string `bson:"_id"`
 
 	// ProcessingSuspended blocks normal vsc custom_json processing until cleared by recovery_require_version.
 	ProcessingSuspended bool `bson:"processing_suspended"`
 
-	// ScheduledActivation is the pending epoch-scheduled version switch (set by
-	// vsc.propose_consensus_version, or Forced by recovery_require_version). It is
-	// resolved into the election at its activation epoch once the stake-readiness guard passes.
-	ScheduledActivation *ScheduledActivation `bson:"scheduled_activation,omitempty"`
+	// BtcKeysignHalted freezes BTC TSS keysign issuance when set by the
+	// governance multisig via vsc.tss_halt (Build Map §5b emergency solvency
+	// containment). Like ProcessingSuspended it is a chain-global deterministic
+	// flag every node converges on by processing the same Hive op; the BTC
+	// solvency gate (modules/tss/solvency_gate.go) reads it before issuing a
+	// SignAction.
+	BtcKeysignHalted bool `bson:"btc_keysign_halted"`
+	// BtcKeysignHaltHeight records the block height the halt was last set (0 when
+	// cleared) — provenance/observability only.
+	BtcKeysignHaltHeight uint64 `bson:"btc_keysign_halt_height"`
+
+	// BtcTheftHalted mirrors the BTC mapping contract's deterministic theft-halt flag
+	// ("th", set by the permissionless SPV-proven reportUnauthorizedSpend op — M1.1b
+	// auto-trip). Refreshed each block from the contract's committed output, so like
+	// BtcKeysignHalted every node converges on the identical value; the BTC solvency gate
+	// (modules/tss/solvency_gate.go) freezes keysign while EITHER flag is set. This is the
+	// deterministic auto-trip complement to the governance vsc.tss_halt flag above.
+	BtcTheftHalted bool `bson:"btc_theft_halted"`
+	// BtcTheftHaltHeight records the block height the theft halt was last (un)set —
+	// provenance/observability only.
+	BtcTheftHaltHeight uint64 `bson:"btc_theft_halt_height"`
+
+	// ForcedActivation is the recovery-multisig override (vsc.recovery_require_version):
+	// at most one, it bypasses the stake-readiness guard and takes precedence over every
+	// normal proposal. The bson key stays "scheduled_activation" for back-compat with any
+	// pre-existing on-disk doc.
+	ForcedActivation *VersionProposal `bson:"scheduled_activation,omitempty"`
+
+	// VersionProposals is the bounded set of normal candidate version switches (set by
+	// vsc.propose_consensus_version), one slot per proposer. The election proposer adopts
+	// the highest target the committee is stake-ready for; the election_result handler
+	// garbage-collects adopted / expired / no-traction entries.
+	VersionProposals []VersionProposal `bson:"version_proposals,omitempty"`
 }
 
-// ScheduledActivation captures a target major.consensus to switch to at ActivationEpoch.
-type ScheduledActivation struct {
-	TargetMajor     uint64 `bson:"target_major"`
-	TargetConsensus uint64 `bson:"target_consensus"`
+// VersionProposal is a single candidate consensus-version switch. This is LOCAL,
+// non-hashed state (rebuilt from L1 ops on reindex), so it stores the version as a
+// single consensusversion.Version rather than the flat fields the consensus-serialized
+// structs keep for wire-format stability. Provenance fields (Proposer/TxId/BlockHeight)
+// make reads height-addressable (honored only when BlockHeight < query height) so every
+// signer resolves the identical floor → CID.
+type VersionProposal struct {
+	// Target is the coordinated version to switch to (non_consensus is not coordinated).
+	Target consensusversion.Version `bson:"target"`
 	// ActivationEpoch is the election epoch at/after which the switch may activate.
 	ActivationEpoch uint64 `bson:"activation_epoch"`
+	// CreationEpoch is the epoch of the proposing block — anchors the fast-fail window.
+	CreationEpoch uint64 `bson:"creation_epoch,omitempty"`
+	// ExpiryEpoch is the hard deadline; the proposal is pruned once an election reaches it.
+	ExpiryEpoch uint64 `bson:"expiry_epoch,omitempty"`
 	// Forced skips the stake-readiness guard (recovery path only).
 	Forced bool `bson:"forced"`
 	// Proposer/TxId/BlockHeight record provenance; BlockHeight makes the read
@@ -34,12 +73,4 @@ type ScheduledActivation struct {
 	Proposer    string `bson:"proposer"`
 	TxId        string `bson:"tx_id"`
 	BlockHeight uint64 `bson:"block_height"`
-}
-
-// Target returns the coordinated target (non_consensus is not coordinated).
-func (s ScheduledActivation) Target() consensusversion.Version {
-	return consensusversion.Version{
-		Major:     s.TargetMajor,
-		Consensus: s.TargetConsensus,
-	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,7 +99,7 @@ func TestRegressionBringup(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)
@@ -131,7 +132,7 @@ func TestFullNetworkRegression(t *testing.T) {
 	requireDocker(t)
 
 	cfg := regressionConfig()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(120*time.Minute))
 	t.Cleanup(cancel)
 
 	// Build the call-tss contract up front so the TSS stage doesn't pay the
@@ -226,19 +227,19 @@ func TestFullNetworkRegression(t *testing.T) {
 		fireTransfers(numTransfers/2, numTransfers)
 		for i := 0; i < numStakeHbd; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.StakeHBD(w, w, "1.000"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.StakeHBD(w, w, "1.000"); return err }); err != nil {
 				t.Errorf("stake_hbd %d: %v", i, err)
 			}
 		}
 		for i := 0; i < numConsStake; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.ConsensusStake(w, w, "1.000"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.ConsensusStake(w, w, "1.000"); return err }); err != nil {
 				t.Errorf("consensus_stake %d: %v", i, err)
 			}
 		}
 		for i := 0; i < numWithdraws; i++ {
 			w := (i % cfg.Nodes) + 1
-			if _, err := d.Withdraw(w, d.witnessAccount(w), "1.000", "hive", "w"); err != nil {
+			if err := regRetryOpLimit(func() error { _, err := d.Withdraw(w, d.witnessAccount(w), "1.000", "hive", "w"); return err }); err != nil {
 				t.Errorf("withdraw %d: %v", i, err)
 			}
 		}
@@ -452,6 +453,11 @@ func TestFullNetworkRegression(t *testing.T) {
 		t.Log("S4: unstaking + stopping magi-4 while it holds an active key")
 		if tx, err := d.ConsensusUnstake(4, "1500.000"); err != nil {
 			t.Errorf("consensus_unstake node4: %v", err)
+		} else if v := vfActiveConsensus(d, ctx); v >= 7 {
+			// From 0.7.0 the POA collateral exit-halt holds a seated, electable
+			// member's bond, so the unstake must be REFUSED (its release is
+			// TestPoaExitHaltReleases). magi-4 still leaves the sessions by readiness.
+			assertTxRefused(t, d, ctx, 2, tx)
 		} else {
 			assertTxProcessed(t, d, ctx, 2, tx)
 		}
@@ -474,7 +480,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		reshare, err := d.WaitForCommitment(ctx, 2, bson.M{
 			"key_id": fullKeyId, "type": "reshare",
 			"block_height": bson.M{"$gt": before},
-		}, 16*time.Minute)
+		}, time.Duration(float64(16*time.Minute)*vfTimeoutScale()))
 		if err != nil {
 			dumpDiagnostics(t, d, ctx)
 			t.Fatalf("reshare to surviving committee never landed: %v", err)
@@ -537,13 +543,13 @@ func TestFullNetworkRegression(t *testing.T) {
 				if _, err := d.Transfer((i%5)+1, ((i+2)%5)+1, "0.500", "hive", "chaos"); err != nil {
 					atomic.AddInt64(&opErrs, 1)
 				}
-				time.Sleep(2 * time.Second)
+				devnetSleep(2 * time.Second)
 			}
 		}()
 
 		// fault 1: transient latency
 		_ = d.AddLatency(ctx, 1, 2, 800, 200)
-		time.Sleep(30 * time.Second)
+		devnetSleep(30 * time.Second)
 		_ = d.RemoveLatency(ctx, 1)
 		_ = d.RemoveLatency(ctx, 2)
 
@@ -551,7 +557,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		fs.requireReachable(t, cfg.Nodes, 5)
 		fs.markDown(2)
 		_ = d.StopNode(ctx, 2)
-		time.Sleep(75 * time.Second)
+		devnetSleep(75 * time.Second)
 		_ = d.StartNode(ctx, 2)
 		fs.markUp(2)
 		if err := d.WaitForBlockProcessing(ctx, 2, nodeBlock(t, d, ctx, 1), 5*time.Minute); err != nil {
@@ -562,7 +568,7 @@ func TestFullNetworkRegression(t *testing.T) {
 		fs.requireReachable(t, cfg.Nodes, 5)
 		fs.markDown(7)
 		_ = d.Disconnect(ctx, 7)
-		time.Sleep(75 * time.Second)
+		devnetSleep(75 * time.Second)
 		_ = d.Reconnect(ctx, 7)
 		fs.markUp(7)
 		if err := d.WaitForBlockProcessing(ctx, 7, nodeBlock(t, d, ctx, 1), 5*time.Minute); err != nil {
@@ -619,23 +625,23 @@ func TestFullNetworkRegression(t *testing.T) {
 // waitBalancePositive polls until an account's asset balance is > 0.
 func waitBalancePositive(t *testing.T, d *Devnet, ctx context.Context, node int, account, asset string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		bal, err := d.GetAccountBalance(ctx, node, account)
 		if err == nil && balanceField(bal, asset) > 0 {
 			return true
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
 // waitStateKey polls contract state until key == want.
 func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, key, want string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		st, err := d.GetStateByKeys(ctx, node, cid, []string{key})
 		if err == nil {
@@ -643,10 +649,10 @@ func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, k
 				return true
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 
@@ -654,7 +660,7 @@ func waitStateKey(t *testing.T, d *Devnet, ctx context.Context, node int, cid, k
 // complete with a non-empty signature.
 func waitTssRequestComplete(t *testing.T, d *Devnet, ctx context.Context, node int, keyId string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		reqs, err := d.GetTssRequests(ctx, node, keyId)
 		if err == nil {
@@ -664,10 +670,10 @@ func waitTssRequestComplete(t *testing.T, d *Devnet, ctx context.Context, node i
 				}
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return false
 		}
-		time.Sleep(5 * time.Second)
+		devnetSleep(5 * time.Second)
 	}
 }
 
@@ -733,4 +739,16 @@ func msg32hex(seed int) string {
 		b[i] = byte(seed + i)
 	}
 	return hex.EncodeToString(b)
+}
+
+// regRetryOpLimit retries a storm broadcast refused by Hive's per-account limit of
+// custom_json ops per block (HIVE_CUSTOM_OP_BLOCK_LIMIT): the storm sends several ops
+// per witness back to back, and the node's own ops share the same per-block budget.
+func regRetryOpLimit(f func() error) error {
+	err := f()
+	for i := 0; i < 3 && err != nil && strings.Contains(err.Error(), "HIVE_CUSTOM_OP_BLOCK_LIMIT"); i++ {
+		devnetSleep(4 * time.Second)
+		err = f()
+	}
+	return err
 }

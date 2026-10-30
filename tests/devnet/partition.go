@@ -219,6 +219,7 @@ func (d *Devnet) tcExec(ctx context.Context, container string, args ...string) e
 	if err != nil {
 		return fmt.Errorf("tc in %s (%v): %s", container, err, strings.TrimSpace(string(out)))
 	}
+	d.netFaults.noteTc(container, args)
 	return nil
 }
 
@@ -230,6 +231,7 @@ func (d *Devnet) iptables(ctx context.Context, container string, args ...string)
 	if err != nil {
 		return fmt.Errorf("iptables in %s (%v): %s", container, err, strings.TrimSpace(string(out)))
 	}
+	d.netFaults.noteIptables(container, args)
 	return nil
 }
 

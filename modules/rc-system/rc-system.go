@@ -3,7 +3,6 @@ package rc_system
 import (
 	"math"
 	"strings"
-	"vsc-node/modules/common/params"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	ledgerSystem "vsc-node/modules/ledger-system"
 
@@ -13,6 +12,13 @@ import (
 type RcSystem struct {
 	RcDb         rcDb.RcDb
 	LedgerSystem ledgerSystem.LedgerSystem
+	// HiveFreeAmount is the network's free-RC allowance for Hive accounts,
+	// resolved once from SystemConfig at construction. VR2-17: it must NEVER be
+	// read from the params package global on a consensus path — that global was
+	// mutated at process start per -network, so two nodes running different
+	// binaries on the same network computed different gas budgets, different
+	// block CIDs, and stalled the fleet.
+	HiveFreeAmount int64
 }
 
 // Returns the amount of RCs that are frozen for the given account at the given block height
@@ -33,7 +39,7 @@ func (rcs *RcSystem) GetAvailableRCs(account string, blockHeight uint64) int64 {
 	balAmt := rcs.LedgerSystem.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
-		balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+		balAmt = balAmt + rcs.HiveFreeAmount
 	}
 
 	frozeAmt := rcs.GetFrozenAmt(account, blockHeight)
@@ -68,10 +74,14 @@ func (rc *RcSystem) Stop() error {
 	return nil
 }
 
-func New(rcDb rcDb.RcDb, ledgerSystem ledgerSystem.LedgerSystem) *RcSystem {
+// New builds an RcSystem. hiveFreeAmount is the network's free-RC allowance,
+// resolved by the caller from SystemConfig.RcHiveFreeAmount() so every node on a
+// network uses the identical value (VR2-17).
+func New(rcDb rcDb.RcDb, ledgerSystem ledgerSystem.LedgerSystem, hiveFreeAmount int64) *RcSystem {
 	return &RcSystem{
-		RcDb:         rcDb,
-		LedgerSystem: ledgerSystem,
+		RcDb:           rcDb,
+		LedgerSystem:   ledgerSystem,
+		HiveFreeAmount: hiveFreeAmount,
 	}
 }
 
@@ -104,9 +114,9 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	balAmt := rss.ledgerSession.GetBalance(account, blockHeight, "hbd")
 
 	if strings.HasPrefix(account, "hive:") {
-		//Give the user 5 HBD worth of RCs by default
+		//Give the user the network's free RC allowance by default
 		//If user is Hive account
-		balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+		balAmt = balAmt + rss.rcSystem.HiveFreeAmount
 	}
 
 	frozeAmt := rss.rcSystem.GetFrozenAmt(account, blockHeight)
@@ -117,6 +127,13 @@ func (rss *rcSession) CanConsume(account string, blockHeight uint64, rcAmt int64
 	} else {
 		return true, totalAmt - rcAmt, rcAmt
 	}
+}
+
+// HiveFreeAmount exposes the network's free-RC allowance through the RcSession
+// interface so package-level helpers (FreeRcRemaining) can reach it without
+// reading the params global (VR2-17).
+func (rss *rcSession) HiveFreeAmount() int64 {
+	return rss.rcSystem.HiveFreeAmount
 }
 
 // GetFrozenAmt on a session includes the session's pending (uncommitted)
@@ -132,7 +149,7 @@ func FreeRcRemaining(rs RcSession, account string, blockHeight uint64) int64 {
 	if !strings.HasPrefix(account, "hive:") {
 		return 0
 	}
-	remaining := params.RC_HIVE_FREE_AMOUNT - rs.GetFrozenAmt(account, blockHeight)
+	remaining := rs.HiveFreeAmount() - rs.GetFrozenAmt(account, blockHeight)
 	if remaining < 0 {
 		return 0
 	}

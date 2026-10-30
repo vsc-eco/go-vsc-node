@@ -8,7 +8,7 @@ import (
 
 type VscBlocks interface {
 	aggregate.Plugin
-	StoreHeader(header VscHeaderRecord)
+	StoreHeader(header VscHeaderRecord) error
 	GetBlockByHeight(height uint64) (*VscHeaderRecord, error)
 	GetBlockById(id string) (*VscHeaderRecord, error)
 	GetBlocksByElection(epoch uint64) ([]VscHeaderRecord, error)
@@ -35,8 +35,7 @@ type VscHeaderRecord struct {
 	Stats        struct {
 		Size uint64 `bson:"size"`
 	} `bson:"stats"`
-	Ts        string      `bson:"ts"`
-	DebugData interface{} `bson:"debug_data"`
+	Ts      string `bson:"ts"`
 }
 
 type VscBlock struct {

@@ -16,17 +16,31 @@ type Document struct {
 	LastStoredBlock    *uint64      `json:"last_stored_block,omitempty" bson:"last_stored_block,omitempty"`
 	HeadHeight         *uint64      `json:"head_height,omitempty" bson:"head_height,omitempty"`
 	ReindexId          *uint64      `json:"reindex_id,omitempty" bson:"reindex_id,omitempty"`
+	// ProcessedUnderMajor/Consensus record the coordinated consensus version of the
+	// binary that last processed up to LastProcessedBlock. On startup the reindex
+	// check compares it against the chain-active version at the head: if the previous
+	// run was BELOW the chain (a version-adoption laggard that diverged) and this
+	// binary is at/above it, a full reindex replays history under the correct rules.
+	ProcessedUnderMajor     *uint64 `json:"processed_under_major,omitempty" bson:"processed_under_major,omitempty"`
+	ProcessedUnderConsensus *uint64 `json:"processed_under_consensus,omitempty" bson:"processed_under_consensus,omitempty"`
 }
 
 // the simplified version of a hive block we store
 type HiveBlock struct {
-	BlockNumber  uint64             `json:"block_number" bson:"block_number"`
-	BlockID      string             `json:"block_id" bson:"block_id"`
-	Witness      string             `json:"witness" bson:"witness"` // L1 block producer (Hive account)
-	Timestamp    string             `json:"timestamp" bson:"timestamp"`
-	MerkleRoot   string             `json:"merkle_root" bson:"merkle_root"`
-	Transactions []Tx               `json:"transactions" bson:"transactions"`
-	VirtualOps   []hivego.VirtualOp `json:"virtual_ops" bson:"virtual_ops"`
+	BlockNumber uint64 `json:"block_number" bson:"block_number"`
+	// BlockID/Witness/Timestamp/MerkleRoot carry bson omitempty so the HAF
+	// block source can persist just the {block_number, timestamp} shim needed
+	// for graphql timestamp joins — everything else lives in the HAF database.
+	// The Hive API streamer always fills them, so its stored documents are
+	// unchanged.
+	BlockID    string `json:"block_id" bson:"block_id,omitempty"`
+	Witness    string `json:"witness" bson:"witness,omitempty"` // L1 block producer (Hive account)
+	Timestamp  string `json:"timestamp" bson:"timestamp"`
+	MerkleRoot string `json:"merkle_root" bson:"merkle_root,omitempty"`
+	// VirtualOps/Transactions carry bson omitempty so empty blocks (and HAF
+	// timestamp shims, which carry neither) don't persist empty arrays.
+	Transactions []Tx               `json:"transactions" bson:"transactions,omitempty"`
+	VirtualOps   []hivego.VirtualOp `json:"virtual_ops" bson:"virtual_ops,omitempty"`
 }
 
 // a tx that can be stored inside a hive block

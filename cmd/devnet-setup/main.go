@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
@@ -59,6 +61,19 @@ func main() {
 	p2pConfs := []p2p.P2PConfig{}
 	gwAuths := [][2]any{}
 	hiveOps := []hivego.HiveOperation{}
+
+	// Hive's account_create_evaluator asserts fee == median_props.account_creation_fee
+	// EXACTLY. That value is set by the chain (genesis + witness props), not by us, and
+	// the HAF testnet image has changed it (0.000 -> 0.030 TESTS), silently breaking a
+	// hardcoded fee. Query the running chain once so every account-create below pays
+	// whatever it currently requires, regardless of image. Routed through drone to hived,
+	// the same condenser_api path broadcasting already uses.
+	acctFee, err := getAccountCreationFee(args.hiveUrl)
+	if err != nil {
+		fmt.Println("failed to query account_creation_fee:", err)
+		os.Exit(1)
+	}
+	fmt.Println("account_creation_fee =", acctFee)
 
 	// Init nodes
 	for n := 1; n <= args.nodes; n++ {
@@ -116,6 +131,13 @@ func main() {
 		})
 		idConf.SetUsername(witnessName)
 		idConf.SetActiveKey(args.wif)
+		// Consensus 0.5.0: nodes must opt in to receive third-party consensus
+		// delegation (default is Deactivated). Devnet nodes announce "custom" so
+		// the delegation stake/unstake paths are exercisable; "custom" keeps
+		// pendulum rewards at the node account, so reward-distribution devnet
+		// tests stay byte-identical to the pre-feature behaviour (only "share"
+		// splits to delegators). Use delegationmode.Share to exercise the split.
+		idConf.SetDelegationMode(delegationmode.Custom)
 
 		// Devnet integration-test hook (gated): when DEVNET_DETERMINISTIC_BLS=1,
 		// override the randomly-generated BLS seed with a DETERMINISTIC per-witness
@@ -139,7 +161,7 @@ func main() {
 		p2pConfs = append(p2pConfs, p2pConf)
 		gwAuths = append(gwAuths, [2]any{*gwKey.GetPublicKeyString(), 1})
 		hiveOps = append(hiveOps, hivego.AccountCreateOperation{
-			Fee:            "0.000 TESTS",
+			Fee:            acctFee,
 			Creator:        args.witCreator,
 			NewAccountName: witnessName,
 			Owner:          defaultAuth,
@@ -196,7 +218,7 @@ func main() {
 	fpIdConf.SetActiveKey(args.wif)
 
 	hiveOps = append(hiveOps, hivego.AccountCreateOperation{
-		Fee:            "0.000 TESTS",
+		Fee:            acctFee,
 		Creator:        args.witCreator,
 		NewAccountName: args.deployerName,
 		Owner:          defaultAuth,
@@ -215,7 +237,7 @@ func main() {
 	daoL1Acc := strings.Replace(params.DAO_WALLET, "hive:", "", 1)
 	if !args.deployerOnly {
 		hiveOps = append(hiveOps, hivego.AccountCreateOperation{
-			Fee:            "0.000 TESTS",
+			Fee:            acctFee,
 			Creator:        args.witCreator,
 			NewAccountName: sysConf.GatewayWallet(),
 			Owner: hivego.Auths{
@@ -236,7 +258,7 @@ func main() {
 			MemoKey:      *pubKey,
 			JsonMetadata: "",
 		}, hivego.AccountCreateOperation{
-			Fee:            "0.000 TESTS",
+			Fee:            acctFee,
 			Creator:        args.witCreator,
 			NewAccountName: daoL1Acc,
 			Owner:          defaultAuth,
@@ -245,7 +267,7 @@ func main() {
 			MemoKey:        *pubKey,
 			JsonMetadata:   "",
 		}, hivego.AccountCreateOperation{
-			Fee:            "0.000 TESTS",
+			Fee:            acctFee,
 			Creator:        args.witCreator,
 			NewAccountName: "vsc.network",
 			Owner:          defaultAuth,
@@ -355,4 +377,40 @@ func main() {
 	}
 
 	os.Exit(0)
+}
+
+// getAccountCreationFee returns the chain's current account_creation_fee — the
+// median witness property that Hive's account_create_evaluator requires
+// account_create_operation.fee to EQUAL exactly
+// (FC_ASSERT(o.fee == wso.median_props.account_creation_fee)). It is served by
+// condenser_api.get_chain_properties in legacy form (e.g. "0.030 TESTS"), the
+// exact string an AccountCreateOperation.Fee wants. hiveURLs may be a
+// comma-separated list; the first endpoint is used.
+func getAccountCreationFee(hiveURLs string) (string, error) {
+	url := strings.TrimSpace(strings.Split(hiveURLs, ",")[0])
+	if url == "" {
+		return "", fmt.Errorf("no hive URL provided")
+	}
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"condenser_api.get_chain_properties","params":[]}`)
+	resp, err := http.Post(url, "application/json", body)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Result struct {
+			AccountCreationFee string `json:"account_creation_fee"`
+		} `json:"result"`
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if len(out.Error) > 0 && string(out.Error) != "null" {
+		return "", fmt.Errorf("get_chain_properties: %s", string(out.Error))
+	}
+	if out.Result.AccountCreationFee == "" {
+		return "", fmt.Errorf("get_chain_properties returned empty account_creation_fee")
+	}
+	return out.Result.AccountCreationFee, nil
 }

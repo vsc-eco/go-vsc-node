@@ -57,7 +57,7 @@ func TestBondGateActive_DipThenReturn(t *testing.T) {
 	// elections, well under the 2048 cap.
 	cp.BondInclusionEstablishedGraceBlocks = 4000
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(60*time.Minute))
 	t.Cleanup(cancel)
 
 	d, err := New(cfg)
@@ -141,7 +141,7 @@ func TestBondGateActive_DipThenReturn(t *testing.T) {
 	}
 	// Wait for the deposit to credit the dipper's VSC hive balance.
 	depositOk := false
-	for end := time.Now().Add(5 * time.Minute); time.Now().Before(end); {
+	for end := devnetNow().Add(5 * time.Minute); devnetNow().Before(end); {
 		bal, bErr := d.GetAccountBalance(ctx, 1, "hive:"+dipper)
 		if bErr == nil && bal.Hive >= 2_000_000 {
 			depositOk = true
@@ -150,7 +150,7 @@ func TestBondGateActive_DipThenReturn(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			t.Fatalf("ctx done waiting for deposit: %v", ctx.Err())
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 	if !depositOk {

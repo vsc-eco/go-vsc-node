@@ -93,6 +93,16 @@ func (e *elections) StoreElection(a ElectionResult) error {
 }
 
 func (e *elections) GetElection(epoch uint64) *ElectionResult {
+	res, err := e.GetElectionStrict(epoch)
+	if err != nil {
+		return nil
+	}
+	return res
+}
+
+// GetElectionStrict is GetElection but returns the error instead of swallowing it
+// to nil (see the interface doc) — for the #11 bond-lock consensus fail-stop path.
+func (e *elections) GetElectionStrict(epoch uint64) (*ElectionResult, error) {
 	findQuery := bson.M{
 		"epoch": epoch,
 	}
@@ -100,23 +110,22 @@ func (e *elections) GetElection(epoch uint64) *ElectionResult {
 	findResult := e.FindOne(ctx, findQuery)
 
 	if findResult.Err() != nil {
-		return nil
-	} else {
-		electionResult := ElectionResult{}
-		findResult.Decode(&electionResult)
-
-		electionRecord := ElectionResultRecord{}
-		err := findResult.Decode(&electionRecord)
-		if err != nil {
-			return nil
-		}
-
-		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
-		if err != nil {
-			return nil
-		}
-		return &electionResult
+		return nil, findResult.Err()
 	}
+	electionResult := ElectionResult{}
+	findResult.Decode(&electionResult)
+
+	electionRecord := ElectionResultRecord{}
+	err := findResult.Decode(&electionRecord)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
+	}
+
+	err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
+	}
+	return &electionResult, nil
 }
 
 func (e *elections) GetPreviousElections(beforeEpoch uint64, limit int) []ElectionResult {
@@ -191,23 +200,91 @@ func (e *elections) GetElectionByHeight(height uint64) (ElectionResult, error) {
 		err := findResult.Decode(&electionRecord)
 
 		if err != nil {
-			return ElectionResult{}, err
+			return ElectionResult{}, fmt.Errorf("%w: %w", db.ErrDecode, err)
 		}
 
 		electionResult := ElectionResult{}
 		err = refmt.CloneAtlased(electionRecord, &electionResult, cbornode.CborAtlas)
 		if err != nil {
-			return electionResult, err
+			return electionResult, fmt.Errorf("%w: %w", db.ErrDecode, err)
 		}
 
 		return electionResult, nil
 	}
 }
 
+// ChainActiveVersionAt returns the coordinated consensus version active at blockHeight
+// — the ResultVersion of the most recent election strictly below it ($lt, matching
+// GetElectionByHeight) — queried directly against the live DbInstance.
+//
+// Unlike the GetElectionByHeight method, it does NOT require the elections plugin's
+// collection handle to be Init-bound: it binds a fresh handle from the already-connected
+// DbInstance. That makes it safe to call during early startup — specifically the reindex
+// version-lag gate (reindex.go), which runs before the elections collection plugin is
+// initialized. Calling the method there dereferences a nil *mongo.Collection and panics
+// the node on every restart (the gate only fires once a prior run recorded a version).
+//
+// ok=false when no election precedes blockHeight or the query/decode fails.
+func ChainActiveVersionAt(d *db.DbInstance, blockHeight uint64) (consensusversion.Version, bool) {
+	var rec struct {
+		VersionMajor        uint64 `bson:"version_major"`
+		ProtocolVersion     uint64 `bson:"protocol_version"`
+		VersionNonConsensus uint64 `bson:"version_non_consensus"`
+	}
+	err := d.Collection("elections").FindOne(
+		context.Background(),
+		bson.M{"block_height": bson.M{"$lt": blockHeight}},
+		options.FindOne().SetSort(bson.M{"block_height": -1}),
+	).Decode(&rec)
+	if err != nil {
+		return consensusversion.Version{}, false
+	}
+	return consensusversion.Version{
+		Major:        rec.VersionMajor,
+		Consensus:    rec.ProtocolVersion,
+		NonConsensus: rec.VersionNonConsensus,
+	}, true
+}
+
 // Utility function
-func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult) (uint64, uint64) {
+// CalculateSigningScore returns the signed weight and the total weight for a
+// block's BLS aggregate.
+//
+// dedupDuplicateKeys collapses seats sharing a BLS key to a single seat (B13).
+// A duplicated key sets a bit at EVERY index holding it, because the circuit
+// matches one honest signature at each — so without the collapse one signature is
+// credited two seats' weight. This fold drives TxProposeBlock.ValidateDetailed's
+// 2/3 check, which decides BlockValid vs BlockInvalid, and an invalid proposal is
+// SLASHED — so it is consensus-critical in both directions and must be
+// version-gated: flipping it ungated would change the verdict on historical
+// blocks during a reindex.
+func CalculateSigningScore(circuit *dids.BlsCircuit, election ElectionResult, dedupDuplicateKeys bool) (uint64, uint64) {
 	IncludedDids := circuit.IncludedDIDs()
 	BitVector := circuit.RawBitVector()
+
+	if dedupDuplicateKeys {
+		memberKeys := make([]string, len(election.Members))
+		for i, m := range election.Members {
+			memberKeys[i] = m.Key
+		}
+		weights := election.Weights
+		if weights == nil {
+			// Legacy elections carry no weights: every member counts one.
+			weights = make([]uint64, len(election.Members))
+			for i := range weights {
+				weights[i] = 1
+			}
+		}
+		var included []dids.BlsDID
+		for idx := range election.Members {
+			if BitVector.Bit(idx) == 1 {
+				included = append(included, dids.BlsDID(election.Members[idx].Key))
+			}
+		}
+		signed, total, _ := dids.FoldSignedWeight(memberKeys, weights, included)
+		return signed, total
+	}
+
 	WeightTotal := uint64(0)
 	sum := uint64(0)
 	if election.Weights == nil {

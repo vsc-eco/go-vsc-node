@@ -1,0 +1,428 @@
+package devnet
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/btcsuite/btcd/btcutil"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/txscript"
+	"github.com/btcsuite/btcd/wire"
+	"go.mongodb.org/mongo-driver/bson"
+)
+
+// untaggedVaultAddr builds the active vault's UNTAGGED P2WSH (empty tag →
+// OP_CHECKSIG, not OP_CHECKSIGVERIFY+tag) — the address topUpFeeReserve credits.
+func untaggedVaultAddr(primaryHex, backupHex string) (string, error) {
+	primary, err := hex.DecodeString(primaryHex)
+	if err != nil {
+		return "", err
+	}
+	backup, err := hex.DecodeString(backupHex)
+	if err != nil {
+		return "", err
+	}
+	sb := txscript.NewScriptBuilder()
+	sb.AddOp(txscript.OP_IF)
+	sb.AddData(primary)
+	sb.AddOp(txscript.OP_CHECKSIG) // empty tag → CHECKSIG
+	sb.AddOp(txscript.OP_ELSE)
+	sb.AddInt64(2) // TestnetBackupCSVBlocks (regtest)
+	sb.AddOp(txscript.OP_CHECKSEQUENCEVERIFY)
+	sb.AddOp(txscript.OP_DROP)
+	sb.AddData(backup)
+	sb.AddOp(txscript.OP_CHECKSIG)
+	sb.AddOp(txscript.OP_ENDIF)
+	script, err := sb.Script()
+	if err != nil {
+		return "", err
+	}
+	wp := sha256.Sum256(script)
+	addr, err := btcutil.NewAddressWitnessScriptHash(wp[:], &chaincfg.RegressionNetParams)
+	if err != nil {
+		return "", err
+	}
+	return addr.EncodeAddress(), nil
+}
+
+// fundFeeReserve seeds FeeSupply: deposit `sats` to the ACTIVE vault's untagged
+// address, relay headers from the contract's last height PLUS the maturity margin,
+// and topUpFeeReserve.
+//
+// VR2-25: topUpFeeReserve is now depth-gated like map and confirmSpend, so the
+// deposit's block must be buried MinConfirmationDepth under the contract's tip
+// before the proof is accepted. Mining only the deposit's own block would leave it
+// AT the tip and the top-up would be refused, so the margin is mined and relayed
+// here exactly as fundVaultViaSPV does for a user deposit.
+func fundFeeReserve(t *testing.T, d *Devnet, ctx context.Context, cid, activePrimary, activeBackup string, sats int64) {
+	t.Helper()
+	addr, err := untaggedVaultAddr(activePrimary, activeBackup)
+	if err != nil {
+		t.Fatalf("untagged addr: %v", err)
+	}
+	amt := fmt.Sprintf("%d.%08d", sats/1e8, sats%int64(1e8))
+	if _, err := d.bitcoinCli(ctx, "sendtoaddress", addr, amt); err != nil {
+		t.Fatalf("fee-reserve sendtoaddress: %v", err)
+	}
+	depTxid, _ := d.bitcoinCli(ctx, "getrawmempool") // ensure mempool has 1 tx
+	_ = depTxid
+	h, _ := d.MineBlocks(ctx, 1)
+	// Bury the deposit's block under the contract's maturity gate (VR2-25) before
+	// proving it. `h` stays the DEPOSIT's height (that is what the proof names);
+	// tip is what the contract must have relayed to accept it.
+	tip, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// relay from the contract's current last height +1 to the matured tip
+	last := contractLastHeight(t, d, ctx, cid)
+	for hh := last + 1; hh <= tip; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		if s := vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx)); !isOK(s) {
+			t.Fatalf("fee-reserve addBlocks %d: %s", hh, s)
+		}
+	}
+	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
+	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
+	var blk struct {
+		Tx []string `json:"tx"`
+	}
+	json.Unmarshal([]byte(blockJSON), &blk)
+	if len(blk.Tx) != 2 {
+		t.Fatalf("fee-reserve block has %d txs (want 2)", len(blk.Tx))
+	}
+	rawTx, _ := d.bitcoinCli(ctx, "getrawtransaction", blk.Tx[1])
+	proof := reverseHexBytes(blk.Tx[0])
+	s := vstatus(t, d, ctx, 1, cid, "topUpFeeReserve", fmt.Sprintf(
+		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1}}`, h, rawTx, proof))
+	if isOK(s) {
+		t.Logf("CASE MD06-FR PASS — FeeSupply topped up (%d sats to untagged active vault)", sats)
+	} else {
+		t.Errorf("CASE MD06-FR FAIL — topUpFeeReserve status=%s", s)
+	}
+}
+
+// contractLastHeight reads the contract "h" (last BTC height, decimal string).
+func contractLastHeight(t *testing.T, d *Devnet, ctx context.Context, cid string) uint64 {
+	st, err := getStateHex(d, ctx, 2, cid, []string{"h"})
+	if err != nil {
+		return 0
+	}
+	if b, ok := st["h"]; ok {
+		if v, err := strconv.ParseUint(string(b), 10, 64); err == nil {
+			return v
+		}
+	}
+	return 0
+}
+
+// TestVaultStage4Rotation exercises the CORE blocktrades-fix machinery under v2
+// ENABLED, dodging the fresh-genesis deadlock by pinning the activation height
+// AFTER genesis:
+//
+//   - genesis (block < Hpin, v2-off) → gen-0 active + funded
+//
+//   - wait past Hpin (v2 on)
+//
+//   - rotate: createKey gen-1 → keygen → register → BRK-2 check-sig (ADMITTED now,
+//     because gen-0 Active resolves the vault view) → activateKey → gen-0 Retiring
+//
+//   - migrateVault → migration sweep (gen-0 UTXOs → gen-1 P2WSH); the node signs it
+//     ONLY because NN#1 output-scoping proves every output pays the successor →
+//     assemble → broadcast → confirmSpend settles the migration → gen-0 drains.
+//
+//     VAULT_STAGE4_RUN=1 DEVNET_KEEP=1 go test -v -run TestVaultStage4Rotation -timeout 40m ./tests/devnet/
+func TestVaultStage4Rotation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode")
+	}
+	if os.Getenv("VAULT_STAGE4_RUN") == "" {
+		t.Skip("set VAULT_STAGE4_RUN=1")
+	}
+	requireDocker(t)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(38*time.Minute))
+	defer cancel()
+
+	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
+	if wasm == "" {
+		wasm = "/home/clauderfly/utxo-s1/btc-mapping-contract/bin/dev.wasm"
+	}
+	if _, err := os.Stat(wasm); err != nil {
+		t.Fatalf("wasm: %v", err)
+	}
+
+	const hpin = 400 // v2 activation height — AFTER genesis (~block 190), so genesis
+	// activates v2-off (no deadlock) and v2 turns on before the rotation.
+	cfg := vfSlowReshareConfig()
+	cfg.SkipFunding = false
+	cfg.EnableBitcoind = true
+	cfg.SysConfigOverrides.ConsensusParams.VaultRotationV2ActivationHeight = hpin
+	if os.Getenv("DEVNET_KEEP") != "" {
+		cfg.KeepRunning = true
+	}
+	d, _ := startDevnetNoKey(t, cfg, 38*time.Minute)
+
+	seedH, err := d.MineBlocks(ctx, 101)
+	if err != nil {
+		t.Fatalf("mine: %v", err)
+	}
+	hdr1, _ := btcBlockHeaderHex(ctx, d, seedH)
+	cid, err := d.DeployContract(ctx, ContractDeployOpts{
+		WasmPath: wasm, Name: "btc-mapping-contract", Description: "vault stage4", DeployerNode: 1, GQLNode: 2,
+	})
+	if err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	t.Logf("CONTRACT=%s hpin=%d", cid, hpin)
+	vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdr1, seedH))
+	d.WriteOracleConfigs(ctx)
+	d.SetOracleContractIDs(map[string]string{"BTC": cid})
+	d.RestartAllMagiNodes(ctx)
+	devnetSleep(10 * time.Second)
+
+	// ── gen-0 genesis (v2 still off, block < hpin) ──
+	vstatus(t, d, ctx, 1, cid, "createKey", "")
+	kd0, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-main", "status": "active"}, 8*time.Minute)
+	if err != nil {
+		t.Fatalf("gen0 keygen: %v", err)
+	}
+	primary0 := kd0.PublicKey
+	// VR2-09: let the post-DKG pre-parameter regeneration finish before the check-sig.
+	vfWaitPreparams(t, d, ctx, 12*time.Minute)
+	if s := vfRegisterGenesis(t, d, ctx, 1, cid,
+		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary0, backupPubKeyG)); !isOK(s) {
+		t.Fatalf("gen0 register: %s", s)
+	}
+	t.Logf("CASE VL-GP-02 PASS — gen-0 genesis active (v2-off pre-hpin)")
+
+	// ── fund gen-0 ──
+	owner := "hive:" + fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, 1)
+	fundVaultViaSPV(t, d, ctx, cid, primary0, backupPubKeyG, owner, 100_000_000, seedH)
+	if !balanceCredited(t, d, ctx, cid, owner) {
+		t.Fatalf("gen-0 funding failed")
+	}
+	t.Logf("gen-0 funded: %s = %d sats", owner, balanceSats(t, d, ctx, cid, owner))
+
+	// ── wait until v2 is ACTIVE (VSC height > hpin) ──
+	t.Logf("waiting for VSC height > hpin=%d (v2 on)...", hpin)
+	// Hardened 2026-09-05: the 8-minute log-and-continue wait let the test run with v2 OFF
+	// under load (observed: node at block 292 after 8m with hpin=400) and produced vacuous
+	// v2 claims. vfWaitV2On waits 18 minutes on every node and is fatal on a miss.
+	vfWaitV2On(t, d, ctx, uint64(hpin))
+	t.Logf("v2 now ACTIVE — rotating gen-0 → gen-1")
+
+	// ── rotate: createKey gen-1 → keygen → register → BRK-2 check-sig → activate ──
+	vstatus(t, d, ctx, 1, cid, "createKey", "")
+	kd1, err := d.WaitForTssKey(ctx, 2, bson.M{"id": cid + "-mainv1", "status": "active"}, 8*time.Minute)
+	if err != nil {
+		// keyId naming may differ; dump keys
+		all, _ := d.GetTssKeys(ctx, 2, bson.M{})
+		for _, k := range all {
+			t.Logf("  tss_key id=%s status=%s", k.Id, k.Status)
+		}
+		t.Fatalf("gen1 keygen: %v", err)
+	}
+	primary1 := kd1.PublicKey
+	if s := vstatus(t, d, ctx, 1, cid, "registerPublicKey",
+		fmt.Sprintf(`{"primary_public_key":"%s","backup_public_key":"%s"}`, primary1, backupPubKeyG)); !isOK(s) {
+		t.Fatalf("gen1 register: %s", s)
+	}
+	// BRK-2: activateKey only succeeds once the node's check-sig for gen-1 lands
+	// (admitted by output-scoping because gen-0 is Active → view resolves).
+	activated := false
+	for i := 0; i < 20; i++ {
+		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
+			activated = true
+			break
+		}
+		t.Logf("activateKey not yet (awaiting BRK-2 check-sig)... retry %d", i)
+		devnetSleep(15 * time.Second)
+	}
+	if activated {
+		t.Logf("CASE VL-GP-11/BRK-2 PASS — gen-1 activated after check-sig (v2 ON); CASE VL-GP-01 rotation gen-0→retiring")
+	} else {
+		t.Errorf("CASE VL-GP-11/BRK-2 FAIL — gen-1 never activated (check-sig not admitted under v2 rotation)")
+		return
+	}
+
+	// ── seed FeeSupply (migration sweep needs a fee reserve) via the gen-1 active vault ──
+	fundFeeReserve(t, d, ctx, cid, primary1, backupPubKeyG, 10_000_000)
+
+	// ── migrate/drain gen-0 → gen-1 (NN#1 output scoping) ──
+	migrateAndSettle(t, d, ctx, cid, cid+"-main", primary1, backupPubKeyG)
+
+	t.Logf("STAGE-4 COMPLETE CONTRACT=%s", cid)
+}
+
+// migrateAndSettle drives migrateVault, waits for the node to sign the migration
+// sweep (which it does ONLY if NN#1 proves every output pays the successor),
+// assembles + broadcasts, and confirmSpend-settles the migration.
+// vfSettleBestEffort makes the migrateAndSettle* / settleSweepByTxid drain helpers
+// REPORT instead of ASSERT.
+//
+// A caller that documents a drain as informational must not fail the whole test through
+// a helper that asserts anyway. F3's gen-1->gen-2 drain says so in its own comment --
+// "on a second back-to-back rotation the migration sweep's sign is timing-flaky
+// (VR2-09-adjacent), so it is reported for info, not asserted" -- and then called
+// migrateAndSettle, whose t.Errorf failed the run regardless. The result was a test
+// printing `VF SUMMARY F3: 6 PASS 0 FAIL` directly above Go's `--- FAIL`, which reads
+// as a product failure and is not one. The campaign baseline recorded exactly this as
+// F3's "1 flaky-drain FAIL".
+//
+// Default false, so every test that genuinely asserts the drain (Stage4 above all, where
+// VL-GP-06 IS the subject) is untouched. Set it only around a loop the test itself calls
+// best-effort, and restore it immediately -- no devnet test calls t.Parallel, so the
+// package-level flag is safe.
+var vfSettleBestEffort = false
+
+// settleReport routes a drain-helper failure through vfSettleBestEffort.
+func settleReport(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if vfSettleBestEffort {
+		t.Logf("(best-effort drain, NOT asserted) "+format, args...)
+		return
+	}
+	t.Errorf(format, args...)
+}
+
+// vfIsSweep reports whether pending spend txid is a migration sweep (it has an "ms-"
+// record), so a user withdrawal created while a helper polls is never taken for one.
+func vfIsSweep(d *Devnet, ctx context.Context, cid, txid string) bool {
+	st, err := getStateHex(d, ctx, 2, cid, []string{"ms-" + txid})
+	return err == nil && len(st["ms-"+txid]) > 0
+}
+
+func migrateAndSettle(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, succPrimary, succBackup string) {
+	t.Helper()
+	migrateAndSettleAs(t, d, ctx, 1, cid, retiringKeyId, succPrimary, succBackup)
+}
+
+// migrateAndSettleAs is migrateAndSettle but issues the owner-gated migrateVault call
+// from opNode's identity (hive:<prefix><opNode>). Everything after — TSS signing,
+// broadcast, addBlocks, the permissionless confirmSpend — is identity-independent and
+// stays on node 1. Used to prove an APPOINTED vault operator (not the owner) can drive
+// the drain.
+func migrateAndSettleAs(t *testing.T, d *Devnet, ctx context.Context, opNode int, cid, retiringKeyId, succPrimary, succBackup string) {
+	t.Helper()
+	before := txSpendIds(t, d, ctx, cid)
+	if s := vstatus(t, d, ctx, opNode, cid, "migrateVault", ""); !isOK(s) {
+		settleReport(t, "CASE VL-GP-06 FAIL — migrateVault rejected status=%s", s)
+		return
+	}
+	var txids []string
+	// Up to 3 minutes: the call is CONFIRMED on the calling node before magi-2 (the
+	// reading node) has applied it, and under two-lane load that lag exceeded the old
+	// 60 s window (F3 run 1 recorded a false "no sweep appeared").
+	for i := 0; i < 60 && len(txids) == 0; i++ {
+		devnetSleep(3 * time.Second)
+		for _, id := range txSpendIds(t, d, ctx, cid) {
+			if !contains(before, id) && vfIsSweep(d, ctx, cid, id) {
+				txids = append(txids, id)
+			}
+		}
+	}
+	if len(txids) == 0 {
+		// Name the cause: a CONFIRMED migrateVault that builds nothing means the
+		// contract answered "nothing to migrate" (no selectable input), so show what the
+		// registry holds and which spends are already pending.
+		vfDumpRegistry(t, d, ctx, 2, cid, "after a CONFIRMED migrateVault that produced no sweep")
+		t.Logf("pending spend ids (magi-2): %v", txSpendIds(t, d, ctx, cid))
+		settleReport(t, "CASE VL-GP-06 FAIL — no migration sweep pending spend appeared within 3 min")
+		return
+	}
+	// MIG-PAR: one migrateVault may build several tranches (legacy entries go one per
+	// tranche); settle every one it built, as the bot does.
+	for _, txid := range txids {
+		t.Logf("migration sweep txid=%s (retiring gen %s, %d built by this call)", txid, retiringKeyId, len(txids))
+		settleSweepByTxid(t, d, ctx, cid, retiringKeyId, txid)
+	}
+}
+
+// settleSweepByTxid is the second half of migrateAndSettleAs: TSS-sign an ALREADY-BUILT
+// migration sweep, broadcast it, relay its block plus the maturity margin, and settle it
+// with confirmSpend. Returns the confirmSpend status.
+//
+// Split out because a caller may already HAVE a sweep. Once VR2-11 let the builder derive an
+// affordable rate, a sweep gets built at the original relayed rate, and a later migrateVault
+// is then correctly a no-op: it must not stack a second tranche on an input the in-flight
+// sweep already owns. A test that wanted "and now it settles" had no way to say so without
+// asking for another sweep it could not get, and read the refusal as a failure.
+func settleSweepByTxid(t *testing.T, d *Devnet, ctx context.Context, cid, retiringKeyId, txid string) string {
+	t.Helper()
+	sd := waitSigningData(t, d, ctx, cid, txid)
+	if sd == nil {
+		settleReport(t, "CASE VL-GP-06 FAIL — no signing data for sweep %s", txid)
+		return "NO_SIGNING_DATA"
+	}
+	var mtx wire.MsgTx
+	if err := mtx.Deserialize(bytes.NewReader(sd.Tx)); err != nil {
+		settleReport(t, "deser sweep: %v", err)
+		return "DESERIALIZE_FAILED"
+	}
+	// The RETIRING gen (gen-0) key signs the sweep — NN#1 output-scoping admits it
+	// only because every output pays the gen-1 successor P2WSH.
+	for _, uh := range sd.UnsignedSigHashes {
+		sig := waitSignature(t, d, ctx, retiringKeyId, uh.SigHash)
+		if sig == nil {
+			settleReport(t, "CASE VL-PEN-03/NN#1 — retiring gen did NOT sign the sweep (output-scoping refused? or slow). input %d", uh.Index)
+			return "NOT_SIGNED"
+		}
+		signature := append(append([]byte{}, sig...), byte(txscript.SigHashAll))
+		mtx.TxIn[uh.Index].Witness = wire.TxWitness{signature, []byte{0x01}, uh.WitnessScript}
+	}
+	var buf bytes.Buffer
+	mtx.BtcEncode(&buf, wire.ProtocolVersion, wire.WitnessEncoding)
+	bcTxid, err := d.bitcoinCli(ctx, "sendrawtransaction", hex.EncodeToString(buf.Bytes()))
+	if err != nil {
+		settleReport(t, "CASE VL-GP-06 FAIL — sweep broadcast rejected: %v", err)
+		return "BROADCAST_REJECTED"
+	}
+	t.Logf("CASE VL-GP-06/NN#1 PASS(partial) — migration sweep TSS-signed (retiring gen, successor-scoped) + broadcast: %s", bcTxid)
+
+	h, _ := d.MineBlocks(ctx, 1)
+	// VR2-06: a settle waits MinConfirmationDepth, so the sweep's own block must be
+	// buried before confirmSpend. Relaying only up to h leaves it at depth 0 and the
+	// settle is correctly refused — which then looks like "no pending spend
+	// appeared" several stages later. Mirrors constants.MinConfirmationDepth
+	// (regtest).
+	tipAfter, _ := d.MineBlocks(ctx, vfDepositMaturityBlocks)
+	// Relay from the CONTRACT's own height, not from the sweep's block. addBlocks
+	// requires each header to chain onto the last one the contract stored, so
+	// starting at h silently fails whenever the contract has fallen behind the
+	// chain — which is exactly what the maturity mining above makes more likely.
+	// The failure surfaces later as a refused settle, several stages from its cause.
+	for hh := contractLastHeight(t, d, ctx, cid) + 1; hh <= tipAfter; hh++ {
+		hx, _ := btcBlockHeaderHex(ctx, d, hh)
+		vstatus(t, d, ctx, 1, cid, "addBlocks", fmt.Sprintf(`{"blocks":"%s","latest_fee":10}`, hx))
+	}
+	bhash, _ := d.bitcoinCli(ctx, "getblockhash", fmt.Sprint(h))
+	blockJSON, _ := d.bitcoinCli(ctx, "getblock", bhash, "1")
+	var blk struct {
+		Tx []string `json:"tx"`
+	}
+	json.Unmarshal([]byte(blockJSON), &blk)
+	// The proof below pairs the sweep (tx 1) with the coinbase (tx 0). A block that
+	// cannot be read (bitcoind call failed, or the test context already expired) used
+	// to index an empty list and panic, losing the whole test's case report.
+	if len(blk.Tx) < 2 {
+		settleReport(t, "CASE VL-GP-06 FAIL: sweep block %d unreadable (%d txs, context: %v)", h, len(blk.Tx), ctx.Err())
+		return "BLOCK_UNREADABLE"
+	}
+	rawTx, _ := d.bitcoinCli(ctx, "getrawtransaction", bcTxid)
+	proof := reverseHexBytes(blk.Tx[0])
+	cs := vstatus(t, d, ctx, 1, cid, "confirmSpend", fmt.Sprintf(
+		`{"tx_data":{"block_height":%d,"raw_tx_hex":"%s","merkle_proof_hex":"%s","tx_index":1},"indices":[0]}`, h, rawTx, proof))
+	if isOK(cs) {
+		t.Logf("CASE VL-GP-01/GP-06 PASS — migration sweep SETTLED via confirmSpend (gen-0 drained to gen-1)")
+	} else {
+		// A sweep that is broadcast but never settles is a failure, not a partial pass:
+		// the generation does not drain. (It used to log "PASS(broadcast)" here.)
+		settleReport(t, "CASE VL-GP-06 FAIL: the migration sweep %s did not settle (confirmSpend status=%s)", bcTxid, cs)
+	}
+	return cs
+}

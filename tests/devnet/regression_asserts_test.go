@@ -63,7 +63,7 @@ func (d *Devnet) allNodes() []int {
 // nodes legitimately sit at very different heights for a while. Fails on timeout.
 func waitNodesConverged(t *testing.T, d *Devnet, ctx context.Context, nodes []int, maxDelta uint64, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var last map[int]uint64
 	for {
 		per := map[int]uint64{}
@@ -89,14 +89,14 @@ func waitNodesConverged(t *testing.T, d *Devnet, ctx context.Context, nodes []in
 				return
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Errorf("nodes did not converge within %v (maxDelta=%d): %v", timeout, maxDelta, last)
 			return
 		}
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context cancelled waiting for node convergence: %v", ctx.Err())
-		case <-time.After(4 * time.Second):
+		case <-devnetAfter(4 * time.Second):
 		}
 	}
 }
@@ -115,19 +115,19 @@ func assertNodesHealthy(t *testing.T, d *Devnet, ctx context.Context, nodes []in
 func assertAdvancing(t *testing.T, d *Devnet, ctx context.Context, nodes []int, timeout time.Duration) {
 	t.Helper()
 	start := maxBlock(d, ctx, nodes)
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		if maxBlock(d, ctx, nodes) > start {
 			return
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Errorf("network not advancing: head stuck at %d for %v", start, timeout)
 			return
 		}
 		select {
 		case <-ctx.Done():
 			t.Fatalf("context cancelled waiting for advance: %v", ctx.Err())
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
@@ -137,7 +137,7 @@ func assertAdvancing(t *testing.T, d *Devnet, ctx context.Context, nodes []int, 
 // callers that need the epoch must tolerate that startup window.
 func currentEpoch(t *testing.T, d *Devnet, ctx context.Context, node int, timeout time.Duration) uint64 {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var lastErr error
 	for {
 		_, ep, err := d.LocalNodeInfo(ctx, node)
@@ -145,10 +145,10 @@ func currentEpoch(t *testing.T, d *Devnet, ctx context.Context, node int, timeou
 			return ep
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Fatalf("magi-%d localNodeInfo never succeeded within %v: %v", node, timeout, lastErr)
 		}
-		time.Sleep(4 * time.Second)
+		devnetSleep(4 * time.Second)
 	}
 }
 
@@ -162,7 +162,7 @@ func assertAllNodesHealthy(t *testing.T, d *Devnet, ctx context.Context, maxDelt
 // CONFIRMED passes; FAILED fails; not-yet-indexed keeps polling until timeout.
 func assertTxProcessed(t *testing.T, d *Devnet, ctx context.Context, node int, txId string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := devnetNow().Add(2 * time.Minute)
 	for {
 		status, err := d.FindTransactionStatus(ctx, node, txId)
 		if err == nil {
@@ -174,11 +174,34 @@ func assertTxProcessed(t *testing.T, d *Devnet, ctx context.Context, node int, t
 				return
 			}
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Errorf("tx %s never reached terminal status on magi-%d (last=%q, err=%v)", txId, node, status, err)
 			return
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
+	}
+}
+
+// assertTxRefused is assertTxProcessed for a tx the protocol must reject.
+func assertTxRefused(t *testing.T, d *Devnet, ctx context.Context, node int, txId string) {
+	t.Helper()
+	deadline := devnetNow().Add(2 * time.Minute)
+	for {
+		status, err := d.FindTransactionStatus(ctx, node, txId)
+		if err == nil {
+			switch status {
+			case "FAILED":
+				return
+			case "PROCESSED", "CONFIRMED":
+				t.Errorf("tx %s was ACCEPTED on magi-%d, expected it refused", txId, node)
+				return
+			}
+		}
+		if devnetNow().After(deadline) {
+			t.Errorf("tx %s never reached terminal status on magi-%d (last=%q, err=%v)", txId, node, status, err)
+			return
+		}
+		devnetSleep(3 * time.Second)
 	}
 }
 
@@ -234,7 +257,7 @@ func assertContractState(t *testing.T, d *Devnet, ctx context.Context, node int,
 	for k := range want {
 		keys = append(keys, k)
 	}
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := devnetNow().Add(2 * time.Minute)
 	for {
 		st, err := d.GetStateByKeys(ctx, node, contractId, keys)
 		ok := err == nil
@@ -249,12 +272,12 @@ func assertContractState(t *testing.T, d *Devnet, ctx context.Context, node int,
 		if ok {
 			return
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			st, _ := d.GetStateByKeys(ctx, node, contractId, keys)
 			t.Errorf("contract %s state on magi-%d = %v, want %v", contractId, node, st, want)
 			return
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 }
 

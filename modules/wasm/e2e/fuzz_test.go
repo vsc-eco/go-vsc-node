@@ -9,6 +9,7 @@ import (
 
 	"vsc-node/lib/test_utils"
 	"vsc-node/modules/db/vsc/contracts"
+	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	stateEngine "vsc-node/modules/state-processing"
 )
 
@@ -31,7 +32,7 @@ func callWithRecover(ct test_utils.ContractTest, contractId string, action strin
 	return result, nil
 }
 
-func callWithRecoverRc(ct test_utils.ContractTest, contractId string, action string, payload string, txSelf stateEngine.TxSelf, rcLimit uint) (result test_utils.ContractTestCallResult, panicVal interface{}) {
+func callWithRecoverRc(ct test_utils.ContractTest, contractId string, action string, payload string, txSelf stateEngine.TxSelf, rcLimit uint64) (result test_utils.ContractTestCallResult, panicVal interface{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicVal = r
@@ -96,6 +97,11 @@ func TestFuzzAll(t *testing.T) {
 	}
 
 	ct := test_utils.NewContractTest()
+	// RC funding: the free tier only grants 10,000 RCs and this suite makes
+	// ~700 calls against the shared hive:fuzzer account. Back the RC balance
+	// with HBD (1:1) so the suite keeps the headroom the old raised allowance
+	// used to provide.
+	ct.Deposit("hive:fuzzer", 990_000, ledgerDb.AssetHbd)
 	ct.RegisterContract(contractId, "hive:fuzzer", WASM_TEST_CODE[:])
 
 	totalPanics := []string{}
@@ -405,7 +411,7 @@ func TestFuzzAll(t *testing.T) {
 				"negative_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: -1, OpIndex: -1,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},
@@ -413,7 +419,7 @@ func TestFuzzAll(t *testing.T) {
 				"huge_index",
 				stateEngine.TxSelf{
 					TxId: "fuzz-tx", BlockId: "abcdef", Index: 999999999, OpIndex: 999999999,
-					Timestamp: "2026-03-28T00:00:00",
+					Timestamp:     "2026-03-28T00:00:00",
 					RequiredAuths: []string{"hive:fuzzer"}, RequiredPostingAuths: []string{},
 				},
 			},
@@ -451,12 +457,12 @@ func TestFuzzAll(t *testing.T) {
 	t.Run("RcLimitEdgeCases", func(t *testing.T) {
 		rcLimits := []struct {
 			name  string
-			limit uint
+			limit uint64
 		}{
 			{"zero", 0},
 			{"one", 1},
 			{"max_uint32", 4294967295},
-			{"max_uint", ^uint(0)},
+			{"max_uint", ^uint64(0)},
 		}
 
 		for _, rc := range rcLimits {

@@ -61,7 +61,7 @@ func TestOracleDashChainRelay(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(20*time.Minute))
 	defer cancel()
 
 	// ── Locate the prebuilt dash-mapping-contract WASM ──────────────────
@@ -177,7 +177,7 @@ func TestOracleDashChainRelay(t *testing.T) {
 	// Keep mining so there's ongoing work for the oracle to relay while
 	// the initial signal lands on Hive and gets processed.
 	go func() {
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(15 * time.Second) // wall: poll interval
 		defer ticker.Stop()
 		for {
 			select {

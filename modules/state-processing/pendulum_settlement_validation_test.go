@@ -24,6 +24,9 @@ func (s *stubElectionsByHeight) StoreElection(elections.ElectionResult) error {
 	return nil
 }
 func (s *stubElectionsByHeight) GetElection(uint64) *elections.ElectionResult { return nil }
+func (s *stubElectionsByHeight) GetElectionStrict(uint64) (*elections.ElectionResult, error) {
+	return nil, nil
+}
 func (s *stubElectionsByHeight) GetPreviousElections(uint64, int) []elections.ElectionResult {
 	return nil
 }

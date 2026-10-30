@@ -1,6 +1,7 @@
 package blockconsumer
 
 import (
+	"sync/atomic"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common/common_types"
 	"vsc-node/modules/db/vsc/hive_blocks"
@@ -20,6 +21,11 @@ type HiveConsumer struct {
 	hh uint64
 
 	headFetcher HeadHeightGetter
+
+	// processed and asyncTicks back the devnet block pacemaker's quiescence
+	// probe (ProcessedHeight / AsyncTicksInFlight). They carry no consensus state.
+	processed  atomic.Uint64
+	asyncTicks atomic.Int64
 }
 
 //Make a module!
@@ -49,7 +55,11 @@ func (v *HiveConsumer) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint6
 	}
 	for _, tick := range v.ticks {
 		if tick.async {
-			go tick.funck(blk.BlockNumber, headHeight)
+			v.asyncTicks.Add(1)
+			go func(funck BTFunc) {
+				defer v.asyncTicks.Add(-1)
+				funck(blk.BlockNumber, headHeight)
+			}(tick.funck)
 		} else {
 			tick.funck(blk.BlockNumber, headHeight)
 		}
@@ -58,6 +68,19 @@ func (v *HiveConsumer) ProcessBlock(blk hive_blocks.HiveBlock, headHeight *uint6
 		v.StateEngine.ProcessBlock(blk)
 	}
 	v.bh = blk.BlockNumber
+	v.processed.Store(blk.BlockNumber)
+}
+
+// ProcessedHeight is the last Hive block whose sync ticks and state-engine pass
+// have completed on this node.
+func (v *HiveConsumer) ProcessedHeight() uint64 {
+	return v.processed.Load()
+}
+
+// AsyncTicksInFlight counts async block ticks (TSS, elections, oracle) that have
+// been dispatched and not yet returned.
+func (v *HiveConsumer) AsyncTicksInFlight() int64 {
+	return v.asyncTicks.Load()
 }
 
 func (v *HiveConsumer) BlockStatus() common_types.BlockStatusGetter {

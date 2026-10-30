@@ -112,6 +112,40 @@ func (s p2pSpec) HandleMessage(
 		s.tssMgr.bufferLock.RLock()
 		entry, hasResult := s.tssMgr.sessionResults[sessId]
 		s.tssMgr.bufferLock.RUnlock()
+
+		// POA-8: a request for a per-accused statement (accuse.go). Sign it
+		// only if this node accuses the same party in the same session; the
+		// statement is built from the session alone, so it matches the
+		// leader's CID exactly when both accuse that party.
+		accused, _ := msg.Data["accused"].(string)
+		if accused != "" {
+			if !hasResult {
+				return nil
+			}
+			rec, ok := accuseRecordOf(entry.result)
+			if !ok {
+				return nil
+			}
+			stmt, ok := s.tssMgr.accuseStatement(rec, accused)
+			if !ok {
+				return nil
+			}
+			sigStr, ok := s.tssMgr.blsSignCommitment(stmt)
+			if !ok {
+				return nil
+			}
+			send(p2pMessage{
+				Type:    "res_sig",
+				Account: s.tssMgr.config.Get().HiveUsername,
+				Data: map[string]interface{}{
+					"sig":        sigStr,
+					"session_id": sessId,
+					"accused":    accused,
+				},
+			})
+			return nil
+		}
+
 		if hasResult {
 			baseCommitment := entry.result.Serialize()
 
@@ -193,8 +227,11 @@ func (s p2pSpec) HandleMessage(
 			return nil
 		}
 
+		accused, _ := msg.Data["accused"].(string)
+		sigKey := accuseSigKey(sessId, accused)
+
 		s.tssMgr.bufferLock.RLock()
-		sigChan := s.tssMgr.sigChannels[sessId]
+		sigChan := s.tssMgr.sigChannels[sigKey]
 		s.tssMgr.bufferLock.RUnlock()
 		if sigChan != nil {
 			// Non-blocking send: the collector may have already exited
@@ -205,7 +242,7 @@ func (s p2pSpec) HandleMessage(
 			select {
 			case sigChan <- sigMsg{
 				Account:   msg.Account,
-				SessionId: sessId,
+				SessionId: sigKey,
 				Sig:       sig,
 			}:
 			default:
@@ -242,17 +279,57 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 		return
 	}
 
-	// Look up the election to verify attestation signatures.
-	election, err := s.tssMgr.electionDb.GetElectionByHeight(targetBlock)
+	// Look up the election to verify attestation signatures. L2-2 (FULL-PRUNED
+	// 2026-07-09): read at currentBh, NOT the future targetBlock. GetElectionByHeight
+	// uses a `< height` (latest-adopted) lookup, so in the COMMON case reading at the
+	// future targetBlock and at currentBh resolve to the SAME latest election (a no-op);
+	// they diverge only when the state engine has adopted an election in
+	// (currentBh, targetBlock] that this node's TSS-tracker currentBh hasn't reached —
+	// there the future-height read pulls the newer, tip-volatile election while
+	// currentBh pulls the more-SETTLED one. Pinning to the settled reference is the
+	// conservative choice: it can be momentarily STALER (a just-adopted member's
+	// attestation waits a block or two to be accepted) but that is self-healing via
+	// per-block re-gossip, never a freeze — and on the normal V-A path retirement
+	// precedes the sweep target by ~100 blocks, so retiring attesters are in-set with
+	// wide margin. This only pre-filters which signed attestations to STORE; the reshare
+	// authoritatively recomputes its party list against the actual state at targetBlock
+	// when it fires, so the pre-filter height never changes the signed result. (It
+	// relocates the read to a settled reference — it does not by itself eliminate the
+	// per-node tip variance, which the settle window + re-gossip already absorb.)
+	//
+	// Below the 0.7.0 line the read stays at targetBlock, as on the 0.3.0 build: when
+	// an election lands inside the readiness window, a node reading at currentBh
+	// rejects a new member's attestation that a 0.3.0 node accepts, and the two can
+	// then put different members in the same session.
+	election, err := s.tssMgr.electionDb.GetElectionByHeight(
+		readyGossipElectionHeight(s.tssMgr.sessionShapeActive(currentBh), currentBh, targetBlock))
 	if err != nil || election.Members == nil {
 		return
 	}
 
+	// V-A: fund-holding retiring/draining-gen committee members are ALSO valid
+	// readiness attesters for a migration sweep, even when churned out of the
+	// current election. Deterministic on-chain set (gated on v2; empty → inert), so
+	// every node accepts the same widened attester set and verifies each against the
+	// election that carries its BLS key. CACHED per height (council A3): this runs
+	// once per untrusted gossip message, so the underlying contract-state read must
+	// not be per-message. L2-2: read at currentBh (see above) so the pre-filter keys
+	// off the more-settled state rather than a future, tip-volatile height.
+	retiringSet := s.tssMgr.retiringGenSignerSetCached(currentBh)
+
 	// Build a set of valid election members for cheap pre-filtering
 	// before the expensive BLS signature verification.
-	electionMembers := make(map[string]bool, len(election.Members))
+	// 0.11.0 widens it further (ReadinessAccounts): the active generation's
+	// holders, so the active key can still sign and be reshared after they leave
+	// the election, and a pending generation's keygen committee, whose readiness
+	// was emitted (tss.go HasReadiness) but never accepted here.
+	readinessExtra := retiringSet.ReadinessAccounts()
+	electionMembers := make(map[string]bool, len(election.Members)+len(readinessExtra))
 	for _, m := range election.Members {
 		electionMembers[m.Account] = true
+	}
+	for _, acct := range readinessExtra {
+		electionMembers[acct] = true
 	}
 
 	// Check settle period: if we're within DEFAULT_SETTLE_BLOCKS of the
@@ -270,7 +347,7 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 
 	// Cap bundle size at the election member count to prevent a malicious peer
 	// from sending an oversized bundle that wastes CPU on BLS verification.
-	maxAttestations := len(election.Members)
+	maxAttestations := len(election.Members) + len(readinessExtra)
 	if len(attList) > maxAttestations {
 		log.Warn("oversized gossip bundle, truncating",
 			"received", len(attList), "max", maxAttestations,
@@ -326,7 +403,16 @@ func (s p2pSpec) handleReadyGossip(msg p2pMessage) {
 			Sig:                 sig,
 		}
 
-		if !s.tssMgr.verifyAttestation(att, election) {
+		// Verify against the current election; if the attester is a churned-out
+		// retiring-gen committee member (V-A), verify against that gen's commitment
+		// epoch election, which carries its BLS key.
+		verified := s.tssMgr.verifyAttestation(att, election)
+		if !verified {
+			if relec, eligible := retiringSet.ReadinessElection(account); eligible {
+				verified = s.tssMgr.verifyAttestation(att, relec)
+			}
+		}
+		if !verified {
 			log.Warn("rejecting attestation with invalid BLS signature",
 				"account", account, "targetBlock", targetBlock)
 			continue
@@ -408,8 +494,10 @@ func (txp *TssManager) startP2P() error {
 }
 
 func (txp *TssManager) stopP2P() error {
-
-	return nil
+	if txp.pubsub == nil {
+		return nil
+	}
+	return txp.pubsub.Close()
 }
 
 // SendMsg sends a TSS message to a participant. This is a single-attempt send;
@@ -782,4 +870,14 @@ func (tss *TssManager) pingPeerAlive(ctx context.Context, peerId peer.ID) error 
 	tMsg := TMsg{Type: "ready"}
 	tRes := TRes{}
 	return tss.client.CallContext(pingCtx, peerId, "vsc.tss", "ReceiveMsg", &tMsg, &tRes)
+}
+
+// readyGossipElectionHeight is the height whose election verifies incoming
+// readiness attestations: currentBh with the session shapes in force (L2-2),
+// targetBlock below the 0.7.0 line, as on the 0.3.0 build.
+func readyGossipElectionHeight(shapeActive bool, currentBh, targetBlock uint64) uint64 {
+	if shapeActive {
+		return currentBh
+	}
+	return targetBlock
 }

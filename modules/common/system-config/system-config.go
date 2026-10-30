@@ -24,6 +24,12 @@ type SystemConfig interface {
 	// baked and NOT overridable via -sysconfig: a consensus rule every node must
 	// share so no single operator can shorten it.
 	ContractUpdateTimelockBlocks() uint64
+	// RcHiveFreeAmount is the network's free-RC allowance for Hive accounts.
+	// Network-baked and NOT overridable via -sysconfig: it feeds consensus-critical
+	// RC accounting (the WASM gas budget and the PullBalance HBD-exclusion), so two
+	// nodes that disagree on it compute different contract results, different block
+	// CIDs, and stall the fleet (VR2-17, devnet-proven). Every node must share it.
+	RcHiveFreeAmount() int64
 	OracleParams() params.OracleParams
 	TssParams() params.TssParams
 	PendulumPoolWhitelistAt(blockHeight uint64) []string
@@ -84,6 +90,9 @@ type config struct {
 	// staged rollout exists to keep default-configured nodes in step, not to
 	// second-guess an operator who set the value deliberately.
 	pendulumWhitelistOverridden bool
+  // Network-baked free-RC allowance for Hive accounts. Deliberately absent from
+	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
+  rcHiveFreeAmount      int64
 }
 
 func (c *config) OnMainnet() bool {
@@ -127,6 +136,10 @@ func (c *config) ConsensusParams() params.ConsensusParams {
 
 func (c *config) ContractUpdateTimelockBlocks() uint64 {
 	return c.contractUpdateTimelockBlocks
+}
+
+func (c *config) RcHiveFreeAmount() int64 {
+	return c.rcHiveFreeAmount
 }
 
 func (c *config) OracleParams() params.OracleParams {
@@ -305,6 +318,7 @@ func MainnetConfig() SystemConfig {
 		startHeight:    94601000,
 		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     8, // H-5: must be >= the gateway floor (8, gateway/multisig.go) — a valid 7-member election otherwise silently wedges keyRotation forever
@@ -323,11 +337,39 @@ func MainnetConfig() SystemConfig {
 			// pins a future epoch-boundary height (>=3d lead) for rollout.
 			BondInclusionWindowBlocks:     86_400,
 			BondInclusionActivationHeight: 107454300,
-			BondInclusionSampleCount:      8,
-			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
-			// together with the bond activation height to bound atomic cohort
-			// entry once the gate is live.
-			MaxNewMembersPerElection: 0,
+			// M1.3 vault-rotation-v2 (BTC TSS reshare→fresh-keygen). 0 = INERT, the
+			// safe default. HARD GO-LIVE GATE (see params.go doc): do NOT pin until
+			// the contract emits fresh-keyId "create" ops + old→new sweep + old-share
+			// destruction are built & devnet-proven, else BTC reshare gate-offs with
+			// no keygen replacement and the vault freezes as the committee churns.
+			// Same cutover discipline as BondInclusionActivationHeight above.
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
+			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
+			// most N NEW members per election so a coordinated cohort maturing on
+			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
+			// majority flip. Set to 1 (most conservative — governance-TUNABLE; a
+			// ~16-node committee still onboards ≥1 established node per ~5-min
+			// election). NOT LIVE YET (L8-02, FULL-PRUNED 2026-07-09):
+			// EffectiveMaxNewMembers gates on TWO preconditions — bondActive
+			// (satisfied: BondInclusionActivationHeight 107454300 above is passed) AND
+			// MaxNewMembersActivationHeight > 0. The latter is 0 below, so
+			// EffectiveMaxNewMembers returns 0 and the cap is DEAD CODE today; it
+			// activates only once governance pins the activation height. (The earlier
+			// "LIVE now" comment here was wrong — it accounted only for bondActive.)
+			// DEPLOY CONSTRAINT: compile-time consensus param, no version gate — ALL
+			// nodes must run this value at the same election or they compute
+			// divergent member sets. Coordinate the upgrade (testnet/devnet/mocknet
+			// stay 0 to preserve the churn-heavy regression harness).
+			MaxNewMembersPerElection: 1,
+			// Gated behind an activation height (pruned-methodology, 4-lens): the cap
+			// VALUE is 1 but the cap is INERT until governance pins a FUTURE
+			// MaxNewMembersActivationHeight, so the 0→1 cutover is an atomic single-
+			// block flip on every node — a bare value would split old/new-binary nodes
+			// mid-rolling-upgrade into divergent election member sets (a determinism
+			// break in the election mechanism). 0 = disabled now; pin a future
+			// epoch-boundary height with lead time to activate.
+			MaxNewMembersActivationHeight: 0,
 			// Established-member exception (operator requirement): the stake an
 			// account was already ratified for stays exempt from the window
 			// through the per-network absence grace set on the next line, even if
@@ -348,6 +390,17 @@ func MainnetConfig() SystemConfig {
 			SafetySlashWindows: []params.HeightWindow{
 				{Start: 107454300, End: 107565100},
 			},
+
+			// POA admission batch (consensus 0.7.0). Inert until the election
+			// version floor reaches 0.7.0 — these values are only read once
+			// consensusversion.Version0_7_0Active is true, so shipping them is a
+			// no-op on the live chain. ~3 days each at 3s/block: the admit-vote
+			// window is the operator-specified deliberation period, and the exit
+			// halt must exceed (BTC theft-detection latency + slash-execution
+			// time) — SPV detection is minutes, so 3 days is ample margin.
+			PoaAdmitVoteWindowBlocks:    86400,
+			PoaExitHaltBlocks:           86400,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -355,6 +408,13 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
+			// BTC keysign solvency observation endpoint — STAGED FOR M1.1b
+			// (observeBtcSolvencyInsolvent), not yet wired, so INERT today.
+			// BtcVaultAddresses is intentionally left empty. NOTE (council): when
+			// M1.1b activates the observation, use a per-node TRUSTED full node
+			// here, not this shared public API a thief could rate-limit into a
+			// fail-open. The live M1.1a freeze is the deterministic governance FLAG.
+			BtcL1BaseURL: "https://mempool.space/api",
 		},
 		tssParams: params.DefaultTssParams,
 		// Seeded with the deployed pool contract IDs; operators can override via
@@ -408,6 +468,7 @@ func TestnetConfig() SystemConfig {
 		startHeight:    2,
 		// Short (~90s) timelock so the mechanism is testable on testnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                       params.CONSENSUS_MINIMUM,
 			MinMembers:                     3,
@@ -450,7 +511,9 @@ func TestnetConfig() SystemConfig {
 			// iteration. Activation 0 = inert until pinned.
 			BondInclusionWindowBlocks:     7_200,
 			BondInclusionActivationHeight: 3_870_000,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -466,8 +529,16 @@ func TestnetConfig() SystemConfig {
 			// slashing before mainnet. Same above-head / frozen-past rules as
 			// mainnet apply when closing or appending windows.
 			SafetySlashWindows: []params.HeightWindow{
-				{Start: 3_870_000, End: 0},
+				{Start: 3_870_000, End: 4_769_770},
 			},
+
+			// POA admission batch (consensus 0.7.0), scaled to testnet's 3600-block
+			// election interval so an admission and an exit-halt each span a couple
+			// of elections rather than mainnet's ~12. Inert until the floor reaches
+			// 0.7.0.
+			PoaAdmitVoteWindowBlocks:    7200,
+			PoaExitHaltBlocks:           7200,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		oracleParams: params.OracleParams{
 			ChainContracts: map[string]string{
@@ -478,6 +549,8 @@ func TestnetConfig() SystemConfig {
 			ZKVerifierChains: map[string]string{
 				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
 			},
+			// BTC keysign solvency SIGNAL: testnet esplora endpoint.
+			BtcL1BaseURL: "https://mempool.space/testnet/api",
 		},
 		tssParams: params.DefaultTssParams,
 		// Populate with deployed pool contract IDs once they exist; operators
@@ -500,6 +573,7 @@ func DevnetConfig() SystemConfig {
 		startHeight:   2,
 		// Short (~90s) timelock so the mechanism is testable on devnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1000,
 			MinMembers:                    3,
@@ -510,6 +584,10 @@ func DevnetConfig() SystemConfig {
 			ElectionDupeFixEpoch:          0,
 			ConsensusVersionActivationNum: 4,
 			ConsensusVersionActivationDen: 5,
+			// Short version-proposal windows so devnet integration tests exercise
+			// adoption + expiry without waiting weeks of (fast) epochs.
+			VersionProposalExpiryEpochs:   6,
+			VersionProposalFastFailEpochs: 3,
 			// Ephemeral network (fresh per run): pin the consensus-version floor to
 			// 0.3.0 from epoch 1 so the whole v0.2.0 AND v0.3.0 batches are active
 			// from genesis and exercised by devnet/regression tests (the governance
@@ -525,7 +603,9 @@ func DevnetConfig() SystemConfig {
 			// to exercise the gate.
 			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -546,8 +626,16 @@ func DevnetConfig() SystemConfig {
 			SafetySlashWindows: []params.HeightWindow{
 				{Start: 1, End: 0},
 			},
+
+			// POA admission batch (consensus 0.7.0), scaled to devnet's 40-block
+			// election interval: 120 blocks = 3 elections, so a devnet test can
+			// actually observe a window open, a vote cross it, and an exit-halt
+			// expire inside one run.
+			PoaAdmitVoteWindowBlocks:    120,
+			PoaExitHaltBlocks:           120,
+			PoaMaxNewMembersPerElection: 1,
 		},
-		tssParams: params.DefaultTssParams,
+		tssParams: params.DevnetTssParams,
 		// Devnet operators set via -sysconfig pendulumPoolWhitelist on each node.
 		pendulumPoolWhitelist: nil,
 	}
@@ -564,6 +652,7 @@ func MocknetConfig() SystemConfig {
 		// Disabled (0): the in-process e2e harness updates then immediately
 		// executes a contract and relies on updates taking effect at once.
 		contractUpdateTimelockBlocks: 0,
+		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
 		consensusParams: params.ConsensusParams{
 			MinStake:                      1,
 			MinMembers:                    3,
@@ -584,7 +673,9 @@ func MocknetConfig() SystemConfig {
 			// Version0_2_0Height=1.)
 			BondInclusionWindowBlocks:     80,
 			BondInclusionActivationHeight: 0,
-			BondInclusionSampleCount:      8,
+			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
+			VaultRotationV2ActivationHeight: 0,
+			BondInclusionSampleCount:        8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -598,6 +689,13 @@ func MocknetConfig() SystemConfig {
 			// Principal safety slashing. Empty = INERT; the in-process e2e harness
 			// and internal unit tests pin their own schedule via an sconf override.
 			SafetySlashWindows: nil,
+
+			// POA admission batch (consensus 0.7.0). Short windows so in-process
+			// unit tests can drive a full admit -> seat -> exit -> release cycle
+			// without minutes of simulated height.
+			PoaAdmitVoteWindowBlocks:    120,
+			PoaExitHaltBlocks:           120,
+			PoaMaxNewMembersPerElection: 1,
 		},
 		tssParams: params.MocknetTssParams,
 	}

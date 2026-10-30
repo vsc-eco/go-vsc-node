@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"vsc-node/cmd/mapping-bot/chain"
@@ -19,11 +21,24 @@ import (
 
 // releaseBlockLease releases the lease with a fresh short-lived context so it
 // doesn't inherit an already-expired deadline from the main-loop context.
+// unusedInstructionRetention: how long an instruction that has never received a
+// deposit is watched after its last request. Renewed by every request; an
+// instruction with a deposit is never dropped.
+const unusedInstructionRetention = 30 * 24 * time.Hour
+
 func releaseBlockLease(bot *mapper.Bot, blockHeight uint64, instanceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := bot.Db.State.ReleaseBlockLease(ctx, blockHeight, instanceID); err != nil {
 		bot.L.Warn("failed to release block lease", "height", blockHeight, "err", err)
+	}
+}
+
+// sleepOrStop waits d, or less if a shutdown signal arrives.
+func sleepOrStop(stop context.Context, d time.Duration) {
+	select {
+	case <-stop.Done():
+	case <-time.After(d):
 	}
 }
 
@@ -42,6 +57,15 @@ func main() {
 
 	sysConfig := systemconfig.FromNetwork(args.network)
 	if args.sysconfigPath != "" {
+		// L8-03 (FULL-PRUNED 2026-07-09): a -sysconfig override rewrites ConsensusParams/
+		// OracleParams, which the node repo requires to be network-baked and identical on
+		// every node (params.go:118-129). Restrict it to devnet/mocknet — the SAME guard as
+		// cmd/vsc-node/main.go — so a production -sysconfig can't silently misdirect this
+		// privileged oracle binary (its BTC L1 endpoint / target contract id).
+		if args.network != "devnet" && args.network != "mocknet" {
+			fmt.Println("Error: sysconfig overrides only allowed on devnet/mocknet, not", args.network)
+			os.Exit(1)
+		}
 		if err := sysConfig.LoadOverrides(args.sysconfigPath); err != nil {
 			fmt.Println("Error loading sysconfig overrides:", err)
 			os.Exit(1)
@@ -119,12 +143,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// BOT-ADDR-2: fold every instruction the address mappings know into the durable
+	// instruction store (idempotent), so an upgraded bot keeps watching them all.
+	backfillCtx, backfillCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if n, err := db.Instructions.BackfillFromAddresses(backfillCtx, db.Addresses); err != nil {
+		bot.L.Error("could not backfill deposit instructions from the address mappings", "err", err)
+	} else {
+		bot.L.Info("deposit instructions backfilled from the address mappings", "instructions", n)
+	}
+	backfillCancel()
+
 	httpCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go mapBotHttpServer(httpCtx, db.Addresses, bot)
 
+	// BOT-LEASE-1 (testnet 2026-10-06): a stop used to kill the bot mid-cycle with
+	// the block lease held, so the next start sat idle and silent for up to
+	// 2 x BlockInterval (20 minutes on BTC). Stop between cycles instead: every
+	// cycle releases its lease before the loop comes round again.
+	stop, stopCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopCancel()
+	var lastLeaseWaitLog time.Time
+
 	var wg sync.WaitGroup
 	for {
+		if stop.Err() != nil {
+			bot.L.Info("shutdown signal received; stopping between cycles with no block lease held")
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
 		// Periodic cleanup (every 24h)
@@ -132,6 +178,16 @@ func main() {
 			_, err := db.Addresses.DeleteOlderThan(ctx, 24*30*time.Hour)
 			if err != nil {
 				bot.L.Error("error deleting expired addresses", "err", err)
+			}
+			// BOT-ADDR-2: the watched set is the instruction store. Only an
+			// instruction that never received a deposit and was not requested for
+			// unusedInstructionRetention is dropped (a bound on what the public
+			// request endpoint can make the bot watch); one that saw a deposit stays.
+			if n, err := db.Instructions.DeleteStale(ctx, unusedInstructionRetention); err != nil {
+				bot.L.Error("error deleting stale deposit instructions", "err", err)
+			} else if n > 0 {
+				bot.L.Info("deleted unused deposit instructions", "count", n)
+				bot.ResetDepositIndex()
 			}
 			// Clean up txs stuck in "sent" state for > 7 days (likely failed broadcasts)
 			_, err = db.State.DeleteOldSentTransactions(ctx, 7*24*time.Hour)
@@ -152,7 +208,7 @@ func main() {
 			startHeight, err := bot.Chain.Client.GetTipHeight()
 			if err != nil {
 				bot.L.Error("error fetching tip height", "err", err)
-				time.Sleep(chainCfg.SleepInterval)
+				sleepOrStop(stop, chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
@@ -160,7 +216,7 @@ func main() {
 
 			if err := bot.Db.State.SetBlockHeight(ctx, startHeight); err != nil {
 				bot.L.Error("error seeding block height", "err", err)
-				time.Sleep(chainCfg.SleepInterval)
+				sleepOrStop(stop, chainCfg.SleepInterval)
 				cancel()
 				continue
 			}
@@ -171,13 +227,18 @@ func main() {
 		if err != nil {
 			bot.L.Error("error acquiring block lease", "height", blockHeight, "err", err)
 			cancel()
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			continue
 		}
 		if !leaseAcquired {
-			// Another bot instance is processing this height right now.
+			// Another bot instance is processing this height right now (or a
+			// previous instance stopped without releasing it; the lease expires).
+			if time.Since(lastLeaseWaitLog) > time.Minute {
+				bot.L.Info("waiting for another instance's block lease", "height", blockHeight)
+				lastLeaseWaitLog = time.Now()
+			}
 			cancel()
-			time.Sleep(2 * time.Second)
+			sleepOrStop(stop, 2*time.Second)
 			continue
 		}
 
@@ -187,14 +248,15 @@ func main() {
 			// At head — still run unmap/confirmations, then sleep before checking again
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			bot.HandleVaultRotation()
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		} else if err != nil {
 			bot.L.Error("error fetching block hash", "height", blockHeight, "err", err)
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
@@ -202,7 +264,7 @@ func main() {
 		if err != nil {
 			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
 			releaseBlockLease(bot, blockHeight, instanceID)
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
 			continue
 		}
@@ -219,6 +281,11 @@ func main() {
 			defer wg.Done()
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
+			// Drive the vault-rotation lifecycle (build the next migration tranche /
+			// write off an un-sweepable residual / advance retire→purge). Runs after
+			// confirmations so a sweep that just settled is seen as settled. No-op on a
+			// contract with no vault registry, and internally rate-limited.
+			bot.HandleVaultRotation()
 		}()
 		wg.Wait()
 		releaseBlockLease(bot, blockHeight, instanceID)
@@ -226,7 +293,7 @@ func main() {
 		cancel()
 		// If the block wasn't processed (e.g., not yet in the contract), sleep before retrying.
 		if !mapped {
-			time.Sleep(chainCfg.SleepInterval)
+			sleepOrStop(stop, chainCfg.SleepInterval)
 		}
 	}
 }

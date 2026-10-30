@@ -66,10 +66,31 @@ func (t *TransactionBroadcaster) Broadcast(tx hivego.HiveTransaction) (string, e
 	return t.Client.BroadcastRaw(tx)
 }
 
+// populateAttempts bounds the tries of PopulateSigningProps. The Hive client
+// pools keep-alive connections and does not retry a POST, so a call made on a
+// connection the API server has just closed as idle fails at once ("the server
+// closed connection before returning the first response byte"); the next try
+// gets a live connection. Without the expiration the transaction cannot be
+// signed, so one such failure used to drop the whole broadcast.
+const populateAttempts = 3
+
 func (t *TransactionBroadcaster) PopulateSigningProps(tx *hivego.HiveTransaction, bh []int) error {
 	if t == nil || t.Client == nil {
 		return errors.New("hive broadcaster client is nil")
 	}
+	var err error
+	for attempt := 0; attempt < populateAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if err = t.populateSigningProps(tx, bh); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (t *TransactionBroadcaster) populateSigningProps(tx *hivego.HiveTransaction, bh []int) error {
 	if len(bh) > 0 {
 		bha := bh[0]
 		hBlock, err := t.Client.GetBlock(bha)

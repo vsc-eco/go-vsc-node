@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/big"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -385,8 +384,15 @@ func (ls *ledgerSystem) SafetySlashConsensusBond(p SafetySlashConsensusParams) L
 	if forcedSlashAmt > 0 {
 		slashAmt = forcedSlashAmt
 	} else {
+		// Fail-stop read (GV-H1): a read error taken as "no bond" would skip the
+		// slash on this node only.
 		bondRecord := func(height uint64) *ledger_db.BalanceRecord {
-			rec, _ := ls.BalanceDb.GetBalanceRecord(acct, height)
+			var rec *ledger_db.BalanceRecord
+			blockingLedgerRead(fmt.Sprintf("GetBalanceRecord(%s @%d)", acct, height), func() error {
+				var err error
+				rec, err = ls.BalanceDb.GetBalanceRecord(acct, height)
+				return err
+			})
 			return rec
 		}
 		rec := bondRecord(p.BlockHeight)
@@ -577,14 +583,25 @@ func (ls *ledgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {
 		// will be picked up by future calls.
 		return
 	}
-	pendingRecs, err := ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+	// Fail-stop reads (GV-H1): skipping or mis-reading this round on one node
+	// would finalize its burns at a different height than its peers.
+	var pendingRecs, finalizedRecs *[]ledger_db.LedgerRecord
+	blockingLedgerRead(fmt.Sprintf("GetLedgerRange(pending burns %d-%d)", cursor, blockHeight), func() error {
+		var err error
+		pendingRecs, err = ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+		})
+		return err
 	})
-	if err != nil || pendingRecs == nil {
+	if pendingRecs == nil {
 		return
 	}
-	finalizedRecs, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+	blockingLedgerRead(fmt.Sprintf("GetLedgerRange(finalized burns %d-%d)", cursor, blockHeight), func() error {
+		var err error
+		finalizedRecs, err = ls.LedgerDb.GetLedgerRange(pendingAcct, cursor, blockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+		})
+		return err
 	})
 	done := make(map[string]struct{})
 	if finalizedRecs != nil {
@@ -716,11 +733,18 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	releaseID := pendingID + "#cancel_release"
 	finalizedID := pendingID + "#finalized_marker"
 
-	// Look up pending row to recover amount + maturity height.
-	allPending, err := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+	// Look up pending row to recover amount + maturity height. Fail-stop like
+	// the reads below: a node that read "no rows" on a DB error would skip the
+	// cancel records its peers write.
+	var allPending *[]ledger_db.LedgerRecord
+	blockingLedgerRead("GetLedgerRange(pending burns)", func() error {
+		var err error
+		allPending, err = ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPending},
+		})
+		return err
 	})
-	if err != nil || allPending == nil {
+	if allPending == nil {
 		return LedgerResult{Ok: false, Msg: "no pending burn rows"}
 	}
 	var pendingRec *ledger_db.LedgerRecord
@@ -738,8 +762,13 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	// finalized-marker (the latter blocks future natural maturation). When a
 	// follower-up call arrives, we must report "already cancelled" not
 	// "already finalized" so callers can distinguish the two outcomes.
-	cancelled, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingCancelled},
+	var cancelled *[]ledger_db.LedgerRecord
+	blockingLedgerRead("GetLedgerRange(cancelled burns)", func() error {
+		var err error
+		cancelled, err = ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPendingCancelled},
+		})
+		return err
 	})
 	if cancelled != nil {
 		for _, m := range *cancelled {
@@ -752,8 +781,13 @@ func (ls *ledgerSystem) CancelPendingSafetySlashBurn(p CancelPendingSafetySlashB
 	// Otherwise, if a finalized-marker already exists, the row matured
 	// naturally before cancel arrived → reject (governance must use
 	// ReverseSafetySlashConsensusDebit instead).
-	finalized, _ := ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
-		OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+	var finalized *[]ledger_db.LedgerRecord
+	blockingLedgerRead("GetLedgerRange(finalized burns)", func() error {
+		var err error
+		finalized, err = ls.LedgerDb.GetLedgerRange(pendingAcct, 0, p.BlockHeight, "hive", ledger_db.LedgerOptions{
+			OpType: []string{LedgerTypeSafetySlashHiveBurnPendingFinalized},
+		})
+		return err
 	})
 	if finalized != nil {
 		for _, m := range *finalized {
@@ -1486,7 +1520,7 @@ func normalizeEthDID(account string) string {
 	if !ok {
 		return account
 	}
-	if matched, _ := regexp.MatchString(ETH_REGEX, addr); !matched {
+	if matched := ethRegex.MatchString(addr); !matched {
 		return account
 	}
 	return ethDIDPrefix + ethcommon.HexToAddress(addr).Hex()
@@ -1505,16 +1539,21 @@ func (ls *ledgerSystem) Deposit(deposit Deposit) string {
 		}
 	}
 
-	matchedHive, _ := regexp.MatchString(HIVE_REGEX, decodedParams.To)
-	matchedEth, _ := regexp.MatchString(ETH_REGEX, decodedParams.To)
+	matchedHive := hiveRegex.MatchString(decodedParams.To)
+	matchedEth := ethRegex.MatchString(decodedParams.To)
 
 	if matchedHive && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17 {
 		decodedParams.To = `hive:` + decodedParams.To
 	} else if matchedEth {
 		decodedParams.To = `did:pkh:eip155:1:` + decodedParams.To
+	} else if strings.HasPrefix(decodedParams.To, "hive:") && deposit.HivePrefixRecipientFix {
+		name := strings.TrimPrefix(decodedParams.To, "hive:")
+		if !(hiveRegex.MatchString(name) && len(name) >= 3 && len(name) < 17) {
+			decodedParams.To = deposit.From
+		}
 	} else if strings.HasPrefix(decodedParams.To, "hive:") {
 		//No nothing. It's parsed correctly
-		matchedEth, _ := regexp.MatchString(HIVE_REGEX, strings.Split(decodedParams.To, ":")[1])
+		matchedEth := hiveRegex.MatchString(strings.Split(decodedParams.To, ":")[1])
 		if !(matchedEth && len(decodedParams.To) >= 3 && len(decodedParams.To) < 17) {
 			decodedParams.To = "hive:" + deposit.From
 		}

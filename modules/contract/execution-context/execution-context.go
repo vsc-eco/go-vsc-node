@@ -9,11 +9,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/params"
 	contract_session "vsc-node/modules/contract/session"
+	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc/contracts"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	ledgerSystem "vsc-node/modules/ledger-system"
@@ -57,6 +59,31 @@ type contractExecutionContext struct {
 	// across binaries. Set once per tx by the state engine and propagated into
 	// nested calls.
 	tryCatchActive bool
+
+	// vaultRotationV2Active gates the BRK-2 SignatureVerified 4th field appended
+	// to TssGetKey's output. That return string feeds deterministic contract
+	// execution whose state writes ARE hashed into the consensus state root, so
+	// the format change is CONSENSUS-relevant and MUST be gated exactly like
+	// tryCatchActive: the state engine computes it per-tx from the
+	// height-addressable VaultRotationV2Enabled flag and plumbs it in via
+	// WithVaultRotationV2 (propagated into nested calls). Appending the field
+	// unconditionally would fork a rolling deploy (upgraded vs not-yet-upgraded
+	// nodes emit different strings) and break historical re-execution. False =>
+	// TssGetKey returns the byte-identical legacy 3-field string.
+	vaultRotationV2Active bool
+
+	// sp1WorkPricing gates the 0.10.0 SP1 work-based pricing exactly like
+	// tryCatchActive: the state engine sets it per tx from the chain-active
+	// consensus version and it propagates into nested calls, so the new price
+	// starts at a coordinated height and history re-executes unchanged.
+	sp1WorkPricing bool
+
+	// keyResharedActive gates TssGetKey's fifth field (consensus 0.11.0): "1"
+	// once the key has been reshared since the keygen that created it. Like
+	// vaultRotationV2Active it changes a hashed contract-execution output, so the
+	// state engine sets it per tx from the chain-active version and it propagates
+	// into nested calls; the field is appended only together with the fourth.
+	keyResharedActive bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -161,6 +188,33 @@ func WithPendulumApplier(p wasm_context.PendulumApplier) Option {
 // coordinated version floor.
 func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
+}
+
+// WithVaultRotationV2 enables the BRK-2 SignatureVerified 4th field in
+// TssGetKey. The state engine sets this from the chain-active
+// VaultRotationV2Enabled flag so the new contract-execution output format
+// activates only at a coordinated height (mirror of WithTryCatch; see the
+// vaultRotationV2Active field doc for the fork-avoidance rationale).
+func WithVaultRotationV2(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.vaultRotationV2Active = active }
+}
+
+// WithKeyReshared enables TssGetKey's fifth field, whether the key has been
+// reshared since its keygen (consensusversion.KeyResharedFlagActive).
+func WithKeyReshared(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.keyResharedActive = active }
+}
+
+// WithSp1WorkPricing prices sp1_verify_groth16 by work
+// (consensusversion.Sp1WorkPricingActive).
+func WithSp1WorkPricing(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.sp1WorkPricing = active }
+}
+
+// Sp1WorkPricingActive reports whether this execution prices SP1 proof checks
+// by work; the SDK host call reads it.
+func (ctx *contractExecutionContext) Sp1WorkPricingActive() bool {
+	return ctx.sp1WorkPricing
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -653,7 +707,12 @@ func (ctx *contractExecutionContext) ContractCall(
 				// the GraphQL simulate path), this propagates nil — same
 				// behaviour as before, just now consistent across the call depth.
 				WithPendulumApplier(ctx.pendulumApplier),
-				WithTryCatch(ctx.tryCatchActive))
+				WithTryCatch(ctx.tryCatchActive),
+				// Propagate the BRK-2 gate so a nested contract call sees the same
+				// TssGetKey output format as the top-level tx (fork-safe at depth).
+				WithVaultRotationV2(ctx.vaultRotationV2Active),
+				WithKeyReshared(ctx.keyResharedActive),
+				WithSp1WorkPricing(ctx.sp1WorkPricing))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
@@ -768,9 +827,75 @@ func (ctx *contractExecutionContext) TssGetKey(keyId string) result.Result[strin
 	if status == tss_db.TssKeyActive || status == tss_db.TssKeyDeprecated || status == "deleted" {
 		res += "," + tssKey.PublicKey
 		res += "," + string(tssKey.Algo)
+		// BRK-2 (D1, activation-gated): expose the check-signature flag as a 4th
+		// CSV field so the contract's attestPrimaryKey can require a produced +
+		// verified signature before activating a vault generation. Appended ONLY
+		// when vault-rotation-v2 is chain-active; otherwise the return is the
+		// byte-identical legacy 3-field string (no rolling-deploy fork, no
+		// historical-re-exec break). Backward-compatible: existing callers read
+		// parts[0]/[1]/[2] and ignore extra fields.
+		if ctx.vaultRotationV2Active {
+			if tssKey.SignatureVerified {
+				res += ",1"
+			} else {
+				res += ",0"
+			}
+			// 0.11.0: a fifth field, whether the key has been handed to a
+			// committee by a reshare since its keygen. The BTC vault refuses to
+			// start a migration into a key that has not.
+			if ctx.keyResharedActive {
+				if keyResharedSinceKeygen(ctx.callSession.TssCommitments, fullKey, tssKey) {
+					res += ",1"
+				} else {
+					res += ",0"
+				}
+			}
+		}
 	}
 
 	return result.Ok(res)
+}
+
+// keyResharedSinceKeygen reports whether key's epoch has moved past the keygen
+// that created it, which only an accepted reshare does (the state engine
+// advances the epoch on a reshare and refuses a second keygen for an active
+// key). The creating keygen is the keygen commitment that carries the key's own
+// public key; derived from commitments and the key record, which every node
+// writes identically, so no node-local state can make two nodes disagree. A
+// transient read error blocks and retries rather than answer differently from
+// the other nodes; a record that cannot decode is the same on every node and
+// reads as "not reshared".
+func keyResharedSinceKeygen(commitments tss_db.TssCommitments, keyId string, key tss_db.TssKey) bool {
+	if commitments == nil || key.PublicKey == "" {
+		return false
+	}
+	var keygens []tss_db.TssCommitment
+	for delay := 100 * time.Millisecond; ; {
+		var err error
+		keygens, err = commitments.FindCommitmentsSimple(&keyId, []string{"keygen"}, nil, nil, nil, 0)
+		if err == nil {
+			break
+		}
+		if errors.Is(err, db.ErrDecode) {
+			return false
+		}
+		tssLog.Error("TssGetKey: commitment read failed; retrying until the DB recovers", "keyId", keyId, "retryIn", delay.String(), "err", err)
+		time.Sleep(delay)
+		if delay < 30*time.Second {
+			delay *= 2
+		}
+	}
+	created := false
+	var createdEpoch uint64
+	for _, c := range keygens {
+		if c.PublicKey == nil || *c.PublicKey != key.PublicKey {
+			continue
+		}
+		if !created || c.Epoch < createdEpoch {
+			created, createdEpoch = true, c.Epoch
+		}
+	}
+	return created && key.Epoch > createdEpoch
 }
 
 func (ctx *contractExecutionContext) TssKeySign(keyId string, msg string) result.Result[string] {

@@ -8,6 +8,7 @@ import (
 	"time"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/hive"
+	"vsc-node/lib/peerpop"
 	"vsc-node/lib/vsclog"
 	agg "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -159,20 +160,29 @@ type payload struct {
 }
 
 type payloadVscNode struct {
-	NetId           string   `json:"net_id"`
-	PeerId          string   `json:"peer_id"`
-	PeerAddrs       []string `json:"peer_addrs"`
-	Ts              string   `json:"ts"`
-	VersionId       string   `json:"version_id"`
-	GitCommit       string   `json:"git_commit"`
-	VersionMajor    uint64   `json:"version_major"`
-	ProtocolVersion uint64   `json:"protocol_version"`
-	VersionNonConsensus uint64 `json:"version_non_consensus"`
-	GatewayKey      string   `json:"gateway_key"`
-	GatewayKeyPoP   string   `json:"gateway_key_pop"`
-	Witness         struct {
+	NetId               string   `json:"net_id"`
+	PeerId              string   `json:"peer_id"`
+	PeerAddrs           []string `json:"peer_addrs"`
+	Ts                  string   `json:"ts"`
+	VersionId           string   `json:"version_id"`
+	GitCommit           string   `json:"git_commit"`
+	VersionMajor        uint64   `json:"version_major"`
+	ProtocolVersion     uint64   `json:"protocol_version"`
+	VersionNonConsensus uint64   `json:"version_non_consensus"`
+	GatewayKey          string   `json:"gateway_key"`
+	GatewayKeyPoP       string   `json:"gateway_key_pop"`
+	// PeerIdPoP proves this node holds PeerId's libp2p key (lib/peerpop, B1).
+	PeerIdPoP string `json:"peer_id_pop,omitempty"`
+	Witness   struct {
 		Enabled bool `json:"enabled"`
 	} `json:"witness"`
+	// DelegationMode is the operator's consensus-delegation policy
+	// (delegationmode.{Deactivated,Share,Custom}). Published so the network can
+	// (a) reject third-party delegation to a Deactivated node and (b) split
+	// pendulum rewards pro-rata to delegators on a Share node. Consensus 0.5.0+;
+	// ignored by pre-0.5.0 logic. Always emitted (default Deactivated) so the
+	// witness record carries an explicit, authenticated value.
+	DelegationMode string `json:"delegation_mode"`
 }
 
 type didConsensusKey struct {
@@ -295,6 +305,17 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 
 	runningVersion := consensusversion.RunningVersion()
 
+	// B1: prove the announced peer id is this node's own libp2p key, so no other
+	// account can claim it (verified at ingest from consensus 0.12.0).
+	peerId := a.safePeerId()
+	peerIdPoP := ""
+	if libp2pKey, err := a.conf.Libp2pPrivateKey(); err != nil {
+		alog.Error("cannot load the libp2p key for the peer id proof", "err", err)
+	} else if peerIdPoP, err = peerpop.Sign(libp2pKey, a.conf.Get().HiveUsername, peerId); err != nil {
+		alog.Error("cannot sign the peer id proof", "err", err)
+		peerIdPoP = ""
+	}
+
 	payload := payload{
 		Services: []string{"vsc.network"},
 		DidKeys: []didConsensusKey{
@@ -307,17 +328,18 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 		},
 		VscNode: payloadVscNode{
 			//Potentially use specific net ID for E2E tests
-			NetId:           a.sconf.NetId(),
-			PeerId:          a.safePeerId(), //Plz fill in
-			PeerAddrs:       peerAddrs,
-			Ts:              time.Now().Format(time.RFC3339),
-			GitCommit:       GitCommit,
+			NetId:               a.sconf.NetId(),
+			PeerId:              peerId,
+			PeerIdPoP:           peerIdPoP,
+			PeerAddrs:           peerAddrs,
+			Ts:                  time.Now().Format(time.RFC3339),
+			GitCommit:           GitCommit,
 			VersionId:           VersionId, //Use standard versioning
 			VersionMajor:        runningVersion.Major,
 			ProtocolVersion:     runningVersion.Consensus,
 			VersionNonConsensus: runningVersion.NonConsensus,
-			GatewayKey:      *gatewayKP.GetPublicKeyString(),
-			GatewayKeyPoP:   gatewayPoP,
+			GatewayKey:          *gatewayKP.GetPublicKeyString(),
+			GatewayKeyPoP:       gatewayPoP,
 			Witness: struct {
 				Enabled bool `json:"enabled"`
 			}{
@@ -325,6 +347,10 @@ func (a *AnnouncementsManager) announce(ctx context.Context) error {
 				//Witness should be enabled/disabled by making a transaction on chain.
 				Enabled: enabled,
 			},
+			// Operator's consensus-delegation policy, normalized to a known mode
+			// (default Deactivated). Read back from the witness record at
+			// consensus 0.5.0+ to gate delegation acceptance and reward sharing.
+			DelegationMode: a.conf.DelegationMode(),
 		},
 	}
 

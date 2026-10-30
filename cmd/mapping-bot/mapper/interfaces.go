@@ -14,7 +14,16 @@ type GraphQLFetcher interface {
 	FetchTxSpends(ctx context.Context) (map[string]*contractinterface.SigningData, error)
 	FetchSignatures(ctx context.Context, msgHex []string) (map[string]database.SignatureUpdate, error)
 	FetchLastHeight(ctx context.Context) (string, error)
+	// FetchPruneFloor returns the contract's prune floor ("pf") and whether it is
+	// set. Headers below it are gone, so a spend mined there cannot be proven.
+	FetchPruneFloor(ctx context.Context) (uint64, bool, error)
+	// FetchPaused reports whether the owner has paused the contract ("paused" = "1").
+	FetchPaused(ctx context.Context) (bool, error)
+	// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep
+	// record ("sa-<txid>") for txId: a sweep it wrote off that can still settle.
+	FetchAbandonedSweep(ctx context.Context, txId string) (bool, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
+	FetchVaultKeySets(ctx context.Context) (DepositKeySets, error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)
 	// FetchTransactionStatus queries the VSC node for the status of a transaction
 	// by its tx ID (Hive tx ID for custom_json-submitted, or L2 CID for
@@ -24,6 +33,17 @@ type GraphQLFetcher interface {
 	// FetchAccountNonce returns the next unused nonce for the given VSC account
 	// (a did:* or hive:* identifier). Used by the L2 submission path.
 	FetchAccountNonce(ctx context.Context, account string) (uint64, error)
+	// FetchAccountRC returns the account's currently available resource credits
+	// and whether the node has a record for it (VR2-04 pre-flight). An account the
+	// node cannot report on is "unknown", not zero.
+	FetchAccountRC(ctx context.Context, account string) (int64, bool, error)
+	// SimulateContractCall dry-runs one contract call as `caller` without committing
+	// anything (simulateContractCalls). rcLimit is capped at 100000 by the node.
+	SimulateContractCall(ctx context.Context, caller, contractId, action, payload string, rcLimit uint64) (SimulatedCall, error)
+	// FetchLatestKeyCommitmentType returns the type ("keygen" or "reshare") of the
+	// newest keygen/reshare commitment the node holds for a TSS key, and whether it
+	// holds any.
+	FetchLatestKeyCommitmentType(ctx context.Context, keyId string) (string, bool, error)
 	// SubmitTransactionV1 submits a signed VSC L2 transaction (CBOR-encoded tx
 	// and signature, base64url-encoded) and returns the resulting CID tx ID.
 	SubmitTransactionV1(ctx context.Context, txB64, sigB64 string) (string, error)
@@ -56,6 +76,13 @@ type StateStore interface {
 }
 
 // AddressStore abstracts the database.AddressStore operations used by Bot methods.
+// InstructionStore abstracts the durable deposit-instruction record (BOT-ADDR-2).
+type InstructionStore interface {
+	Touch(ctx context.Context, instruction string) (bool, error)
+	MarkDeposit(ctx context.Context, instruction string) error
+	ListSince(ctx context.Context, since time.Time) ([]string, error)
+}
+
 type AddressStore interface {
 	GetInstruction(ctx context.Context, chainAddr string) (string, error)
 	Insert(ctx context.Context, chainAddr, instruction string) error
@@ -68,4 +95,13 @@ type FailedTxStore interface {
 	GetOne(ctx context.Context, txId string) (*database.FailedVscTx, error)
 	TryMarkRetrying(ctx context.Context, txId string, throttle time.Duration) (bool, error)
 	Delete(ctx context.Context, txId string) error
+}
+
+// SimulatedCall is the dry-run verdict for one contract call.
+type SimulatedCall struct {
+	Success bool
+	Err     string // error code, e.g. "gas_limit_hit", "no_permission"
+	ErrMsg  string // the contract's own reason
+	Ret     string // the contract's return value on success
+	RcUsed  int64
 }

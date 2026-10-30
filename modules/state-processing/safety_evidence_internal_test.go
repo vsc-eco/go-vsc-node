@@ -45,6 +45,10 @@ func (s *stubLedgerSystem) PendulumDistribute(toAccount string, amount int64, tx
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
 func (s *stubLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) {}
+func (s *stubLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int  { return 0 }
+func (s *stubLedgerSystem) AllDelegationEdges(blockHeight uint64) (map[string]map[string]int64, bool) {
+	return nil, true
+}
 func (s *stubLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
@@ -54,7 +58,7 @@ func (s *stubLedgerSystem) ReverseSafetySlashConsensusDebit(p ledgerSystem.Rever
 func (s *stubLedgerSystem) ReservePayout(p ledgerSystem.ReservePayoutParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{Ok: false, Msg: "stub"}
 }
-func (s *stubLedgerSystem) ReserveAvailable() int64 { return 0 }
+func (s *stubLedgerSystem) ReserveAvailable() int64                                       { return 0 }
 func (s *stubLedgerSystem) PendulumBucketBalance(bucket string, blockHeight uint64) int64 { return 0 }
 func (s *stubLedgerSystem) NewEmptySession(state *ledgerSystem.LedgerState, startHeight uint64) ledgerSystem.LedgerSession {
 	return nil
@@ -660,7 +664,10 @@ type versionElectionDb struct {
 }
 
 func (m *versionElectionDb) StoreElection(elecResult elections.ElectionResult) error { return nil }
-func (m *versionElectionDb) GetElection(epoch uint64) *elections.ElectionResult       { return nil }
+func (m *versionElectionDb) GetElection(epoch uint64) *elections.ElectionResult      { return nil }
+func (m *versionElectionDb) GetElectionStrict(epoch uint64) (*elections.ElectionResult, error) {
+	return nil, nil
+}
 func (m *versionElectionDb) GetPreviousElections(beforeEpoch uint64, limit int) []elections.ElectionResult {
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,7 +50,7 @@ type BotConfiger interface {
 	SignApiKey() string
 	OpsApiKey() string
 	FilePath() string
-	RcLimit() uint
+	RcLimit() uint64
 }
 
 type Bot struct {
@@ -66,6 +67,7 @@ type Bot struct {
 	Caller     ContractCaller
 	StateDB    StateStore
 	AddrDB     AddressStore
+	InstrDB    InstructionStore
 	FailedTxDB FailedTxStore
 
 	// GqlClient and GqlURL are single-endpoint overrides used in tests.
@@ -94,6 +96,10 @@ type Bot struct {
 	// L2 submission identity — secp256k1 key + derived did:pkh:eip155 DID.
 	botEthKey *ecdsa.PrivateKey
 	botEthDID dids.EthDID
+
+	// Deposit addresses derived from instructions x vault generations (deposit_index.go).
+	depositIdxOnce sync.Once
+	depositIndex   *depositIndex
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.
@@ -226,6 +232,25 @@ func (b *Bot) addrDB() AddressStore {
 	return b.Db.Addresses
 }
 
+// instrDB returns the InstructionStore to use: the override if set, otherwise
+// Db.Instructions. A Bot built without a database (unit tests that only parse)
+// watches no stored instructions.
+func (b *Bot) instrDB() InstructionStore {
+	if b.InstrDB != nil {
+		return b.InstrDB
+	}
+	if b.Db != nil && b.Db.Instructions != nil {
+		return b.Db.Instructions
+	}
+	return noInstructions{}
+}
+
+type noInstructions struct{}
+
+func (noInstructions) Touch(context.Context, string) (bool, error)            { return false, nil }
+func (noInstructions) MarkDeposit(context.Context, string) error              { return nil }
+func (noInstructions) ListSince(context.Context, time.Time) ([]string, error) { return nil, nil }
+
 // botContractCaller wraps the Bot's callContract method to satisfy ContractCaller.
 type botContractCaller struct{ b *Bot }
 
@@ -347,12 +372,44 @@ func (b *Bot) awaitTxStatus(ctx context.Context, txId string, action string) (st
 	}
 }
 
+// isAlreadyBroadcast reports a broadcast refused only because the network already
+// has this exact transaction: mined ("Transaction outputs already in utxo set", or
+// "Transaction already in block chain" on older nodes, both RPC -27) or waiting in
+// the mempool ("txn-already-in-mempool", "txn-already-known"). The txid commits to
+// the whole transaction, so the job is done.
+//
+// BOT-BCAST-1 (testnet 2026-10-06): this used to be retried as a failure, so the tx
+// was never marked sent, never reached confirmSpend, and was re-posted every cycle
+// forever. It happens whenever someone else broadcast the spend first: another bot
+// instance, a restart onto an empty database, or the old bot before an upgrade.
+func isAlreadyBroadcast(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{
+		"already in utxo set",
+		"already in block chain",
+		"txn-already-in-mempool",
+		"txn-already-known",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
 // postTxWithRetry retries a transaction broadcast up to maxAttempts times with exponential backoff.
 func (b *Bot) postTxWithRetry(rawTx string, maxAttempts int) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		lastErr = b.Chain.Client.PostTx(rawTx)
 		if lastErr == nil {
+			return nil
+		}
+		if isAlreadyBroadcast(lastErr) {
+			b.L.Info("tx already on chain or in the mempool; treating it as broadcast", "detail", lastErr)
 			return nil
 		}
 		if attempt < maxAttempts {

@@ -733,10 +733,16 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("invalid vk root hex")),
 				)
 			}
-			if err := Sp1VerifyGroth16(proof, publicInputs, vkeyHash, groth16Vk, vkRoot); err != nil {
-				return result.Ok(SdkResultStruct{Result: "false", Gas: params.CYCLE_GAS_PER_RC * 10})
+			// Below consensus 0.10.0 the legacy flat cost applies, so history
+			// re-executes unchanged; from 0.10.0 the cost follows the work.
+			sp1Gas := uint(params.CYCLE_GAS_PER_RC * 10)
+			if eCtx, ok := ctx.Value(wasm_context.WasmExecCtxKey).(wasm_context.ExecContextValue); ok && eCtx.Sp1WorkPricingActive() {
+				sp1Gas = sp1VerifyBaseGas + uint(len(publicInputs))*sp1GasPerInputByte
 			}
-			return result.Ok(SdkResultStruct{Result: "true", Gas: params.CYCLE_GAS_PER_RC * 10})
+			if err := Sp1VerifyGroth16(proof, publicInputs, vkeyHash, groth16Vk, vkRoot); err != nil {
+				return result.Ok(SdkResultStruct{Result: "false", Gas: sp1Gas})
+			}
+			return result.Ok(SdkResultStruct{Result: "true", Gas: sp1Gas})
 		},
 	},
 }
@@ -756,6 +762,16 @@ func hexEncode(b []byte) string {
 const (
 	keccak256GasPerByte = params.CYCLE_GAS_PER_RC / 256
 	rlpDecodeGasPerByte = params.CYCLE_GAS_PER_RC / 128
+
+	// sp1_verify_groth16 runs up to two pairing checks plus a hash over the
+	// public inputs. The pairing work is fixed and dominates the cost; the hash
+	// scales with the public-input length. Pricing both stops the call being
+	// looped cheaply to overrun a slot, the way a flat cost allowed. The base
+	// must stay large enough that the free resource tier funds far fewer calls
+	// than a slot's worth of pairing work; the exact figure is set from the
+	// measured per-call time.
+	sp1VerifyBaseGas   = params.CYCLE_GAS_PER_RC * 200
+	sp1GasPerInputByte = params.CYCLE_GAS_PER_RC / 256
 )
 
 // rlpMaxDecodeDepth bounds recursion to prevent stack exhaustion. Ethereum

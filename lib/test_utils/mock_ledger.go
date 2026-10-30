@@ -2,6 +2,7 @@ package test_utils
 
 import (
 	"slices"
+	"sort"
 	"strings"
 	"vsc-node/modules/aggregate"
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
@@ -52,6 +53,16 @@ func (m *MockBalanceDb) UpdateBalanceRecord(record ledgerDb.BalanceRecord) error
 		m.BalanceRecords[record.Account] = append(m.BalanceRecords[record.Account], record)
 	}
 
+	return nil
+}
+
+// UpdateBalanceRecords mirrors UpdateBalanceRecord for the batched path.
+func (m *MockBalanceDb) UpdateBalanceRecords(records []ledgerDb.BalanceRecord) error {
+	for _, record := range records {
+		if err := m.UpdateBalanceRecord(record); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -201,6 +212,24 @@ func (m *MockLedgerDb) GetLedgersTsRange(account *string, txId *string, txTypes 
 	return make([]ledgerDb.LedgerRecord, 0), nil
 }
 
+// GetLedgersByTxId returns the ledger records whose id is prefixed with the tx
+// id (matching the production anchored-regex semantics, including the bare
+// MakeTxId(txId, 0) record for opIdx 0 — no suffix separator is required).
+func (m *MockLedgerDb) GetLedgersByTxId(txId string) ([]ledgerDb.LedgerRecord, error) {
+	results := make([]ledgerDb.LedgerRecord, 0)
+	for _, records := range m.LedgerRecords {
+		for _, record := range records {
+			if strings.HasPrefix(record.Id, txId) {
+				results = append(results, record)
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].BlockHeight < results[j].BlockHeight
+	})
+	return results, nil
+}
+
 // GraphQL use only, not implemented in mocks
 func (m *MockLedgerDb) GetRawLedgerRange(account *string, txId *string, txTypes []string, asset *ledgerDb.Asset, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]ledgerDb.LedgerRecord, error) {
 	return make([]ledgerDb.LedgerRecord, 0), nil
@@ -221,6 +250,30 @@ func (m *MockLedgerDb) GetDistinctAccountsRange(startBlock, endBlock uint64) ([]
 		}
 	}
 
+	return results, nil
+}
+
+func (m *MockLedgerDb) GetLedgerRecordsByType(types []string, toBlock uint64) ([]ledgerDb.LedgerRecord, error) {
+	results := make([]ledgerDb.LedgerRecord, 0)
+	for _, records := range m.LedgerRecords {
+		for _, record := range records {
+			if record.BlockHeight > toBlock {
+				continue
+			}
+			for _, t := range types {
+				if record.Type == t {
+					results = append(results, record)
+					break
+				}
+			}
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].BlockHeight != results[j].BlockHeight {
+			return results[i].BlockHeight < results[j].BlockHeight
+		}
+		return results[i].Id < results[j].Id
+	})
 	return results, nil
 }
 

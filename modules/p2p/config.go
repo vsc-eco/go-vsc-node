@@ -6,13 +6,13 @@ import (
 )
 
 type p2pConfig struct {
-	Port                    int
-	ServerMode              bool
-	AllowPrivate            bool
-	PubsubBufferSize        int
-	PubsubConcurrencyLimit  int
-	Bootnodes               []string
-	AnnounceAddrs           []string
+	Port                   int
+	ServerMode             bool
+	AllowPrivate           bool
+	PubsubBufferSize       int
+	PubsubConcurrencyLimit int
+	Bootnodes              []string
+	AnnounceAddrs          []string
 
 	// Pentest finding N-L6: operator-managed connection deny lists,
 	// applied to the libp2p ConnectionGater at node start. Empty by
@@ -55,6 +55,13 @@ func (pc *p2pConfigStruct) SetOptions(conf p2pConfig) error {
 		return fmt.Errorf("port must be between 1024 and 65535")
 	} else if conf.Port > 0 && conf.Port < 1024 {
 		return fmt.Errorf("cannot listen to privileged ports")
+	}
+	defaults := pc.DefaultValue()
+	if conf.PubsubBufferSize == 0 {
+		conf.PubsubBufferSize = defaults.PubsubBufferSize
+	}
+	if conf.PubsubConcurrencyLimit == 0 {
+		conf.PubsubConcurrencyLimit = defaults.PubsubConcurrencyLimit
 	}
 	return pc.Update(func(pc *p2pConfig) {
 		pc.Port = conf.Port

@@ -90,6 +90,16 @@ func (m *MockTssKeysDb) DeprecateLegacyKeys() error {
 	return nil
 }
 
+func (m *MockTssKeysDb) SetSignatureVerified(id string) error {
+	key, exists := m.Keys[id]
+	if !exists {
+		return fmt.Errorf("key not found: %s", id)
+	}
+	key.SignatureVerified = true
+	m.Keys[id] = key
+	return nil
+}
+
 // MockTssCommitmentsDb implements tss.TssCommitments interface for testing
 type MockTssCommitmentsDb struct {
 	aggregate.Plugin

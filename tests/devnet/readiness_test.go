@@ -42,7 +42,7 @@ func TestTSSOfflineNodeExcludedByReadiness(t *testing.T) {
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 2*time.Minute)
 
 	// Wait for the result (reshare or blame)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 
@@ -114,7 +114,7 @@ func TestTSSFalseReadinessProducesBlame(t *testing.T) {
 	// Wait for reshare to trigger and timeout (ReshareTimeout=2m)
 	waitForBlock(t, d.HiveRPCEndpoint(), target+5, 1*time.Minute)
 	t.Log("waiting for timeout + blame...")
-	time.Sleep(40 * time.Second) // ReshareTimeout + BLS collection
+	devnetSleep(40 * time.Second) // ReshareTimeout + BLS collection
 
 	assertNoSSIDMismatch(t, d, ctx, cfg.Nodes)
 

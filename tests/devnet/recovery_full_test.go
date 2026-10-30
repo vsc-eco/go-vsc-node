@@ -48,7 +48,7 @@ func TestTSSFullRecoveryCycle(t *testing.T) {
 	blameTarget := nextReshareBoundary(head) + 2*testRotateInterval
 	t.Logf("waiting for blame cycles, target block ~%d", blameTarget)
 	waitForBlock(t, d.HiveRPCEndpoint(), blameTarget+5, 5*time.Minute)
-	time.Sleep(40 * time.Second)
+	devnetSleep(40 * time.Second)
 
 	// Step 4: Verify blame or exclusion happened
 	blameCount := countCommitments(t, d.MongoURI(), bson.M{
@@ -64,14 +64,14 @@ func TestTSSFullRecoveryCycle(t *testing.T) {
 	}
 
 	// Wait for reconnected node to sync and participate
-	time.Sleep(10 * time.Second)
+	devnetSleep(10 * time.Second)
 
 	// Step 6: Reshare with all nodes back online
 	head, _ = getHeadBlock(d.HiveRPCEndpoint())
 	recoveryTarget := nextReshareBoundary(head) + 2*testRotateInterval
 	t.Logf("step 6: waiting for recovery reshare at ~%d", recoveryTarget)
 	waitForBlock(t, d.HiveRPCEndpoint(), recoveryTarget+5, 5*time.Minute)
-	time.Sleep(15 * time.Second)
+	devnetSleep(15 * time.Second)
 
 	// Verify reshare happened after recovery
 	postRecovery := countCommitments(t, d.MongoURI(), bson.M{

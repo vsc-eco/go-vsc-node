@@ -45,9 +45,109 @@ import (
 //     which backs (a) by giving witnesses time to gather a slash_restore quorum before
 //     the residual matures. Until 0.3.0 is chain-active the ops are ignored and the
 //     pending window stays 3 days, so old and new binaries interoperate until activation.
+//   - 0.4.0 — the Consensus 3→4 bump gates a safety/correctness batch, all activated
+//     together when the election floor reaches 0.4.0 (consensusversion.V0_4_0):
+//     (a) GV4-3 sub-MinMembers election reject (MinMembersGuardActive) — the state
+//     engine rejects an incoming election whose new committee is below MinMembers
+//     before persisting it, so a degenerate (e.g. empty) committee can never drive
+//     consensus.GenerateSchedule into a divide-by-zero chain halt; below the line the
+//     reject is inert so replay of pre-activation history is byte-identical;
+//     (b) F14 offchain unstake_hbd direction fix (UnstakeHbdDirectionFixActive) — an
+//     offchain unstake_hbd builds TxUnstakeHbd (releases stake) instead of TxStakeHbd
+//     (the 0.3.0 behavior that wrongly STAKED); below the line the legacy stake
+//     direction is preserved so old and new binaries interoperate until activation.
+//   - 0.5.0 — the Consensus 4→5 bump gates the consensus DELEGATION batch, all activated
+//     together when the election floor reaches 0.5.0 (consensusversion.V0_5_0):
+//     (a) per-delegator consensus stake/unstake (DelegatedStakeActive) — a per-edge
+//     delegation balance (asset "delegation", composite owner "from::to") records who
+//     staked onto which node, so a delegator (not the node operator) can always
+//     reclaim their own delegated bond and the operator can never touch it; a slash on
+//     the node is shared pro-rata across its delegators (released = gross × bond/total,
+//     against the slash-immune per-node gross total), and a one-time backfill
+//     reconstructs edges from historical stake records so pre-activation stakes become
+//     reclaimable;
+//     (b) delegator pendulum rewards — a share-mode node's pendulum reward is split
+//     pro-rata to its delegators inside the attested, BLS-signed settlement record
+//     (per-delegator entries sum to the node's unchanged amount, rounding remainder to
+//     the operator), so payouts come from the signed record;
+//     (c) operator opt-in delegation modes (deactivated|share|custom, published in the
+//     node announcement) — third-party delegation (from != to) is rejected unless the
+//     node opted in; self-stake and unstaking an existing delegation are never gated.
+//     The node's aggregate hive_consensus still feeds election weight + pendulum bond
+//     unchanged. Below the line all three behaviors are inert and the legacy
+//     hive_consensus-holder paths run byte-identically, so old and new binaries
+//     interoperate until activation.
+//   - 0.7.0 — the Consensus 5→7 bump gates the POA ADMISSION batch, all activated
+//     together when the election floor reaches 0.7.0 (consensusversion.V0_7_0): the
+//     seat-registry gate on candidacy, vsc.admit_vote, flat seat-weight, the churn
+//     cap, and the collateral exit-halt. Skipping 0.6.0 is deliberate: that line is
+//     reserved for feat/vault-protection's batch, so 0.7.0 is the first line free
+//     across every branch (see feature_gates.go V0_7_0). Reusing a taken line would
+//     mean one floor rise silently activates two unrelated batches at once — the
+//     exact coordinated-activation property this mechanism exists to provide.
+//     Until 0.7.0 is chain-active every POA rule is inert and behaviour stays
+//     byte-identical, so old and new binaries interoperate until activation.
+//   - 0.8.0 — the Consensus 7→8 bump gates the BTC VAULT-ROTATION-V2 batch
+//     (consensusversion.V0_8_0): the per-generation keygen cutover, the BRK-2
+//     SignatureVerified contract-output field, keygen-exclusion scoring, the
+//     keyId-reuse rejection, and the retiring-member bond lock. These previously
+//     coordinated on a bare ConsensusParams.VaultRotationV2ActivationHeight, which
+//     carries the rolling-upgrade footgun this mechanism exists to remove. The
+//     height pin is retained as an override for ephemeral networks (a fresh-genesis
+//     devnet has no election yet, so the floor gate is inert at block 1) and is 0
+//     on every shipped network. Until 0.8.0 is chain-active every v2 rule is inert
+//     and behaviour stays byte-identical, so old and new binaries interoperate.
+//   - 0.9.0 — the Consensus 8→9 bump gates the POA FIX batch
+//     (consensusversion.V0_9_0): corrections to 0.7.0 rules found on the live
+//     testnet after 0.7.0 had activated there (the exit-halt and bond lock key on
+//     the bonded node, an expired admission can re-open, a departed seat stops
+//     voting, a starved committee is topped up to the floor instead of opened).
+//     A new line rather than a change to 0.7.0, so a node replaying the testnet's
+//     0.7.0 history reproduces it byte for byte. Until 0.9.0 is chain-active
+//     every fix is inert and old and new binaries interoperate.
+//   - 0.10.0: the Consensus 9→10 bump gates the PRE-MAINNET FIX batch
+//     (consensusversion.V0_10_0): SP1 proof checks are priced by work instead
+//     of a flat cost (Sp1WorkPricingActive), and block apply skips a
+//     transaction an earlier block already handled, or one listed twice in the
+//     same block (ApplySkipsHandledTxActive). Two rules once drafted for this
+//     batch are deliberately NOT gated on this line: requiring an account's
+//     active authority for the system/money operations that pull a balance is
+//     enforced unconditionally in the state engine (the system-tx vs
+//     posting-only-user-op split at state_engine.go, not a version gate), and
+//     the one-block-per-slot skip was dropped as unnecessary - re-applying a
+//     produce_block is consensus-safe without it (see the removal note in
+//     feature_gates.go). A new line rather than a change to 0.9.0 because the
+//     testnet already runs 0.9.0, so a node replaying that history must
+//     reproduce it. Mainnet raises its floor from 0.3.0 straight to 0.10.0.
+//     Until 0.10.0 is chain-active every fix is inert and old and new binaries
+//     interoperate.
+//   - 0.11.0: the Consensus 10→11 bump gates the KEY-CUSTODY batch
+//     (consensusversion.V0_11_0): contracts can see whether a TSS key has been
+//     reshared since its keygen (a fifth TssGetKey field), so the BTC vault moves
+//     funds only to a key the committee has already handed on once; and the
+//     holders of the active vault key stay able to sign and reshare it after
+//     they leave the election (the retiring-key V-A rule, extended to the active
+//     key; their bond is already locked by POA-1 from 0.9.0). A new line because
+//     the testnet already runs 0.10.0. Mainnet
+//     can raise its floor from 0.3.0 straight to 0.11.0. Until 0.11.0 is
+//     chain-active every rule is inert and old and new binaries interoperate.
+//   - 0.12.0: the Consensus 11→12 bump gates the TSS-PARTY batch
+//     (consensusversion.V0_12_0): a POA-8 accusation exclusion yields when it
+//     would leave a reshare below the commit quorum or the threshold floor
+//     (TssAccuseYieldsToFloorActive), a witness announcement that carries a
+//     peer_id must prove it holds that peer's libp2p key (PeerIdPoPActive), and a
+//     pending BTC vault key is reshared once its check-signature has verified,
+//     before activation (PendingKeyReshareActive), and a deposit memo naming
+//     "hive:<account>" is checked on the account name (HivePrefixRecipientActive). A new
+//     line because the testnet already runs 0.11.0. Until 0.12.0 is chain-active
+//     every rule is inert and old and new binaries interoperate. Added after the
+//     testnet reached 0.12.0: POA-8 accusation exclusions stack to two
+//     (TssAccuseStackActive), so testnet nodes take that build together: while
+//     an accusation is live the two builds can pick different parties, form
+//     different sessions and both fail until every node runs the same build.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 3
+	currentConsensus    uint64 = 12
 	currentNonConsensus uint64 = 0
 )
 

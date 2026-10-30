@@ -26,3 +26,4 @@ docs/local
 
 # Node deps for the optional Ledger signer (cmd/contract-deployer/ledger-signer)
 node_modules/
+/evm-mapping-bot

@@ -161,6 +161,10 @@ func (m *mockLedgerSystem) SafetySlashConsensusBond(p ledgerSystem.SafetySlashCo
 }
 
 func (m *mockLedgerSystem) FinalizeMaturedSafetySlashBurns(blockHeight uint64) { _ = blockHeight }
+func (m *mockLedgerSystem) MigrateDelegationEdgesOnce(blockHeight uint64) int  { return 0 }
+func (m *mockLedgerSystem) AllDelegationEdges(blockHeight uint64) (map[string]map[string]int64, bool) {
+	return nil, true
+}
 
 func (m *mockLedgerSystem) CancelPendingSafetySlashBurn(p ledgerSystem.CancelPendingSafetySlashBurnParams) ledgerSystem.LedgerResult {
 	_ = p
@@ -572,7 +576,7 @@ func TestInvariant_RCConservation(t *testing.T) {
 
 	db := test_utils.NewMockRcDb()
 
-	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
+	rcs := rcSystem.New(db, &mockLedgerSystem{state: state}, params.RC_HIVE_FREE_AMOUNT)
 
 	// Initially: no frozen RCs, full available
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
@@ -642,7 +646,7 @@ func TestInvariant_RCConservation_MultipleConsumptions(t *testing.T) {
 	seedBalance(state, "hive:alice", 50, 0, balance, 0)
 
 	db := test_utils.NewMockRcDb()
-	rcs := rcSystem.New(db, &mockLedgerSystem{state: state})
+	rcs := rcSystem.New(db, &mockLedgerSystem{state: state}, params.RC_HIVE_FREE_AMOUNT)
 
 	maxRC := balance + params.RC_HIVE_FREE_AMOUNT
 

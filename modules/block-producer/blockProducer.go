@@ -240,7 +240,7 @@ func (bp *BlockProducer) GenerateBlock(
 		offchainTxs = append(offchainTxs, reverses...)
 	}
 
-	vlog.Info("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
+	vlog.Debug("GenerateBlock", "slotHeight", slotHeight, "txCount", len(offchainTxs))
 	for i, tx := range offchainTxs {
 		vlog.Trace("GenerateBlock tx", "index", i, "type", tx.Type, "id", tx.Id)
 	}
@@ -387,8 +387,6 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		preOrder[i], preOrder[j] = preOrder[j], preOrder[i]
 	})
 
-	// nonceMap := make(map[string]uint64)
-
 	txMap := make(map[string][]transactions.TransactionRecord)
 
 	for _, txRecord := range txRecords {
@@ -415,7 +413,6 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 		ActionDb:    bp.StateEngine.LedgerState.ActionDb,
 		BalanceDb:   bp.StateEngine.LedgerState.BalanceDb,
 	})
-	// ledgerSession := bp.StateEngine.LedgerSystem.NewSession(slotHeight)
 	rcSession := bp.rcSystem.NewSession(ledgerSession)
 
 	sequencedTxs := make([]transactions.TransactionRecord, 0)
@@ -495,7 +492,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	cid, _ := bp.Datalayer.HashObject(genBlock)
 
-	vlog.Info("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh,
+	vlog.Debug("ProduceBlock PRODUCER", "headerCid", cid.String(), "slotHeight", bh,
 		"components", comps.summary())
 
 	// TEST-ONLY (devnet) malicious DOUBLE-BLOCK-SIGN injection. When this node ==
@@ -629,7 +626,7 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	id, err := bp.HiveCreator.Broadcast(tx)
 
-	vlog.Info("Block produced", "blockID", id, "err", err)
+	vlog.Info("Block produced", "id", id, "err", err)
 }
 
 func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
@@ -719,14 +716,22 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 		txStrs = append(txStrs, s)
 	}
 
-	transactions := []vscBlocks.VscBlockTx{}
+	blockTxs := []vscBlocks.VscBlockTx{}
 	for _, txStr := range txStrs {
 		txRecord := bp.TxDb.GetTransaction(txStr)
 		if txRecord == nil {
 			return "", errors.New("invalid transaction")
 		}
+		// F22 fix: Ops[0] previously indexed an empty slice → index-out-of-range
+		// panic (recovered in the pubsub goroutine, so non-fatal, but it aborts
+		// block-msg handling). A tx with zero ops is invalid — reject it cleanly,
+		// the same way a nil txRecord is handled above. (Exposed once F4 made an
+		// unknown-op tx resolve to zero ops instead of a chain-halting nil.)
+		if len(txRecord.Ops) == 0 {
+			return "", errors.New("transaction has no ops")
+		}
 		op := txRecord.Ops[0].Type
-		transactions = append(transactions, vscBlocks.VscBlockTx{
+		blockTxs = append(blockTxs, vscBlocks.VscBlockTx{
 			Id:   txRecord.Id,
 			Op:   &op,
 			Type: int(common.BlockTypeTransaction),
@@ -749,9 +754,33 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	}
 	waitCancel()
 
+	// A block may only list transactions that are still pending. This runs after
+	// the state engine has caught up to the slot, so a transaction that an earlier
+	// block already included or settled is never seen with a stale pending status.
+	// An honest producer only picks pending entries, so a repeat can only come from
+	// a faulty or malicious producer, and refusing to sign keeps it short of 2/3.
+	for _, txStr := range txStrs {
+		rec, err := bp.TxDb.GetTransactionErr(txStr)
+		if err != nil {
+			return "", fmt.Errorf("refusing to sign: reading transaction %s failed: %w", txStr, err)
+		}
+		if rec != nil && rec.Status != transactions.TransactionStatusUnconfirmed {
+			return "", fmt.Errorf("refusing to sign: transaction %s was already handled", txStr)
+		}
+		// The compose rule above (txRecord.Nonce >= the account nonce), read the
+		// same way: an honest producer never lists a transaction whose nonce is
+		// below its signers' account nonce, so one here is stale.
+		if rec != nil && len(rec.RequiredAuths) > 0 {
+			nonceRecord, _ := bp.nonceDb.GetNonce(transactionpool.HashKeyAuths(rec.RequiredAuths))
+			if rec.Nonce < int64(nonceRecord.Nonce) {
+				return "", fmt.Errorf("refusing to sign: transaction %s nonce %d is below its account nonce %d", txStr, rec.Nonce, nonceRecord.Nonce)
+			}
+		}
+	}
+
 	// Independently derive block (including oplog + contract outputs)
 	blockHeader, _, localComps, err := bp.GenerateBlock(msg.SlotHeight, generateBlockParams{
-		Transactions: transactions,
+		Transactions: blockTxs,
 	})
 
 	if err != nil {
@@ -810,6 +839,15 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 	return sigStr, nil
 }
 
+// Busy reports whether this node is collecting signatures for, or broadcasting,
+// an L2 block. blockSigning is cleared by the producer's deferred cleanup, after
+// the broadcast. Read-only; used by the devnet block pacemaker.
+func (bp *BlockProducer) Busy() bool {
+	bp.sigMu.RLock()
+	defer bp.sigMu.RUnlock()
+	return bp.blockSigning != nil
+}
+
 func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.ElectionResult) (uint64, error) {
 	bp.sigMu.RLock()
 	signing := bp.blockSigning
@@ -821,18 +859,45 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	weightTotal := uint64(0)
-	for _, weight := range election.Weights {
-		weightTotal += weight
+	// B13: fold weight through the canonical primitive, and account for a signature
+	// by the KEY that verified it rather than by the account label that carried it.
+	//
+	// The `account` field is self-declared in an unauthenticated JSON body
+	// (block-producer/p2p.go), and gossipsub's StrictSign authenticates the libp2p
+	// PEER, not the claimed account. So a seat whose BLS key duplicates an honest
+	// witness's needed no private key and no cooperation: it watched the honest
+	// broadcast, re-emitted the identical signature bytes under its own label, and
+	// AddAndVerify passed — it checks the cryptography, not who sent it. The same
+	// signature was then credited twice under two account labels. Free-riding at
+	// zero marginal cost.
+	//
+	// Keying on the DID closes that, and folding through dids.FoldSignedWeight
+	// means the leader measures quorum exactly the way the chain does when it
+	// validates the block: duplicate seats collapse to one, first occurrence
+	// winning, in the numerator and the denominator alike. Leaving the phantom seat
+	// in the denominator would make the leader wait for weight that cannot exist.
+	//
+	// This is the leader's local decision to broadcast, not a replayed rule — the
+	// on-chain check is TxProposeBlock.ValidateDetailed — so it needs no version
+	// gate. The produced block is unaffected either way: the circuit stores by DID,
+	// so a replayed duplicate was never in the aggregate, only in this counter.
+	memberKeys := make([]string, len(election.Members))
+	accountSeat := make(map[string]dids.BlsDID, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+		accountSeat[m.Account] = dids.BlsDID(m.Key)
 	}
+
+	_, weightTotal, _ := dids.FoldSignedWeight(memberKeys, election.Weights, nil)
 
 	bp.sigMu.RLock()
 	sigChan := bp.sigChannels[signing.slotHeight]
 	bp.sigMu.RUnlock()
 
 	signedWeight := uint64(0)
-	signedAccounts := make(map[string]bool)
-	for signedWeight < (weightTotal * 9 / 10) {
+	var included []dids.BlsDID
+	signedDIDs := make(map[dids.BlsDID]bool)
+	for !leaderSigsComplete(signedWeight, weightTotal, election.TotalWeight) {
 		select {
 		case <-ctx.Done():
 			vlog.Trace("Ending wait for sig (timeout)")
@@ -848,19 +913,10 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				if !ok {
 					continue
 				}
-				if signedAccounts[account] {
-					continue
-				}
-				var member dids.Member
-				var index int = -1
-				for i, data := range election.Members {
-					if data.Account == account {
-						member = dids.BlsDID(data.Key)
-						index = i
-						break
-					}
-				}
-				if index == -1 {
+				// The account only selects which seat is being claimed; from here
+				// on the key is the identity.
+				member, seated := accountSeat[account]
+				if !seated || signedDIDs[member] {
 					continue
 				}
 
@@ -872,15 +928,28 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 				} else if !added {
 					vlog.Warn("sig rejected", "account", account)
 				} else {
-					signedAccounts[account] = true
-					signedWeight += election.Weights[index]
-					vlog.Trace("sig accepted", "account", account, "weight", election.Weights[index], "totalSigned", signedWeight)
+					signedDIDs[member] = true
+					included = append(included, member)
+					signedWeight, _, _ = dids.FoldSignedWeight(memberKeys, election.Weights, included)
+					vlog.Trace("sig accepted", "account", account, "totalSigned", signedWeight)
 				}
 			}
 		}
 	}
 	vlog.Trace("Done waittt")
 	return signedWeight, nil
+}
+
+// leaderSigsComplete reports whether the leader can stop collecting block
+// signatures: 90% of the (duplicate-key folded) weight has signed, AND the
+// signed weight clears the strict 2/3 bar the block must pass (the check after
+// waitForSigs, and TxProposeBlock's validation). For a total weight of 3 or
+// less, 90% rounds down to 2/3 or below, so stopping there alone left a
+// 3-member committee (MinMembers on testnet/devnet, and every POA flat-weight
+// committee of three) unable to broadcast any block even with every member
+// online (L2-STALL-1). A leader-local decision, not a replayed rule.
+func leaderSigsComplete(signed, foldedTotal, electionTotal uint64) bool {
+	return signed >= foldedTotal*9/10 && signed > electionTotal*2/3
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {

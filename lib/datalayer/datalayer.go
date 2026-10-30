@@ -13,6 +13,7 @@ import (
 	"github.com/ipfs/boxo/blockservice"
 	blockstore "github.com/ipfs/boxo/blockstore"
 	"github.com/ipfs/boxo/datastore/dshelp"
+	"github.com/ipfs/boxo/exchange/offline"
 	"github.com/ipfs/boxo/exchange/providing"
 	"github.com/ipfs/boxo/ipld/merkledag"
 	"github.com/ipfs/boxo/provider"
@@ -45,6 +46,25 @@ type DataLayer struct {
 	Datastore  *badger.Datastore
 
 	dataDir []string
+
+	// local is a read view over the same blockstore that never asks the network.
+	// Built in Init; see LocalOnly.
+	local *DataLayer
+	// localOnly is set on that view.
+	localOnly bool
+}
+
+// LocalOnly returns a view of the data layer that reads only blocks already in
+// the local blockstore and never fetches from the network. It is for the GraphQL
+// API, whose callers choose the CIDs: through the full data layer, a CID the
+// node does not have makes bitswap search the network with no deadline, parking
+// the request goroutine, and anything it does fetch is stored with no garbage
+// collection, so any client could pile up hung requests and grow the disk. A
+// synced node already holds everything the API serves (blocks, outputs, contract
+// code and state, elections), because applying those blocks stored it locally.
+// Nil before Init.
+func (dl *DataLayer) LocalOnly() *DataLayer {
+	return dl.local
 }
 
 // Bitswap exposes the underlying bitswap instance for diagnostics/probe use.
@@ -109,6 +129,17 @@ func (dl *DataLayer) Init() error {
 	dl.bitswap = bswap
 
 	dl.DagServ = merkledag.NewDAGService(blockService)
+
+	localServ := blockservice.New(bstore, offline.Exchange(bstore))
+	dl.local = &DataLayer{
+		p2pService: dl.p2pService,
+		blockServ:  localServ,
+		DagServ:    merkledag.NewDAGService(localServ),
+		Datastore:  ds,
+		dataDir:    dl.dataDir,
+		localOnly:  true,
+	}
+	dl.local.local = dl.local
 
 	// Pre-populate the universal empty-bytes block. boxo's bitswap server has
 	// a bug where getBlockSizes filters zero-size results out of its return
@@ -305,6 +336,10 @@ func (dl *DataLayer) GetRaw(cid cid.Cid) ([]byte, error) {
 }
 
 func (dl *DataLayer) notify(ctx context.Context, block blocks.Block) {
+	if dl.bitswap == nil {
+		// The LocalOnly view has no network side: a write stays local.
+		return
+	}
 	dl.bitswap.NotifyNewBlocks(ctx, block)
 	//We might need to proactively rebroadcast that we are storing a CID
 	dl.p2pService.BroadcastCidWithContext(ctx, block.Cid())

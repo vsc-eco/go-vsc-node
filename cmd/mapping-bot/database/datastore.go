@@ -22,6 +22,7 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 
 	db := client.Database(dbName)
 	addrCollection := db.Collection("address_mappings")
+	instrCollection := db.Collection("deposit_instructions")
 	heightCollection := db.Collection("block_height")
 	txCollection := db.Collection("transactions")
 	failedTxCollection := db.Collection("failed_vsc_txs")
@@ -33,6 +34,24 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 	}
 	if _, err := addrCollection.Indexes().CreateOne(ctx, addrIndexModel); err != nil {
 		return nil, fmt.Errorf("failed to create address index: %w", err)
+	}
+
+	// Index on lastRequestedAt for the incremental instruction reload and the prune
+	instrIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "lastRequestedAt", Value: 1}},
+		Options: options.Index().SetName("lastRequestedAt_idx"),
+	}
+	if _, err := instrCollection.Indexes().CreateOne(ctx, instrIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create instruction index: %w", err)
+	}
+	// ...and on lastDepositAt, the other half of the per-block reload filter (sparse:
+	// only instructions that have received a deposit carry it)
+	instrDepositIndexModel := mongo.IndexModel{
+		Keys:    bson.D{{Key: "lastDepositAt", Value: 1}},
+		Options: options.Index().SetName("lastDepositAt_idx").SetSparse(true),
+	}
+	if _, err := instrCollection.Indexes().CreateOne(ctx, instrDepositIndexModel); err != nil {
+		return nil, fmt.Errorf("failed to create instruction deposit index: %w", err)
 	}
 
 	// Index on state for filtering pending/sent/confirmed
@@ -89,6 +108,9 @@ func New(ctx context.Context, connString, dbName string) (*Database, error) {
 		Addresses: &AddressStore{
 			collection: addrCollection,
 		},
+		Instructions: &InstructionStore{
+			collection: instrCollection,
+		},
 		State: &StateStore{
 			heightCollection: heightCollection,
 			txCollection:     txCollection,
@@ -108,6 +130,9 @@ func (d *Database) Close(ctx context.Context) error {
 func (d *Database) DropAllCollections(ctx context.Context) error {
 	if err := d.Addresses.collection.Drop(ctx); err != nil {
 		return fmt.Errorf("failed to drop address collection: %w", err)
+	}
+	if err := d.Instructions.collection.Drop(ctx); err != nil {
+		return fmt.Errorf("failed to drop instruction collection: %w", err)
 	}
 	if err := d.State.heightCollection.Drop(ctx); err != nil {
 		return fmt.Errorf("failed to drop height collection: %w", err)

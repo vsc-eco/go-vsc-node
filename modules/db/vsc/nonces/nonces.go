@@ -2,6 +2,7 @@ package nonces
 
 import (
 	"context"
+	"errors"
 	"vsc-node/modules/db"
 	"vsc-node/modules/db/vsc"
 
@@ -30,16 +31,19 @@ func (n *nonceDb) GetNonce(account string) (NonceRecord, error) {
 func (n *nonceDb) SetNonce(account string, nonce uint64) error {
 
 	options := options.FindOneAndUpdate().SetUpsert(true)
-	singleResult := n.FindOneAndUpdate(context.Background(), bson.M{
+	err := n.FindOneAndUpdate(context.Background(), bson.M{
 		"account": account,
 	}, bson.M{
 		"$set": bson.M{
 			"nonce": nonce,
 		},
-	}, options)
-	_ = singleResult
-
-	return nil
+	}, options).Err()
+	// An upsert that inserts the first record for an account finds no prior
+	// document, which the driver reports as ErrNoDocuments; the write succeeded.
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil
+	}
+	return err
 }
 
 func (n *nonceDb) Init() error {

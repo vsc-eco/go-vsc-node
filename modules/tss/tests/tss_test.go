@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -75,6 +77,9 @@ func (mes *MockElectionSystem) GetSchedule(blockHeight uint64) []stateEngine.Wit
 func (mes *MockElectionSystem) TssMinimumConsensusVersion(uint64) consensusversion.Version {
 	return consensusversion.Version{}
 }
+
+func (mes *MockElectionSystem) BtcKeysignHalted() bool { return false }
+func (mes *MockElectionSystem) BtcTheftHalted() bool   { return false }
 
 type nodeComponents struct {
 	agg            *aggregate.Aggregate
@@ -253,6 +258,8 @@ func MakeNode(index int, mes *MockElectionSystem, broadcastCb func(tx hivego.Hiv
 		sysConf,
 		keystore,
 		&txCreator,
+		nil, // contractState — solvency gate inert in this test (no BTC contract)
+		nil, // da
 	)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -358,6 +365,7 @@ func reconnectNode(t *testing.T, nodes []nodeComponents, targetIdx int) {
 func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64) {
 	hh := *headHeight // Snapshot: async BlockTick goroutines won't see later mutations
 	for bh := start; bh <= end; bh++ {
+		waitReadinessConverged(nodes, bh)
 		for _, node := range nodes {
 			node.consumer.ProcessBlock(hive_blocks.HiveBlock{
 				Transactions: []hive_blocks.Tx{},
@@ -373,6 +381,53 @@ func processBlocks(nodes []nodeComponents, start, end uint64, headHeight *uint64
 		}
 	}
 	time.Sleep(2 * time.Second) // Let final async goroutines complete + gossip propagate
+}
+
+// readinessConvergeTimeout bounds waitReadinessConverged. A node that never
+// attests (stopped, partitioned) keeps the sets apart; the wait then gives up
+// and the window closes as before.
+const readinessConvergeTimeout = 10 * time.Second
+
+// waitReadinessConverged holds block bh back while it is the first settle-window
+// block (DEFAULT_SETTLE_BLOCKS before the target) of a readiness target whose
+// attestations the nodes do not all hold yet. On a live chain the 30-block
+// window is about 90 s of gossip; processBlocks runs it in well under a second,
+// so an attestation signed a few hundred ms late reached peers already in the
+// settle window, which reject a new one: some built the party list with that
+// node and some without, the session failed, and a test that drives a single
+// rotation never got the retry a live network gets. The devnet pacemaker holds
+// fast blocks back on the same condition (TssManager.HeldAttestations).
+func waitReadinessConverged(nodes []nodeComponents, bh uint64) {
+	targets := map[string]bool{}
+	for _, node := range nodes {
+		for target := range node.tssMgr.HeldAttestations() {
+			if t, err := strconv.ParseUint(target, 10, 64); err == nil && t > bh && t-bh == vtss.DEFAULT_SETTLE_BLOCKS {
+				targets[target] = true
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	deadline := time.Now().Add(readinessConvergeTimeout)
+	for {
+		converged := true
+		for target := range targets {
+			var first []string
+			for i, node := range nodes {
+				held := node.tssMgr.HeldAttestations()[target]
+				if i == 0 {
+					first = held
+				} else if !slices.Equal(first, held) {
+					converged = false
+				}
+			}
+		}
+		if converged || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // verifyEcdsaSig verifies a DER-encoded ECDSA signature (hex) against a message hash (hex)
@@ -1953,10 +2008,14 @@ func TestTss(t *testing.T) {
 	// Critical DB test: insert both commitments with the SAME tx_id.
 	// With the old {tx_id}-only filter, the second SetCommitmentData would
 	// overwrite the first. With the {key_id, tx_id} fix, both persist.
+	// The rows are synthetic (epoch 55 has no election and no shares), so
+	// they go on keys no later phase signs or reshares with: on "test-key"
+	// the first became its newest commitment, and phase 12's sign built its
+	// party list from epoch 55 and never completed.
 	for _, node := range nodes {
 		node.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 			Type:        "reshare",
-			KeyId:       "test-key",
+			KeyId:       "test-key-dbcheck",
 			Epoch:       55,
 			BlockHeight: 700,
 			Commitment:  commitmentStr,
@@ -1973,15 +2032,15 @@ func TestTss(t *testing.T) {
 	}
 
 	// Verify both records exist (the core assertion for the DB fix)
-	c1, err := nodes[0].tssCommitments.GetCommitment("test-key", 55)
+	c1, err := nodes[0].tssCommitments.GetCommitment("test-key-dbcheck", 55)
 	if err != nil {
-		t.Fatalf("Phase 11: Failed to get commitment for test-key epoch 55: %v", err)
+		t.Fatalf("Phase 11: Failed to get commitment for test-key-dbcheck epoch 55: %v", err)
 	}
 	if c1.Type != "reshare" {
-		t.Errorf("Phase 11: Expected test-key commitment type 'reshare', got '%s'", c1.Type)
+		t.Errorf("Phase 11: Expected test-key-dbcheck commitment type 'reshare', got '%s'", c1.Type)
 	}
 	if c1.TxId != "mock-multi-tx" {
-		t.Errorf("Phase 11: Expected test-key tx_id 'mock-multi-tx', got '%s'", c1.TxId)
+		t.Errorf("Phase 11: Expected test-key-dbcheck tx_id 'mock-multi-tx', got '%s'", c1.TxId)
 	}
 
 	c2, err := nodes[0].tssCommitments.GetCommitment("test-key-multi", 55)
@@ -2543,6 +2602,8 @@ func TestTssThresholdIntegration(t *testing.T) {
 			sysConf,
 			keystore,
 			&txCreator,
+			nil, // contractState — solvency gate inert in this test (no BTC contract)
+			nil, // da
 		)
 
 		agg := aggregate.New([]aggregate.Plugin{
@@ -3116,6 +3177,8 @@ func makeBlameNode(mes *MockElectionSystem) (nodeComponents, *vtss.TssManager) {
 		sysConf,
 		keystore,
 		&txCreator,
+		nil, // contractState — solvency gate inert in this test (no BTC contract)
+		nil, // da
 	)
 
 	agg := aggregate.New([]aggregate.Plugin{
@@ -3163,6 +3226,14 @@ func TestBlameScore(t *testing.T) {
 
 	mes := &MockElectionSystem{WitnessNames: []string{"node-a", "node-b", "node-c", "node-d"}}
 	node, tssMgr := makeBlameNode(mes)
+	// currentElec mirrors BlameScore's former internal GetElectionByHeight(MaxInt64-1) read
+	// (BlameScore now takes the election as a param, pinned to bh by RunActions). Each subtest
+	// stores its elections first, so this returns the same latest election BlameScore used to
+	// fetch itself — preserving the exact prior test semantics.
+	currentElec := func() elections.ElectionResult {
+		el, _ := node.electionDb.GetElectionByHeight(math.MaxInt64 - 1)
+		return el
+	}
 
 	go test_utils.RunPlugin(t, node.agg)
 	time.Sleep(3 * time.Second)
@@ -3218,7 +3289,7 @@ func TestBlameScore(t *testing.T) {
 
 		storeElectionsWithGracePeriodBypass(10)
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if len(result.BannedNodes) != 0 {
 			t.Errorf("Expected no banned nodes, got %v", result.BannedNodes)
@@ -3241,7 +3312,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-tx-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf("Expected node-a to be banned (100%% failure rate), got BannedNodes=%v", result.BannedNodes)
@@ -3271,7 +3342,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-tx-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if len(result.BannedNodes) != 0 {
 			t.Errorf("Expected no bans (33%% failure rate < 60%% threshold), got BannedNodes=%v", result.BannedNodes)
@@ -3312,7 +3383,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-tx-9",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if result.BannedNodes["node-d"] {
 			t.Errorf("Expected node-d exempt from ban (grace period), got BannedNodes=%v", result.BannedNodes)
@@ -3335,7 +3406,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(2), TxId: "blame-tx-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-c"] {
 			t.Errorf("Expected node-c to be banned (100%% blame rate), got BannedNodes=%v", result.BannedNodes)
@@ -3362,7 +3433,7 @@ func TestBlameScore(t *testing.T) {
 			Metadata: &tss_db.CommitmentMetadata{Error: &timeoutErr, Reason: &timeoutReason},
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-b"] {
 			t.Errorf(
@@ -3397,7 +3468,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-mix-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf(
@@ -3428,7 +3499,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(0), TxId: "blame-thresh-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-a"] {
 			t.Errorf("Expected node-a to be banned, got BannedNodes=%v", result.BannedNodes)
@@ -3518,7 +3589,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(1, 2), TxId: "blame-below-6",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		// All 3 nodes (a, b, c) exceed the 60% threshold, but ban cap (maxBans=2)
 		// should prevent banning all 3. Exactly 2 should be banned.
@@ -3572,7 +3643,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-grace3-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-d"] {
 			t.Errorf(
@@ -3616,7 +3687,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(3), TxId: "blame-grace2-2",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if result.BannedNodes["node-d"] {
 			t.Errorf(
@@ -3651,7 +3722,7 @@ func TestBlameScore(t *testing.T) {
 			Commitment: blameBitset(1), TxId: "blame-multi-ep-3",
 		})
 
-		result := tssMgr.BlameScore()
+		result := tssMgr.BlameScore(currentElec())
 
 		if !result.BannedNodes["node-b"] {
 			t.Errorf(

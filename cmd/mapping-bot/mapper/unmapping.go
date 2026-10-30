@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
@@ -40,6 +42,7 @@ func (b *Bot) HandleUnmap() {
 	defer cancel()
 
 	txSpends, err := b.gql().FetchTxSpends(ctx)
+	spendsKnown := err == nil
 	if err != nil {
 		b.L.Debug("failed to fetch tx spends from contract", "error", err)
 	} else {
@@ -65,11 +68,24 @@ func (b *Bot) HandleUnmap() {
 			txPairs[i] = txPair
 		}
 		for _, tx := range txPairs {
-			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
-			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
-				b.L.Warn("transaction failed to post after retries", "err", err, "txId", tx.TxId)
+			if tx == nil || !postDue(tx.TxId) {
 				continue
 			}
+			// BOT-ABANDON-1: a spend the contract no longer lists (abandoned with
+			// abandonSweep, or already settled) has nothing left to post. Without this,
+			// an abandoned sweep stays pending in the bot DB and is re-posted every
+			// postRetryInterval forever (testnet 2026-10-11, ebc108a8 / 286b0ec8).
+			if _, live := txSpends[tx.TxId]; spendsKnown && !live {
+				continue
+			}
+			b.L.Debug("request to be sent", "txId", tx.TxId, "rawTx", tx.RawTx)
+			if err := b.postTxWithRetry(tx.RawTx, 3); err != nil {
+				notePostFailed(tx.TxId)
+				noteInputsMissing(tx.TxId, err)
+				b.L.Warn("transaction failed to post after retries; next attempt in "+postRetryInterval.String(), "err", err, "txId", tx.TxId)
+				continue
+			}
+			clearPostFailed(tx.TxId)
 			height, _ := b.LastBlock()
 			b.stateDB().MarkTransactionSent(ctx, tx.TxId, height)
 		}
@@ -92,21 +108,37 @@ func (b *Bot) HandleConfirmations() {
 		return
 	}
 
-	// Fetch the contract's last processed block height once, so we can check
-	// whether each confirmation block has been ingested before calling confirmSpend.
-	var contractHeight uint64
-	var contractHeightOk bool
+	// These three reads gate every confirmSpend below: depth, already settled,
+	// provable at all. A gate that could not be read has not passed. On testnet
+	// 2026-10-06 a node restart made all three fail at once, the pass went ahead
+	// and three spends mined below the prune floor were each refused on chain at
+	// RC cost, leaving the bot short of what migrateVault needs. Skip the pass;
+	// the next cycle reads again.
 	lastContractHeightStr, err := b.gql().FetchLastHeight(ctx)
 	if err != nil {
-		b.L.Debug("failed to fetch contract height for confirmSpend", "error", err)
-	} else {
-		h, parseErr := strconv.ParseUint(lastContractHeightStr, 10, 64)
-		if parseErr != nil {
-			b.L.Debug("invalid contract height response", "value", lastContractHeightStr)
-		} else {
-			contractHeight = h
-			contractHeightOk = true
-		}
+		b.L.Warn("skipping confirmSpend pass: contract height unreadable", "error", err)
+		return
+	}
+	contractHeight, err := strconv.ParseUint(lastContractHeightStr, 10, 64)
+	if err != nil {
+		b.L.Warn("skipping confirmSpend pass: invalid contract height", "value", lastContractHeightStr)
+		return
+	}
+
+	// A spend mined below the contract's prune floor can never be proven: its header
+	// is gone, so confirmSpend fails on every cycle and burns RC until the 7-day
+	// cleanup drops the tx. Skip it with one warning.
+	pruneFloor, pruneFloorSet, err := b.gql().FetchPruneFloor(ctx)
+	if err != nil {
+		b.L.Warn("skipping confirmSpend pass: contract prune floor unreadable", "error", err)
+		return
+	}
+
+	// The contract's pending spends: a sent tx missing from it has settled.
+	pending, err := b.gql().FetchTxSpends(ctx)
+	if err != nil {
+		b.L.Warn("skipping confirmSpend pass: pending spends unreadable", "error", err)
+		return
 	}
 
 	for _, dbTx := range sentTxs {
@@ -121,11 +153,46 @@ func (b *Bot) HandleConfirmations() {
 			continue
 		}
 
-		// Wait until the contract has processed the confirmation block,
-		// the same way HandleMap waits before mapping.
-		if contractHeightOk && contractHeight < details.BlockHeight {
-			b.L.Info("delaying confirmSpend, block not yet in contract",
+		// Wait until the confirmation block is as deep in the contract as the
+		// contract requires, the same way HandleMap waits before mapping. A call
+		// made earlier is refused and still costs RC (BOT-CONF-1).
+		if contractHeight < b.contractHeightNeededFor(details.BlockHeight) {
+			b.L.Info("delaying confirmSpend, block not yet deep enough in the contract",
 				"txId", txId, "blockHeight", details.BlockHeight, "contractHeight", contractHeight)
+			continue
+		}
+
+		// A spend the contract no longer lists as pending has settled (by this
+		// bot's earlier call whose status poll timed out, or by another
+		// submitter). Calling confirmSpend again only fails and costs RC: on
+		// testnet 2026-10-06 the bot re-sent it every two minutes after the sweep
+		// had settled. Record it confirmed and move on.
+		if _, still := pending[txId]; !still {
+			// BOT-ABANDON-2: a sweep written off with abandonSweep is off the pending
+			// list too. If it confirms after all, confirmSpend settles it (pause-exempt):
+			// its output is indexed to the successor and the written-off amount returns
+			// to the fee reserve. Marking it confirmed here would leave those coins
+			// unindexed for good.
+			abandoned, aerr := b.gql().FetchAbandonedSweep(ctx, txId)
+			if aerr != nil {
+				b.L.Warn("cannot read the contract's abandoned-sweep record; retrying next pass", "txId", txId, "error", aerr)
+				continue
+			}
+			if !abandoned {
+				b.L.Info("spend already settled in the contract; marking it confirmed", "txId", txId)
+				if err := b.stateDB().MarkTransactionConfirmed(ctx, txId); err != nil {
+					b.L.Warn("failed to mark tx confirmed in DB", "txId", txId, "error", err)
+				}
+				continue
+			}
+			b.L.Info("an abandoned sweep confirmed after all; settling it", "txId", txId)
+		}
+
+		if pruneFloorSet && details.BlockHeight < pruneFloor {
+			if warnUnprovableOnce(txId) {
+				b.L.Warn("spend was mined below the contract's prune floor; it cannot be proven, so confirmSpend is skipped",
+					"txId", txId, "blockHeight", details.BlockHeight, "pruneFloor", pruneFloor)
+			}
 			continue
 		}
 
@@ -176,16 +243,21 @@ func (b *Bot) buildConfirmSpendPayload(
 
 	rawTxHex := hex.EncodeToString(dbTx.RawTx)
 
-	// Collect the input indices that correspond to VSC-mapped UTXOs.
-	indices := make([]uint32, 0, len(dbTx.Signatures))
-	seen := make(map[uint32]struct{})
-	for _, sig := range dbTx.Signatures {
-		idx := uint32(sig.Index)
-		if _, ok := seen[idx]; !ok {
-			seen[idx] = struct{}{}
-			indices = append(indices, idx)
-		}
+	// C1: confirmSpend's indices are OUTPUT vouts, not input indices. The contract
+	// (HandleConfirmSpend) promotes each unconfirmed change UTXO of this tx whose VOUT is in
+	// the set; it never looks at inputs. The old code sent the signed INPUT indices, so a
+	// spend whose change sits at a vout those indices do not cover (e.g. a 1-input unmap with
+	// the recipient at vout 0 and change at vout 1 -> indices [0]) matched nothing and the
+	// unmap could never settle. Send every output vout: the contract promotes only the vouts
+	// that are genuinely this tx's unconfirmed, unreserved change and ignores the rest (a
+	// recipient output has no vault UTXO to promote), so extra vouts are harmless. The vouts
+	// come from the confirmed tx the Merkle proof above covers
+	// (msgBlock.Transactions[details.TxIndex]) - the same tx as dbTx.RawTx, proof-bound to
+	// this block position, and already deserialized and validated here.
+	if int(details.TxIndex) >= len(msgBlock.Transactions) {
+		return nil, fmt.Errorf("confirmSpend: tx index %d out of range (%d txs in block)", details.TxIndex, len(msgBlock.Transactions))
 	}
+	indices := confirmSpendOutputVouts(msgBlock.Transactions[details.TxIndex])
 
 	params := ConfirmSpendParams{
 		TxData: &VerificationRequest{
@@ -197,6 +269,18 @@ func (b *Bot) buildConfirmSpendPayload(
 		Indices: indices,
 	}
 	return json.Marshal(params)
+}
+
+// confirmSpendOutputVouts returns [0, 1, ..., n-1] for the n outputs of tx. confirmSpend's
+// indices are OUTPUT vouts (C1); the contract promotes only the vouts that are this tx's
+// unconfirmed, unreserved change, so listing every output vout is correct and the rest are
+// ignored.
+func confirmSpendOutputVouts(tx *wire.MsgTx) []uint32 {
+	vouts := make([]uint32, len(tx.TxOut))
+	for i := range tx.TxOut {
+		vouts[i] = uint32(i)
+	}
+	return vouts
 }
 
 func (b *Bot) ProcessTxSpends(
@@ -300,4 +384,75 @@ func attachSignatures(signedData *database.Transaction) (*TxRawIdPair, error) {
 		RawTx: hex.EncodeToString(buf.Bytes()),
 		TxId:  tx.TxID(),
 	}, nil
+}
+
+// postRetryInterval spaces re-posts of a signed spend Bitcoin refused. A refusal
+// that never clears (an input that does not exist, like the shared testnet vault's
+// phantom legacy coin, or one already spent by a backup-key spend) was re-posted
+// three times every cycle until the sweep was abandoned days later: thousands of
+// requests to the same API the bot reads blocks and confirmations from.
+const postRetryInterval = 5 * time.Minute
+
+var (
+	postFailMu   sync.Mutex
+	postFailedAt = map[string]time.Time{}
+	postNow      = time.Now
+)
+
+// postDue reports whether txId may be posted now: never refused, or refused at
+// least postRetryInterval ago.
+func postDue(txId string) bool {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	at, ok := postFailedAt[txId]
+	return !ok || postNow().Sub(at) >= postRetryInterval
+}
+
+func notePostFailed(txId string) {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	postFailedAt[txId] = postNow()
+}
+
+func clearPostFailed(txId string) {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	delete(postFailedAt, txId)
+	delete(inputsMissing, txId)
+}
+
+// inputsMissing remembers spends Bitcoin refused because an input does not exist
+// or is already spent. A fee bump cannot help those (BOT-REDRIVE-1).
+var inputsMissing = map[string]bool{}
+
+func noteInputsMissing(txId string, err error) {
+	if err == nil || !strings.Contains(err.Error(), "missingorspent") {
+		return
+	}
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	inputsMissing[txId] = true
+}
+
+func refusedForMissingInputs(txId string) bool {
+	postFailMu.Lock()
+	defer postFailMu.Unlock()
+	return inputsMissing[txId]
+}
+
+var (
+	unprovableMu     sync.Mutex
+	unprovableWarned = map[string]bool{}
+)
+
+// warnUnprovableOnce reports whether this is the first time txId was skipped as
+// unprovable, so the operator gets one warning per tx rather than one per cycle.
+func warnUnprovableOnce(txId string) bool {
+	unprovableMu.Lock()
+	defer unprovableMu.Unlock()
+	if unprovableWarned[txId] {
+		return false
+	}
+	unprovableWarned[txId] = true
+	return true
 }

@@ -8,6 +8,14 @@ import (
 type TxPacket struct {
 	TxId string
 	Ops  []VSCTransaction
+
+	// Invalid marks a transaction that could not be resolved into executable ops
+	// (unknown op type, or an undecodable attacker-controlled payload). Such a tx
+	// executes NO op and is marked FAILED by ExecuteBatch's early-fail branch.
+	// Payer (RequiredAuths[0]) is charged a fixed RC so an invalid tx isn't free.
+	// Set only on the offchain ingest path; the L1 path leaves both zero-valued.
+	Invalid bool
+	Payer   string
 }
 
 type TxOutput struct {

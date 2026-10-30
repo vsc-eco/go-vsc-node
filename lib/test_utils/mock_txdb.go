@@ -22,7 +22,6 @@ func (m *MockTxDb) Ingest(offTx transactions.IngestTransactionUpdate) error {
 		Ops:                  offTx.Ops,
 		OpTypes:              offTx.OpTypes,
 		RcLimit:              offTx.RcLimit,
-		Ledger:               &offTx.Ledger,
 	}
 	return nil
 }
@@ -35,11 +34,11 @@ func (m *MockTxDb) SetOutput(sOut transactions.SetResultUpdate) {
 	if sOut.Status != nil {
 		rec.Status = *sOut.Status
 	}
-	if sOut.Ledger != nil {
-		rec.Ledger = sOut.Ledger
-	}
 	if sOut.Output != nil {
 		rec.Output = append(rec.Output, *sOut.Output)
+	}
+	if sOut.Error != nil {
+		rec.Error = *sOut.Error
 	}
 	m.Records[sOut.Id] = rec
 }
@@ -52,7 +51,11 @@ func (m *MockTxDb) GetTransaction(id string) *transactions.TransactionRecord {
 	return &rec
 }
 
-func (m *MockTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *transactions.TransactionStatus, byType []string, ledgerToFrom *string, ledgerTypes []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]transactions.TransactionRecord, error) {
+func (m *MockTxDb) GetTransactionErr(id string) (*transactions.TransactionRecord, error) {
+	return m.GetTransaction(id), nil
+}
+
+func (m *MockTxDb) FindTransactions(ids []string, id *string, account *string, contract *string, status *transactions.TransactionStatus, byType []string, fromBlock *uint64, toBlock *uint64, offset int, limit int) ([]transactions.TransactionRecord, error) {
 	return make([]transactions.TransactionRecord, 0), nil
 }
 

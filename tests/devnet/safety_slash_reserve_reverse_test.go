@@ -125,15 +125,15 @@ func gqlHiveSpendable(t *testing.T, gqlURL, account string) int64 {
 // appears within the timeout.
 func waitForStableBond(t *testing.T, d *Devnet, account string, timeout time.Duration) int64 {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var last int64 = -1
-	for time.Now().Before(deadline) {
+	for devnetNow().Before(deadline) {
 		v := gqlConsensus(t, d.GQLEndpoint(1), account)
 		if v > 0 && v == last {
 			return v
 		}
 		last = v
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	t.Fatalf("bond for %s never stabilized to a non-zero value within %v (last=%d)", account, timeout, last)
 	return 0
@@ -297,14 +297,14 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 	// Poll node-3's bond until it drops below the honest baseline (the double-sign
 	// fired and was slashed). Up to ~10 minutes of block production — node-3 only
 	// double-signs the first slot it is elected to produce.
-	slashDeadline := time.Now().Add(10 * time.Minute)
+	slashDeadline := devnetNow().Add(10 * time.Minute)
 	var cur3 int64 = base3
-	for time.Now().Before(slashDeadline) {
+	for devnetNow().Before(slashDeadline) {
 		cur3 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if cur3 >= 0 && cur3 < baseH {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !(cur3 >= 0 && cur3 < baseH) {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -326,10 +326,10 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 
 	// Poll the reserve for a positive safety_slash_reserve credit. Promotion runs
 	// on the finalize cursor tick, so allow a few more blocks/seconds.
-	reserveDeadline := time.Now().Add(4 * time.Minute)
+	reserveDeadline := devnetNow().Add(4 * time.Minute)
 	var reserveRows []ledgerRecord
 	var reserveCredit int64
-	for time.Now().Before(reserveDeadline) {
+	for devnetNow().Before(reserveDeadline) {
 		reserveRows = findLedgerTXs(t, d.GQLEndpoint(1), reserveAcct, nil)
 		reserveCredit = 0
 		for _, r := range reserveRows {
@@ -340,7 +340,7 @@ func TestSafetySlashResidualToReserve(t *testing.T) {
 		if reserveCredit > 0 {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 
 	if reserveCredit <= 0 {
@@ -465,14 +465,14 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 
 	// 1) Wait for the single double-sign incident to slash node-3's bond below the
 	// honest baseline.
-	slashDeadline := time.Now().Add(10 * time.Minute)
+	slashDeadline := devnetNow().Add(10 * time.Minute)
 	var cur3 int64 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
-	for time.Now().Before(slashDeadline) {
+	for devnetNow().Before(slashDeadline) {
 		cur3 = gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if cur3 >= 0 && cur3 < baseH {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if !(cur3 >= 0 && cur3 < baseH) {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -495,8 +495,8 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 	// extract the kind from the row id so the payload always matches the chosen row.
 	var slashRow ledgerRecord
 	var slashRowKind string
-	rowDeadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(rowDeadline) {
+	rowDeadline := devnetNow().Add(2 * time.Minute)
+	for devnetNow().Before(rowDeadline) {
 		rows := findLedgerTXs(t, d.GQLEndpoint(1), "hive:"+attacker, []string{"safety_slash_consensus"})
 		var best ledgerRecord
 		var bestKind string
@@ -528,7 +528,7 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 			slashRowKind = bestKind
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	if slashRow.TxId == "" {
 		dumpNodeLogs(t, d, ctx, cfg.Nodes, 40)
@@ -585,15 +585,15 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 	// amount. The reverse must be queued (L1 op observed), included in a VSC block,
 	// the block's 2/3 BLS aggregate ratified, then applySafetySlashReverse credits
 	// the bond. Allow ~80 blocks (several full leader rotations).
-	restoreDeadline := time.Now().Add(8 * time.Minute)
+	restoreDeadline := devnetNow().Add(8 * time.Minute)
 	restored := false
-	for time.Now().Before(restoreDeadline) {
+	for devnetNow().Before(restoreDeadline) {
 		a3 := gqlConsensus(t, d.GQLEndpoint(1), "hive:"+attacker)
 		if a3 >= wantBond {
 			restored = true
 			break
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 
 	// Per-node view after the attempted restore. Each node folds the reverse
@@ -608,10 +608,10 @@ func TestSafetySlashGovernanceReverse(t *testing.T) {
 	t.Logf("[reverse] === per-node bond after reverse (want >= %d) ===", wantBond)
 	allRestored := true
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeDeadline := time.Now().Add(2 * time.Minute)
+		nodeDeadline := devnetNow().Add(2 * time.Minute)
 		a3 := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker)
-		for a3 < wantBond && time.Now().Before(nodeDeadline) {
-			time.Sleep(3 * time.Second)
+		for a3 < wantBond && devnetNow().Before(nodeDeadline) {
+			devnetSleep(3 * time.Second)
 			a3 = gqlConsensus(t, d.GQLEndpoint(n), "hive:"+attacker)
 		}
 		aH := gqlConsensus(t, d.GQLEndpoint(n), "hive:"+honest)

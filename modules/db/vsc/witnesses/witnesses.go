@@ -70,25 +70,39 @@ func (w *witnesses) SetWitnessUpdate(requestIn SetWitnessUpdateType) error {
 		"account": request.Account,
 		"height":  request.Height,
 	}
-	update := bson.M{
-		"$set": bson.M{
-			"peer_id":    request.Metadata.VscNode.PeerId,
-			"peer_addrs": request.Metadata.VscNode.PeerAddrs,
-			//timestamp
-			"ts":               request.Metadata.VscNode.Ts,
-			"tx_id":            request.TxId,
-			"version_id":       request.Metadata.VscNode.VersionId,
-			"git_commit":       request.Metadata.VscNode.GitCommit,
-			"net_id":           request.Metadata.VscNode.NetId,
-			"version_major":         request.Metadata.VscNode.VersionMajor,
-			"protocol_version":      request.Metadata.VscNode.ProtocolVersion,
-			"version_non_consensus": request.Metadata.VscNode.VersionNonConsensus,
-			"enabled":               request.Metadata.VscNode.Witness.Enabled,
-			"did_keys":         request.Metadata.DidKeys,
-			"gateway_key":      request.Metadata.VscNode.GatewayKey,
-			"gateway_key_pop":  request.Metadata.VscNode.GatewayKeyPoP,
-		},
+	set := bson.M{
+		"peer_id":    request.Metadata.VscNode.PeerId,
+		"peer_addrs": request.Metadata.VscNode.PeerAddrs,
+		//timestamp
+		"ts":                    request.Metadata.VscNode.Ts,
+		"tx_id":                 request.TxId,
+		"version_id":            request.Metadata.VscNode.VersionId,
+		"git_commit":            request.Metadata.VscNode.GitCommit,
+		"net_id":                request.Metadata.VscNode.NetId,
+		"version_major":         request.Metadata.VscNode.VersionMajor,
+		"protocol_version":      request.Metadata.VscNode.ProtocolVersion,
+		"version_non_consensus": request.Metadata.VscNode.VersionNonConsensus,
+		"enabled":               request.Metadata.VscNode.Witness.Enabled,
+		"did_keys":              request.Metadata.DidKeys,
+		"gateway_key":           request.Metadata.VscNode.GatewayKey,
+		"gateway_key_pop":       request.Metadata.VscNode.GatewayKeyPoP,
+		// Operator's consensus-delegation policy (consensus 0.5.0+); empty
+		// when the announcement predates the field. Normalized by readers.
+		"delegation_mode": request.Metadata.VscNode.DelegationMode,
 	}
+	// Delegation-mode downgrade timelock (consensus 0.5.0+): only written when a
+	// downgrade is actually pending (MaturityEpoch != 0), so pre-0.5.0 and
+	// non-adverse rows stay byte-identical to before the feature.
+	if request.DelegationModeMaturityEpoch != 0 {
+		set["delegation_mode_effective"] = request.DelegationModeEffective
+		set["delegation_mode_maturity_epoch"] = request.DelegationModeMaturityEpoch
+	}
+	// B1: only written when the peer_id proof verified (consensus 0.12.0+), so
+	// rows below the line stay byte-identical.
+	if request.PeerIdPoPOk {
+		set["peer_id_pop_ok"] = true
+	}
+	update := bson.M{"$set": set}
 	w.FindOneAndUpdate(ctx, query, update, findOptions)
 
 	oldRecordsFilter := bson.M{
@@ -221,13 +235,19 @@ func (w *witnesses) GetWitnessesAtBlockHeight(bh uint64, opts ...SearchOption) (
 		return nil, err
 	}
 
+	defer cursor.Close(ctx)
 	var witnesses []Witness
 	for cursor.Next(ctx) {
 		var result Witness
 		if err := cursor.Decode(&result); err != nil {
-			return nil, fmt.Errorf("failed to decode witness: %w", err)
+			return nil, fmt.Errorf("failed to decode witness: %w: %w", db.ErrDecode, err)
 		}
 		witnesses = append(witnesses, result)
+	}
+	// A failed fetch of a later batch ends Next() early: without this check
+	// the caller would get a truncated list and no error.
+	if err := cursor.Err(); err != nil {
+		return nil, err
 	}
 
 	//TODO: add filtering options equivalent to the old VSC network
@@ -304,6 +324,66 @@ func (w *witnesses) GetWitnessesByPeerId(PeerIds []string, options ...SearchOpti
 	return witnesses, nil
 }
 
+// GetCurrentWitnessesByPeerId lists the accounts whose LATEST announcement carries one of
+// PeerIds (B1). GetWitnessesByPeerId returns every account that has EVER announced the
+// peer id, in map order, so a caller taking the first entry can pick an account that
+// moved on, or one that merely copied the peer id. This one keeps the latest row per
+// account only, ordered peer-id-proof-verified first, then newest, then by account, so
+// every node resolves a leftover collision the same way. TSS message attribution uses
+// it (node-local, no gate); the election proposer's presence check keeps
+// GetWitnessesByPeerId.
+// The production store must keep the current-row lookup TSS asserts for (B1).
+var _ interface {
+	GetCurrentWitnessesByPeerId([]string) ([]Witness, error)
+} = (*witnesses)(nil)
+
+func (w *witnesses) GetCurrentWitnessesByPeerId(PeerIds []string) ([]Witness, error) {
+	ctx := context.Background()
+	want := make(map[string]bool, len(PeerIds))
+	for _, p := range PeerIds {
+		want[p] = true
+	}
+	findResult, err := w.Find(ctx, bson.M{"peer_id": bson.M{"$in": PeerIds}},
+		options.Find().SetProjection(bson.M{"account": 1}))
+	if err != nil {
+		return nil, err
+	}
+	accounts := make(map[string]struct{})
+	for findResult.Next(ctx) {
+		var row struct {
+			Account string `bson:"account"`
+		}
+		if err := findResult.Decode(&row); err != nil {
+			return nil, fmt.Errorf("failed to decode witness: %w", err)
+		}
+		accounts[row.Account] = struct{}{}
+	}
+	if err := findResult.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]Witness, 0, len(accounts))
+	for account := range accounts {
+		latest, err := w.GetWitnessAtHeight(account, nil)
+		if err != nil {
+			return nil, err
+		}
+		if latest != nil && want[latest.PeerId] {
+			out = append(out, *latest)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PeerIdPoPOk != out[j].PeerIdPoPOk {
+			return out[i].PeerIdPoPOk
+		}
+		if out[i].Height != out[j].Height {
+			return out[i].Height > out[j].Height
+		}
+		return out[i].Account < out[j].Account
+	})
+	return out, nil
+}
+
 func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, error) {
 	ctx := context.Background()
 
@@ -328,7 +408,7 @@ func (w *witnesses) GetWitnessAtHeight(account string, bh *uint64) (*Witness, er
 	err := findResult.Decode(&witness)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", db.ErrDecode, err)
 	}
 
 	return &witness, nil

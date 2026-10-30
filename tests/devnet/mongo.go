@@ -3,7 +3,9 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -108,9 +110,9 @@ func (d *Devnet) GetTssKeys(ctx context.Context, node int, filter bson.M) ([]Tss
 // WaitForCommitment polls until a tss_commitment matching the filter
 // appears in the given node's database, or the timeout expires.
 func (d *Devnet) WaitForCommitment(ctx context.Context, node int, filter bson.M, timeout time.Duration) (*TssCommitmentDoc, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for commitment (filter=%v)", filter)
 		}
 		docs, err := d.GetCommitments(ctx, node, filter)
@@ -123,7 +125,7 @@ func (d *Devnet) WaitForCommitment(ctx context.Context, node int, filter bson.M,
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
@@ -150,10 +152,88 @@ func (d *Devnet) getLastProcessedBlock(ctx context.Context, node int) (uint64, e
 	return *result.LastProcessedBlock, nil
 }
 
+// seedProcessedUnderVersion overwrites the consensus version recorded against a
+// node's processed history in the hive_blocks metadata doc. It is a test affordance
+// for the reindex version-lag trigger: in a homogeneous-binary devnet every node
+// records its own running version, so to simulate a node that processed under an
+// OLDER version (a laggard that diverged) we write a lower processed_under_* directly.
+// On the node's next boot the reindex gate compares this against the chain-active
+// version at the head and, if lower, full-reindexes. The node must be stopped first.
+func (d *Devnet) seedProcessedUnderVersion(ctx context.Context, node int, major, consensus uint64) error {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer client.Disconnect(ctx)
+
+	coll := client.Database(d.nodeDbName(node)).Collection("hive_blocks")
+	_, err = coll.UpdateOne(ctx,
+		bson.M{"type": "metadata"},
+		bson.M{"$set": bson.M{
+			"processed_under_major":     major,
+			"processed_under_consensus": consensus,
+		}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
 // CountRegisteredWitnesses returns the number of distinct accounts that have a
 // witness registration in the given node's DB. Every such record carries a
 // consensus key (SetWitnessUpdate rejects records without one), so this is the
 // pool genesis-elector draws the genesis committee from.
+// getHighestStoredBlock mirrors hive_blocks.GetHighestBlock, the read
+// genesis-elector uses as "head": the highest Hive block the streamer has stored,
+// independent of the replay checkpoint (H-33). 0 when nothing is stored yet.
+func (d *Devnet) getHighestStoredBlock(ctx context.Context, node int) (uint64, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Disconnect(ctx)
+	coll := client.Database(d.nodeDbName(node)).Collection("hive_blocks")
+	var result struct {
+		Block struct {
+			BlockNumber uint64 `bson:"block_number"`
+		} `bson:"block"`
+	}
+	// Stored blocks carry type "block" (hive_blocks.DocumentTypeHiveBlock); the
+	// first cut of this helper asked for "hive_block" and always read 0, which
+	// silently fell back to the 12-minute "proceed anyway" path.
+	err = coll.FindOne(ctx, bson.M{"type": "block"}, options.FindOne().SetSort(bson.D{{Key: "block.block_number", Value: -1}})).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return result.Block.BlockNumber, nil
+}
+
+// maxWitnessRegistrationHeight returns the highest registration height in the
+// node's witnesses collection (0 when empty). genesis-elector only seats
+// witnesses registered strictly below its head, so the boot gate needs the
+// stored head to be past this (H-33).
+func (d *Devnet) maxWitnessRegistrationHeight(ctx context.Context, node int) (uint64, error) {
+	client, err := d.mongoClient(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Disconnect(ctx)
+	coll := client.Database(d.nodeDbName(node)).Collection("witnesses")
+	var result struct {
+		Height uint64 `bson:"height"`
+	}
+	err = coll.FindOne(ctx, bson.M{"account": bson.M{"$ne": ""}}, options.FindOne().SetSort(bson.D{{Key: "height", Value: -1}})).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return result.Height, nil
+}
+
 func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, error) {
 	client, err := d.mongoClient(ctx)
 	if err != nil {
@@ -169,7 +249,20 @@ func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, e
 }
 
 // waitForWitnessRegistrations polls the node's DB until at least want witnesses
-// are registered AND the node has processed past minHeight, or timeout.
+// are registered AND the node's highest STORED Hive block is past minHeight and
+// strictly past every registration height, or timeout.
+//
+// INSTRUMENT (H-33): the gate used to read hive_blocks metadata
+// last_processed_block. That number is a replay checkpoint, not the processed
+// height: StateEngine.SaveBlockHeight pins it at firstTxHeight-1 while any tx
+// output is pending and no VSC block exists yet, i.e. from the first announcement
+// until the genesis election. So whenever the announcements landed below block
+// 30 the gate could never be met and every boot burned the full 12 minutes
+// before "proceeding anyway" (F27, F1, F5, GenesisV2Fix), while the nodes were
+// in fact processing (their witnesses collection kept filling from later
+// blocks). genesis-elector itself uses GetHighestBlock (highest stored block)
+// and GetWitnessesAtBlockHeight(head) (registration height strictly below it),
+// so the gate now mirrors exactly those two reads.
 //
 // The minHeight gate is essential: genesis-elector includes only witnesses whose
 // registration height is strictly < the node's highest block. Node self-
@@ -181,29 +274,38 @@ func (d *Devnet) CountRegisteredWitnesses(ctx context.Context, node int) (int, e
 //
 // Returns the final (count, lastBlock) and an error on timeout.
 func (d *Devnet) waitForWitnessRegistrations(ctx context.Context, node, want int, minHeight uint64, timeout time.Duration) (int, uint64, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	var lastN int
-	var lastBh uint64
+	var lastBh, lastReg uint64
+	var lastErrN, lastErrB, lastErrR error
 	for {
 		n, errN := d.CountRegisteredWitnesses(ctx, node)
-		bh, errB := d.getLastProcessedBlock(ctx, node)
+		bh, errB := d.getHighestStoredBlock(ctx, node)
+		reg, errR := d.maxWitnessRegistrationHeight(ctx, node)
+		lastErrN, lastErrB, lastErrR = errN, errB, errR
 		if errN == nil {
 			lastN = n
 		}
 		if errB == nil {
 			lastBh = bh
 		}
-		if errN == nil && errB == nil && n >= want && bh >= minHeight {
+		if errR == nil {
+			lastReg = reg
+		}
+		if errN == nil && errB == nil && errR == nil && n >= want && bh >= minHeight && bh > reg {
 			return n, bh, nil
 		}
-		if time.Now().After(deadline) {
-			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, block %d/%d",
-				timeout, lastN, want, lastBh, minHeight)
+		if devnetNow().After(deadline) {
+			// The last read errors are part of the reading: a stuck count can be a
+			// stuck node OR a failing query, and the caller cannot tell them apart
+			// otherwise (H-32).
+			return lastN, lastBh, fmt.Errorf("witness gate not met after %v: %d/%d registered, highest stored block %d/%d, max registration height %d (last reads: witnesses err=%v, block err=%v, reg err=%v)",
+				timeout, lastN, want, lastBh, minHeight, lastReg, lastErrN, lastErrB, lastErrR)
 		}
 		select {
 		case <-ctx.Done():
 			return lastN, lastBh, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }
@@ -221,9 +323,9 @@ func (d *Devnet) dumpBlockHeight(ctx context.Context, t interface{ Logf(string, 
 // WaitForBlockProcessing waits until a node has processed at least
 // the given block height.
 func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			bh, _ := d.getLastProcessedBlock(ctx, node)
 			return fmt.Errorf("node %d only at block %d after %v (need %d)", node, bh, timeout, minBlock)
 		}
@@ -234,7 +336,7 @@ func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 }
@@ -242,15 +344,22 @@ func (d *Devnet) WaitForBlockProcessing(ctx context.Context, node int, minBlock 
 // waitForElectionEpoch polls until the elections collection contains
 // an election with epoch >= minEpoch.
 func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch uint64, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
+	highest := int64(-1)
 	for {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("node %d: election epoch %d never arrived (timeout %v)", node, minEpoch, timeout)
+		if devnetNow().After(deadline) {
+			return fmt.Errorf("node %d: election epoch %d never arrived (timeout %v, highest epoch seen %d)", node, minEpoch, timeout, highest)
 		}
 		client, err := d.mongoClient(ctx)
 		if err == nil {
 			coll := client.Database(d.nodeDbName(node)).Collection("elections")
 			count, _ := coll.CountDocuments(ctx, bson.M{"epoch": bson.M{"$gte": minEpoch}})
+			var top struct {
+				Epoch int64 `bson:"epoch"`
+			}
+			if coll.FindOne(ctx, bson.M{}, options.FindOne().SetSort(bson.D{{Key: "epoch", Value: -1}})).Decode(&top) == nil {
+				highest = top.Epoch
+			}
 			client.Disconnect(ctx)
 			if count > 0 {
 				return nil
@@ -259,7 +368,7 @@ func (d *Devnet) waitForElectionEpoch(ctx context.Context, node int, minEpoch ui
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }
@@ -331,9 +440,15 @@ func (d *Devnet) dumpContracts(ctx context.Context, t interface{ Logf(string, ..
 
 // WaitForTssKey polls until a tss_key matching the filter appears.
 func (d *Devnet) WaitForTssKey(ctx context.Context, node int, filter bson.M, timeout time.Duration) (*TssKeyDoc, error) {
-	deadline := time.Now().Add(timeout)
+	// DEVNET_TIMEOUT_SCALE (above 1) stretches the wait like the vault tests'
+	// own budgets: from a 0.7 floor a member holds its readiness until its
+	// pre-params exist, so a keygen can take longer on a loaded host.
+	if f, err := strconv.ParseFloat(os.Getenv("DEVNET_TIMEOUT_SCALE"), 64); err == nil && f > 1 {
+		timeout = time.Duration(float64(timeout) * f)
+	}
+	deadline := devnetNow().Add(timeout)
 	for {
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			return nil, fmt.Errorf("timeout waiting for tss_key (filter=%v)", filter)
 		}
 		docs, err := d.GetTssKeys(ctx, node, filter)
@@ -346,7 +461,7 @@ func (d *Devnet) WaitForTssKey(ctx context.Context, node int, filter bson.M, tim
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-devnetAfter(5 * time.Second):
 		}
 	}
 }

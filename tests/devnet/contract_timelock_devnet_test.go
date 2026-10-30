@@ -27,7 +27,7 @@ func TestContractUpdateTimelockDevnet(t *testing.T) {
 	}
 	requireDocker(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), vfTestBudget(30*time.Minute))
 	defer cancel()
 
 	codeAWasm := TestContractPath()
@@ -77,33 +77,33 @@ func TestContractUpdateTimelockDevnet(t *testing.T) {
 	// Poll the active contract until it first appears on-chain.
 	waitActive := func(id string) *ContractGQL {
 		t.Helper()
-		deadline := time.Now().Add(4 * time.Minute)
+		deadline := devnetNow().Add(4 * time.Minute)
 		for {
 			c, err := d.ActiveContract(ctx, queryNode, id)
 			if err == nil && c != nil {
 				return c
 			}
-			if time.Now().After(deadline) {
+			if devnetNow().After(deadline) {
 				d.dumpContracts(ctx, t, queryNode)
 				t.Fatalf("contract %s never became active (err=%v)", id, err)
 			}
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 	// Poll until a pending update appears for the contract.
 	waitPending := func(id string) *ContractGQL {
 		t.Helper()
-		deadline := time.Now().Add(4 * time.Minute)
+		deadline := devnetNow().Add(4 * time.Minute)
 		for {
 			rows, err := d.PendingUpdates(ctx, queryNode, id)
 			if err == nil && len(rows) > 0 {
 				return &rows[0]
 			}
-			if time.Now().After(deadline) {
+			if devnetNow().After(deadline) {
 				d.dumpContracts(ctx, t, queryNode)
 				t.Fatalf("no pending update appeared for %s (err=%v)", id, err)
 			}
-			time.Sleep(3 * time.Second)
+			devnetSleep(3 * time.Second)
 		}
 	}
 
@@ -180,16 +180,16 @@ func TestContractUpdateTimelockDevnet(t *testing.T) {
 	}
 
 	// Pending list should drain once the cancel is processed.
-	deadline := time.Now().Add(4 * time.Minute)
+	deadline := devnetNow().Add(4 * time.Minute)
 	for {
 		rows, err := d.PendingUpdates(ctx, queryNode, id2)
 		if err == nil && len(rows) == 0 {
 			break
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Fatalf("pending update for %s was not cancelled (rows=%d err=%v)", id2, len(rows), err)
 		}
-		time.Sleep(3 * time.Second)
+		devnetSleep(3 * time.Second)
 	}
 	t.Logf("pending update for %s cancelled ✓", id2)
 

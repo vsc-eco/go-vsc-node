@@ -125,7 +125,29 @@ func (se *StateEngine) applyPendulumSettlement(rec pendulumsettlement.Settlement
 	// aggregate is the primary check; this is the second line — if our own
 	// re-derivation disagrees with what the chain attested, refuse rather
 	// than silently apply a payload we would not have signed.
-	if mismatchErr, ran := se.rederivePendulumSettlement(rec); ran && mismatchErr != nil {
+	//
+	// TESTNET-ONLY HISTORICAL-REPLAY GUARD — do NOT replicate to any other
+	// network. Early testnet history contains settlements composed and 2/3-BLS-
+	// ratified against a HIVE_CONSENSUS bond that a NON-DETERMINISTIC liveness
+	// slash reduced live (an honest producer slashed because its committee was
+	// too slow to attest a block). That slash left no deterministic on-chain
+	// fault, so a from-scratch reindex never reproduces it: re-derivation always
+	// recomputes the pre-slash bond and byte-mismatches the attested record,
+	// freezing every reindex at the first affected epoch (555, L1 ~3,425,393).
+	// Below this pinned L1 height we skip pass 2 and rely on pass 1 (structural
+	// validation — conservation + committee/delegator membership, already run
+	// above) plus the record's own 2/3 BLS aggregate, applying the attested
+	// history as-is. At/above the height, strict re-derivation stays fully in
+	// force for all new epochs. Hardcoded (not config) and testnet-gated so it
+	// can never be enabled on mainnet: mainnet has no such history and this must
+	// never weaken its consensus boundary. blockHeight is the L1 height at which
+	// the carrying election_result confirmed.
+	const testnetReplayNoRederiveBelowHeight = 4769770
+	skipRederive := se.sconf != nil && se.sconf.OnTestnet() && blockHeight < testnetReplayNoRederiveBelowHeight
+	if skipRederive {
+		log.Warn("pendulum settlement: TESTNET replay guard active — skipping re-derivation, applying attested record on structural validation + BLS only",
+			"epoch", rec.Epoch, "block_height", blockHeight, "boundary_height", testnetReplayNoRederiveBelowHeight)
+	} else if mismatchErr, ran := se.rederivePendulumSettlement(rec); ran && mismatchErr != nil {
 		log.Error("pendulum settlement: re-derivation mismatch; refusing to apply",
 			"epoch", rec.Epoch, "err", mismatchErr)
 		return
@@ -257,22 +279,49 @@ func (se *StateEngine) validatePendulumSettlement(rec pendulumsettlement.Settlem
 		return fmt.Errorf("election at snapshot_to=%d has no members", rec.SnapshotRangeTo)
 	}
 	members := make(map[string]struct{}, len(election.Members))
+	memberList := make([]string, 0, len(election.Members))
 	for _, m := range election.Members {
 		acct := m.Account
 		if !strings.HasPrefix(acct, "hive:") {
 			acct = "hive:" + acct
 		}
 		members[acct] = struct{}{}
+		memberList = append(memberList, acct)
+	}
+
+	// Consensus 0.5.0: share-mode nodes pay their delegators, so a distribution
+	// to a non-committee account is legitimate iff that account is a delegator
+	// to a share-mode committee node at the snapshot height. Build the allowed
+	// delegator set from the same deterministic source the re-derivation uses.
+	//
+	// On a transient read failure the set is empty, so a (legitimate) delegator
+	// distribution would be strictly rejected here and the apply refused WITHOUT
+	// advancing the settlement marker — restart-replay then re-attempts the
+	// epoch once the read recovers (the codebase's standard "deterministic ids +
+	// idempotent upserts + replay" self-healing path). So a read blip delays the
+	// settlement on that node, it never diverges, and the actual payouts always
+	// come from the attested, BLS-aggregated record. With no share nodes the set
+	// is empty and this is byte-identical to the pre-0.5.0 members-only check.
+	shareDelegations, _ := se.PendulumShareDelegations(memberList, rec.SnapshotRangeTo)
+	allowedDelegators := make(map[string]struct{})
+	for _, edges := range shareDelegations {
+		for dlg := range edges {
+			allowedDelegators[dlg] = struct{}{}
+		}
 	}
 	for _, d := range rec.Distributions {
 		acct := d.Account
 		if !strings.HasPrefix(acct, "hive:") {
 			acct = "hive:" + acct
 		}
-		if _, ok := members[acct]; !ok {
-			return fmt.Errorf("distribution to non-committee account %s at epoch=%d",
-				d.Account, rec.Epoch)
+		if _, ok := members[acct]; ok {
+			continue
 		}
+		if _, ok := allowedDelegators[acct]; ok {
+			continue
+		}
+		return fmt.Errorf("distribution to non-committee account %s at epoch=%d",
+			d.Account, rec.Epoch)
 	}
 	for _, r := range rec.RewardReductions {
 		acct := r.Account
@@ -340,6 +389,16 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		uint64(pendulumoracle.DefaultTickIntervalBlocks),
 	)
 
+	// Consensus 0.5.0: re-read the share-mode delegation edges at the SAME
+	// pinned height (SnapshotRangeTo) the producer used, so the re-derived
+	// record's per-delegator distributions byte-match. A transient read failure
+	// means we can't re-derive deterministically — fall back to structural
+	// validation rather than risk a false byte-mismatch.
+	shareDelegations, sdOk := se.PendulumShareDelegations(members, rec.SnapshotRangeTo)
+	if !sdOk {
+		return nil, false
+	}
+
 	expected, err := pendulumsettlement.ComposeRecord(pendulumsettlement.ComposeInputs{
 		Epoch:               rec.Epoch,
 		PrevEpoch:           rec.PrevEpoch,
@@ -348,6 +407,7 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		CommitteeBonds:      bonds,
 		BucketBalanceHBD:    bucket,
 		ReductionsByAccount: reductions,
+		ShareDelegations:    shareDelegations,
 	})
 	if err != nil || expected == nil {
 		return nil, false
@@ -362,10 +422,85 @@ func (se *StateEngine) rederivePendulumSettlement(rec pendulumsettlement.Settlem
 		return nil, false
 	}
 	if !bytes.Equal(expectedBytes, actualBytes) {
-		return fmt.Errorf("settlement byte mismatch (expected %d bytes, got %d)",
-			len(expectedBytes), len(actualBytes)), true
+		// Diagnostic: name the field(s) that diverge so an operator can localise a
+		// replay divergence WITHOUT another instrumented rebuild — a differing
+		// bucket_hbd points at the pendulum bucket (seed / accrual / a dropped
+		// historical settlement), a differing per-account distribution or a
+		// residual/total points at the committee-bond inputs (ledger state). The
+		// refuse-to-apply behaviour is unchanged; this only enriches the error the
+		// caller already logs.
+		return fmt.Errorf("settlement byte mismatch (expected %d bytes, got %d): %s",
+			len(expectedBytes), len(actualBytes), diffSettlementRecords(*expected, rec)), true
 	}
 	return nil, true
+}
+
+// diffSettlementRecords formats the fields that differ between a re-derived
+// settlement (exp) and the on-chain record (got). Diagnostic only — it builds a
+// log string and never affects state or the byte compare above. Accounts are
+// iterated in the records' existing (Account-sorted) order for stable output.
+func diffSettlementRecords(exp, got pendulumsettlement.SettlementRecord) string {
+	var b strings.Builder
+	addU := func(field string, e, g uint64) {
+		if e != g {
+			fmt.Fprintf(&b, " %s(exp=%d got=%d)", field, e, g)
+		}
+	}
+	addI := func(field string, e, g int64) {
+		if e != g {
+			fmt.Fprintf(&b, " %s(exp=%d got=%d)", field, e, g)
+		}
+	}
+	addU("epoch", exp.Epoch, got.Epoch)
+	addU("prev_epoch", exp.PrevEpoch, got.PrevEpoch)
+	addU("snapshot_from", exp.SnapshotRangeFrom, got.SnapshotRangeFrom)
+	addU("snapshot_to", exp.SnapshotRangeTo, got.SnapshotRangeTo)
+	addI("bucket_hbd", exp.BucketBalanceHBD, got.BucketBalanceHBD)
+	addI("total_distributed_hbd", exp.TotalDistributedHBD, got.TotalDistributedHBD)
+	addI("residual_hbd", exp.ResidualHBD, got.ResidualHBD)
+
+	gotDist := make(map[string]int64, len(got.Distributions))
+	for _, d := range got.Distributions {
+		gotDist[d.Account] = d.HBDAmt
+	}
+	expDist := make(map[string]int64, len(exp.Distributions))
+	for _, d := range exp.Distributions {
+		expDist[d.Account] = d.HBDAmt
+		if g, ok := gotDist[d.Account]; !ok {
+			fmt.Fprintf(&b, " dist[%s](exp=%d got=<absent>)", d.Account, d.HBDAmt)
+		} else if g != d.HBDAmt {
+			fmt.Fprintf(&b, " dist[%s](exp=%d got=%d)", d.Account, d.HBDAmt, g)
+		}
+	}
+	for _, d := range got.Distributions {
+		if _, ok := expDist[d.Account]; !ok {
+			fmt.Fprintf(&b, " dist[%s](exp=<absent> got=%d)", d.Account, d.HBDAmt)
+		}
+	}
+
+	gotReduc := make(map[string]int, len(got.RewardReductions))
+	for _, r := range got.RewardReductions {
+		gotReduc[r.Account] = r.Bps
+	}
+	expReduc := make(map[string]int, len(exp.RewardReductions))
+	for _, r := range exp.RewardReductions {
+		expReduc[r.Account] = r.Bps
+		if g, ok := gotReduc[r.Account]; !ok {
+			fmt.Fprintf(&b, " reduc[%s](exp=%d got=<absent>)", r.Account, r.Bps)
+		} else if g != r.Bps {
+			fmt.Fprintf(&b, " reduc[%s](exp=%d got=%d)", r.Account, r.Bps, g)
+		}
+	}
+	for _, r := range got.RewardReductions {
+		if _, ok := expReduc[r.Account]; !ok {
+			fmt.Fprintf(&b, " reduc[%s](exp=<absent> got=%d)", r.Account, r.Bps)
+		}
+	}
+
+	if b.Len() == 0 {
+		return "fields equal (CBOR ordering/encoding difference only)"
+	}
+	return "differing fields:" + b.String()
 }
 
 // pendulumSettlementTxID is the deterministic ledger-record id prefix used to

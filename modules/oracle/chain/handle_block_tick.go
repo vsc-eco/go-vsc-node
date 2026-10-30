@@ -58,7 +58,7 @@ func makeTransaction(
 		Ops:     []transactionpool.VSCTransactionOp{vOp},
 		Nonce:   nonce,
 		NetId:   txNetId,
-		RcLimit: uint64(op.RcLimit),
+		RcLimit: op.RcLimit,
 	}
 }
 

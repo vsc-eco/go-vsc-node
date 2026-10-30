@@ -57,6 +57,13 @@ type ConsensusParams struct {
 	Type          string
 	BlockHeight   uint64
 	ElectionEpoch uint64
+	// Delegated selects per-edge delegation semantics (consensus 0.5.0+). Set by
+	// the caller from StateEngine.delegatedStakeActive(blockHeight). When true,
+	// stake records a from->to edge and unstake authorizes against the signer's
+	// edge + debits the node bond; when false, the legacy hive_consensus-holder
+	// path runs unchanged. Carried through into the OpLogEvent so the (pure)
+	// record builder stays deterministic.
+	Delegated bool
 }
 
 // SafetySlashConsensusParams debits HIVE_CONSENSUS principal for provable safety faults.
@@ -187,6 +194,13 @@ type Deposit struct {
 	Asset   string
 	Memo    string
 	From    string
+
+	// HivePrefixRecipientFix (consensus 0.12.0, DEP-PREFIX-1): a "to=hive:<name>" memo is
+	// checked on the name alone, and one that does not name a valid account falls back to
+	// the sender as given. Before it the check counted the "hive:" prefix against the
+	// 16-character limit, so a 12-16 character name failed, and the fallback prefixed the
+	// already-prefixed sender: the deposit landed on "hive:hive:<sender>".
+	HivePrefixRecipientFix bool
 }
 
 // Add more fields as necessary
@@ -241,6 +255,16 @@ type LedgerSystem interface {
 	PendulumDistribute(toAccount string, amount int64, txID string, blockHeight uint64) LedgerResult
 	SafetySlashConsensusBond(p SafetySlashConsensusParams) LedgerResult
 	FinalizeMaturedSafetySlashBurns(blockHeight uint64)
+	// MigrateDelegationEdgesOnce backfills per-delegator consensus-stake edges
+	// from history exactly once (idempotent via a persisted marker), at the
+	// consensus-0.5.0 activation. Caller gates on delegatedStakeActive. Returns
+	// the number of edges seeded (0 if already migrated / no history).
+	MigrateDelegationEdgesOnce(blockHeight uint64) int
+	// AllDelegationEdges returns every node's positive consensus-delegation
+	// edges as of blockHeight: node -> (delegator -> net HIVE delegated), both
+	// in "hive:" form, from a single deterministic ledger scan. ok=false on a
+	// transient read error. Drives the share-mode pendulum reward split.
+	AllDelegationEdges(blockHeight uint64) (map[string]map[string]int64, bool)
 	// CancelPendingSafetySlashBurn cancels a pending burn slice before maturity.
 	// Idempotent: if the (TxID, EvidenceKind) row is missing, finalized, or
 	// already cancelled, returns Ok=false with a descriptive Msg but does not

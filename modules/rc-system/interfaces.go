@@ -8,6 +8,9 @@ type RcSession interface {
 	// Returns the currently-frozen (unreturned) RC amount for an account,
 	// including the session's pending (uncommitted) consumption.
 	GetFrozenAmt(account string, blockHeight uint64) int64
+	// HiveFreeAmount returns the network's free-RC allowance for Hive accounts
+	// (VR2-17: resolved from SystemConfig, never from a mutable package global).
+	HiveFreeAmount() int64
 	Revert()
 	Done() RcMapResult
 }

@@ -19,8 +19,11 @@ import (
 //     snapshot_range_from, snapshot_range_to, total_distributed_hbd,
 //     residual_hbd) are byte-identical across every node for the
 //     same epoch — i.e. settlement consensus actually converged.
-//  3. TotalDistributedHBD > 0 — at least one DistributionEntry was
-//     produced; the settlement didn't degenerate to a no-op.
+//  3. The marker pays out nothing it was not given: nothing in this
+//     setup credits the pendulum:nodes bucket (only a whitelisted pool's
+//     swap does), and a marker balances to the bucket (distributed +
+//     residual), so both are 0. That a credited bucket IS paid out is
+//     proven by TestPendulumLPFloorDevnet, which fires a real swap.
 //  4. Snapshot range is well-formed (from <= to, both > 0).
 //
 // What's deferred to a follow-up (call it M3.5):
@@ -49,9 +52,8 @@ import (
 //   - Settlement never lands: marker stays nil after the timeout
 //     (pendulum scheduler is wedged, or oracle window never produced
 //     usable inputs).
-//   - Settlement produces zero distribution: marker.TotalDistributedHBD
-//     == 0 (committee bond reader returned no bonds, fee inputs are
-//     all zero, or stabilizer suppressed everything).
+//   - Settlement pays out of an empty bucket (distributed or residual
+//     nonzero with no swap credited).
 //
 // Run with:
 //
@@ -70,7 +72,7 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	// no settlement can land before epoch >= 1.
 	t.Log("waiting for first running election (epoch >= 1) on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -105,7 +107,7 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	markers := make([]*settlementMarkerDoc, cfg.Nodes)
 	markers[0] = first
 	for n := 2; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 3*time.Minute)
 		m, err := waitForSpecificSettlementEpoch(nodeCtx, d, n, targetEpoch, 3*time.Minute)
 		cancel()
 		if err != nil {
@@ -115,9 +117,9 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 	}
 
 	// Assertion 1: well-formed marker on magi-1 (sanity baseline).
-	if first.TotalDistributedHBD <= 0 {
-		t.Errorf("settlement marker on magi-1 has total_distributed_hbd=%d (expected > 0) — settlement produced no rewards",
-			first.TotalDistributedHBD)
+	if first.TotalDistributedHBD != 0 || first.ResidualHBD != 0 {
+		t.Errorf("settlement marker on magi-1 has total_distributed_hbd=%d residual_hbd=%d with nothing credited to the bucket (expected 0, 0)",
+			first.TotalDistributedHBD, first.ResidualHBD)
 	}
 	if first.SnapshotRangeTo == 0 || first.SnapshotRangeFrom > first.SnapshotRangeTo {
 		t.Errorf("settlement marker on magi-1 has malformed snapshot range [%d, %d]",
@@ -181,8 +183,8 @@ func TestPendulumSettlementHappyPath(t *testing.T) {
 // waits for exactly `epoch`, not "epoch >= minEpoch". Used by M3 to
 // fetch the same epoch's marker from every node.
 func waitForSpecificSettlementEpoch(ctx context.Context, d *Devnet, node int, epoch uint64, timeout time.Duration) (*settlementMarkerDoc, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		m, err := readSettlementMarkerForEpoch(ctx, d, node, epoch)
 		if err != nil {
 			return nil, err
@@ -193,7 +195,7 @@ func waitForSpecificSettlementEpoch(ctx context.Context, d *Devnet, node int, ep
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 	return nil, fmt.Errorf("magi-%d: no settlement marker for epoch %d within %s", node, epoch, timeout)

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/announcements"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -291,7 +293,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 	if err != nil {
 		return nil, err
 	}
-	databin := datalayer.NewDataBinFromCid(r.Da, cidz)
+	databin := datalayer.NewDataBinFromCid(r.Da.LocalOnly(), cidz)
 	result := make(map[string]interface{})
 	var keyErr error
 	for _, key := range keys {
@@ -304,7 +306,7 @@ func (r *queryResolver) GetStateByKeys(ctx context.Context, contractID string, k
 			}
 			continue
 		}
-		rawVal, err := r.Da.GetRaw(*cidVal)
+		rawVal, err := r.Da.LocalOnly().GetRaw(*cidVal)
 		if err != nil {
 			keyErr = err
 			continue
@@ -331,7 +333,7 @@ func (r *queryResolver) FindTransaction(ctx context.Context, filterOptions *Tran
 		return nil, err
 	}
 
-	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, filterOptions.ByLedgerToFrom, filterOptions.ByLedgerTypes, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
+	return r.Transactions.FindTransactions(filterOptions.ByIds, filterOptions.ByID, filterOptions.ByAccount, filterOptions.ByContract, filterOptions.ByStatus, filterOptions.ByType, (*uint64)(filterOptions.FromBlock), (*uint64)(filterOptions.ToBlock), offset, limit)
 }
 
 // FindContractOutput is the resolver for the findContractOutput field.
@@ -394,6 +396,64 @@ func (r *queryResolver) GetAccountBalance(ctx context.Context, account string, h
 	return r.Balances.GetBalanceRecord(account, blockHeight)
 }
 
+// GetConsensusDelegation is the resolver for the getConsensusDelegation field.
+func (r *queryResolver) GetConsensusDelegation(ctx context.Context, from string, to string, height *model.Uint64) (*ConsensusDelegation, error) {
+	if from == "" || to == "" {
+		return nil, fmt.Errorf("from and to cannot be empty")
+	}
+	blockHeight := ParseHeight(height)
+	session := ledgerSystem.NewSession(r.StateEngine.LedgerState)
+
+	// Gross stake on this edge, and the node's pooled bond (slash-aware) vs its
+	// slash-immune gross delegated total.
+	delegated := session.GetBalance(ledgerSystem.DelegationEdgeKey(from, to), blockHeight, ledgerSystem.AssetDelegation)
+	bond := session.GetBalance(to, blockHeight, "hive_consensus")
+	total := session.GetBalance(to, blockHeight, ledgerSystem.AssetDelegationTotal)
+
+	// Pro-rata claimable (mirrors ledgerSession.slashAdjustedRelease): full
+	// unless the node is slashed (bond < total), then delegated * bond / total.
+	claimable := delegated
+	if delegated > 0 && total > 0 && bond < total {
+		if bond <= 0 {
+			claimable = 0
+		} else {
+			num := new(big.Int).Mul(big.NewInt(delegated), big.NewInt(bond))
+			num.Div(num, big.NewInt(total))
+			claimable = num.Int64()
+		}
+	}
+
+	return &ConsensusDelegation{
+		From:      from,
+		To:        to,
+		Delegated: model.Int64(delegated),
+		Claimable: model.Int64(claimable),
+	}, nil
+}
+
+// GetNodeDelegationMode is the resolver for the getNodeDelegationMode field. It
+// returns the node operator's normalized EFFECTIVE consensus-delegation mode
+// (timelock-resolved, as the stake/settlement paths see it), or null when it
+// cannot be determined — no announcement, or a transient read failure — rather
+// than blocking or reporting a wrong default.
+func (r *queryResolver) GetNodeDelegationMode(ctx context.Context, account string, height *model.Uint64) (*string, error) {
+	if account == "" {
+		return nil, fmt.Errorf("account cannot be empty")
+	}
+	// Report the EFFECTIVE (timelock-resolved) mode a delegator actually gets —
+	// during a pending adverse downgrade that is the still-protected mode, not the
+	// raw announced target. Use the NON-BLOCKING best-effort read: when the mode
+	// cannot be determined (no announcement, or a transient DB error) return null
+	// ("not found") rather than hanging the request or reporting a wrong default.
+	// The consensus paths use the fail-stop NodeDelegationMode instead. nil height
+	// → latest (ParseHeight → MaxInt64).
+	mode, ok := r.StateEngine.NodeDelegationModeBestEffort(account, ParseHeight(height))
+	if !ok {
+		return nil, nil // null / not found
+	}
+	return &mode, nil
+}
+
 // GetAccountRc is the resolver for the getAccountRC field.
 func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height *model.Uint64) (*rcDb.RcRecord, error) {
 	if account == "" {
@@ -416,13 +476,26 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	amount := int64(0)
 
 	if strings.HasPrefix(account, "hive:") {
-		maxRcs = maxRcs + params.RC_HIVE_FREE_AMOUNT
-		amount = params.RC_HIVE_FREE_AMOUNT
+		// VR2-17: report the network-resolved allowance so this query cannot
+		// disagree with what the RC subsystem actually enforces.
+		freeAmt := params.RC_HIVE_FREE_AMOUNT
+		if r.StateEngine != nil && r.StateEngine.RcSystem != nil {
+			freeAmt = r.StateEngine.RcSystem.HiveFreeAmount
+		}
+		maxRcs = maxRcs + freeAmt
+		amount = freeAmt
 	}
 
 	balRecord, err := r.Balances.GetBalanceRecord(account, blockHeight)
-
-	if err == mongo.ErrNoDocuments {
+	// NC-4: GetBalanceRecord returns (nil, nil) for an account with no balance record (a
+	// fresh account), NOT mongo.ErrNoDocuments - so the old ErrNoDocuments-only guard fell
+	// through and balRecord.HBD below nil-panicked on any fresh account's RC query. Surface a
+	// real DB error, and treat an absent record (nil, with or without ErrNoDocuments) as a
+	// zero-HBD account that reports only the free allowance.
+	if err != nil && err != mongo.ErrNoDocuments {
+		return nil, fmt.Errorf("failed to get balance record for %s: %w", account, err)
+	}
+	if balRecord == nil {
 		return &rcDb.RcRecord{
 			Account:     account,
 			Amount:      amount,
@@ -434,10 +507,15 @@ func (r *queryResolver) GetAccountRc(ctx context.Context, account string, height
 	rcRecord, err := r.Rc.GetRecord(account, blockHeight)
 
 	if err == mongo.ErrNoDocuments {
+		// RC-GQL-1: an account that holds HBD but has never spent RC has no RC
+		// record, and nothing is frozen. The RC system enforces balance - frozen
+		// (rc-system.go GetAvailableRCs) with no record needed, so report the HBD
+		// here too; returning only the free amount told a funded account (a
+		// freshly funded mapping-bot DID) it had 0 RC.
 		return &rcDb.RcRecord{
 			Account:     account,
-			Amount:      amount,
-			MaxRcs:      maxRcs,
+			Amount:      amount + balRecord.HBD,
+			MaxRcs:      maxRcs + balRecord.HBD,
 			BlockHeight: blockHeight,
 		}, nil
 	}
@@ -551,15 +629,28 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		return nil, electionErr
 	}
 	info := &LocalNodeInfo{
-		GitCommit:               announcements.GitCommit,
-		VersionID:               announcements.VersionId,
-		LastProcessedBlock:      model.Uint64(head),
-		Epoch:                   model.Uint64(election.Epoch),
-		ConsensusVersionDisplay: r.StateEngine.DisplayConsensusVersion(),
-		ProcessingSuspended:     r.StateEngine.ProcessingSuspendedForPool(),
-		ActiveConsensusLine:     r.StateEngine.ActiveConsensusLine(head).Key(),
-		ActiveConsensusExecutor: r.StateEngine.ActiveConsensusExecutor(head).Name(),
-		ChainOracles:            []ChainOracleStatus{},
+		GitCommit:                 announcements.GitCommit,
+		VersionID:                 announcements.VersionId,
+		RunningVersion:            consensusversion.RunningVersion().Format(),
+		LastProcessedBlock:        model.Uint64(head),
+		Epoch:                     model.Uint64(election.Epoch),
+		ConsensusVersionDisplay:   r.StateEngine.DisplayConsensusVersion(),
+		ProcessingSuspended:       r.StateEngine.ProcessingSuspendedForPool(),
+		ActiveConsensusLine:       r.StateEngine.ActiveConsensusLine(head).Key(),
+		ActiveConsensusExecutor:   r.StateEngine.ActiveConsensusExecutor(head).Name(),
+		ConsensusVersionProposals: []ConsensusVersionProposal{},
+		ChainOracles:              []ChainOracleStatus{},
+	}
+	for _, p := range r.StateEngine.ConsensusVersionProposals() {
+		info.ConsensusVersionProposals = append(info.ConsensusVersionProposals, ConsensusVersionProposal{
+			Target:          p.Target.Format(),
+			ActivationEpoch: model.Uint64(p.ActivationEpoch),
+			CreationEpoch:   model.Uint64(p.CreationEpoch),
+			ExpiryEpoch:     model.Uint64(p.ExpiryEpoch),
+			Forced:          p.Forced,
+			Proposer:        p.Proposer,
+			Txid:            p.TxId,
+		})
 	}
 	if act := r.StateEngine.ConsensusActivation(); act != nil {
 		mode := "normal"
@@ -572,7 +663,7 @@ func (r *queryResolver) LocalNodeInfo(ctx context.Context) (*LocalNodeInfo, erro
 		info.ConsensusActivationEpoch = &ep
 		ab := model.Uint64(act.BlockHeight)
 		info.ConsensusActivationAttestedBlock = &ab
-		av := act.Target().Format()
+		av := act.Target.Format()
 		info.ConsensusActivationVersion = &av
 		if act.TxId != "" {
 			info.ConsensusActivationAttestedTxid = &act.TxId
@@ -627,7 +718,7 @@ func (r *queryResolver) GetDagByCid(ctx context.Context, cidString string) (stri
 	if parseErr != nil {
 		return "", parseErr
 	}
-	node, nodeErr := r.Da.GetDag(blockCid)
+	node, nodeErr := r.Da.LocalOnly().GetDag(blockCid)
 	if nodeErr != nil {
 		return "", nodeErr
 	}
@@ -782,16 +873,22 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 	// Create sessions from live DB state
 	ledgerSession := ledgerSystem.NewSession(r.StateEngine.LedgerState)
-	callSession := contract_session.NewCallSession(r.Da, r.Contracts, r.ContractsState, r.TssKeys, blockHeight, nil)
+	callSession := contract_session.NewCallSession(r.Da.LocalOnly(), r.Contracts, r.ContractsState, r.TssKeys, r.TssCommitments, blockHeight, nil)
 
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
 
 	for opIndex, call := range input.Calls {
-		rcLimit := uint(call.RcLimit)
-		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC
-		if maxGas := ^uint(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
+		rcLimit := uint64(call.RcLimit)
+		// Cap rcLimit to prevent overflow when multiplied by CYCLE_GAS_PER_RC.
+		// uint64 (not platform-dependent uint) keeps the bound identical
+		// across architectures, matching TxVscCallContract.ExecuteTx.
+		if maxGas := ^uint64(0) / params.CYCLE_GAS_PER_RC; rcLimit > maxGas {
 			rcLimit = maxGas
 		}
+		// uint64->uint narrowing forced by WasmEdge's uint gas meter; lossless
+		// on 64-bit and bounded by the maxGas cap above. See
+		// TxVscCallContract.ExecuteTx for the full rationale.
+		gasCycles := uint(rcLimit * params.CYCLE_GAS_PER_RC)
 
 		info, err := r.Contracts.ContractById(call.ContractID, blockHeight)
 		if err != nil {
@@ -821,7 +918,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			return results, nil
 		}
 
-		node, err := r.Da.Get(c, nil)
+		node, err := r.Da.LocalOnly().Get(c, nil)
 		if err != nil {
 			errMsg := err.Error()
 			results = append(results, SimulateContractCallResult{
@@ -870,6 +967,25 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
 			}
+			// BRK-2 (D1, simulate accuracy): reflect the chain-active
+			// vault-rotation-v2 flag so a simulated activateKey enforces the same
+			// check-signature gate (TssGetKey's 4th field) the real tx would —
+			// otherwise a preview would optimistically show activation succeeding
+			// before the new committee has proven signability. Read-only sim
+			// (reverted like the rest); non-consensus, so this only affects the
+			// preview's accuracy, never the state root.
+			// Same "in force" rules as the real call (transactions.go): the height pin
+			// OR the attested 0.8.0 floor. Keying on the pin alone left the preview on
+			// the 3-field TssGetKey once the floor, not a pin, turned the batch on. The
+			// 0.11.0 reshared field follows the same way (simulateTssKeyOpts).
+			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
+			if sc := r.StateEngine.SystemConfig(); sc != nil {
+				ctxOpts = append(ctxOpts, simulateTssKeyOpts(sc.ConsensusParams(), blockHeight, activeVersion)...)
+			}
+			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
+			ctxOpts = append(ctxOpts,
+				contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
+			)
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{
@@ -888,7 +1004,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 				Intents:              intents,
 				PendulumOracle:       pendulumOracle,
 			},
-			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), rcLimit*params.CYCLE_GAS_PER_RC, ledgerSession, callSession, 0,
+			int64(rcLimit), rc_system.FreeRcRemaining(r.StateEngine.RcSystem.NewSession(ledgerSession), caller, blockHeight), gasCycles, ledgerSession, callSession, 0,
 			ctxOpts...,
 		)
 
@@ -906,7 +1022,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 
 		w := wasm_runtime_ipc.New()
 		w.Init()
-		res := w.Execute(wasmCtx, rcLimit*params.CYCLE_GAS_PER_RC, call.Action, payload, info.Runtime)
+		res := w.Execute(wasmCtx, gasCycles, call.Action, payload, info.Runtime)
 		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 
 		if res.Error != nil {
@@ -1098,6 +1214,31 @@ func (r *transactionRecordResolver) Nonce(ctx context.Context, obj *transactions
 // RcLimit is the resolver for the rc_limit field.
 func (r *transactionRecordResolver) RcLimit(ctx context.Context, obj *transactions.TransactionRecord) (model.Uint64, error) {
 	return model.Uint64(obj.RcLimit), nil
+}
+
+// Ledger is the resolver for the ledger field. The ledger events were removed
+// from the transaction_pool document (redundant with the ledger collection);
+// they are resolved from the ledger collection by tx id instead. Note: the
+// method name shadows the resolver struct's Ledger field, hence r.Resolver.Ledger.
+func (r *transactionRecordResolver) Ledger(ctx context.Context, obj *transactions.TransactionRecord) ([]ledgerSystem.OpLogEvent, error) {
+	lrs, err := r.Resolver.Ledger.GetLedgersByTxId(obj.Id)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]ledgerSystem.OpLogEvent, len(lrs))
+	for i, lr := range lrs {
+		events[i] = ledgerSystem.OpLogEvent{
+			Id:          lr.Id,
+			To:          lr.Owner,
+			From:        lr.From,
+			Amount:      lr.Amount,
+			Asset:       lr.Asset,
+			Memo:        "",
+			Type:        lr.Type,
+			BlockHeight: lr.BlockHeight,
+		}
+	}
+	return events, nil
 }
 
 // LedgerActions is the resolver for the ledger_actions field.

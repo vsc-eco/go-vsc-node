@@ -1,6 +1,7 @@
 package state_engine
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ed25519"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"runtime/debug"
 	"slices"
@@ -17,8 +19,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"vsc-node/lib/btcvault"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
+	"vsc-node/lib/peerpop"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
@@ -34,6 +38,7 @@ import (
 	ledgerDb "vsc-node/modules/db/vsc/ledger"
 	"vsc-node/modules/db/vsc/nonces"
 	"vsc-node/modules/db/vsc/pendulum_settlements"
+	"vsc-node/modules/db/vsc/poaseats"
 	rcDb "vsc-node/modules/db/vsc/rcs"
 	"vsc-node/modules/db/vsc/transactions"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -83,10 +88,26 @@ type StateEngine struct {
 	tssRequests    tss_db.TssRequests
 	tssKeys        tss_db.TssKeys
 	tssCommitments tss_db.TssCommitments
+	// heldShareCheck overrides heldShareOfFundedVault (POA-1) in tests; nil in
+	// production.
+	heldShareCheck func(account string, height uint64) (bool, error)
+	// POA-1 read caches (poa_share_hold.go). tssCommitWrites counts stored
+	// tss commitments, so the per-height party memo is dropped when a row lands.
+	poaCacheMu      sync.Mutex
+	poaElecMembers  map[uint64]*elections.ElectionResult
+	poaPartyMemo    poaPartyMemo
+	tssCommitWrites atomic.Uint64
 	// governanceDb persists witness-vote governance proposals + votes
 	// (vsc.slash_restore / vsc.reserve_payout). Nil on paths that don't process
 	// governance (the handlers no-op when nil).
 	governanceDb governance_db.Governance
+
+	// poaSeats is the POA seat registry (the on-chain allowlist of vetted
+	// operator accounts eligible for election). Nil on paths that do not
+	// process POA — every POA code path checks for nil and no-ops, exactly like
+	// governanceDb above, so a harness that does not wire it keeps pre-POA
+	// behaviour rather than panicking.
+	poaSeats poaseats.PoaSeats
 
 	consensusState      consensus_state.ConsensusState
 	chainConsensusCache consensus_state.ChainConsensusState
@@ -142,11 +163,6 @@ type StateEngine struct {
 	// bonds via BalanceRecord directly, bypassing the op-type-filter trap
 	// on LedgerSystem.GetBalance.
 	balanceDb ledgerDb.Balances
-	// ledgerRemediationDone stops the one-time legacy write-off from being
-	// re-emitted on every slot inside its catch-up window. Process-local by
-	// design: the records are upserts keyed to a fixed height, so a restart
-	// simply re-applies them onto the identical rows.
-	ledgerRemediationDone bool
 	// selfHiveUsername is the local node's Hive account name. Currently
 	// unused outside of tests now that settlement is leader-agnostic.
 	selfHiveUsername string
@@ -205,6 +221,61 @@ type StateEngine struct {
 	// L1 height at which the last per-Magi-block log was emitted. Used to
 	// throttle the log to once per 10k L1 blocks during catchup.
 	lastMagiLogHeight uint64
+
+	// --- reindex hot-path read caching ---
+	// electionCache memoizes GetElectionByHeight for the exact query height.
+	// Mutex'd because gql/tss tickers reach ActiveConsensusVersion off the
+	// ProcessBlock goroutine. Correctness: elections only become active at
+	// heights strictly above their stored block_height, and onElectionStored
+	// clears the entry, so a hit at the same height equals a fresh read.
+	electionCacheMu     sync.Mutex
+	electionCacheHeight uint64
+	electionCacheResult elections.ElectionResult
+	electionCacheHit    bool
+	// scheduleCache memoizes the witness schedule for the produce_block path
+	// (getScheduleForSlot), keyed by the (round, election) pair the schedule
+	// is a pure function of: the seed derives from the round start and the
+	// membership from the election active at the slot (GetElectionByHeight's
+	// latest block_height strictly below the slot height). Keying by round
+	// alone was unsound: a mid-round election changes the schedule for slots
+	// above its block_height, and a produce_block op for a slot at or below
+	// that height validated AFTER the election op (e.g. both landing in the
+	// same 10-block slot, election first) re-seeded the dropped memo with the
+	// OLD schedule under the same round key — every later slot of the round
+	// then hit the stale schedule while producers (uncached GetSchedule)
+	// used the new committee, so blocks were skipped until the round ended.
+	// scheduleElectionEpoch/Bh record the election the memo was computed from;
+	// memoElectionIsCurrent refuses the hit once that election is no longer
+	// the latest stored one (the election later slots resolve then differs).
+	// Only touched from ProcessBlock (serial), so unsynchronized.
+	scheduleRoundStart    uint64
+	scheduleCached        []WitnessSlot
+	scheduleElectionEpoch uint64
+	scheduleElectionBh    uint64
+	// latestElection* mirrors the most recently STORED election, which
+	// memoElectionIsCurrent compares the memo's election against. Stored
+	// block_heights strictly increase with replay order (a stored bh is the
+	// block height of the storing op), so if the memo's election is still the
+	// latest stored one, no election can exist with a bh in [the memo's slot,
+	// the current slot) — every later slot of the round resolves the same
+	// election the memo was built from. Seeded lazily from the DB on first
+	// use (GetElectionByHeight(MaxInt64-1), the existing "latest overall"
+	// read) so a restart mid-round never compares against a mirror older
+	// than the DB, and maintained by onElectionStored thereafter — ProcessBlock
+	// is the only election-storing path. On a failed StoreElection the mirror
+	// may describe a phantom latest (the election is not in the DB); that only
+	// degrades memo hits into recomputes (the pre-memo cost, still correct)
+	// until the next successful store. Only touched from ProcessBlock
+	// (serial), so unsynchronized.
+	latestElectionSeeded bool
+	latestElectionEpoch  uint64
+	latestElectionBh     uint64
+
+	// profiler times each indexing phase so operators can see where block
+	// processing spends its time via the periodic "indexing profile" log
+	// summary (modules/state-processing/profiling.go). Always-on; overhead
+	// is one monotonic-clock read per sample. Constructed in New.
+	profiler *Profiler
 }
 
 // SetBlockStatus wires the block-status getter so the state engine can
@@ -248,6 +319,84 @@ func (se *StateEngine) warnSync(bh uint64, msg string, args ...any) {
 	}
 }
 
+// vaultCheckSigDigest recomputes the BRK-2 canonical check-signature message M
+// for a BTC-vault keyId, using the generation encoded in the keyId and the
+// key's OWN pubkey. It is the single derivation shared by the enqueue (N-c) and
+// the verify/mark (N-d) so both sites bind identical bytes. Returns (nil, false)
+// unless vault-rotation-v2 is active at bh AND keyId is a BTC-vault key with a
+// valid 33-byte pubkey — the caller then does nothing (fail-safe: no enqueue /
+// no flag, never a wrong one). Deterministic: every input is on-chain
+// (consensus flag, config-derived BTC contract id, committed pubkey), so all
+// honest nodes compute the same M or all skip.
+func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) ([]byte, bool) {
+	if se.sconf == nil {
+		return nil, false
+	}
+	// Cheap, purely local checks FIRST: resolving the chain-active consensus
+	// version costs an election read, and the overwhelming majority of calls here
+	// are for keys that are not BTC vault keys at all.
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
+		return nil, false
+	}
+	if !se.vaultRotationV2InForce(bh) {
+		return nil, false
+	}
+	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+	if !ok {
+		return nil, false
+	}
+	pub, err := hex.DecodeString(pubKeyHex)
+	if err != nil || len(pub) != 33 {
+		return nil, false
+	}
+	return btcvault.CheckSigMessage(keyId, gen, pub), true
+}
+
+// maybeEnqueueVaultCheckSig (BRK-2 / brick council FS3-1) enqueues the canonical
+// check-signature request the moment a v2 BTC-vault key flips created->active.
+// The fresh committee must PRODUCE and on-chain-verify a signature with the new
+// key before the contract's attestPrimaryKey will activate the vault generation
+// — otherwise funds could route into an agreed-but-UNSIGNABLE vault and custody
+// collapses to the single CSV backup key. Deterministic in-ProcessBlock write
+// (all nodes emit the identical tss_requests row at this block); the sign then
+// flows through the EXISTING FindUnsignedRequests -> SignDispatcher ->
+// vsc.tss_sign path, admitted by the S3 scopeCheckSig verdict. No-op
+// (byte-identical) when the rotation flag is off. Fail-safe: a missing enqueue
+// only means the vault never activates (a clean, recoverable freeze), never a
+// wrong activation.
+func (se *StateEngine) maybeEnqueueVaultCheckSig(keyInfo tss_db.TssKey, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyInfo.Id, keyInfo.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if err := se.tssRequests.SetSignedRequest(tss_db.TssRequest{
+		KeyId: keyInfo.Id,
+		Msg:   hex.EncodeToString(m),
+	}); err != nil {
+		tssLog.Warn("BRK-2: failed to enqueue vault check-signature", "keyId", keyInfo.Id, "err", err)
+	} else {
+		se.tssLogSync(bh, "BRK-2 vault check-signature enqueued", "keyId", keyInfo.Id)
+	}
+}
+
+// maybeMarkVaultCheckSig (BRK-2) sets SignatureVerified on a BTC-vault key when
+// the just-verified signature is over the canonical check-message M for that key
+// (recomputed from keyId + the key's OWN committed pubkey). Because M is
+// domain-separated it can never equal a real BTC sighash, so a genuine
+// withdrawal/migration signature never trips this — only the deliberate
+// check-sign does. Deterministic (on-chain inputs, recomputed identically on all
+// nodes). No-op when the rotation flag is off or the message is not M.
+func (se *StateEngine) maybeMarkVaultCheckSig(keyId string, key tss_db.TssKey, msg []byte, bh uint64) {
+	m, ok := se.vaultCheckSigDigest(keyId, key.PublicKey, bh)
+	if !ok {
+		return
+	}
+	if bytes.Equal(msg, m) {
+		se.tssKeys.SetSignatureVerified(keyId)
+	}
+}
+
 //Transaction
 // InputArgs string -->
 // // - Entrypoint
@@ -280,14 +429,64 @@ func (se *StateEngine) claimHBDInterest(blockHeight uint64, amount int64, txId s
 	se.LedgerSystem.ClaimHBDInterest(claimHeight, blockHeight, amount, txId)
 }
 
-// Gets ranomized schedule of witnesses
-// Uses a different PRNG variant from the original used in JS VSC
-// Not aiming for exact replica
+// GetSchedule returns the randomized witness schedule for the round containing
+// slotHeight. Async callers (block ticks, gql) read the DB directly.
 func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
+	schedule, _ := se.computeSchedule(slotHeight)
+	return schedule
+}
+
+// getScheduleForSlot is the ProcessBlock-side memoized variant of GetSchedule:
+// the schedule is a pure function of (round, election), so the produce_block
+// hot path (once per slot) reuses the last computed round instead of re-reading
+// the election + hive block — but only while the memo's election is still the
+// latest stored one (memoElectionIsCurrent), which is exactly the condition
+// under which every later slot of the round resolves the same election.
+// onElectionStored drops the memo AND refreshes the latest-election mirror, so
+// a mid-round election recomputes for later slots — including the re-seed case
+// where a produce_block op for a slot at or below the election's block height,
+// validated after the election, would otherwise re-cache the old committee's
+// schedule under the same round key. Must only be called from ProcessBlock —
+// the cache fields are unsynchronized.
+func (se *StateEngine) getScheduleForSlot(slotHeight uint64) []WitnessSlot {
+	roundStart := vscBlocks.CalculateRoundInfo(slotHeight).StartHeight
+	if se.scheduleRoundStart == roundStart && se.scheduleCached != nil && se.memoElectionIsCurrent() {
+		return se.scheduleCached
+	}
+	schedule, election := se.computeSchedule(slotHeight)
+	se.scheduleRoundStart = roundStart
+	se.scheduleCached = schedule
+	se.scheduleElectionEpoch = election.Epoch
+	se.scheduleElectionBh = election.BlockHeight
+	return schedule
+}
+
+// memoElectionIsCurrent reports whether the election the schedule memo was
+// computed from is still the latest stored election — the condition under which
+// the memo can serve later slots of the same round. Seeds the latest-election
+// mirror once per process from the DB so a restart mid-round never compares
+// against a mirror older than the DB; on a read error it stays unseeded and
+// reports false, which only costs a recompute (never a wrong hit). Election
+// identity is the (epoch, block_height) pair — epoch alone could alias
+// same-epoch duplicate stores from pre-ElectionDupeFix replay.
+func (se *StateEngine) memoElectionIsCurrent() bool {
+	if !se.latestElectionSeeded {
+		if latest, err := se.electionDb.GetElectionByHeight(math.MaxInt64 - 1); err == nil {
+			se.latestElectionEpoch = latest.Epoch
+			se.latestElectionBh = latest.BlockHeight
+			se.latestElectionSeeded = true
+		}
+	}
+	return se.latestElectionSeeded &&
+		se.scheduleElectionEpoch == se.latestElectionEpoch &&
+		se.scheduleElectionBh == se.latestElectionBh
+}
+
+func (se *StateEngine) computeSchedule(slotHeight uint64) ([]WitnessSlot, elections.ElectionResult) {
 	lastElection, err := se.electionDb.GetElectionByHeight(slotHeight)
 
 	if err != nil {
-		return nil
+		return nil, elections.ElectionResult{}
 	}
 
 	witnessList := make([]Witness, 0)
@@ -324,7 +523,7 @@ func (se *StateEngine) GetSchedule(slotHeight uint64) []WitnessSlot {
 	copy(seed32[:], seed)
 	witnessSchedule := GenerateSchedule(slotHeight, witnessList, seed32)
 
-	return witnessSchedule
+	return witnessSchedule, lastElection
 }
 
 // Implementation note:
@@ -352,53 +551,72 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 			}
 		}
 	}()
+	stopProcessBlock := se.profiler.Start(PhaseProcessBlock)
+	defer stopProcessBlock()
 
 	se.BlockHeight = int(block.BlockNumber)
 	se.refreshChainConsensusCache()
+	// M1.1b: mirror the BTC mapping contract's SPV-proven theft-halt flag ("th") into the
+	// consensus cache, so the TSS keysign gate freezes on a detected drain as cheaply +
+	// robustly as it does on the governance vsc.tss_halt flag. Deterministic + fail-safe;
+	// inert on networks with no BTC contract configured.
+	se.refreshBtcTheftHalt(block.BlockNumber)
 
 	// --- Key lifecycle: deprecation and retirement ---
-	if electionData, elecErr := se.electionDb.GetElectionByHeight(block.BlockNumber); elecErr == nil {
-		currentEpoch := electionData.Epoch
+	// BRK-5 (brick council FS-1/FS-2): FREEZE the deprecation/retirement clock
+	// while the chain is processing-suspended. A suspend blocks renewKey (a
+	// non-recovery contract op), so deprecating a key it cannot renew forces an
+	// un-curable freeze (a fund-holding gen's key stops signing with no in-suspend
+	// cure); the chain is halted anyway. Deterministic (on-chain suspend flag,
+	// refreshed just above). Resumes normally when the suspend lifts. The 0.3.0
+	// build keeps the clock running, so the freeze waits for TssKeyLifecycleActive.
+	keyLifecycleActive := consensusversion.TssKeyLifecycleActive(se.ActiveConsensusVersion(block.BlockNumber))
+	if !keyLifecycleActive || !se.chainProcessingSuspended() {
+		keyLifecycleStart := time.Now()
+		if electionData, elecErr := se.electionAtHeight(block.BlockNumber); elecErr == nil {
+			currentEpoch := electionData.Epoch
 
-		// Phase 1: deprecate active keys that have reached their expiry epoch.
-		if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
-			for _, k := range deprecating {
-				k.Status = tss_db.TssKeyDeprecated
-				if tss_db.KeyRetirementEnabled {
-					k.DeprecatedHeight = int64(block.BlockNumber)
+			// Phase 1: deprecate active keys that have reached their expiry epoch.
+			if deprecating, err := se.tssKeys.FindDeprecatingKeys(currentEpoch); err == nil {
+				for _, k := range deprecating {
+					k.Status = tss_db.TssKeyDeprecated
+					if tss_db.KeyRetirementEnabled {
+						k.DeprecatedHeight = int64(block.BlockNumber)
+					}
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key deprecated",
+						"keyId",
+						k.Id,
+						"expiryEpoch",
+						k.ExpiryEpoch,
+						"blockHeight",
+						block.BlockNumber,
+					)
 				}
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key deprecated",
-					"keyId",
-					k.Id,
-					"expiryEpoch",
-					k.ExpiryEpoch,
-					"blockHeight",
-					block.BlockNumber,
-				)
 			}
 		}
-	}
 
-	// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
-	if tss_db.KeyRetirementEnabled {
-		if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
-			for _, k := range retiring {
-				k.Status = tss_db.TssKeyRetired
-				se.tssKeys.SetKey(k)
-				tssLog.Info(
-					"key retired",
-					"keyId",
-					k.Id,
-					"deprecatedHeight",
-					k.DeprecatedHeight,
-					"blockHeight",
-					block.BlockNumber,
-				)
+		// Phase 2: retire deprecated keys whose grace period has elapsed (block-height based).
+		if tss_db.KeyRetirementEnabled {
+			if retiring, err := se.tssKeys.FindNewlyRetired(block.BlockNumber); err == nil {
+				for _, k := range retiring {
+					k.Status = tss_db.TssKeyRetired
+					se.tssKeys.SetKey(k)
+					tssLog.Info(
+						"key retired",
+						"keyId",
+						k.Id,
+						"deprecatedHeight",
+						k.DeprecatedHeight,
+						"blockHeight",
+						block.BlockNumber,
+					)
+				}
 			}
 		}
-	}
+		se.profiler.Record(PhaseKeyLifecycle, time.Since(keyLifecycleStart))
+	} // BRK-5: close the processing-suspended key-lifecycle-freeze guard
 
 	blockInfo := struct {
 		BlockHeight uint64
@@ -438,20 +656,24 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	}
 
 	for i, virtualOp := range block.VirtualOps {
+		virtualOpStart := time.Now()
 		if virtualOp.Op.Type == "interest_operation" {
 			owner, ok := virtualOp.Op.Value["owner"].(string)
 			if !ok {
+				se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 				continue
 			}
 			if owner == se.sconf.GatewayWallet() {
 				interest, ok := virtualOp.Op.Value["interest"].(map[string]any)
 				if !ok {
 					log.Warn("interest_operation: unexpected interest field type", "block", block.BlockNumber)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				amountStr, ok := interest["amount"].(string)
 				if !ok {
 					log.Warn("interest_operation: unexpected amount field type", "block", block.BlockNumber)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				vInt1, err := strconv.ParseInt(amountStr, 10, 64)
@@ -461,6 +683,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						"amount", amountStr,
 						"err", err,
 					)
+					se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 					continue
 				}
 				// Disambiguator for the interest ledger-record id. A Hive
@@ -473,9 +696,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				se.claimHBDInterest(blockInfo.BlockHeight, vInt1, strconv.Itoa(i))
 			}
 		}
+		se.profiler.Record(PhaseVirtualOps, time.Since(virtualOpStart))
 	}
 
 	for blkIdx, tx := range block.Transactions {
+		parseStart := time.Now()
 		if se.pendulumFeed != nil {
 			se.pendulumFeed.IngestTransactionOps(block.BlockNumber, tx)
 		}
@@ -596,6 +821,41 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
+				// vsc.tss_halt: the governance multisig freezes/unfreezes BTC TSS
+				// keysign issuance (emergency solvency containment, Build Map §5b).
+				// Chain-global deterministic flag — every node converges by processing
+				// this same op. The BTC solvency gate (modules/tss/solvency_gate.go)
+				// reads it before issuing a SignAction. Authority = the gateway/
+				// governance multisig (same gate as safety_slash_reverse / reserve_*).
+				if Id == "vsc.tss_halt" && RequiredAuths[0] == se.sconf.GatewayWallet() &&
+					se.btcKeysignHaltActive(blockInfo.BlockHeight) {
+					var h struct {
+						Active bool   `json:"active"`
+						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+					}
+					if err := json.Unmarshal(cj.Json, &h); err != nil {
+						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
+					} else if se.consensusState == nil {
+						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else {
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetBtcKeysignHalt(context.Background(), h.Active, height); err != nil {
+							// ERROR, not Warn: this node did NOT apply the emergency BTC
+							// keysign halt (write failed) and will keep signing until a
+							// later op succeeds — operators must alert + re-broadcast the
+							// idempotent vsc.tss_halt op (pruned-methodology F1 write-path).
+							log.Error("vsc.tss_halt: SetBtcKeysignHalt FAILED — halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied", "active", h.Active, "keyId", h.KeyId,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
+					}
+				}
+
 				// The witness-vote governance batch (vsc.slash_restore /
 				// vsc.reserve_payout / vsc.reserve_vote) is gated on the CHAIN-ACTIVE
 				// consensus version reaching 0.3.0, resolved from the election active
@@ -628,6 +888,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if Id == "vsc.reserve_vote" {
 						se.handleReservePayoutVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
 					}
+
+					// vsc.admit_vote (POA): a SEATED operator votes a vetted
+					// candidate into the seat registry. Deliberately not
+					// gateway-gated — the electorate is the seated operators
+					// themselves, so any account may broadcast and the handler
+					// decides whether it holds a seat. The extra 0.7.0 check is
+					// what makes this inert until the POA batch activates; the
+					// enclosing 0.3.0 gate is implied by it (consensus 7 >= 3)
+					// and is kept only because this op shares the governance
+					// store and vote engine with the trio above.
+					if Id == "vsc.admit_vote" && se.PoaAdmitVoteActive(blockInfo.BlockHeight) {
+						se.handleAdmitVote(cj.Json, RequiredAuths[0], tx.TransactionID, blockInfo.BlockHeight)
+					}
 				}
 			}
 		}
@@ -637,6 +910,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		//Main pipeline
 		if singleOp.Type == "account_update" {
+			accountUpdateStart := time.Now()
 			opValue := singleOp.Value
 
 			// review2 MED #86/#88 (sweep): json_metadata / account from
@@ -683,19 +957,47 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								"txId",
 								tx.TransactionID,
 							)
+							se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+							se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 							continue
 						}
 					}
-					inputData := witnesses.SetWitnessUpdateType{
-						Account:  acct,
-						Height:   blockInfo.BlockHeight,
-						TxId:     tx.TransactionID,
-						BlockId:  blockInfo.BlockId,
-						Metadata: rawJson,
+					// B1 (0.12.0): an announced peer_id must come with proof that the
+					// announcer holds its libp2p key, or any account could claim a
+					// member's peer id and make TSS attribute the member's messages to
+					// itself. Pure function of the announce payload, like the BLS guard
+					// above, and gated so a reindex below the line stores what it did.
+					peerIdPoPOk, peerIdErr := witnessAnnouncePeerIdProof(se.ActiveConsensusVersion(blockInfo.BlockHeight), rawJson, acct)
+					if peerIdErr != nil {
+						se.warnSync(
+							blockInfo.BlockHeight,
+							"witness announce REJECTED: peer_id proof of possession failed (B1)",
+							"account", acct, "peerId", rawJson.VscNode.PeerId, "err", peerIdErr, "txId", tx.TransactionID,
+						)
+						se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+						se.profiler.Record(PhaseTxParse, time.Since(parseStart))
+						continue
 					}
+					inputData := witnesses.SetWitnessUpdateType{
+						Account:     acct,
+						Height:      blockInfo.BlockHeight,
+						TxId:        tx.TransactionID,
+						BlockId:     blockInfo.BlockId,
+						Metadata:    rawJson,
+						PeerIdPoPOk: peerIdPoPOk,
+					}
+					// Delegation-mode downgrade timelock (consensus 0.5.0+): resolve
+					// the effective mode + maturity for this announcement from the
+					// prior row and the election at this height, so an adverse
+					// (leaving-Share) change is deferred a full unbond window. Returns
+					// zero-values below 0.5.0, keeping historical rows byte-identical.
+					inputData.DelegationModeEffective, inputData.DelegationModeMaturityEpoch =
+						se.computeDelegationTimelock(acct, blockInfo.BlockHeight, rawJson.VscNode.DelegationMode)
 					se.witnessDb.SetWitnessUpdate(inputData)
 				}
 			}
+			se.profiler.Record(PhaseTxParseAccountUpdate, time.Since(accountUpdateStart))
+			se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 			continue
 		}
 
@@ -727,12 +1029,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					RequiredPostingAuths: cj.RequiredPostingAuths,
 				}
 				if se.chainProcessingSuspended() && !isRecoveryAllowlistedCustomJSON(cj.Id) {
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 				//Start parsing block
 				if cj.Id == "vsc.produce_block" {
+					produceBlockStart := time.Now()
 					//Process block production
-					schedule := se.GetSchedule(slotInfo.StartHeight)
+					schedule := se.getScheduleForSlot(slotInfo.StartHeight)
 
 					var scheduleSlot WitnessSlot
 
@@ -823,6 +1127,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							// double-sign that already fired in this same incident
 							// so we don't stack two independent 10% slashes against
 							// CorrelatedSlashCapBps without acknowledging it.
+							// Reason logged symmetrically with the Skip/Stale cases
+							// above so the deterministic rejection is observable
+							// (e.g. "malformed BLS signature") instead of silent.
+							log.Warn("invalid block proposal rejected",
+								"account", cj.RequiredAuths[0], "tx_id", tx.TransactionID,
+								"slot_height", slotInfo.StartHeight, "reason", outcome.Reason)
 							_ = doubleSign
 							slashRes := se.slashForEvidenceIfPolicyAllows(
 								cj.RequiredAuths[0],
@@ -845,12 +1155,15 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					se.profiler.Record(PhaseTxParseProduceBlock, time.Since(produceBlockStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 				//# End parsing block
 
 				//# Start parsing system transactions
 				if cj.Id == "vsc.create_contract" {
+					createContractStart := time.Now()
 					for idx, auth := range txSelf.RequiredAuths {
 						txSelf.RequiredAuths[idx] = "hive:" + auth
 					}
@@ -871,6 +1184,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							"hbd",
 						)
 						if !hasFee {
+							se.profiler.Record(PhaseTxParseCreateContract, time.Since(createContractStart))
+							se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 							continue
 						}
 
@@ -905,8 +1220,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					} else {
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParseCreateContract, time.Since(createContractStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.update_contract" {
+					updateContractStart := time.Now()
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_UPDATE_HEIGHT {
 						for idx, auth := range txSelf.RequiredAuths {
 							txSelf.RequiredAuths[idx] = "hive:" + auth
@@ -952,8 +1270,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 					}
+					se.profiler.Record(PhaseTxParseUpdateContract, time.Since(updateContractStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.cancel_contract_update" {
+					cancelContractUpdateStart := time.Now()
 					// Cancel a contract update still inside its timelock window.
 					// Gated like the timelock itself: a no-op before rollout (no
 					// pending updates exist), and historical replay sees no such
@@ -973,8 +1294,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						json.Unmarshal(cj.Json, &parsedTx)
 						parsedTx.ExecuteTx(se)
 					}
+					se.profiler.Record(PhaseTxParseCancelContractUpdate, time.Since(cancelContractUpdateStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.election_result" {
+					electionResultStart := time.Now()
 					parsedTx := &TxElectionResult{
 						Self: txSelf,
 					}
@@ -985,21 +1309,32 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// nil receiver.
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseElectionResult, time.Since(electionResultStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.propose_consensus_version" {
+					proposeConsensusVersionStart := time.Now()
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseProposeConsensusVersion, time.Since(proposeConsensusVersionStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_suspend" {
+					recoverySuspendStart := time.Now()
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseRecoverySuspend, time.Since(recoverySuspendStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				} else if cj.Id == "vsc.recovery_require_version" {
+					recoveryRequireVersionStart := time.Now()
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
 					parsedTx.ExecuteTx(se)
+					se.profiler.Record(PhaseTxParseRecoveryRequireVersion, time.Since(recoveryRequireVersionStart))
+					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
 				}
 			} //# End parsing system transactions
@@ -1009,27 +1344,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 		for opIndex, op := range tx.Operations {
 
-			// review7 C7-a: a transfer_to_savings to the gateway is not a
-			// supported deposit path (it credits the gateway's illiquid L1
-			// savings). Flag it loudly for manual refund instead of silently
-			// stranding it — the prior handler was dead code (see
-			// isUnsupportedGatewaySavingsDeposit).
 			fromStr, _ := op.Value["from"].(string)
 			toStr, _ := op.Value["to"].(string)
 			if isUnsupportedGatewaySavingsDeposit(op.Type, fromStr, toStr) {
-				log.Warn(
-					"review7 C7-a: transfer_to_savings to gateway is not a supported deposit path — NOT credited, manual refund required",
-					"tx",
-					tx.TransactionID,
-					"op",
-					opIndex,
-					"from",
-					fromStr,
-					"amount",
-					op.Value["amount"],
-					"blockHeight",
-					blockInfo.BlockHeight,
-				)
+				// ignore deposit to savings, perhaps could support deposit and stake here in the future and issue sHBD
 				continue
 			}
 
@@ -1136,6 +1454,8 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Memo:   depositMemo,
 
 						BlockHeight: blockInfo.BlockHeight,
+
+						HivePrefixRecipientFix: consensusversion.HivePrefixRecipientActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)),
 
 						BIdx:  int64(tx.Index),
 						OpIdx: int64(opIndex),
@@ -1304,6 +1624,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								keyCache[sigPack.KeyId] = &tssKey
 							}
 							if keyCache[sigPack.KeyId] != nil {
+								tssSignStart := time.Now()
 								publicKey, err := hex.DecodeString(keyCache[sigPack.KeyId].PublicKey)
 								sigBytes, err1 := hex.DecodeString(sigPack.Sig)
 								msgBytes, _ := hex.DecodeString(sigPack.Msg)
@@ -1312,18 +1633,21 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										pubKey, err := btcec.ParsePubKey(publicKey)
 										if err != nil {
 											log.Warn("invalid TSS public key, skipping", "keyId", sigPack.KeyId, "err", err)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
 										signature, err := btcecdsa.ParseDERSignature(sigBytes)
 										if err != nil {
 											log.Warn("invalid TSS DER signature, skipping", "keyId", sigPack.KeyId, "err", err)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
 										sigS := signature.S()
 										if sigS.IsOverHalfOrder() {
 											log.Warn("TSS signature has high-S (BIP-62 non-canonical), rejecting", "keyId", sigPack.KeyId)
+											se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 											continue
 										}
 
@@ -1337,6 +1661,12 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 												Status: tss_db.SignComplete,
 											})
 											se.tssLogSync(txSelf.BlockHeight, "indexing TSS signature", "keyId", sigPack.KeyId, "algo", "ecdsa")
+											// BRK-2: if this verified sig is over the canonical
+											// check-message M for this key, mark it signature-verified
+											// (the contract's attestPrimaryKey gate). Domain-separated
+											// M can never equal a real BTC sighash, so a genuine
+											// withdrawal/migration sig never trips this.
+											se.maybeMarkVaultCheckSig(sigPack.KeyId, *keyCache[sigPack.KeyId], msgBytes, txSelf.BlockHeight)
 										}
 									} else if keyCache[sigPack.KeyId].Algo == tss_db.EddsaType {
 										pk := ed25519.PublicKey(publicKey)
@@ -1354,6 +1684,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 										}
 									}
 								}
+								se.profiler.Record(PhaseTxParseTssSign, time.Since(tssSignStart))
 							}
 						}
 					}
@@ -1368,9 +1699,46 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							tssLog.Debug("vsc.tss_commitment parse error", "txId", tx.TransactionID, "err", err)
 							continue
 						}
-						for _, c := range commitmentMap {
-							commitments = append(commitments, c)
+						// In key order, not Go map order: map order is random per
+						// node, and two commitments for one key (e.g. two keygens
+						// that both finished before either landed) activate
+						// whichever is read first.
+						keys := make([]string, 0, len(commitmentMap))
+						for k := range commitmentMap {
+							keys = append(keys, k)
 						}
+						slices.Sort(keys)
+						for _, k := range keys {
+							commitments = append(commitments, commitmentMap[k])
+						}
+					}
+
+					// M-1: bound the bundle before iterating it.
+					//
+					// Everything below runs PER ELEMENT and none of it is cheap: a
+					// staleness check, a database lookup, a CID hash, a BLS circuit
+					// deserialisation and a pairing verification. The array came
+					// straight off an unauthenticated custom_json payload with no
+					// length check at all, so a single transaction carrying a few
+					// hundred thousand entries made every node on the network do that
+					// work — a denial of service against the whole fleet from one
+					// cheap transaction.
+					//
+					// Rejected wholesale rather than truncated: a legitimate bundle
+					// carries at most one commitment per committee member per ceremony,
+					// which is orders of magnitude below this cap, so an oversized one
+					// is not a large honest bundle to be salvaged. Truncating would
+					// also make WHICH commitments survive depend on payload ordering.
+					//
+					// Version-gated because dropping a transaction's commitments
+					// changes indexed state: flipping this ungated would make a reindex
+					// of any historical oversized bundle diverge.
+					if len(commitments) > params.MAX_TSS_COMMITMENTS_PER_TX &&
+						consensusversion.TssCommitmentBundleCapActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+						tssLog.Warn("vsc.tss_commitment bundle rejected: too many entries",
+							"txId", tx.TransactionID, "count", len(commitments),
+							"max", params.MAX_TSS_COMMITMENTS_PER_TX)
+						continue
 					}
 
 					se.tssLogSync(block.BlockNumber, "processing vsc.tss_commitment", "txId", tx.TransactionID, "blockHeight", block.BlockNumber, "count", len(commitments))
@@ -1420,12 +1788,17 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						// The BLS aggregate verify is the dominant cost of indexing a
+						// tss_commitment op; time it (and the deserialize + quorum
+						// check that accompany it) as the tssCommitment phase.
+						tssCommitmentStart := time.Now()
 						circuit, derr := dids.DeserializeBlsCircuit(dids.SerializedCircuit{
 							Signature: commitment.Signature,
 							BitVector: commitment.BitSet,
 						}, members, commitmentCid)
 						if derr != nil || circuit == nil {
 							tssLog.Debug("BLS deserialize failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "err", derr)
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
 
@@ -1434,6 +1807,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 
 						if !verified {
 							tssLog.Debug("BLS verification failed", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "cid", commitmentCid)
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
 						// review2 CRITICAL #6: a valid aggregate is not enough —
@@ -1441,10 +1815,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						// rule the leader enforces in waitForSigs. Without this,
 						// a sub-quorum commitment (e.g. 3/6) was accepted and
 						// could activate a TSS key.
-						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights) {
+						if !BlsQuorumMet(includedDIDs, electionData.Members, electionData.Weights,
+							consensusversion.BlsWeightDedupActive(se.ActiveConsensusVersion(block.BlockNumber))) {
 							tssLog.Warn("BLS sub-quorum commitment rejected", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "blockHeight", commitment.BlockHeight, "signers", len(includedDIDs), "members", len(electionData.Members))
+							se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 							continue
 						}
+						se.profiler.Record(PhaseTxParseTssCommitment, time.Since(tssCommitmentStart))
 						if block.BlockNumber <= tssIndexHeight {
 							se.tssLogSync(block.BlockNumber, "skipped (before TssIndexHeight)", "keyId", commitment.KeyId, "blockHeight", block.BlockNumber, "tssIndexHeight", tssIndexHeight)
 							continue
@@ -1461,6 +1838,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							TxId:        tx.TransactionID,
 							BitSet:      commitment.BitSet,
 						})
+						se.tssCommitWrites.Add(1)
 						if commitment.Type == "blame" {
 							// Blame events stay on-chain for liveness analysis (and future
 							// reward-reduction wiring), but are NOT principal-slashed: a
@@ -1494,9 +1872,33 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								}
 								se.tssLogSync(block.BlockNumber, "key activated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch, "blockHeight", block.BlockNumber, "pubKey", keyInfo.PublicKey)
 								se.tssKeys.SetKey(keyInfo)
+								// BRK-2 (check-SIGNATURE-before-activate, deploy
+								// precondition g): the instant a v2 BTC-vault key becomes
+								// node-active, enqueue its canonical check-signature so the
+								// fresh committee must PROVE signability before the contract
+								// activates the vault generation. Inert (no enqueue) until
+								// the rotation flag is pinned. See the helper.
+								se.maybeEnqueueVaultCheckSig(keyInfo, block.BlockNumber)
 							} else if newKey {
 								se.tssLogSync(block.BlockNumber, "keygen/reshare acknowledged (no pubKey)", "keyId", commitment.KeyId, "epoch", commitment.Epoch)
 							} else {
+								// corr-F1 (M1.3 council; rule-zero — don't grant the trust
+								// assumption): a "keygen" commitment must NEVER land on an
+								// already-active keyId. Under vault-rotation-v2 every rotation
+								// mints a FRESH keyId (always status "created" → the newKey
+								// branch above), so a keygen for an ALREADY-active key means
+								// the contract reused a keyId. Taking this else-branch would
+								// bump the epoch while keeping the stale on-chain PublicKey
+								// (old d) — but the DKG has written NEW shares (d') to the
+								// keystore at the bumped epoch. On-chain key and shares then
+								// disagree and the committee can no longer sign the vault's own
+								// funds (split-brain FREEZE). Reject it. A RESHARE legitimately
+								// re-keys an active key WITHOUT changing the pubkey → unaffected.
+								// Gated on the flag → byte-identical when inert (flag 0 default).
+								if commitment.Type == "keygen" && se.vaultRotationV2InForce(block.BlockNumber) {
+									tssLog.Warn("rejecting keygen commitment for an already-active keyId (v2 rotation must use a fresh keyId; contract keyId-reuse would split-brain the vault)", "keyId", commitment.KeyId, "activeEpoch", keyInfo.Epoch, "commitmentEpoch", commitment.Epoch, "blockHeight", commitment.BlockHeight)
+									continue
+								}
 								// S8: never rewind an active key's Epoch.
 								// keyInfo.Epoch drives the on-disk keystore-path
 								// derivation (tss.go: makeKey("key", id, epoch)),
@@ -1507,7 +1909,20 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 									continue
 								}
 								keyInfo.Epoch = commitment.Epoch
-								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch)
+								// BRK-8 (brick council FS3-2 / L-1): a RESHARE re-keys an
+								// IN-USE active key — extend its expiry too (like activation
+								// does), so an actively-reshared key does NOT deprecate mid-
+								// life on the fixed epoch clock (the manual-renew time-bomb).
+								// A key that STOPS resharing still deprecates at its last-
+								// reshare expiry. Deterministic (commitment.Epoch + Epochs are
+								// on-chain). reshare only (a v2 keygen for an already-active
+								// keyId is rejected above; a legacy no-expiry key has Epochs==0
+								// → unchanged). The 0.3.0 build does not extend, so this
+								// waits for TssKeyLifecycleActive.
+								if keyLifecycleActive && commitment.Type == "reshare" && keyInfo.Epochs > 0 {
+									keyInfo.ExpiryEpoch = commitment.Epoch + keyInfo.Epochs
+								}
+								se.tssLogSync(block.BlockNumber, "key epoch updated", "keyId", keyInfo.Id, "epoch", keyInfo.Epoch, "expiryEpoch", keyInfo.ExpiryEpoch)
 								se.tssKeys.SetKey(keyInfo)
 							}
 						}
@@ -1575,9 +1990,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				AnchoredBlock:        &block.BlockID,
 				AnchoredHeight:       &block.BlockNumber,
 				AnchoredIndex:        &blkIdx,
-				Ledger:               make([]ledgerSystem.OpLogEvent, 0),
 			})
 		}
+		se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 	}
 
 	//Detects new slot and executes batch if so
@@ -1606,8 +2021,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		// Observability only — read-only, never fail-stop. Nothing halts on a
 		// negative balance any more, so without this a new one would go
 		// unnoticed exactly the way the ten legacy ones did.
-		se.scanNegativeBalances(se.slotStatus.SlotHeight)
-		se.reconcileCompletedActions(se.slotStatus.SlotHeight)
+		// Skipped during a reindex / catch-up replay.
+		if se.IsLiveSynced(int(block.BlockNumber)) {
+			se.scanNegativeBalances(se.slotStatus.SlotHeight)
+			se.reconcileCompletedActions(se.slotStatus.SlotHeight)
+		}
 
 		se.RcMap = make(map[string]int64)
 
@@ -1645,6 +2063,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 	if se.pendulumFeed != nil {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
+
+	// Emit the periodic indexing-performance summary for the window since
+	// the last emission (once per 1000 blocks live-synced / 100000 during
+	// catch-up), then reset. Runs last so every phase above is counted.
+	se.profiler.MaybeEmit(block.BlockNumber, se.IsLiveSynced(int(block.BlockNumber)))
 }
 
 // verifyAnnouncedBlsPoP locates the consensus BLS DID key in a witness announce
@@ -1690,6 +2113,21 @@ func verifyAnnouncedBlsPoP(meta witnesses.PostingJsonMetadata, account string) e
 func witnessAnnounceHasRogueBlsKey(meta witnesses.PostingJsonMetadata, account string) bool {
 	err := verifyAnnouncedBlsPoP(meta, account)
 	return err != nil && !errors.Is(err, errNoConsensusBlsKey)
+}
+
+// witnessAnnouncePeerIdProof checks an announce's peer_id proof of possession (B1).
+// Below 0.12.0, or for an announce without a peer_id, it accepts and reports
+// verified=false (the row is stored exactly as before). From 0.12.0 an announced
+// peer_id must carry a proof that verifies for this account (lib/peerpop), else the
+// announce is rejected. Pure function of the payload: every node reaches the same verdict.
+func witnessAnnouncePeerIdProof(active consensusversion.Version, meta witnesses.PostingJsonMetadata, account string) (verified bool, err error) {
+	if !consensusversion.PeerIdPoPActive(active) || meta.VscNode.PeerId == "" {
+		return false, nil
+	}
+	if err := peerpop.Verify(account, meta.VscNode.PeerId, meta.VscNode.PeerIdPoP); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // isUnsupportedGatewaySavingsDeposit reports whether an L1 op is a
@@ -1740,6 +2178,38 @@ func executeTxSafely(
 	return vscTx.ExecuteTx(se, ledgerSession, rcSession, callSession, payer)
 }
 
+// tickSlotRange returns the slots whose block production a pendulum tick scores.
+//
+// The block for slot S covers L1 blocks S-SlotLength+1 .. S and is produced after
+// L1 block S, landing a block or two later. Counting the slot that ends AT the
+// tick therefore scores a block that cannot exist yet when the election proposer
+// composes the settlement at that height, but does exist when the other nodes
+// re-derive it a few blocks later: the record charges its leader a missed block,
+// every node refuses it, and the election is re-proposed 50 blocks later
+// (ELECT-50, every testnet epoch; on mainnet the first attempt fails to gather
+// signatures). It also scored the boundary slot in two consecutive ticks.
+//
+// closedOnly (from 0.9.0) counts only slots that closed at least one slot before
+// the tick, so every node reads the same blocks whenever it runs, and each slot
+// lands in exactly one tick: this tick takes (tick-window-SlotLength, tick-SlotLength].
+// Below 0.9.0 the old window is kept byte for byte, so replayed settlements
+// re-derive unchanged.
+func tickSlotRange(fromBlock, tickHeight, slotLen uint64, closedOnly bool) (first, last uint64) {
+	first = fromBlock - (fromBlock % slotLen)
+	if first < fromBlock {
+		first += slotLen
+	}
+	last = tickHeight - (tickHeight % slotLen)
+	if closedOnly {
+		if tickHeight < slotLen {
+			return 1, 0 // empty
+		}
+		end := tickHeight - slotLen
+		last = end - (end % slotLen)
+	}
+	return first, last
+}
+
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
 // aggregator scores. Pure read on on-chain caches; deterministic across
 // nodes given identical chain state. Returns a zero-Committee TickInputs
@@ -1777,11 +2247,8 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.vscBlocks != nil {
 		slotLen := common.CONSENSUS_SPECS.SlotLength
 		if slotLen >= 1 {
-			firstSlot := fromBlock - (fromBlock % slotLen)
-			if firstSlot < fromBlock {
-				firstSlot += slotLen
-			}
-			lastSlot := tickHeight - (tickHeight % slotLen)
+			closedOnly := consensusversion.SettlementClosedSlotsActive(se.ActiveConsensusVersion(tickHeight))
+			firstSlot, lastSlot := tickSlotRange(fromBlock, tickHeight, slotLen, closedOnly)
 			if lastSlot >= firstSlot {
 				blocks, err := se.vscBlocks.GetBlocksInSlotRange(firstSlot, lastSlot)
 				if err != nil {
@@ -1843,9 +2310,22 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	if se.tssCommitments != nil {
 		from := fromBlock
 		to := tickHeight
+		// G15: keygen-exclusion scoring is GATED on VaultRotationV2Enabled.
+		// When inert (flag 0 — the default on every network today), "keygen"
+		// is NOT added to the query type list, so `commits` is byte-identical
+		// to base and no keygen commitment can enter the reward pipeline. When
+		// active, the BTC vault key rotates by fresh keygen-per-generation
+		// instead of reshare, so skipping the security-critical new-vault DKG
+		// must cost the same as skipping a reshare. Nil-guard sconf so a
+		// minimal (test) engine keeps base behavior.
+		keygenScoringEnabled := se.vaultRotationV2InForce(tickHeight)
+		commitTypes := []string{"reshare", "blame", "sign_result"}
+		if keygenScoringEnabled {
+			commitTypes = append(commitTypes, "keygen")
+		}
 		commits, err := se.tssCommitments.FindCommitments(
 			nil,
-			[]string{"reshare", "blame", "sign_result"},
+			commitTypes,
 			nil,
 			&from,
 			&to,
@@ -1864,6 +2344,20 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 				switch c.Type {
 				case "reshare":
 					in.Reshares = append(in.Reshares, rewards.ReshareWithCommittee{
+						Commitment:   c,
+						NewCommittee: memberAccounts,
+					})
+				case "keygen":
+					// G15: only reachable when VaultRotationV2Enabled — "keygen"
+					// is absent from commitTypes otherwise, so this case never
+					// fires while the flag is inert (double gate: query + here).
+					// Keygen carries the same participant bitset as reshare
+					// (KeyGenResult.Serialize → setToCommitment, identical
+					// semantics), so a member absent from the bitset was
+					// excluded from the new-vault DKG and scores like a reshare
+					// exclusion. Same committee source as reshare: the election
+					// elected for the commitment's own epoch.
+					in.Keygens = append(in.Keygens, rewards.KeygenWithCommittee{
 						Commitment:   c,
 						NewCommittee: memberAccounts,
 					})
@@ -1925,6 +2419,9 @@ func (se *StateEngine) committeeAccountsAtHeight(height uint64) []string {
 
 func (se *StateEngine) ExecuteBatch() {
 
+	stopExecuteBatch := se.profiler.Start(PhaseExecuteBatch)
+	defer stopExecuteBatch()
+
 	lastBlock, err := se.vscBlocks.GetBlockByHeight(se.slotStatus.SlotHeight)
 	if err != nil && err != mongo.ErrNoDocuments {
 		log.Error("GetBlockByHeight failed in ExecuteBatch, falling back to lastBlockBh=0",
@@ -1945,9 +2442,47 @@ func (se *StateEngine) ExecuteBatch() {
 	// instead of recreating the ledger session for every Hive transaction,
 	// we reuse one session for the whole slot so balance checks see prior ops
 	se.LedgerState.BlockHeight = lastBlockBh
+
+	// Consensus 0.5.0: the first slot whose chain-active version is >= 0.5.0
+	// backfills per-delegator stake edges from history, exactly once (idempotent
+	// via a persisted marker). Runs BEFORE the session/txs below so a delegated
+	// consensus_unstake in this very slot already sees its edge. Stamped at
+	// lastBlockBh so the edge rows are visible to every tx in the slot
+	// (tx.BlockHeight > lastBlockBh). No-op (single indexed lookup) once migrated.
+	//
+	// The gate uses the FAIL-STOP election read (same as the consensus_stake/
+	// unstake handlers) — NOT delegatedStakeActive/ActiveConsensusVersion, which
+	// returns a zero version on a transient election-DB error. A non-fail-stop
+	// gate could let one node skip the migration for a slot while peers run it,
+	// then reject a delegated unstake the peers accept → fork. Fail-stop blocks
+	// until the DB recovers so every node decides identically.
+	if se.LedgerSystem != nil {
+		if elec, found := se.GetElectionInfoOrBlock(se.slotStatus.SlotHeight); found &&
+			DelegatedStakeActiveForElection(elec) {
+			se.LedgerSystem.MigrateDelegationEdgesOnce(lastBlockBh)
+		}
+	}
+
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
 	for idx, tx := range se.TxBatch {
+		// Invalid tx (unknown op type / undecodable payload): execute NO op and
+		// mark it FAILED. This is the explicit second failure location for txs
+		// that can't even be resolved — distinct from the per-op ExecuteTx
+		// failure path below. It rides the same oplog finalization as every other
+		// tx (TxOutIds → MakeOplog → SetOutput FAILED). A fixed RC is charged so
+		// the tx isn't free. Deterministic: Invalid/Payer are set identically on
+		// every node from the content-addressed resolve error.
+		if tx.Invalid {
+			if tx.Payer != "" {
+				se.RcMap[tx.Payer] += 50
+			}
+			se.TxOutput[tx.TxId] = TxOutput{Ok: false}
+			se.TxOutIds = append(se.TxOutIds, tx.TxId)
+			se.recordTxFailure(tx.TxId, "transaction could not be decoded: unknown operation type or invalid payload")
+			continue
+		}
+
 		var opTypes map[string]bool = make(map[string]bool)
 		for _, vscTx := range tx.Ops {
 			opTypes[vscTx.Type()] = true
@@ -1964,16 +2499,11 @@ func (se *StateEngine) ExecuteBatch() {
 		log.Verbose("executing batch item", "idx", idx, "total", len(se.TxBatch))
 		// ledgerSession := se.LedgerSystem.NewSession(lastBlockBh)
 		rcSession := se.RcSystem.NewSession(ledgerSession)
+		// Call session is created lazily on the first call op — the vast
+		// majority of batch items execute non-call ops and never touch it.
 		// Pass the current temp outputs so calls within this slot see the
-		// latest in-memory state instead of the latest contract state
-		callSession := contract_session.NewCallSession(
-			se.da,
-			se.contractDb,
-			se.contractState,
-			se.tssKeys,
-			lastBlockBh,
-			se.TempOutputs,
-		)
+		// latest in-memory state instead of the latest contract state.
+		var callSession *contract_session.CallSession
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
@@ -1983,6 +2513,17 @@ func (se *StateEngine) ExecuteBatch() {
 			if vscTx.Type() == "deposit" {
 				continue
 			}
+			if vscTx.Type() == "call" && callSession == nil {
+				callSession = contract_session.NewCallSession(
+					se.da,
+					se.contractDb,
+					se.contractState,
+					se.tssKeys,
+					se.tssCommitments,
+					lastBlockBh,
+					se.TempOutputs,
+				)
+			}
 			if se.firstTxHeight == 0 {
 				se.firstTxHeight = vscTx.TxSelf().BlockHeight - 1
 			}
@@ -1990,6 +2531,7 @@ func (se *StateEngine) ExecuteBatch() {
 				log.Debug("TRANSACTION REVERTING - no required auths")
 				ok = false
 				ledgerSession.Revert()
+				se.recordTxFailure(tx.TxId, opFailure(idx, len(tx.Ops), vscTx.Type(), "no required auths"))
 				break
 			}
 
@@ -2019,14 +2561,14 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
+			execOpStart := time.Now()
 			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
+			se.profiler.Record(PhaseExecuteBatchOp(vscTx.Type()), time.Since(execOpStart))
 
 			log.Debug(
 				"TRANSACTION STATUS",
 				"result",
 				result,
-				"ledger session",
-				ledgerSession,
 				"idx",
 				idx,
 				"type",
@@ -2106,13 +2648,16 @@ func (se *StateEngine) ExecuteBatch() {
 				log.Debug("TRANSACTION REVERTING")
 				ok = false
 				ledgerSession.Revert()
+				if result.Ret != "" {
+					se.recordTxFailure(tx.TxId, opFailure(idx, len(tx.Ops), vscTx.Type(), result.Ret))
+				}
 				break
 			}
 		}
 		for _, out := range outputs {
 			se.AppendOutput(out.ContractId, out.Output)
 		}
-		if ok {
+		if ok && callSession != nil {
 			callSession.Commit()
 			callOutputs := callSession.ToOutputs()
 			for k, v := range callOutputs {
@@ -2130,6 +2675,26 @@ func (se *StateEngine) ExecuteBatch() {
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
+}
+
+// recordTxFailure stores why a transaction failed in this node's transaction index,
+// returned by findTransaction (UNSTAKE-REASON-1). A refused op used to leave only
+// status FAILED, so an operator whose consensus_unstake was refused for a bond lock
+// could not see why. Every node executes the batch itself and records the same text.
+// Index only: the oplog, and so the block, still carries just {id, ok}.
+func (se *StateEngine) recordTxFailure(txId, reason string) {
+	if se.txDb == nil {
+		return // harnesses that build a state engine without a transaction index
+	}
+	se.txDb.SetOutput(transactions.SetResultUpdate{Id: txId, Error: &reason})
+}
+
+// opFailure names the failing op when a transaction carries more than one.
+func opFailure(opIdx, opCount int, opType, reason string) string {
+	if opCount > 1 {
+		return fmt.Sprintf("op %d (%s): %s", opIdx, opType, reason)
+	}
+	return reason
 }
 
 // guardedSpendableAssets are the L1-backed balances that must never be
@@ -2164,6 +2729,9 @@ func isGuardedAccount(account string) bool {
 }
 
 func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
+	stopUpdateBalances := se.profiler.Start(PhaseUpdateBalances)
+	defer stopUpdateBalances()
+
 	//Sets a default start block of 0 if near block 0
 	//E2E testing starts at block 0
 	var stBlock uint64
@@ -2195,6 +2763,47 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 	completeIds := make([]string, 0)
 	ledgerRecords := make([]ledgerDb.LedgerRecord, 0)
 	for _, record := range records {
+		// #11 F4 (front-run hold-release): a matured consensus_unstake whose BONDED
+		// account is still a bond-locked retiring committee member is HELD — not paid
+		// out and not marked complete, so it stays pending and is re-attempted next
+		// slot; it releases automatically once the member's generation drains (it
+		// leaves the fund-holding set). The funds are DEFERRED, never lost — this
+		// closes the front-run where a member unstakes just before its gen goes
+		// retiring (its bond is already debited, but it still holds the key's TSS
+		// share via V-A eligibility, so holding the payout keeps the pull to finish
+		// the migration). Consensus-safe: IsBondLockedRetiringMember is the SAME
+		// fail-stop predicate this slot already uses (council F2), so every node holds
+		// or releases the identical set. INERT when vault-rotation-v2 is off (returns
+		// false → normal release). The bonded account is From (carried in Params by
+		// the unstake action); the record's To is only the payout destination. A
+		// pre-this-change record has no "from" → treated as not-locked (inert).
+		if from, ok := record.Params["from"].(string); ok && from != "" &&
+			se.IsBondLockedRetiringMember(from, endBlock) {
+			continue
+		}
+
+		// POA collateral exit-halt (B1), same hold-don't-lose shape as the
+		// retiring-member lock directly above.
+		//
+		// THIS SITE IS WHAT MAKES THE HALT REAL. The submission-time check alone
+		// is bypassable by ordering: submit the unstake while still comfortably
+		// seated, then leave the set and let the 5-epoch maturity elapse — the
+		// bond would pay out on schedule with no halt ever applied, because the
+		// halt did not exist at submission time. Re-evaluating at RELEASE time
+		// closes that, and it is why the two enforcement points are not
+		// redundant.
+		//
+		// The payout is HELD (stays pending, retried next slot), never dropped,
+		// and releases automatically once the exit-halt expires. INERT below
+		// consensus 0.7.0 and for accounts with no seat.
+		// POA-10: blocking reads, so a read error cannot hold the payout on one
+		// node while its peers pay it.
+		if from, ok := record.Params["from"].(string); ok && from != "" {
+			if halted, _, _ := se.PoaExitHaltOrBlock(from, endBlock); halted {
+				continue
+			}
+		}
+
 		completeIds = append(completeIds, record.Id)
 
 		ledgerRecords = append(ledgerRecords, ledgerDb.LedgerRecord{
@@ -2242,7 +2851,12 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		}
 	}
 	if !hasFr {
-		frBal, _ := se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+		var frBal *ledgerDb.BalanceRecord
+		blockingRetry(fmt.Sprintf("GetBalanceRecord(%s @%d)", params.FR_VIRTUAL_ACCOUNT, endBlock), func() error {
+			var err error
+			frBal, err = se.LedgerState.BalanceDb.GetBalanceRecord(params.FR_VIRTUAL_ACCOUNT, endBlock)
+			return err
+		})
 		if frBal != nil {
 			distinctAccounts = append(distinctAccounts, params.FR_VIRTUAL_ACCOUNT)
 		}
@@ -2250,10 +2864,30 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 	assets := []string{"hbd", "hive", "hbd_savings", "hive_consensus"}
 
+	// The last-claim record is slot-constant (depends only on endBlock) —
+	// read it once instead of once per account (previously a full
+	// ledger_claims scan per account).
+	claimRecord := se.claimDb.GetLastClaim(endBlock)
+	exists := claimRecord != nil
+	var claimRecordC ledgerDb.ClaimRecord
+	if exists {
+		claimRecordC = *claimRecord
+	}
+
 	//Cleanup!
+	pendingBalanceRecords := make([]ledgerDb.BalanceRecord, 0, len(distinctAccounts))
 	for _, k := range distinctAccounts {
+		accountStart := time.Now()
 		ledgerBalances := map[string]int64{}
-		prevBalRecord, _ := se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+		// Fail-stop (GV-H1): a read error taken as "no previous snapshot" would
+		// rebuild this account from zero and reset its path-dependent HBD_AVG /
+		// modify / claim heights on this node only.
+		var prevBalRecord *ledgerDb.BalanceRecord
+		blockingRetry(fmt.Sprintf("GetBalanceRecord(%s @%d)", k, endBlock), func() error {
+			var err error
+			prevBalRecord, err = se.LedgerState.BalanceDb.GetBalanceRecord(k, endBlock)
+			return err
+		})
 		var balanceR ledgerDb.BalanceRecord
 		var stHeight uint64
 		if prevBalRecord != nil {
@@ -2292,17 +2926,11 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		hasLedgerUpdates := ledgerUpdates != nil && len(*ledgerUpdates) > 0
 
-		//Previous claim record
-		claimRecord := se.claimDb.GetLastClaim(endBlock)
-
 		var hbdAvg = int64(0)
 		var modifyHeight = uint64(0)
 		var claimHeight = uint64(0)
 
-		exists := claimRecord != nil
-		var claimRecordC ledgerDb.ClaimRecord
 		if exists {
-			claimRecordC = *claimRecord
 			modifyHeight = endBlock
 		}
 
@@ -2310,6 +2938,7 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		//Skip accounts that have no new ledger records AND no pending claim update
 		if !hasLedgerUpdates && !needsClaimUpdate {
+			se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
 			continue
 		}
 
@@ -2418,73 +3047,28 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 
 		newRecord.HBD_CLAIM_HEIGHT = claimHeight
 
-		// NEGATIVE SPENDABLE BALANCE — observability only, NEVER a halt.
-		//
-		// History: this was a fail-stop panic added during the 2026-08-13
-		// recovery, on the premise that "a correct node can never materialize a
-		// negative spendable balance, so a negative means THIS node diverged."
-		// That premise is false. Negative balances also exist as legacy,
-		// network-consistent state from historical over-debits: an unstake was
-		// once applied for more than the account held (hive:dhedge staked
-		// 63364 and unstaked 64302 — 938 too much — leaving hbd_savings
-		// negative on EVERY node). Those rows fold identically everywhere, so
-		// the chain ran with them for months without forking.
-		//
-		// Because the guard tested the ABSOLUTE materialized record, it fired
-		// whenever such an account was merely touched again — even by an op on
-		// a different asset that only carried the old negative forward. On
-		// 2026-08-16 an unrelated hbd transfer re-materialized dhedge's record
-		// and every node panicked at the same block: the guard itself halted
-		// the network. It served its purpose during the recovery; it must not
-		// stay armed.
-		//
-		// Log and continue. A negative here is a real accounting defect worth
-		// surfacing, but it is NOT proof of local divergence and must never
-		// stop the block pipeline. The durable fixes are (a) preventing
-		// over-debits at the ledger apply point, and (b) settling the existing
-		// negatives with compensating ledger records at an agreed height —
-		// which fold deterministically and survive a reindex, unlike a
-		// hand-edited balance snapshot.
-		if isGuardedAccount(k) {
-			if asset, bal, negative := negativeSpendableBalance(newRecord); negative {
-				log.Warn("negative spendable balance materialized (legacy over-debit; not halting)",
-					"account", k, "asset", asset, "balance", bal, "blockHeight", endBlock)
-			}
-		}
-
-		// review4 HIGH #95: UpdateBalanceRecord returns an error on Mongo
-		// write failure. Silently dropping it leaves the next slot's TWAB
-		// calc reading the stale snapshot, which feeds the HBD-interest
-		// distribution path. We can't safely abort the slot here (other
-		// accounts already wrote), but we surface the failure so it shows
-		// up in operator monitoring instead of vanishing.
-		// B6: fail-stop, not log-and-continue.
-		//
-		// Spendable balances self-heal — GetBalance reconstructs them from the
-		// append-only ledger past any checkpoint — but HBD_AVG,
-		// HBD_MODIFY_HEIGHT and HBD_CLAIM_HEIGHT do NOT. They are
-		// path-dependent accumulators kept ONLY in this snapshot and never
-		// rebuilt from the ledger, as the review4 HIGH #118 note a few lines
-		// above already states. A single dropped write therefore permanently
-		// mistimes this account's TWAB interval, and because ClaimHBDInterest
-		// divides by the sum of every account's HBD_AVG, one corrupted account
-		// skews the payout for ALL of them.
-		//
-		// This was one of only two writes on the deterministic slot-transition
-		// path still left log-only after the two 2026-08 halts; the other is
-		// rcDb.SetRecord. Block until it lands, matching getLedgerRangeOrBlock
-		// immediately above, which fail-stops the READ feeding this same value.
-		blockingRetry(fmt.Sprintf("UpdateBalanceRecord(%s @%d)", k, endBlock), func() error {
-			return se.LedgerState.BalanceDb.UpdateBalanceRecord(newRecord)
+		// review4 HIGH #95 (B6): a balance write that is silently dropped leaves the
+		// next slot's TWAB reading a stale snapshot — and HBD_AVG, HBD_MODIFY_HEIGHT
+		// and HBD_CLAIM_HEIGHT are path-dependent accumulators kept ONLY in this
+		// snapshot and never rebuilt from the ledger. One lost write therefore
+		// permanently mistimes this account's interval, and because ClaimHBDInterest
+		// divides by the sum of every account's HBD_AVG, it skews the payout for ALL
+		// of them. Records are collected per slot and flushed in a single round trip
+		// (UpdateBalanceRecords) under a blocking retry below, so a Mongo failure
+		// stalls the slot instead of being swallowed — retries converge because the
+		// upserts are deterministic and idempotent.
+		pendingBalanceRecords = append(pendingBalanceRecords, newRecord)
+		se.LedgerState.DropVirtual(k, func(v ledgerSystem.LedgerUpdate) bool {
+			return v.Type == "deposit"
 		})
-
-		se.LedgerState.VirtualLedger[k] = slices.DeleteFunc(
-			se.LedgerState.VirtualLedger[k],
-			func(v ledgerSystem.LedgerUpdate) bool {
-				return v.Type == "deposit"
-			},
-		)
+		se.profiler.Record(PhaseUpdateBalancesAccount, time.Since(accountStart))
 	}
+	// Fail-stop flush of the slot's balance records (see the loop above). A
+	// swallowed write here is exactly the failure the 2026-08 halt class was;
+	// the batch is deterministic upserts, so a partial write + retry converges.
+	blockingRetry(fmt.Sprintf("UpdateBalanceRecords(%d records @%d)", len(pendingBalanceRecords), endBlock), func() error {
+		return se.LedgerState.BalanceDb.UpdateBalanceRecords(pendingBalanceRecords)
+	})
 }
 
 // blockingRetry runs `read` until it returns a nil error, sleeping with
@@ -2522,16 +3106,20 @@ func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool)
 	return -unstakedAmount, true
 }
 
-func blockingRetry(what string, read func() error) {
+func blockingRetry(what string, read func() error, stallHook ...func(time.Duration)) {
 	const (
 		baseDelay = 100 * time.Millisecond
 		maxDelay  = 30 * time.Second
 	)
 	delay := baseDelay
+	stall := time.Duration(0)
 	for attempt := 1; ; attempt++ {
 		if err := read(); err == nil {
 			if attempt > 1 {
 				log.Error("DB read recovered; resuming slot", "op", what, "attempts", attempt)
+				if len(stallHook) > 0 && stall > 0 {
+					stallHook[0](stall)
+				}
 			}
 			return
 		} else {
@@ -2539,6 +3127,7 @@ func blockingRetry(what string, read func() error) {
 				"op", what, "attempt", attempt, "retryIn", delay.String(), "err", err)
 		}
 		time.Sleep(delay)
+		stall += delay
 		if delay < maxDelay {
 			if delay *= 2; delay > maxDelay {
 				delay = maxDelay
@@ -2560,6 +3149,8 @@ func (se *StateEngine) getLedgerRangeOrBlock(account string, start, end uint64, 
 		var err error
 		out, err = se.LedgerState.LedgerDb.GetLedgerRange(account, start, end, asset)
 		return err
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out
 }
@@ -2588,6 +3179,8 @@ func (se *StateEngine) GetElectionInfoOrBlock(height uint64) (elections.Election
 			return nil
 		}
 		return err // infra failure → keep blocking
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out, found
 }
@@ -2601,12 +3194,18 @@ func (se *StateEngine) getPendingActionsByEpochOrBlock(epoch uint64, t ...string
 		var err error
 		out, err = se.LedgerState.ActionDb.GetPendingActionsByEpoch(epoch, t...)
 		return err
+	}, func(d time.Duration) {
+		se.profiler.Record(PhaseDbStall, d)
 	})
 	return out
 }
 
 func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
+	stopUpdateRcMap := se.profiler.Start(PhaseUpdateRcMap)
+	defer stopUpdateRcMap()
+	records := make([]rcDb.RcRecord, 0, len(se.RcMap))
 	for k, v := range se.RcMap {
+		rcAccountStart := time.Now()
 		//Get the last rc record
 		rcRecord, _ := se.rcDb.GetRecord(k, blockHeight-1)
 
@@ -2623,7 +3222,11 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 		// to prevent frozen RC from accumulating beyond what the user owns.
 		balAmt := se.LedgerSystem.GetBalance(k, blockHeight, "hbd")
 		if strings.HasPrefix(k, "hive:") {
-			balAmt = balAmt + params.RC_HIVE_FREE_AMOUNT
+			// VR2-17: read the network-resolved allowance, NOT the params global.
+			// This site is a per-slot consensus path (it clamps the persisted RC
+			// checkpoint), so a stale value here would silently disagree with the
+			// budget CanConsume computed in the same block.
+			balAmt = balAmt + se.RcSystem.HiveFreeAmount
 		}
 		if rcBal > balAmt {
 			rcBal = balAmt
@@ -2632,14 +3235,18 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 			rcBal = 0
 		}
 
-		// B6: the caller clears this slot's consumption right after, so a
-		// dropped write loses the accounting with nothing to rebuild it from.
-		// RC gates transaction admission, so a node that under-counts admits
-		// transactions its peers reject. Fail-stop like the balance snapshot.
-		blockingRetry(fmt.Sprintf("rcDb.SetRecord(%s @%d)", k, blockHeight), func() error {
-			return se.rcDb.SetRecord(k, blockHeight, rcBal)
-		})
+		records = append(records, rcDb.RcRecord{Account: k, BlockHeight: blockHeight, Amount: rcBal})
+		se.profiler.Record(PhaseUpdateRcMapAccount, time.Since(rcAccountStart))
 	}
+	// Single round trip for the whole slot's RC map, under a fail-stop retry:
+	// the caller clears this slot's in-memory consumption right after, so a
+	// dropped write loses the accounting with nothing to rebuild it from
+	// (unlike balances, RCs are not a fold of an append-only log). RC gates
+	// transaction admission, so a node that under-counts admits transactions
+	// its peers reject. Retries converge — the upserts are deterministic.
+	blockingRetry(fmt.Sprintf("rcDb.SetRecords(%d records @%d)", len(records), blockHeight), func() error {
+		return se.rcDb.SetRecords(records)
+	})
 }
 
 // Append a contract output to the output map
@@ -2651,6 +3258,8 @@ func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
 }
 
 func (se *StateEngine) Flush() {
+	stopFlush := se.profiler.Start(PhaseFlush)
+	defer stopFlush()
 	se.ContractResults = make(map[string][]ContractResult)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
@@ -2662,6 +3271,8 @@ func (se *StateEngine) Flush() {
 // If not continue parsing from lastBlk
 // Need to test
 func (se *StateEngine) SaveBlockHeight(lastBlk uint64, lastSavedBlk uint64) uint64 {
+	stopSaveBlockHeight := se.profiler.Start(PhaseSaveBlockHeight)
+	defer stopSaveBlockHeight()
 
 	if lastBlk == 0 || lastSavedBlk == 0 {
 		return lastSavedBlk
@@ -2716,6 +3327,12 @@ func (se *StateEngine) Commit() {
 }
 
 func (se *StateEngine) Init() error {
+	initStart := time.Now()
+	defer func() {
+		se.profiler.Record(PhaseInit, time.Since(initStart))
+		seprofLog.Info("state engine init", "duration", time.Since(initStart).String())
+	}()
+
 	// One-time migration: deprecate any active keys that pre-date the expiry system.
 	// These keys have no ExpiryEpoch and would otherwise reshare forever.
 	// deprecated_height=0 means no retirement clock — they stay deprecated until renewed.
@@ -2853,6 +3470,17 @@ func (se *StateEngine) PendulumOracleEnv() map[string]interface{} {
 	return m
 }
 
+// resolveRcHiveFreeAmount returns the network's free-RC allowance from SystemConfig,
+// falling back to the production default when sconf is absent (tests construct a
+// StateEngine without one). VR2-17: this is the single place the value enters the
+// RC subsystem, so every reader downstream shares one network-derived number.
+func resolveRcHiveFreeAmount(sconf systemconfig.SystemConfig) int64 {
+	if sconf == nil {
+		return params.RC_HIVE_FREE_AMOUNT
+	}
+	return sconf.RcHiveFreeAmount()
+}
+
 func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	witnessesDb witnesses.Witnesses,
 	electionsDb elections.Elections,
@@ -2871,6 +3499,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	tssCommitments tss_db.TssCommitments,
 	tssRequests tss_db.TssRequests,
 	governanceDb governance_db.Governance,
+	poaSeatsDb poaseats.PoaSeats,
 	pendulumSettlementsDb pendulum_settlements.PendulumSettlements,
 	consensusStateDb consensus_state.ConsensusState,
 	wasm *wasm_runtime.Wasm,
@@ -2920,12 +3549,13 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		txDb:           txDb,
 		rcDb:           rcDb,
 		nonceDb:        nonceDb,
-		RcSystem:       rcSystem.New(rcDb, ls),
+		RcSystem:       rcSystem.New(rcDb, ls, resolveRcHiveFreeAmount(sconf)),
 		RcMap:          make(map[string]int64),
 		tssRequests:    tssRequests,
 		tssCommitments: tssCommitments,
 		tssKeys:        tssKeys,
 		governanceDb:   governanceDb,
+		poaSeats:       poaSeatsDb,
 
 		consensusState:   consensusStateDb,
 		consensusRuntime: NewConsensusRuntime(),
@@ -2942,6 +3572,7 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 		pendulumFeed:          pendulumoracle.NewFeedTracker(sconf.OnMainnet()),
 		pendulumSettlementsDb: pendulumSettlementsDb,
 		balanceDb:             balanceDb,
+		profiler:              newProfiler(),
 	}
 	if identityConfig != nil {
 		se.selfHiveUsername = identityConfig.Get().HiveUsername

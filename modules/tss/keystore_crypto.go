@@ -136,3 +136,42 @@ func keystoreGetDecrypted(ctx context.Context, ds datastore.Datastore, k datasto
 	}
 	return decryptKeystoreBlob(encKey, blob)
 }
+
+// zeroizeKeystoreEntry is BEST-EFFORT, DORMANT defence-in-depth secure erase of a
+// retired TSS key share (M1.4, Build Map §5a): it overwrites the stored value
+// with zeros of the same length before the caller deletes the datastore entry.
+//
+// DORMANT + SAFETY: the ONLY caller gates this behind VaultRotationV2Enabled AND
+// the retirement path itself is still the legacy time-gate under
+// KeyRetirementEnabled (false on mainnet) — the real fund-gated trigger is S5. It
+// must NEVER fire on the current time-gated retirement: securely erasing the share
+// of a key whose migration merely STALLED would turn a recoverable freeze into
+// permanent, unrecoverable loss. Hence dormant behind the rotation flag until the
+// fund gate lands.
+//
+// HONEST LIMITATION: shares are already AES-256-GCM encrypted at rest (see
+// encryptKeystoreBlob), which is the PRIMARY confidentiality control. On the
+// flatfs datastore a Put writes a temp file and renames it over the key, so this
+// is a LOGICAL overwrite (the value can no longer be read back) + unlink; it does
+// NOT guarantee the original ciphertext blocks are physically overwritten (temp+
+// rename leaves old blocks for the FS to reclaim; SSD wear-levelling can retain
+// copies). True physical erasure needs a custom datastore. This is deliberately
+// defence-in-depth ON TOP OF the encryption, not a substitute for it.
+func zeroizeKeystoreEntry(ctx context.Context, ds datastore.Datastore, k datastore.Key) error {
+	blob, err := ds.Get(ctx, k)
+	if err != nil {
+		if errors.Is(err, datastore.ErrNotFound) {
+			return nil // nothing to overwrite; the caller's Delete is a no-op
+		}
+		return err
+	}
+	zero := make([]byte, len(blob))
+	if err := ds.Put(ctx, k, zero); err != nil {
+		return err
+	}
+	// Also clear the in-memory copy we just read back.
+	for i := range blob {
+		blob[i] = 0
+	}
+	return nil
+}

@@ -550,8 +550,7 @@ func (w *Wasm) Execute(
 	defer vm.Release()
 
 	type initResult struct {
-		mods     []*wasmedge.Module
-		byteCode []byte
+		mods []*wasmedge.Module
 	}
 
 	strCode := ctx.Value(wasm_context.WasmExecCodeCtxKey).(string)
@@ -585,8 +584,7 @@ func (w *Wasm) Execute(
 	}, retChan, importGm))
 
 	init := initResult{
-		mods:     mods,
-		byteCode: code,
+		mods: mods,
 	}
 
 	defer func() {
@@ -595,9 +593,42 @@ func (w *Wasm) Execute(
 		}
 	}()
 
-	err := vm.RegisterWasmBuffer("contract", init.byteCode)
+	// Parsed bytecode is cached by code hash; only the first call to a given
+	// contract pays the load/parse cost. Instances are still created per VM.
+	// acquire() returns nil only if the entry was evicted mid-lookup, in which
+	// case it is reloaded (getOrLoadBytecode skips dead entries).
+	var ast *wasmedge.AST
+	var bc *cachedBytecode
+	var err error
+	for attempts := 0; attempts < 8; attempts++ {
+		bc, err = getOrLoadBytecode(code)
+		if err != nil {
+			// Same text as the 0.3.0 build, whose RegisterWasmBuffer fails with the
+			// identical loader error: the text lands in the contract output and so in
+			// the block, and a different string on upgraded nodes splits a mixed fleet.
+			errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
+			return wasm_types.WasmResultStruct{
+				Error:     &errStr,
+				ErrorCode: contracts.WASM_INIT_ERROR,
+				Gas:       vm.GetStatistics().GetTotalCost(),
+			}
+		}
+		if ast = bc.acquire(); ast != nil {
+			break
+		}
+	}
+	if ast == nil {
+		// The cache entry kept being evicted: register from the raw bytes, as the
+		// 0.3.0 build always did, rather than fail a call its peers execute.
+		err = vm.RegisterWasmBuffer("contract", code)
+	} else {
+		err = vm.RegisterAST("contract", ast)
+		bc.release()
+	}
 
 	if err != nil {
+		// Same text and gas as the 0.3.0 build's RegisterWasmBuffer (instantiation
+		// errors such as "cost limit exceeded" are identical on both paths).
 		errStr := fmt.Errorf("failed to register wasm buffer: %w", err).Error()
 		return wasm_types.WasmResultStruct{
 			Error:     &errStr,

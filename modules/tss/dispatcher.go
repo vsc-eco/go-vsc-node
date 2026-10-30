@@ -12,11 +12,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "github.com/btcsuite/btcd/btcec"
 
 	"vsc-node/lib/utils"
+	"vsc-node/modules/common/consensusversion"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v3/common"
@@ -56,6 +58,30 @@ type Dispatcher interface {
 	// Cancels msgCtx (so reshareMsgs/handleMsgs goroutines exit) and releases
 	// startLock (so any HandleP2P callers blocked in startWait unblock).
 	Cleanup()
+}
+
+// partyLister reports the accounts of a session's parties, for attributing a
+// round message to the account that is actually in the session (B1, rpc.go
+// senderAccount). The lists are set when the dispatcher is built, before it is
+// registered in actionMap, and never reassigned, so the RPC goroutine may read them.
+type partyLister interface {
+	partyAccounts() []string
+}
+
+func (dispatcher *BaseDispatcher) partyAccounts() []string {
+	out := make([]string, 0, len(dispatcher.participants))
+	for _, p := range dispatcher.participants {
+		out = append(out, p.Account)
+	}
+	return out
+}
+
+func (dispatcher *ReshareDispatcher) partyAccounts() []string {
+	out := dispatcher.BaseDispatcher.partyAccounts()
+	for _, p := range dispatcher.newParticipants {
+		out = append(out, p.Account)
+	}
+	return out
 }
 
 type ReshareDispatcher struct {
@@ -165,14 +191,24 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		newPids = append(newPids, pi)
 	}
 
-	//@todo add fail case when node is not in next party
-	//@todo add fail case when node is not in old party
 	var myNewParty *btss.PartyID
 	dispatcher.newPids = btss.SortPartyIDs(newPids)
 	for _, p := range dispatcher.newPids {
 		if p.Id == userId {
 			myNewParty = p
 		}
+	}
+
+	// A node in neither committee has no party to run (both are created only for
+	// a member below), so its session could only sit until ReshareTimeout and end
+	// as an empty-culprit timeout, which no participant's result matches. That is
+	// the routine case for a node that held back its readiness (TSS-BATCH-1) or is
+	// blamed or banned, and as the rotate leader it would ask the committee to sign
+	// that empty blame instead of the batch. Refuse to start, as keygen and
+	// signing already do for a node outside their committee.
+	if myParty == nil && myNewParty == nil {
+		log.Verbose("node in neither reshare committee", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
+		return fmt.Errorf("node not part of reshare committees")
 	}
 
 	newP2pCtx := btss.NewPeerContext(dispatcher.newPids)
@@ -235,6 +271,49 @@ func (dispatcher *ReshareDispatcher) Start() error {
 		endOld := make(chan *keyGenSecp256k1.LocalPartySaveData)
 
 		save := keyGenSecp256k1.NewLocalPartySaveData(len(dispatcher.newPids))
+
+		// B1: pre-warm the NEW party's Paillier parameters.
+		//
+		// Unlike keygen, reshare had no pre-parameter pool read, so `save` went to
+		// NewLocalParty zero-valued. tss-lib then falls through
+		// resharing/round_2_new_step_1.go's else-branch and generates 1024-bit safe
+		// primes SYNCHRONOUSLY, inside round 2, under the party mutex. Its budget
+		// (SafePrimeGenTimeout, 5 min) can exceed the outer ReshareTimeout (2 min),
+		// so for a new-only node the held mutex froze the idle timer into a hard
+		// ceiling and the reshare wedged. Supplying validated pre-params makes
+		// round 2 take the fast path instead (it uses them iff ValidateWithProof).
+		//
+		// ECDSA ONLY: the EdDSA save data has no LocalPreParams/Paillier fields and
+		// its resharing round 2 never calls GeneratePreParams, so mirroring this
+		// into the EdDSA branch below would be a no-op.
+		//
+		// Only a node joining the NEW committee needs them. The read is bounded
+		// (VR2-18): an empty or failing pool must clean-fail and retry next
+		// interval, never block while tssMgr.lock is held.
+		//
+		// Not below the 0.7.0 line (reshareTakesPooledPreParams): the 0.3.0 build
+		// generates in round 2, and a mixed committee where only the 0.3.0 member
+		// is slow leaves it as the one party everyone else waits on, so it is the
+		// one blamed and banned. Below the line every node generates in round 2.
+		if myNewParty != nil && dispatcher.tssMgr.reshareTakesPooledPreParams(dispatcher.blockHeight) {
+			// Async, for the same 2x reason as the keygen path above.
+			go dispatcher.tssMgr.GeneratePreParams()
+			preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+			if ppErr != nil {
+				// BEHAVIOUR CHANGE, stated plainly: before this, a reshare with a cold
+				// pool fell through to tss-lib's OWN in-round generation, which carries
+				// a 5-minute SafePrimeGenTimeout — slow, mutex-held, and the wedge this
+				// fix exists to remove, but it had 5 minutes to succeed. Now a cold pool
+				// clean-fails after PreParamsTimeout (1 minute by default, since no
+				// network sets it) and retries a whole rotate interval later. That is
+				// deliberate — a predictable retry beats a mutex-held wedge that usually
+				// blew past ReshareTimeout anyway — but it NARROWS the cold-start margin
+				// on the rotation-critical path, so PreParamsTimeout must be sized from a
+				// real low-core benchmark before this is relied on in production.
+				return ppErr
+			}
+			save.LocalPreParams = preParams
+		}
 
 		go dispatcher.reshareMsgs()
 
@@ -375,22 +454,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 					keydata, _ := json.Marshal(reshareResult)
 
-					k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-					if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
-						log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-					} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
-						log.Error("reshared keystore write failed", "algo", "ECDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
-					}
-
-					dispatcher.result = &ReshareResult{
-						Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
-						KeyId:       dispatcher.keyId,
-						SessionId:   dispatcher.sessionId,
-						NewEpoch:    dispatcher.newEpoch,
-						BlockHeight: dispatcher.blockHeight,
-					}
-
-					dispatcher.signalDone()
+					dispatcher.storeReshareResult("ECDSA", keydata)
 					return
 				}
 			}
@@ -526,22 +590,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 
 				keydata, _ := json.Marshal(reshareResult)
 
-				k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
-				if encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey(); encErr != nil {
-					log.Error("keystore encryption key error, NOT writing reshared key in clear", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-				} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey); ksErr != nil {
-					log.Error("reshared keystore write failed", "algo", "EdDSA", "keyId", dispatcher.keyId, "err", ksErr, "sessionId", dispatcher.sessionId)
-				}
-
-				dispatcher.result = &ReshareResult{
-					Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
-					KeyId:       dispatcher.keyId,
-					SessionId:   dispatcher.sessionId,
-					NewEpoch:    dispatcher.newEpoch,
-					BlockHeight: dispatcher.blockHeight,
-				}
-
-				dispatcher.signalDone()
+				dispatcher.storeReshareResult("EdDSA", keydata)
 				return
 			}
 		}()
@@ -553,11 +602,44 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	return nil
 }
 
+// storeReshareResult writes this node's share of the reshared key under the
+// new epoch and records the session's success result.
+func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []byte) {
+	k := makeKey("key", dispatcher.keyId, int(dispatcher.newEpoch))
+	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+	if err == nil {
+		err = keystorePutEncrypted(context.Background(), dispatcher.keystore, k, keydata, encKey)
+	}
+	if err != nil {
+		log.Error("reshared key share NOT saved, not reporting success", "algo", algo, "keyId", dispatcher.keyId, "err", err, "sessionId", dispatcher.sessionId)
+		dispatcher.shareErr = fmt.Errorf("reshared key share not saved: %w", err)
+		dispatcher.signalDone()
+		return
+	}
+
+	dispatcher.result = &ReshareResult{
+		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+		KeyId:       dispatcher.keyId,
+		SessionId:   dispatcher.sessionId,
+		NewEpoch:    dispatcher.newEpoch,
+		BlockHeight: dispatcher.blockHeight,
+	}
+
+	dispatcher.signalDone()
+}
+
 func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
 
+		if dispatcher.shareErr != nil {
+			log.Warn("reshare done: share not saved, not vouching for the session", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", dispatcher.shareErr)
+			reject(dispatcher.shareErr)
+			return
+		}
+
 		tssErr, culprits, errorText := dispatcher.snapshotTssError()
+		accused := dispatcher.accusedAfterTimeout()
 
 		log.Verbose("reshare done called", "sessionId", dispatcher.sessionId, "timeout", dispatcher.timeout, "hasTssErr", tssErr != nil, "culpritCount", len(culprits), "hasErr", dispatcher.err != nil, "hasResult", dispatcher.result != nil)
 
@@ -593,6 +675,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				tssErr:      tssErr,
 				Culprits:    culprits,
 				ErrorText:   errorText,
+				Accused:     accused,
+				OldEpoch:    dispatcher.epoch,
 				SessionId:   dispatcher.sessionId,
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
@@ -671,6 +755,37 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 			for c := range culprits {
 				culpritsList = append(culpritsList, c)
 			}
+
+			// B3a: FAIL CLEANLY rather than naming names.
+			//
+			// WaitingFor() is pure local boolean state with no cryptographic content
+			// whatsoever. It says "I have not received X's message yet", which is not
+			// evidence that X withheld it: a slow link, a partition, or a node that is
+			// itself blocked upstream all produce the identical set. Two honest nodes
+			// therefore compute DIFFERENT culprit sets for the same session, so the
+			// blame never converges — and one withholder can make every other node
+			// name an innocent third party. Blame built on it can frame an honest
+			// validator, and blame drives committee exclusion.
+			//
+			// The diagnostic above is kept in full, because locally it is genuinely
+			// useful; what stops is publishing it as an accusation. Proper attribution
+			// needs signed per-message receipts and a vote rule over them, which is a
+			// protocol layer tss-lib's message model does not have and is its own
+			// design track, not a patch.
+			//
+			// STILL OPEN, and deliberately not claimed as fixed (B3b): this removes the
+			// only path feeding a blame score for this failure mode, so a repeat
+			// griefer can wedge rotations at zero cost and never be excluded. The
+			// honest-victim half is closed; the griefer half is not.
+			if consensusversion.BlsWeightDedupActive(
+				dispatcher.tssMgr.scheduler.TssMinimumConsensusVersion(dispatcher.blockHeight)) {
+				if len(culpritsList) > 0 {
+					log.Warn("reshare timeout blame withheld: WaitingFor cannot distinguish a withholder from a victim",
+						"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+						"wouldHaveBlamed", culpritsList)
+				}
+				culpritsList = culpritsList[:0]
+			}
 			resolve(TimeoutResult{
 				tssMgr:   dispatcher.tssMgr,
 				Culprits: culpritsList,
@@ -679,6 +794,8 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.newEpoch,
+				Accused:     accused,
+				OldEpoch:    dispatcher.epoch,
 			})
 			return
 		}
@@ -699,6 +816,7 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 				KeyId:       dispatcher.keyId,
 				BlockHeight: dispatcher.blockHeight,
 				Epoch:       dispatcher.newEpoch,
+				OldEpoch:    dispatcher.epoch, // POA-8 statements only; not serialized
 			})
 			return
 		}
@@ -715,6 +833,25 @@ func (dispatcher *ReshareDispatcher) Done() *promise.Promise[DispatcherResult] {
 		log.Error("reshare done: signalled with no result and no error", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 		reject(fmt.Errorf("reshare dispatcher signalled done with no result"))
 	})
+}
+
+// accusedAfterTimeout is this node's accused set for a reshare that stalled
+// (POA-8, 0.9.0): the parties its new party still waits on. Only after the
+// timeout fired, when WaitingFor describes the stall; empty below 0.9.0 and on
+// every other path. btss error culprits are left out on purpose (a bad old
+// party 0 gets party 1 blamed by everyone, see accuse.go). Feeds the
+// per-accused statements only, never the session's own blame commitment.
+func (dispatcher *ReshareDispatcher) accusedAfterTimeout() []string {
+	if !dispatcher.timeout || dispatcher.newParty == nil {
+		return nil
+	}
+	waiting := make([]string, 0)
+	for _, p := range dispatcher.newParty.WaitingFor() {
+		waiting = append(waiting, p.Id)
+	}
+	return accusedIfActive(
+		dispatcher.tssMgr.scheduler.TssMinimumConsensusVersion(dispatcher.blockHeight),
+		dispatcher.tssMgr.config.Get().HiveUsername, waiting)
 }
 
 func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isBrcst bool, cmt string, fromCmt string) {
@@ -756,7 +893,9 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 
 	if cmt == "both" || cmt == "old" {
 		if dispatcher.party != nil {
+			dispatcher.processing.Add(1)
 			go func() {
+				defer dispatcher.processing.Add(-1)
 				defer func() {
 					if r := recover(); r != nil {
 						// N-L4: a panic here is consensus-unsafe to turn
@@ -784,7 +923,9 @@ func (dispatcher *ReshareDispatcher) HandleP2P(input []byte, fromStr string, isB
 	}
 	if cmt == "both" || cmt == "new" {
 		if dispatcher.newParty != nil {
+			dispatcher.processing.Add(1)
 			go func() {
+				defer dispatcher.processing.Add(-1)
 				defer func() {
 					if r := recover(); r != nil {
 						// N-L4: deliberately NOT routed to recordTssError.
@@ -900,10 +1041,6 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	newPids btss.SortedPartyIDs,
 	maxWait time.Duration,
 ) bool {
-	startTime := time.Now()
-	checkInterval := 500 * time.Millisecond
-	maxChecks := int(maxWait / checkInterval)
-
 	allParticipants := make(map[string]bool)
 	for _, p := range oldPids {
 		allParticipants[p.Id] = true
@@ -911,13 +1048,44 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 	for _, p := range newPids {
 		allParticipants[p.Id] = true
 	}
+	return waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, allParticipants, maxWait)
+}
+
+// waitForParticipantsReady is the ABORT-GATE both key ceremonies share: it waits
+// until at least threshold+1 of the participants are reachable, and reports
+// failure if they never are.
+//
+// The important property is what it does NOT do. It never drops an unreachable
+// participant from the ceremony, and it never recomputes the threshold from a
+// filtered subset — reshare's own code warns that "using the filtered subset size
+// produces wrong coefficients and corrupts the key". The threshold always comes
+// from the FULL participant set, so unreachability can delay or abort a ceremony
+// but never resize it.
+//
+// VR2-08: keygen had no readiness check at all, so a ceremony that could not
+// possibly complete started anyway and burned its whole window before failing.
+// Gating cannot lose a ceremony that would have succeeded — below threshold+1
+// reachable it could not have — and turns a slow, opaque failure into an
+// immediate, diagnosable one.
+func waitForParticipantsReady(
+	tssMgr *TssManager,
+	sessionId string,
+	allParticipants map[string]bool,
+	maxWait time.Duration,
+) bool {
+	startTime := time.Now()
+	checkInterval := 500 * time.Millisecond
+	maxChecks := int(maxWait / checkInterval)
 
 	connectedCount := 0
 	totalCount := len(allParticipants)
+	if totalCount == 0 {
+		return false
+	}
 
-	log.Verbose("checking participant readiness", "sessionId", dispatcher.sessionId, "totalParticipants", totalCount)
+	log.Verbose("checking participant readiness", "sessionId", sessionId, "totalParticipants", totalCount)
 
-	selfAccount := dispatcher.tssMgr.config.Get().HiveUsername
+	selfAccount := tssMgr.config.Get().HiveUsername
 
 	for i := 0; i < maxChecks; i++ {
 		connectedCount = 0
@@ -928,7 +1096,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			witness, err := dispatcher.tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
+			witness, err := tssMgr.witnessDb.GetWitnessAtHeight(account, nil)
 			if err != nil {
 				continue
 			}
@@ -938,7 +1106,7 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 				continue
 			}
 
-			host := dispatcher.tssMgr.p2p.Host()
+			host := tssMgr.p2p.Host()
 			connState := host.Network().Connectedness(peerId)
 			if connState == network.Connected {
 				connectedCount++
@@ -946,21 +1114,21 @@ func (dispatcher *ReshareDispatcher) waitForParticipantReadiness(
 		}
 
 		readinessPercent := float64(connectedCount) / float64(totalCount) * 100.0
-		log.Verbose("readiness check", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
+		log.Verbose("readiness check", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "readinessPercent", readinessPercent, "elapsed", time.Since(startTime))
 
 		// Require at least threshold+1 participants to be connected
 		threshold, _ := tss_helpers.GetThreshold(totalCount)
 		minRequired := threshold + 1
 
 		if connectedCount >= minRequired {
-			log.Verbose("sufficient participants ready", "sessionId", dispatcher.sessionId, "connected", connectedCount, "required", minRequired)
+			log.Verbose("sufficient participants ready", "sessionId", sessionId, "connected", connectedCount, "required", minRequired)
 			return true
 		}
 
 		time.Sleep(checkInterval)
 	}
 
-	log.Warn("readiness check timeout", "sessionId", dispatcher.sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
+	log.Warn("readiness check timeout", "sessionId", sessionId, "connected", connectedCount, "total", totalCount, "elapsed", time.Since(startTime))
 	return false
 }
 
@@ -973,6 +1141,21 @@ type SignDispatcher struct {
 	origCommitteeSize  int // full committee size before readiness filtering
 
 	result *KeySignResult
+}
+
+// leaderInParty reports whether `leader` (the slot's witness-leader account) is a
+// participant of this sign session's party. NT-3 publishes a sign result from the
+// leader when true, and from every completer when false (the leader holds no result
+// for a key whose committee has churned out of the election). A false-positive here
+// (returning true when the leader is NOT a party member) would strand such a sign,
+// so it is unit-tested: TestSignDispatcherLeaderInParty.
+func (dispatcher *SignDispatcher) leaderInParty(leader string) bool {
+	for _, p := range dispatcher.participants {
+		if p.Account == leader {
+			return true
+		}
+	}
+	return false
 }
 
 func (dispatcher *SignDispatcher) Start() error {
@@ -1273,9 +1456,19 @@ type BaseDispatcher struct {
 	// (which embeds the local party's sorted index) from the stored text.
 	// Lazy-initialized; read/write under p2pMu.
 	tssErrors map[string]map[string]bool
-	timeout   bool
-	p2pMu     sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
+	// dropUnattributableCulprits (TSS-FRAME-1, 0.9.0): record an error whose
+	// culprit is not the author of the bad data without that culprit. Set once
+	// from the session height, so every node decides the same way.
+	dropUnattributableCulprits bool
+	timeout                    bool
+	p2pMu                      sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
+
+	// shareErr is set when this node finished a keygen or reshare but could
+	// not save its share. Done rejects on it before every other branch: a
+	// share that is not on disk cannot sign later, so the node must not vouch
+	// for a commitment naming it a holder, nor emit a blame.
+	shareErr error
 
 	done       chan struct{}
 	msgCtx     context.Context // cancelled by signalDone to unblock message-loop goroutines
@@ -1292,6 +1485,14 @@ type BaseDispatcher struct {
 
 	lastMsg   time.Time
 	isReshare bool // true when this is a ReshareDispatcher (use longer timeout)
+
+	// processing counts UpdateFromBytes calls in progress. tss-lib runs the next
+	// round's Start (the heavy proofs) inside the Update that completes a round,
+	// holding the party lock, so while this node computes no other message is
+	// processed and lastMsg stands still. Off mainnet the timeout monitor counts a
+	// call in progress as activity (timeoutDecision), so a slow but working node
+	// does not time itself out of a session its peers would finish.
+	processing atomic.Int64
 
 	failedMsgs     []failedMsg
 	failedMsgsLock sync.Mutex
@@ -1489,6 +1690,43 @@ func (dispatcher *BaseDispatcher) startWait() {
 	}
 }
 
+// unattributableTssCauses are the tss-lib v3 errors whose named culprit is not
+// the author of the bad data (TSS-FRAME-1). Each compares a party's value with
+// one ANOTHER party supplied, or blames one party for a point summed from every
+// party's commitments, so a single lying party can make honest nodes agree on an
+// honest culprit. Matched on the cause text, which is fixed in the pinned module
+// (tss-lib/v3 v3.0.0); tss_frame1_test.go drives the real rounds to produce the
+// ssid, public-key and h1 cases.
+var unattributableTssCauses = map[string]bool{
+	// ecdsa/resharing round 2: every old party's SSID is compared with old party 0's.
+	"ssid mismatch": true,
+	// ecdsa+eddsa/resharing round 1: old party 0's key, replaceable by resending
+	// its message, is compared with the first one seen; the party whose message
+	// is being processed is named.
+	"ecdsa pub key did not match what we received previously": true,
+	"eddsa pub key did not match what we received previously": true,
+	// Same site: the key that fails to parse is old party 0's, the party named is
+	// the one being processed.
+	"unable to unmarshal the ecdsa pub key": true,
+	"unable to unmarshal the eddsa pub key": true,
+	// ecdsa keygen round 2 and resharing round 4: the later index is named, so a
+	// party that copies an honest party's public h1/h2 frames it.
+	"this h1j was already used by another party": true,
+	"this h2j was already used by another party": true,
+	// ecdsa+eddsa keygen round 3: the sum of every party's commitments fails, the
+	// party whose term was being added is named.
+	"adding PjVs[c] to Vc[c] resulted in a point not on the curve":             true,
+	"adding Vc[c].ScalarMult(z) to BigXj resulted in a point not on the curve": true,
+}
+
+// eddsa/resharing round 4 wraps its aggregate-point error (the new party named
+// only contributes its index), so it is matched by prefix.
+const unattributableTssCausePrefix = "newBigXj.Add(Vc[c].ScalarMult(z))"
+
+func isUnattributableTssCause(cause string) bool {
+	return unattributableTssCauses[cause] || strings.HasPrefix(cause, unattributableTssCausePrefix)
+}
+
 // recordTssError stores the first btss error (kept for fall-back logging)
 // and accumulates each (culprit, cause) pair into tssErrors. Stores
 // err.Cause().Error() rather than err.Error() so the recorded text omits
@@ -1497,15 +1735,27 @@ func (dispatcher *BaseDispatcher) startWait() {
 func (dispatcher *BaseDispatcher) recordTssError(err *btss.Error) {
 	dispatcher.p2pMu.Lock()
 	defer dispatcher.p2pMu.Unlock()
+	cause := ""
+	if c := err.Cause(); c != nil {
+		cause = c.Error()
+	}
+	if dispatcher.dropUnattributableCulprits && isUnattributableTssCause(cause) && len(err.Culprits()) > 0 {
+		// TSS-FRAME-1: the session still failed, but nobody is named for it.
+		// Keep a culprit-free copy so ErrorResult.Serialize's fallback to
+		// tssErr.Culprits() cannot bring the culprit back.
+		named := make([]string, 0, len(err.Culprits()))
+		for _, c := range err.Culprits() {
+			named = append(named, c.GetId())
+		}
+		log.Warn("tss error names a party that did not author the bad data; not blamed",
+			"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "cause", cause, "wouldHaveBlamed", named)
+		err = btss.NewError(err.Cause(), err.Task(), err.Round(), err.Victim())
+	}
 	if dispatcher.tssErr == nil {
 		dispatcher.tssErr = err
 	}
 	if dispatcher.tssErrors == nil {
 		dispatcher.tssErrors = make(map[string]map[string]bool)
-	}
-	cause := ""
-	if c := err.Cause(); c != nil {
-		cause = c.Error()
 	}
 	for _, c := range err.Culprits() {
 		culprit := string(c.GetId())
@@ -1575,7 +1825,9 @@ func (dispatcher *BaseDispatcher) HandleP2P(input []byte, fromStr string, isBrcs
 		return
 	}
 
+	dispatcher.processing.Add(1)
 	go func() {
+		defer dispatcher.processing.Add(-1)
 		ok, err := dispatcher.party.UpdateFromBytes(input, from, isBrcst)
 
 		log.Trace("update party", "ok", ok, "inputLen", len(input), "from", from.Id)
@@ -1627,6 +1879,7 @@ func (dispatcher *BaseDispatcher) baseStart() {
 	go dispatcher.retryFailedMsgs()
 
 	dispatcher.lastMsg = time.Now()
+	extend := extendTimeoutWhileProcessing(dispatcher.tssMgr.sconf.OnMainnet())
 	log.Trace("starting timeout monitor", "sessionId", dispatcher.sessionId, "timeout", timeout, "lastMsg", dispatcher.lastMsg)
 	go func() {
 		timer := time.NewTimer(timeout)
@@ -1641,9 +1894,14 @@ func (dispatcher *BaseDispatcher) baseStart() {
 				lastMsg := dispatcher.lastMsg
 				dispatcher.p2pMu.Unlock()
 				elapsed := time.Since(lastMsg)
-				if elapsed < timeout {
-					// Activity happened since the timer started; reset for remaining time
-					timer.Reset(timeout - elapsed)
+				processing := extend && dispatcher.processing.Load() > 0
+				if fire, wait := timeoutDecision(elapsed, timeout, processing); !fire {
+					// Activity since the timer started, or this node is still
+					// processing a message: look again later.
+					if processing && elapsed >= timeout {
+						log.Debug("session quiet but still processing a message; not timing out yet", "sessionId", dispatcher.sessionId, "elapsed", elapsed, "timeout", timeout)
+					}
+					timer.Reset(wait)
 					continue
 				}
 
@@ -1668,6 +1926,38 @@ func (dispatcher *BaseDispatcher) baseStart() {
 
 	dispatcher.started = true
 	dispatcher.startLock.Unlock()
+}
+
+// timeoutRecheck is how often the timeout monitor looks again while the session
+// is quiet but this node is still processing a message.
+const timeoutRecheck = time.Second
+
+// maxComputeHold bounds how long past the timeout a message in progress holds
+// the session open. A round's computation takes what the hardware needs, not a
+// share of the configured timeout: on a 5-node devnet one update ran 24-33s
+// against a 20s timeout. The bound only matters for a call that never returns.
+var maxComputeHold = 2 * time.Minute
+
+// timeoutDecision says whether the session monitor times the session out now,
+// or how long to wait before looking again. The session times out once no
+// message has been processed for timeout. A message still being processed
+// (processing) counts as activity too, for up to maxComputeHold past the
+// timeout, so a call that never returns still times out.
+func timeoutDecision(sinceLastMsg, timeout time.Duration, processing bool) (fire bool, wait time.Duration) {
+	if sinceLastMsg < timeout {
+		return false, timeout - sinceLastMsg
+	}
+	limit := timeout + maxComputeHold
+	if processing && sinceLastMsg < limit {
+		return false, min(timeoutRecheck, limit-sinceLastMsg)
+	}
+	return true, 0
+}
+
+// extendTimeoutWhileProcessing reports whether a message in progress holds the
+// session timeout off. Off on mainnet, which keeps its timeout as it is.
+func extendTimeoutWhileProcessing(onMainnet bool) bool {
+	return !onMainnet
 }
 
 func (dispatcher *BaseDispatcher) baseInfo() (btss.SortedPartyIDs, *btss.PartyID, *btss.PeerContext) {
@@ -1723,12 +2013,53 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 		return fmt.Errorf("node not part of keygen committee")
 	}
 
+	// VR2-08: refuse to start a ceremony that cannot complete.
+	//
+	// Reshare has had this abort-gate all along; keygen had no readiness check at
+	// all, so a DKG whose committee was unreachable started regardless and consumed
+	// its entire window before failing — with no signal distinguishing "the network
+	// is not there" from "the ceremony went wrong".
+	//
+	// It cannot cost a ceremony that would have succeeded: below threshold+1
+	// reachable, the DKG could not have completed anyway. And it deliberately does
+	// NOT exclude the unreachable parties and shrink the committee — that would
+	// recompute the threshold from a filtered subset, which reshare's own code warns
+	// "produces wrong coefficients and corrupts the key". Delay or abort, never
+	// resize.
+	//
+	// Not below the 0.7.0 line (keygenReadinessGateActive): the 0.3.0 build starts
+	// every keygen and reaches its peers by dialling them, so a node that aborts
+	// here while a 0.3.0 member starts is the one the failed session blames.
+	if dispatcher.tssMgr.keygenReadinessGateActive(dispatcher.blockHeight) {
+		reachable := make(map[string]bool, len(dispatcher.participants))
+		for _, p := range dispatcher.participants {
+			reachable[p.Account] = true
+		}
+		syncDelay := dispatcher.tssMgr.sconf.TssParams().ReshareSyncDelay
+		if !waitForParticipantsReady(dispatcher.tssMgr, dispatcher.sessionId, reachable, syncDelay) {
+			log.Warn("keygen aborted: too few participants reachable",
+				"sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId,
+				"participants", len(dispatcher.participants))
+			return fmt.Errorf("keygen aborted: fewer than threshold+1 participants reachable")
+		}
+	}
+
 	log.Info("starting DKG", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "participants", len(dispatcher.participants), "algo", dispatcher.algo)
 
 	if dispatcher.algo == tss_helpers.SigningAlgoEcdsa {
 		end := make(chan *keyGenSecp256k1.LocalPartySaveData)
-		dispatcher.tssMgr.GeneratePreParams()
-		preParams := <-dispatcher.tssMgr.preParams
+		// Kick generation off ASYNCHRONOUSLY. Calling it inline would block this
+		// goroutine for a FULL PreParamsTimeout doing the generation itself, and
+		// awaitPreParams would then wait another full budget on top — a 2x worst
+		// case, all of it with tssMgr.lock held. Async keeps the bound at 1x.
+		go dispatcher.tssMgr.GeneratePreParams()
+		// VR2-18: bounded. A bare receive here blocked forever on an empty/failed
+		// pool while holding tssMgr.lock, silently freezing this node's entire TSS
+		// participation until restart.
+		preParams, ppErr := dispatcher.tssMgr.awaitPreParams(dispatcher.msgCtx, dispatcher.sessionId)
+		if ppErr != nil {
+			return ppErr
+		}
 		parameters := btss.NewParameters(btss.S256(), p2pCtx, myParty, pl, threshold)
 		applySessionNonce(parameters, dispatcher.sessionId)
 		dispatcher.party = keyGenSecp256k1.NewLocalParty(parameters, dispatcher.p2pMsg, end, preParams)
@@ -1764,27 +2095,7 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			bytes, _ := json.Marshal(savedOutput)
 
-			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-			if encErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
-			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
-			} else {
-				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
-			}
-
-			dispatcher.result = &KeyGenResult{
-				PublicKey:   pubBytes,
-				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
-				SavedSecret: bytes,
-				SessionId:   dispatcher.sessionId,
-				KeyId:       dispatcher.keyId,
-
-				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
-			}
-			dispatcher.signalDone()
+			dispatcher.storeKeygenResult(pubBytes, bytes)
 		}()
 	} else if dispatcher.algo == tss_helpers.SigningAlgoEddsa {
 		end := make(chan *keyGenEddsa.LocalPartySaveData)
@@ -1820,36 +2131,51 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 
 			bytes, _ := json.Marshal(savedOutput)
 
-			k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-			encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-			if encErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", encErr)
-			} else if ksErr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, bytes, encKey); ksErr != nil {
-				log.Info("keystore write failed", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", ksErr)
-			} else {
-				log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
-			}
-
-			dispatcher.result = &KeyGenResult{
-				PublicKey:   pubBytes,
-				Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
-				SavedSecret: bytes,
-				SessionId:   dispatcher.sessionId,
-				KeyId:       dispatcher.keyId,
-
-				BlockHeight: dispatcher.blockHeight,
-				Epoch:       dispatcher.epoch,
-			}
-			dispatcher.signalDone()
+			dispatcher.storeKeygenResult(pubBytes, bytes)
 		}()
 	}
 	dispatcher.baseStart()
 	return nil
 }
 
+// storeKeygenResult writes this node's share of the new key and records the
+// session's success result.
+func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
+	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
+	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
+	if err == nil {
+		err = keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey)
+	}
+	if err != nil {
+		log.Error("keygen key share NOT saved, not reporting success", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", err)
+		dispatcher.shareErr = fmt.Errorf("key share not saved: %w", err)
+		dispatcher.signalDone()
+		return
+	}
+	log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
+
+	dispatcher.result = &KeyGenResult{
+		PublicKey:   pubBytes,
+		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
+		SavedSecret: saved,
+		SessionId:   dispatcher.sessionId,
+		KeyId:       dispatcher.keyId,
+
+		BlockHeight: dispatcher.blockHeight,
+		Epoch:       dispatcher.epoch,
+	}
+	dispatcher.signalDone()
+}
+
 func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 	return promise.New(func(resolve func(DispatcherResult), reject func(error)) {
 		<-dispatcher.done
+
+		if dispatcher.shareErr != nil {
+			log.Warn("keygen done: share not saved, not vouching for the session", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", dispatcher.shareErr)
+			reject(dispatcher.shareErr)
+			return
+		}
 
 		tssErr, culprits, errorText := dispatcher.snapshotTssError()
 
@@ -2050,6 +2376,11 @@ type ErrorResult struct {
 	// to tssErr.Error() in Serialize when empty (degenerate path).
 	ErrorText string
 
+	// Accused and OldEpoch feed the per-accused statements of a failed
+	// reshare (POA-8, 0.9.0; see accuse.go). Never part of Serialize().
+	Accused  []string
+	OldEpoch uint64
+
 	SessionId   string
 	KeyId       string
 	BlockHeight uint64
@@ -2123,6 +2454,11 @@ type TimeoutResult struct {
 	KeyId       string   `json:"key_id"`
 	BlockHeight uint64
 	Epoch       uint64 `json:"epoch"`
+
+	// Accused and OldEpoch feed the per-accused statements of a failed
+	// reshare (POA-8, 0.9.0; see accuse.go). Never part of Serialize().
+	Accused  []string `json:"-"`
+	OldEpoch uint64   `json:"-"`
 }
 
 func (TimeoutResult) Type() DispatcherType {

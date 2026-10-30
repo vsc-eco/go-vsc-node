@@ -1,0 +1,369 @@
+package tss
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"vsc-node/lib/btcclient"
+	"vsc-node/lib/datalayer"
+	"vsc-node/modules/common/consensusversion"
+
+	"github.com/ipfs/go-cid"
+)
+
+// btcKeysignFrozen reports whether THIS node should refuse to ISSUE a BTC TSS
+// keysign for keyId (Build Map §5b — solvency auto-halt).
+//
+// M1.1a scope: the gate reads ONLY the deterministic governance FLAG
+// (vsc.tss_halt, persisted in consensus_state, read via GetScheduler). It is a
+// pure LOCAL issue-or-skip, evaluated at the top of the SignAction branch
+// before any session/commitment work, so it cannot affect party lists or
+// commitment CIDs (repo CLAUDE.md TSS Constraints 1-3). Because the FLAG is
+// DETERMINISTIC — every node converges on the same consensus-state value by
+// processing the same Hive op — ALL nodes freeze together: a clean,
+// network-wide liveness stop, never a partial-participation stall.
+//
+// The local L1-vs-Supply SIGNAL is deliberately NOT a gate input. Adversarial
+// review established that a UNILATERAL local drop is the wrong mechanism: btss
+// requires 100% of the on-chain-listed parties (Constraint 1), so a SINGLE node
+// that locally dropped out would stall the ENTIRE keysign for everyone (a
+// griefing/DoS vector — the party list is on-chain-derived, so the dropping
+// node stays listed and every other node blocks on it), and a shared-endpoint
+// fail-open SIGNAL is suppressible by a capable thief. The solvency observation
+// therefore belongs in the M1.1b AUTO-TRIP, where it TRIPS THE DETERMINISTIC
+// FLAG (consensus-wide) rather than causing a local drop.
+// observeBtcSolvencyInsolvent below is that observation, staged for M1.1b.
+func (tssMgr *TssManager) btcKeysignFrozen(keyId string) bool {
+	// Scope: only ever gate the BTC vault key.
+	if !tssMgr.isBtcVaultKey(keyId) {
+		return false
+	}
+
+	// V-8 (RESOLVED in S3): btcKeysignFrozen reports the raw FLAG state for a BTC
+	// vault key. The V-8 evacuation exemption — allowing a PROVEN successor-scoped
+	// migration sweep to sign even while the halt is up — is applied by the
+	// caller btcSignRefused (output_scoping.go), which only reaches this check
+	// when the sign is NOT such a sweep. Keeping this function FLAG-pure lets the
+	// M1.1a solvency semantics stay independently unit-tested.
+
+	// FLAG — deterministic freeze inputs, BOTH consensus-cache-mirrored (zero I/O here):
+	//  - BtcKeysignHalted: the M1.1a governance vsc.tss_halt flag.
+	//  - BtcTheftHalted:   the M1.1b contract theft flag ("th"), tripped by an SPV-proven
+	//    unauthorised spend of a registered vault UTXO (reportUnauthorizedSpend). Either
+	//    one freezes; the V-8 evacuation + BRK-2 check-sig exemptions in output_scoping.go
+	//    apply to both (the honest successor-sweep must still complete during a theft halt
+	//    to rescue remaining funds from the thief).
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return tssMgr.scheduler.BtcKeysignHalted() || tssMgr.scheduler.BtcTheftHalted()
+}
+
+// isBtcVaultKey reports whether keyId is the BTC vault's TSS key for the
+// configured BTC mapping contract. keyIds are "<contractId>-<name>", so a prefix
+// match on "<btcContractId>-" identifies BTC vault keys deterministically
+// (config-derived, identical on all nodes). An empty BTC contract id (a network
+// with no BTC oracle, or a TSS-only test) => not a BTC vault key. Shared by the
+// M1.1a solvency gate and the M1.3 vault-rotation-v2 reshare gate.
+func (tssMgr *TssManager) isBtcVaultKey(keyId string) bool {
+	btcContract := tssMgr.sconf.OracleParams().ContractId("BTC")
+	return btcContract != "" && strings.HasPrefix(keyId, btcContract+"-")
+}
+
+// shouldSkipReshareForVaultRotation reports whether the BlockTick reshare loop
+// must skip emitting a ReshareAction for keyId at height bh.
+//
+// L9-1 (FULL-PRUNED 2026-07-09): skip reshare ONLY for a SUPERSEDED
+// (retiring/draining/inactive) BTC-vault generation — NOT the ACTIVE gen. Old
+// gens are drained + replaced by FRESH KEYGEN (the vault-rotation-v2 cure for the
+// immortal-pubkey reconstruction attack), so resharing them is pointless and only
+// prolongs their reconstructable d. But the ACTIVE gen's signing committee is
+// pinned to its keygen committee; if it never reshares, that committee only
+// SHRINKS as members churn out of the election, and once it drops below threshold
+// ordinary user withdrawals FREEZE with no auto-trigger to rotate. Resharing the
+// active gen is Magi's canonical custody-key-follows-churn mechanism (identical to
+// every other chain's vault key) and does NOT worsen the reconstruction posture —
+// the active key is reconstructable by its current committee regardless (the
+// accepted §3.5 residual, bounded by the eventual fresh-keygen rotation).
+//
+// The superseded-gen set is the SHARED vaultrotation predicate (single source of
+// truth, lock-step with V-A signing eligibility + #11 bond-lock): keyId is skipped
+// IFF it is one of retiringGenSignerSet's KeyIds. The ACTIVE gen is never in that
+// set → always reshares. Deterministic in the committed "v" at bh. On a corrupt/
+// absent "v" the set is empty → nothing is skipped → EVERYTHING reshares: a
+// fail-SAFE liveness direction (keys stay signable; the active gen — the freeze
+// target — is unaffected since it is never in the set either way), and identical
+// on every node (a corrupt "v" is the same committed blob everywhere). The reshare
+// action is a per-node participation decision reconciled by 2/3 BLS + retry, not a
+// CID-committing consensus output, so any residual superseded-gen divergence on a
+// degraded "v" is fail-and-retry, never a fork. Inert (always false) until
+// vaultRotationV2InForce flips (the height pin OR the attested 0.8.0 floor —
+// vault_rotation_gate.go; never the bare pin, or the TSS half would stay inert
+// after a floor-only activation while the contract-execution half goes live).
+func (tssMgr *TssManager) shouldSkipReshareForVaultRotation(keyId string, bh uint64) bool {
+	if !tssMgr.vaultRotationV2InForce(bh) || !tssMgr.isBtcVaultKey(keyId) {
+		return false
+	}
+	set := tssMgr.retiringGenSignerSet(bh)
+	inSkip := skipReshareForSupersededGen(set.ReshareSkipKeyIds, keyId)
+	isPending := set.PendingKeyIds[keyId]
+	// Read the check-sig flag ONLY for a pending gen that is in the skip set: the
+	// single case where it can change the decision. FindKey is node-local; this is a
+	// scheduling choice (the sole reader of ReshareSkipKeyIds, reconciled by 2/3 +
+	// retry, never a CID output), so reading it here cannot fork.
+	preActivation := tssMgr.pendingKeyReshareActive(bh)
+	sigVerified := false
+	if preActivation && inSkip && isPending {
+		if k, err := tssMgr.tssKeys.FindKey(keyId); err == nil && k.SignatureVerified {
+			sigVerified = true
+		}
+	}
+	return skipReshareDecision(inSkip, isPending, sigVerified, preActivation)
+}
+
+// pendingKeyReshareActive reports whether VR2-12 is in force at bh
+// (consensusversion.PendingKeyReshareActive on the chain-active version). Gated on
+// a new line because a node that reshares a pending key while its peers still skip
+// it starts a session they never join: the timeout commits a blame and POA-8
+// accusations against honest nodes. Below 0.12.0 every node skips, as before.
+func (tssMgr *TssManager) pendingKeyReshareActive(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.PendingKeyReshareActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
+}
+
+// skipReshareDecision is the pure VR2-12 rule. A key in the superseded skip set is
+// skipped from resharing, EXCEPT a PENDING generation whose BRK-2 check-signature has
+// verified: then it may reshare BEFORE activation. After verification a pending gen has
+// no in-flight sign to collide with (it holds no funds; the check-sig is a one-time
+// event that has landed), so the VR2-09/VR2-10 collision cannot recur. The
+// pre-activation reshare hands the key to a committee before any funds move in
+// (migrateVault still gates on the reshare, and ActivatePendingGeneration now requires
+// it for a rotation), so the operator activates+migrates with no post-activation epoch
+// wait while the OLD generation keeps serving. Superseded gens
+// (retiring/draining/inactive/purged) are never pending, so they stay skipped forever.
+// Below 0.12.0 (preActivation false) a pending gen stays skipped, the VR2-10 rule.
+func skipReshareDecision(inSkipSet, isPending, sigVerified, preActivation bool) bool {
+	if !inSkipSet {
+		return false
+	}
+	if preActivation && isPending && sigVerified {
+		return false
+	}
+	return true
+}
+
+// skipReshareForSupersededGen is the pure L9-1 decision, split out so it is
+// directly unit-testable without a live datalayer (the superseded-gen set itself is
+// proven by TestComputeRetiringSignerSet): skip reshare IFF keyId is a NON-ACTIVE
+// generation — retiring/draining/inactive OR the terminal PURGED — i.e. present in the
+// shared predicate's ReshareSkipKeyIds. The ACTIVE gen is never in that set, so it
+// always reshares; a Purged gen IS (so a retired key is never resharen).
+func skipReshareForSupersededGen(reshareSkipKeyIds map[string]bool, keyId string) bool {
+	return reshareSkipKeyIds[keyId]
+}
+
+// observeBtcSolvencyInsolvent compares the vault's real L1 balance against the
+// contract-claimed Supply and reports (insolvent, ok). STAGED FOR M1.1b — it is
+// NOT wired to the gate. When M1.1b wires it, per the council it MUST:
+//  1. feed the AUTO-TRIP that sets the deterministic FLAG (consensus-wide) —
+//     NEVER cause a unilateral local drop (Constraint 1 griefing);
+//  2. run OFF the TSS lock (background poller + cached verdict) — never
+//     synchronous HTTP inside RunActions, which holds tssMgr.lock and would
+//     cause other TSS action batches to be dropped;
+//  3. read L1 from a per-node TRUSTED full node, not a shared public endpoint a
+//     thief can rate-limit into a fail-open.
+//
+// It fails OPEN (ok=false) on any uncertainty — empty config, unreadable
+// supply, unknown encoding, or an L1 read error — so a wrong assumption can
+// never wrongly conclude "insolvent". Inert until BtcVaultAddresses is set.
+func (tssMgr *TssManager) observeBtcSolvencyInsolvent(bh uint64) (insolvent bool, ok bool) {
+	op := tssMgr.sconf.OracleParams()
+	addrs := op.BtcVaultAddresses
+	if len(addrs) == 0 || op.BtcL1BaseURL == "" || tssMgr.contractState == nil || tssMgr.da == nil {
+		return false, false
+	}
+	btcContract := op.ContractId("BTC")
+	if btcContract == "" {
+		return false, false
+	}
+	rawSupply, found := tssMgr.readContractStateKey(btcContract, bh, "s")
+	if !found {
+		return false, false
+	}
+	supplySats, parsed := parseSupplySats(rawSupply)
+	if !parsed {
+		return false, false
+	}
+	client := btcclient.New(op.BtcL1BaseURL, 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var l1 int64
+	for _, a := range addrs {
+		bal, err := client.AddressBalanceSats(ctx, a)
+		if err != nil {
+			log.Warn("solvency observation: L1 read failed, failing open", "addr", a, "err", err)
+			return false, false
+		}
+		l1 += bal
+	}
+	gap := tssMgr.sconf.TssParams().SolvencyGapSats
+	// Reject an implausibly large / hostile contract Supply before it can drive a
+	// freeze decision (max BTC = 21e6·1e8 sats « 2^63); a corrupt/attacker-inflated
+	// "s" key must fail open, never trip (pruned-methodology money-math F1: the old
+	// int64(supplySats)-int64(gap) overflowed/inverted for uint64 inputs ≥ 2^63).
+	if supplySats > 21_000_000*100_000_000 {
+		return false, false
+	}
+	if supplySats < gap {
+		// Solvency tolerance exceeds Supply → threshold non-positive → cannot
+		// conclude insolvent. (uint64 subtraction below would otherwise underflow.)
+		return false, true
+	}
+	if l1 < 0 {
+		l1 = 0
+	}
+	return uint64(l1) < supplySats-gap, true
+}
+
+// readContractStateKey resolves a single contract state key at blockHeight,
+// pinned to the contract's most-recent ContractOutput at/before bh — the same
+// deterministic path as pendulum_geometry.liveContractStateKeyReader and the
+// GraphQL getStateByKeys resolver. Returns (raw, false) on any miss/error.
+func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key string) ([]byte, bool) {
+	if tssMgr.contractState == nil || tssMgr.da == nil {
+		return nil, false
+	}
+	output, err := tssMgr.contractState.GetLastOutput(contractID, bh)
+	if err != nil || output.StateMerkle == "" {
+		return nil, false
+	}
+	stateCid, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return nil, false
+	}
+	local := tssMgr.da.LocalOnly()
+	if local == nil {
+		return nil, false
+	}
+	databin := datalayer.NewDataBinFromCid(local, stateCid)
+	keyCid, err := databin.Get(key)
+	if err != nil || keyCid == nil {
+		return nil, false
+	}
+	raw, err := local.GetRaw(*keyCid)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// contractStateReaderAt resolves the contract's committed output at bh ONCE
+// (a single GetLastOutput + one state databin) and returns a reader closure over
+// its keys. A multi-key consumer — the S3 output-scoping gate reads "v"/"va"/"p"
+// plus one "d-<txid>" per pending spend — thus pays ONE GetLastOutput instead of
+// one per key, bounding the work done under the global TSS lock (methodology
+// F-1). The returned reader is ALWAYS non-nil: if the output can't be resolved
+// (contract not deployed / no output at bh) it always misses, so the gate sees
+// an absent registry (inert) rather than erroring. NOTE: the underlying
+// datalayer GetRaw has no per-read timeout; contract-state leaves at a processed
+// bh are local, so a network stall is an edge — a context-bounded GetRaw is a
+// tracked hardening (needs a datalayer API that takes a context).
+func (tssMgr *TssManager) contractStateReaderAt(contractID string, bh uint64) func(key string) ([]byte, bool) {
+	strict := tssMgr.contractStateReaderAtStrict(contractID, bh)
+	return func(key string) ([]byte, bool) {
+		raw, ok, _ := strict(key)
+		return raw, ok
+	}
+}
+
+// contractStateReaderAtStrict is contractStateReaderAt that DISTINGUISHES a read ERROR from a
+// genuine ABSENT key (NT-6). A failure to READ the committed state — the output lookup, the
+// state CID, the LocalOnly view, or a per-key datalayer/blockstore error — returns a non-nil
+// error; a key that is simply not present (databin.Get returns a nil CID with no error, or the
+// contract has no state yet) returns (nil, false, nil). The "v" vault-registry read in
+// resolveVaultView must fail CLOSED on a read error (refuse to sign) rather than mistake an
+// unreadable registry for an absent one and fall open to legacy gen-0 signing.
+//
+// This runs under the global TSS lock, so the read must not block. State at a processed height
+// is already local, and the LocalOnly view answers from the blockstore instead of retrying on
+// the full data layer or waiting on bitswap for a block nobody serves; a LocalOnly datalayer
+// error therefore surfaces here as a read error (caller fails closed + retries next tick).
+func (tssMgr *TssManager) contractStateReaderAtStrict(contractID string, bh uint64) func(key string) ([]byte, bool, error) {
+	fail := func(err error) func(string) ([]byte, bool, error) {
+		return func(string) ([]byte, bool, error) { return nil, false, err }
+	}
+	if tssMgr.contractState == nil || tssMgr.da == nil {
+		return fail(fmt.Errorf("contract state reader unavailable"))
+	}
+	output, err := tssMgr.contractState.GetLastOutput(contractID, bh)
+	if err != nil {
+		return fail(fmt.Errorf("get last output for %s@%d: %w", contractID, bh, err))
+	}
+	if output.StateMerkle == "" {
+		return func(string) ([]byte, bool, error) { return nil, false, nil } // no state yet: genuine absent
+	}
+	stateCid, err := cid.Parse(output.StateMerkle)
+	if err != nil {
+		return fail(fmt.Errorf("parse state cid %q: %w", output.StateMerkle, err))
+	}
+	local := tssMgr.da.LocalOnly()
+	if local == nil {
+		return fail(fmt.Errorf("local datalayer view unavailable"))
+	}
+	databin := datalayer.NewDataBinFromCid(local, stateCid)
+	return func(key string) ([]byte, bool, error) {
+		keyCid, err := databin.Get(key)
+		if err != nil {
+			// DataBin.Get returns os.ErrNotExist for a genuinely ABSENT key, NOT a
+			// (nil, nil): boxo BasicDirectory.Find maps mdag.ErrLinkNotFound ->
+			// os.ErrNotExist (ipld/unixfs/io/directory.go), and a missing parent-dir
+			// path or a directory-leaf also return os.ErrNotExist (lib/datalayer/dir.go
+			// :190,:202). That is not a read failure - the key is simply not in the
+			// committed state - so report it as absent exactly as the old ([]byte,bool)
+			// reader's !ok did. If this were treated as a read error, an unfolded BTC
+			// contract (v2 in force, no "v" registry yet) would fail CLOSED and refuse
+			// every legacy "main" keysign -> a withdrawal halt. ONLY a non-NotExist
+			// error is a real read failure (e.g. Find's dserv.Get or GetRaw below hit
+			// the blockstore/bitswap for a present link) -> fail closed (NT-6).
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, false, nil
+			}
+			return nil, false, fmt.Errorf("read %s: %w", key, err)
+		}
+		if keyCid == nil {
+			return nil, false, nil // defensive: Get does not currently return (nil, nil)
+		}
+		raw, err := local.GetRaw(*keyCid)
+		if err != nil {
+			return nil, false, fmt.Errorf("getraw %s: %w", key, err)
+		}
+		return raw, true, nil
+	}
+}
+
+// parseSupplySats interprets the contract's Supply value ("s") as an integer
+// number of satoshis. The exact on-chain encoding lives in the BTC mapping
+// contract (not in this repo), so this is intentionally conservative: it
+// accepts a decimal integer (optionally JSON-quoted) and returns false on
+// ANYTHING it cannot parse with confidence, so the observation fails OPEN rather
+// than acting on a wrong assumption. Confirm the encoding against the contract
+// before wiring the M1.1b auto-trip.
+func parseSupplySats(raw []byte) (uint64, bool) {
+	s := strings.TrimSpace(string(raw))
+	s = strings.Trim(s, `"`)
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}

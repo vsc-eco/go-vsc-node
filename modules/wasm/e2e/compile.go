@@ -10,7 +10,10 @@ func Compile(wkdir string) (string, error) {
 	prefix := wkdir + "/modules/wasm/e2e/tmp/"
 	path := prefix + "main.wasm"
 	//-no-debug
-	cmd := exec.Command("bash", "-c", "tinygo build -no-debug -gc=custom -scheduler=none -panic=trap -target=wasm-unknown -o "+path+" modules/wasm/e2e/go_wasm/main.go") // Example: list files in the current directory
+	cmd := exec.Command("bash", "-c", "tinygo build -no-debug -gc=custom -scheduler=none -panic=trap -target=wasm-unknown -o "+path+" .")
+	// The guest is its own Go module (modules/wasm/e2e/go_wasm/go.mod),
+	// so tinygo must resolve its imports from inside that directory.
+	cmd.Dir = wkdir + "/modules/wasm/e2e/go_wasm"
 
 	// cmd.Env = append(cmd.Environ(), "GOOS=js")
 	// cmd.Env = append(cmd.Env, "GOARCH=wasm")

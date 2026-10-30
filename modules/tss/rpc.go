@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"vsc-node/modules/db/vsc/witnesses"
+
 	gorpc "github.com/libp2p/go-libp2p-gorpc"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -115,12 +117,12 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) (err er
 			}
 
 			peerIds := []string{peerId.String()}
-			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
+			witness, err := tss.peerWitnesses(peerIds)
 			if err != nil || len(witness) == 0 {
 				log.Warn("failed to get witness", "peerId", peerId.String(), "sessionId", req.SessionId, "err", err)
 				return nil
 			}
-			act := witness[0].Account
+			act := senderAccount(witness, dispatcher)
 			i := big.NewInt(0)
 			i.SetBytes([]byte(act))
 
@@ -220,6 +222,43 @@ func (tss *TssRpc) ReceiveMsg(ctx context.Context, req *TMsg, res *TRes) (err er
 	return nil
 }
 
+// currentPeerLookup is the witness store's current-row lookup (B1). Asserted here
+// rather than added to witnesses.Witnesses so that interface, and every
+// implementation of it, stays unchanged; witnesses.go asserts the store has it.
+type currentPeerLookup interface {
+	GetCurrentWitnessesByPeerId(peerIds []string) ([]witnesses.Witness, error)
+}
+
+// peerWitnesses is the attribution lookup (B1): the current-row lookup. Node-local,
+// no CID input, so it needs no consensus gate (PROPOSAL-FIX-peerid part 2). A store
+// without it (test doubles) falls back to the old lookup.
+func (tss *TssRpc) peerWitnesses(peerIds []string) ([]witnesses.Witness, error) {
+	if cl, ok := tss.mgr.witnessDb.(currentPeerLookup); ok {
+		return cl.GetCurrentWitnessesByPeerId(peerIds)
+	}
+	return tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
+}
+
+// senderAccount resolves the account behind a sending peer id (B1). candidates are
+// the accounts whose latest announcement carries the peer id, proof-verified first
+// (GetWitnessesByPeerId). A party of this session wins, so an account that copied a
+// member's peer id cannot shadow the member in the member's own session; otherwise
+// the first candidate, which is the same on every node.
+func senderAccount(candidates []witnesses.Witness, d Dispatcher) string {
+	if pl, ok := d.(partyLister); ok && pl != nil {
+		party := make(map[string]bool)
+		for _, a := range pl.partyAccounts() {
+			party[a] = true
+		}
+		for _, w := range candidates {
+			if party[w.Account] {
+				return w.Account
+			}
+		}
+	}
+	return candidates[0].Account
+}
+
 // replayBufferedMessages replays buffered messages for a session when dispatcher becomes ready
 func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatcher) {
 	tss.mgr.bufferLock.Lock()
@@ -245,7 +284,7 @@ func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatche
 			}
 
 			peerIds := []string{peerId.String()}
-			witness, err := tss.mgr.witnessDb.GetWitnessesByPeerId(peerIds)
+			witness, err := tss.peerWitnesses(peerIds)
 			if err != nil || len(witness) == 0 {
 				log.Warn(
 					"failed to get witness for buffered message",
@@ -258,7 +297,7 @@ func (tss *TssRpc) replayBufferedMessages(sessionId string, dispatcher Dispatche
 				)
 				continue
 			}
-			act := witness[0].Account
+			act := senderAccount(witness, dispatcher)
 
 			age := time.Since(msg.Time)
 			log.Trace("replaying buffered message", "sessionId", sessionId, "from", act, "age", age)

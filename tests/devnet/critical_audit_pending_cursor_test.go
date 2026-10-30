@@ -68,14 +68,14 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	}
 
 	cfg := tssTestConfig()
-	d, ctx := startDevnetNoKey(t, cfg, 20*time.Minute)
+	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(30*time.Minute))
 
 	// Wait until every node has ingested a running election. The unstake
 	// guard from PR #181 (#96) rejects pre-election unstakes, and we
 	// want a clean post-election baseline anyway.
 	t.Log("waiting for first running election (epoch >= 1) on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+		nodeCtx, cancel := devnetWithTimeout(ctx, 8*time.Minute)
 		if err := d.waitForElectionEpoch(nodeCtx, n, 1, 8*time.Minute); err != nil {
 			cancel()
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
@@ -98,9 +98,11 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	if err := d.Unstake(ctx, targetAccount, "1.000"); err != nil {
 		t.Fatalf("broadcasting unstake A: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	devnetSleep(500 * time.Millisecond)
 	t.Logf("submitting unstake B for %s", targetAccount)
-	if err := d.Unstake(ctx, targetAccount, "1.000"); err != nil {
+	// A different amount: the same op half a second later is the same Hive
+	// transaction, which hived refuses as a duplicate.
+	if err := d.Unstake(ctx, targetAccount, "1.001"); err != nil {
 		t.Fatalf("broadcasting unstake B: %v", err)
 	}
 
@@ -131,10 +133,25 @@ func TestCriticalAuditPendingActionsCursor(t *testing.T) {
 	// then give state-engine a few extra slots to actually process the
 	// release. UpdateBalances runs every slot, so 4 slots is generous.
 	t.Logf("waiting for release epoch %d on magi-1...", releaseEpoch)
-	if err := d.waitForElectionEpoch(ctx, 1, releaseEpoch, 12*time.Minute); err != nil {
+	if err := d.waitForElectionEpoch(ctx, 1, releaseEpoch, time.Duration(float64(12*time.Minute)*vfTimeoutScale())); err != nil {
 		t.Fatalf("magi-1 never ingested release epoch %d: %v", releaseEpoch, err)
 	}
-	time.Sleep(45 * time.Second)
+	// The release runs in the next L2 slots (UpdateBalances). A fixed 45 s was
+	// shorter than two slots under load (10-07: epoch 6 arrived, both actions
+	// still pending). Wait, bounded, until every node has completed both.
+	for deadline := devnetNow().Add(time.Duration(float64(4*time.Minute) * vfTimeoutScale())); ; devnetSleep(10 * time.Second) {
+		done := 0
+		for n := 1; n <= cfg.Nodes; n++ {
+			for _, sib := range siblings {
+				if rec, err := readActionById(ctx, d, n, sib.Id); err == nil && rec.Status == "complete" {
+					done++
+				}
+			}
+		}
+		if done == cfg.Nodes*len(siblings) || devnetNow().After(deadline) {
+			break
+		}
+	}
 
 	// Both action records should now be status="complete" on every node.
 	for n := 1; n <= cfg.Nodes; n++ {
@@ -180,8 +197,8 @@ type pendingUnstakeRecord struct {
 // account. Returns when at least 2 are found (the most recent two by
 // block_height ascending).
 func waitForTwoPendingUnstakes(ctx context.Context, d *Devnet, node int, hiveTarget string, timeout time.Duration) ([]pendingUnstakeRecord, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := devnetNow().Add(timeout)
+	for devnetNow().Before(deadline) {
 		recs, err := findPendingUnstakes(ctx, d, node, hiveTarget)
 		if err == nil && len(recs) >= 2 {
 			return recs[:2], nil
@@ -189,7 +206,7 @@ func waitForTwoPendingUnstakes(ctx context.Context, d *Devnet, node int, hiveTar
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(3 * time.Second):
+		case <-devnetAfter(3 * time.Second):
 		}
 	}
 	return nil, fmt.Errorf("timed out waiting for two pending unstakes on magi-%d for %s", node, hiveTarget)

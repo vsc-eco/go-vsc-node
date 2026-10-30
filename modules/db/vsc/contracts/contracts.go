@@ -295,6 +295,28 @@ type contractState struct {
 	*db.Collection
 }
 
+// Init creates the indexes contract_state's own queries need. GetLastOutput and
+// GetLastOutputStrict ({contract_id, block_height $lte}, newest first) run for
+// every contract call and in the TSS solvency gate, every contract output is
+// upserted by id (IngestOutput) and read by id (GetOutput), and the API finds
+// outputs by input tx; without these each of those reads the whole collection.
+// Non-unique on purpose (see transactions.Init).
+func (ch *contractState) Init() error {
+	if err := ch.Collection.Init(); err != nil {
+		return err
+	}
+	for _, keys := range []bson.D{
+		{{Key: "contract_id", Value: 1}, {Key: "block_height", Value: -1}},
+		{{Key: "id", Value: 1}},
+		{{Key: "inputs", Value: 1}},
+	} {
+		if err := ch.CreateIndexIfNotExist(mongo.IndexModel{Keys: keys}); err != nil {
+			return fmt.Errorf("failed to create contract_state index %v: %w", keys, err)
+		}
+	}
+	return nil
+}
+
 func (ch *contractState) IngestOutput(output IngestOutputArgs) {
 	options := options.FindOneAndUpdate().SetUpsert(true)
 	ch.FindOneAndUpdate(context.Background(), bson.M{"id": output.Id}, bson.M{
@@ -319,6 +341,28 @@ func (ch *contractState) GetLastOutput(contractId string, height uint64) (Contra
 	}}, options)
 	if findResult.Err() != nil {
 		return ContractOutput{}, nil
+	}
+	contractOutput := ContractOutput{
+		Metadata: ContractMetadata{},
+	}
+	if err := findResult.Decode(&contractOutput); err != nil {
+		return contractOutput, fmt.Errorf("%w: %w", db.ErrDecode, err)
+	}
+	return contractOutput, nil
+}
+
+// GetLastOutputStrict is GetLastOutput but SURFACES the FindOne error rather than
+// swallowing it (see the interface doc): the #11 bond-lock consensus path fail-STOPS
+// on a transient error and treats only mongo.ErrNoDocuments as deterministic absence.
+// Kept as a separate function (not a refactor of GetLastOutput) so the existing
+// callers' exact swallow-FindOne / surface-decode behaviour is untouched.
+func (ch *contractState) GetLastOutputStrict(contractId string, height uint64) (ContractOutput, error) {
+	opts := options.FindOne().SetSort(bson.M{"block_height": -1})
+	findResult := ch.FindOne(context.Background(), bson.M{"contract_id": contractId, "block_height": bson.M{
+		"$lte": height,
+	}}, opts)
+	if findResult.Err() != nil {
+		return ContractOutput{}, findResult.Err()
 	}
 	contractOutput := ContractOutput{
 		Metadata: ContractMetadata{},

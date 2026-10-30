@@ -33,6 +33,11 @@ type TssKeys interface {
 	// Keys with deprecated_height=0 are not subject to the retirement grace period — they stay
 	// deprecated until explicitly renewed.
 	DeprecateLegacyKeys() error
+	// SetSignatureVerified marks a key as having produced a consensus-verified
+	// BRK-2 check-signature (see TssKey.SignatureVerified). A DEDICATED targeted
+	// $set on this one field — NOT a read-modify-write via SetKey, which does not
+	// persist signature_verified and would clobber a concurrent field write.
+	SetSignatureVerified(id string) error
 }
 
 type TssRequests interface {
@@ -88,6 +93,16 @@ type TssKey struct {
 	// DeprecatedHeight is the block height at which this key was deprecated (0 = not deprecated).
 	// Retirement fires at DeprecatedHeight + KeyDeprecationGracePeriod.
 	DeprecatedHeight int64 `bson:"deprecated_height"`
+	// SignatureVerified (BRK-2 / brick council FS3-1) is set true, once, when
+	// this key has produced a consensus-verified canonical check-signature (a
+	// landed vsc.tss_sign over btcvault.CheckSigMessage). Under vault-rotation-v2
+	// the BTC mapping contract's attestPrimaryKey requires it before activating
+	// the vault generation, so funds can never route to an agreed-but-unsignable
+	// key. It is set ONLY on the deterministic state-processing verify path
+	// (never by a single node locally) and is NEVER hashed into any commitment
+	// CID (Constraint-3 CHECK-4: no callsite serializes TssKey). Default false;
+	// omitempty keeps old rows byte-identical.
+	SignatureVerified bool `bson:"signature_verified,omitempty"`
 }
 
 type TssRequest struct {
@@ -106,13 +121,13 @@ type CommitmentMetadata struct {
 
 type TssCommitment struct {
 	//type = blame, reshare, sign_result, keygen
-	Type        string              `json:"type"         bson:"type"`
-	BlockHeight uint64              `json:"block_height" bson:"block_height"`
-	Epoch       uint64              `json:"epoch"        bson:"epoch"`
-	Commitment  string              `json:"commitment"   bson:"commitment"`
-	KeyId       string              `json:"key_id"       bson:"key_id"`
-	TxId        string              `json:"tx_id"        bson:"tx_id"`
-	PublicKey   *string             `json:"public_key"   bson:"public_key"`
+	Type        string  `json:"type"         bson:"type"`
+	BlockHeight uint64  `json:"block_height" bson:"block_height"`
+	Epoch       uint64  `json:"epoch"        bson:"epoch"`
+	Commitment  string  `json:"commitment"   bson:"commitment"`
+	KeyId       string  `json:"key_id"       bson:"key_id"`
+	TxId        string  `json:"tx_id"        bson:"tx_id"`
+	PublicKey   *string `json:"public_key"   bson:"public_key"`
 	// BitSet is the BLS signers bitvec from the on-chain SignedCommitment
 	// (the "bv" field). For sign_result commitments this enumerates which
 	// committee members BLS-signed the result; the reward-reduction

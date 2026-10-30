@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	systemconfig "vsc-node/modules/common/system-config"
 )
 
 // composeFilePath returns the path to the static docker-compose.yml
@@ -25,6 +27,7 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName
 	kv("SOURCE_DIR", cfg.SourceDir)
 	kv("HAF_IMAGE", cfg.HAFImage)
 	kv("MONGO_IMAGE", cfg.MongoImage)
+	kv("MONGO_MEMORY", cfg.MongoMemory)
 	kv("HAF_DATA_DIR", hafDataDir)
 	kv("DEVNET_DATA_DIR", devnetDir)
 	kv("HIVE_PORT", fmt.Sprint(cfg.HivePort))
@@ -51,15 +54,50 @@ func writeEnvFile(cfg *Config, hafDataDir, devnetDir, droneConfigPath, imageName
 // each node into the devnet data directory. Returns the container path
 // to the sysconfig file (same for all nodes since the file is identical).
 func writeSysConfigOverrides(cfg *Config, devnetDir string) error {
-	if cfg.SysConfigOverrides == nil {
-		return nil
+	if cfg.SysConfigOverrides != nil {
+		data, err := json.MarshalIndent(cfg.SysConfigOverrides, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling sysconfig overrides: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(devnetDir, "sysconfig.json"), data, 0o644); err != nil {
+			return err
+		}
 	}
-	data, err := json.MarshalIndent(cfg.SysConfigOverrides, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling sysconfig overrides: %w", err)
+	for node, own := range cfg.NodeSysConfigOverrides {
+		data, err := layerSysConfigOverrides(cfg.SysConfigOverrides, own)
+		if err != nil {
+			return fmt.Errorf("magi-%d sysconfig overrides: %w", node, err)
+		}
+		if err := os.WriteFile(filepath.Join(devnetDir, nodeSysConfigFile(node)), data, 0o644); err != nil {
+			return err
+		}
 	}
-	path := filepath.Join(devnetDir, "sysconfig.json")
-	return os.WriteFile(path, data, 0o644)
+	return nil
+}
+
+// nodeSysConfigFile names a node's own sysconfig file in the devnet dir.
+func nodeSysConfigFile(node int) string { return fmt.Sprintf("sysconfig-%d.json", node) }
+
+// layerSysConfigOverrides lays own over shared, top-level field by field.
+func layerSysConfigOverrides(shared, own *systemconfig.SysConfigOverrides) ([]byte, error) {
+	merged := map[string]json.RawMessage{}
+	for _, o := range []*systemconfig.SysConfigOverrides{shared, own} {
+		if o == nil {
+			continue
+		}
+		raw, err := json.Marshal(o)
+		if err != nil {
+			return nil, err
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return nil, err
+		}
+		for k, v := range fields {
+			merged[k] = v
+		}
+	}
+	return json.MarshalIndent(merged, "", "  ")
 }
 
 // isOldCodeNode returns true if the given node number is in the
@@ -104,8 +142,12 @@ func writeNodesOverride(cfg *Config, devnetDir, projectName, imageName, outputPa
 			`"./magid", "-network", "devnet", "-data-dir", "/data/devnet/data-%d", "-log-level", "%s"`,
 			i, cfg.LogLevel,
 		)
-		if cfg.SysConfigOverrides != nil && !isOld {
-			cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
+		if !isOld || cfg.OldCodeSysconfig {
+			if cfg.NodeSysConfigOverrides[i] != nil {
+				cmd += fmt.Sprintf(`, "-sysconfig", "/data/devnet/%s"`, nodeSysConfigFile(i))
+			} else if cfg.SysConfigOverrides != nil {
+				cmd += `, "-sysconfig", "/data/devnet/sysconfig.json"`
+			}
 		}
 
 		// Image source: pre-built old-code image or the standard

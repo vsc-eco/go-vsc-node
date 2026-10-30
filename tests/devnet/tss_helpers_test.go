@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -57,17 +58,17 @@ func getHeadBlock(hiveRPC string) (int, error) {
 
 func waitForBlock(t *testing.T, hiveRPC string, target int, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := devnetNow().Add(timeout)
 	for {
 		head, err := getHeadBlock(hiveRPC)
 		if err == nil && head >= target {
 			t.Logf("reached block %d (target %d)", head, target)
 			return
 		}
-		if time.Now().After(deadline) {
+		if devnetNow().After(deadline) {
 			t.Fatalf("timeout waiting for block %d (current: %d, err: %v)", target, head, err)
 		}
-		time.Sleep(2 * time.Second)
+		devnetSleep(2 * time.Second)
 	}
 }
 
@@ -81,7 +82,7 @@ type tssCommitmentDoc struct {
 
 func connectMongo(t *testing.T, mongoURI string) (*mongo.Client, *mongo.Collection) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // wall: single call
 	defer cancel()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
@@ -92,7 +93,7 @@ func connectMongo(t *testing.T, mongoURI string) (*mongo.Client, *mongo.Collecti
 
 func waitForCommitment(t *testing.T, mongoURI string, commitType string, timeout time.Duration) tssCommitmentDoc {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := devnetWithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	client, coll := connectMongo(t, mongoURI)
@@ -110,7 +111,7 @@ func waitForCommitment(t *testing.T, mongoURI string, commitType string, timeout
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %s commitment in MongoDB", commitType)
 			return tssCommitmentDoc{}
-		case <-time.After(2 * time.Second):
+		case <-devnetAfter(2 * time.Second):
 		}
 	}
 }
@@ -118,7 +119,7 @@ func waitForCommitment(t *testing.T, mongoURI string, commitType string, timeout
 // waitForCommitmentAfter waits for a commitment of the given type with block_height > afterBlock.
 func waitForCommitmentAfter(t *testing.T, mongoURI string, commitType string, afterBlock uint64, timeout time.Duration) tssCommitmentDoc {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := devnetWithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	client, coll := connectMongo(t, mongoURI)
@@ -138,7 +139,7 @@ func waitForCommitmentAfter(t *testing.T, mongoURI string, commitType string, af
 		case <-ctx.Done():
 			t.Fatalf("timeout waiting for %s commitment after block %d", commitType, afterBlock)
 			return tssCommitmentDoc{}
-		case <-time.After(2 * time.Second):
+		case <-devnetAfter(2 * time.Second):
 		}
 	}
 }
@@ -147,14 +148,26 @@ func waitForCommitmentAfter(t *testing.T, mongoURI string, commitType string, af
 // On a real network this would be done by a contract calling tss.create_key.
 func insertTssKey(t *testing.T, mongoURI string, keyId string, algo string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // wall: single call
 	defer cancel()
 	client, _ := connectMongo(t, mongoURI)
 	defer client.Disconnect(ctx)
 	// Insert into ALL node databases (magi-1 through magi-N).
-	// The devnet-setup default prefix is "magi".
+	// The devnet-setup default prefix is "magi". magi-1..10 as before, plus every
+	// other magi-N that exists (a 16-node devnet: nodes 11-16 never saw the key
+	// and never joined the keygen).
+	dbNames := make([]string, 0, 16)
 	for n := 1; n <= 10; n++ {
-		dbName := fmt.Sprintf("magi-%d", n)
+		dbNames = append(dbNames, fmt.Sprintf("magi-%d", n))
+	}
+	if more, err := client.ListDatabaseNames(ctx, bson.M{"name": bson.M{"$regex": "^magi-[0-9]+$"}}); err == nil {
+		for _, name := range more {
+			if !slices.Contains(dbNames, name) {
+				dbNames = append(dbNames, name)
+			}
+		}
+	}
+	for _, dbName := range dbNames {
 		coll := client.Database(dbName).Collection("tss_keys")
 		_, err := coll.UpdateOne(ctx,
 			bson.M{"id": keyId},
@@ -171,7 +184,7 @@ func insertTssKey(t *testing.T, mongoURI string, keyId string, algo string) {
 
 func countCommitments(t *testing.T, mongoURI string, filter bson.M) int64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // wall: single call
 	defer cancel()
 	client, coll := connectMongo(t, mongoURI)
 	defer client.Disconnect(ctx)
@@ -265,6 +278,14 @@ func tssTestConfig() *Config {
 			PreParamsTimeout:   10 * time.Minute,            // generous timeout for loaded test servers
 		},
 	}
+	// Parallel-lane support (used by the devnet test loop): DEVNET_PROJECT pins a stable
+	// docker compose project name → stable image name → docker REUSES the built image (no
+	// rebuild) and cleanup can be scoped to this lane. A no-op when unset. DEVNET_PORT_OFFSET
+	// is applied once, by DefaultConfig; adding it here again ran every TSS devnet at twice
+	// the lane's offset, onto the next lane's ports (TestDevnetPortOffsetAppliedOnce).
+	if pj := os.Getenv("DEVNET_PROJECT"); pj != "" {
+		cfg.ProjectName = pj
+	}
 	return cfg
 }
 
@@ -276,13 +297,9 @@ func startDevnet(t *testing.T, cfg *Config, timeout time.Duration) (*Devnet, con
 	if err != nil {
 		t.Fatalf("creating devnet: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := d.Stop(); err != nil {
-			t.Logf("warning: stop failed: %v", err)
-		}
-	})
+	t.Cleanup(func() { stopDevnetChecked(t, d) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := devnetWithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 
 	t.Log("starting devnet (this takes several minutes)...")
@@ -315,13 +332,9 @@ func startDevnetNoKey(t *testing.T, cfg *Config, timeout time.Duration) (*Devnet
 	if err != nil {
 		t.Fatalf("creating devnet: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := d.Stop(); err != nil {
-			t.Logf("warning: stop failed: %v", err)
-		}
-	})
+	t.Cleanup(func() { stopDevnetChecked(t, d) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := devnetWithTimeout(context.Background(), timeout)
 	t.Cleanup(cancel)
 
 	t.Log("starting devnet (this takes several minutes)...")

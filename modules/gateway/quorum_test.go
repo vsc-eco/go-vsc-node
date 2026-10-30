@@ -1,6 +1,10 @@
 package gateway
 
-import "testing"
+import (
+	"fmt"
+	"slices"
+	"testing"
+)
 
 // review2 HIGH #29 — the gateway multisig owner-auth weight_threshold was set
 // as int(totalWeight * 2 / 3), i.e. floor(2N/3). For 10 keys that is 6, but a
@@ -36,5 +40,57 @@ func TestGatewayWeightThreshold_CeilOfTwoThirds(t *testing.T) {
 		if c.total > 0 && got*3 < c.total*2 {
 			t.Errorf("gatewayWeightThreshold(%d)=%d is below 2/3", c.total, got)
 		}
+	}
+}
+
+// Item 10: under POA flat weight every gateway key has the same election
+// weight. At 0.9.0 each gets weight 1, so exactly 12 of 18 signers reach the
+// threshold whichever 12 sign; before, 10000/18 left 556/555 by account name
+// and some 12-key sets fell short.
+func TestGatewayKeyWeights_EqualStakesGetEqualWeight(t *testing.T) {
+	const n = 18
+	stakes := make([]uint64, n)
+	accounts := make([]string, n)
+	for i := range stakes {
+		stakes[i] = 1
+		accounts[i] = fmt.Sprintf("w%02d", i)
+	}
+
+	w := gatewayKeyWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE, true)
+	total := 0
+	for i, x := range w {
+		if x != 1 {
+			t.Fatalf("key %d weight %d, want 1", i, x)
+		}
+		total += x
+	}
+	if thr := gatewayWeightThreshold(total); thr != 12 {
+		t.Fatalf("threshold %d, want 12 of 18", thr)
+	}
+
+	// Before 0.9.0: the uneven split, where the 12 lightest keys fall short.
+	old := gatewayKeyWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE, false)
+	sorted := slices.Clone(old)
+	slices.Sort(sorted)
+	oldTotal, lightest12 := 0, 0
+	for i, x := range sorted {
+		oldTotal += x
+		if i < 12 {
+			lightest12 += x
+		}
+	}
+	if weightMeetsThreshold(uint64(lightest12), gatewayWeightThreshold(oldTotal)) {
+		t.Fatalf("expected the pre-0.9.0 split to leave some 12-key sets short (lightest 12 = %d of %d)", lightest12, oldTotal)
+	}
+}
+
+// Unequal stakes keep stake-proportional weights even with the gate on.
+func TestGatewayKeyWeights_UnequalStakesStayProportional(t *testing.T) {
+	stakes := []uint64{3, 1, 1, 1, 1, 1, 1, 1}
+	accounts := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	got := gatewayKeyWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE, true)
+	want := quantizeStakeWeights(stakes, accounts, GATEWAY_WEIGHT_SCALE)
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want quantized %v", got, want)
 	}
 }

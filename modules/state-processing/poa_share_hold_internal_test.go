@@ -1,0 +1,369 @@
+package state_engine
+
+import (
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"math/big"
+	"strings"
+	"testing"
+	"time"
+
+	"vsc-node/lib/btcvault"
+	vdb "vsc-node/modules/db"
+	"vsc-node/modules/db/vsc/elections"
+	"vsc-node/modules/db/vsc/poaseats"
+	tss_db "vsc-node/modules/db/vsc/tss"
+)
+
+// POA-1: a reshare keeps the key, so every past committee's share of a funded
+// generation still signs. The bond behind such a share stays locked until the
+// generation is rotated out and drained (THORChain's retiring-vault rule).
+
+func bits(idx ...int) string {
+	b := new(big.Int)
+	for _, i := range idx {
+		b.SetBit(b, i, 1)
+	}
+	return base64.RawURLEncoding.EncodeToString(b.Bytes())
+}
+
+func vaultKey(gen uint32) string { return "vsc1BTC-" + btcvault.VaultKeyName(gen) }
+
+func holdCheck(t *testing.T, vaults []btcvault.Vault, rows map[string][]tss_db.TssCommitment, elecs map[uint64][]string, account string) (bool, error) {
+	t.Helper()
+	return holdCheckWith(t, vaults, rows, elecs, nil, account)
+}
+
+func holdCheckWith(t *testing.T, vaults []btcvault.Vault, rows map[string][]tss_db.TssCommitment, elecs map[uint64][]string, current []string, account string) (bool, error) {
+	t.Helper()
+	return accountInFundedVaultCommittees(vaults, "vsc1BTC", account, current,
+		func(keyId string) ([]tss_db.TssCommitment, error) {
+			if keyId == "boom" {
+				return nil, errors.New("transient")
+			}
+			return rows[keyId], nil
+		},
+		func(epoch uint64) (*elections.ElectionResult, error) {
+			accts, ok := elecs[epoch]
+			if !ok {
+				return nil, nil
+			}
+			e := &elections.ElectionResult{}
+			for _, a := range accts {
+				e.Members = append(e.Members, elections.ElectionMember{Account: a})
+			}
+			return e, nil
+		})
+}
+
+func TestPoa1_ShareOfAnyEpochOfAFundedGenerationLocksTheBond(t *testing.T) {
+	vaults := []btcvault.Vault{
+		{Generation: 0, Status: btcvault.VaultStatusRetiring},
+		{Generation: 1, Status: btcvault.VaultStatusActive},
+		{Generation: 2, Status: btcvault.VaultStatusPending},
+	}
+	rows := map[string][]tss_db.TssCommitment{
+		vaultKey(0): {{Epoch: 3, Commitment: bits(0, 1, 2)}, {Epoch: 5, Commitment: bits(0, 1)}},
+		vaultKey(1): {{Epoch: 8, Commitment: bits(0, 1, 2)}, {Epoch: 9, Commitment: bits(0, 1)}},
+		vaultKey(2): {{Epoch: 10, Commitment: bits(0)}},
+	}
+	elecs := map[uint64][]string{
+		3:  {"a", "b", "old0"}, // old0: only in an early epoch of the RETIRING gen
+		5:  {"a", "b"},
+		8:  {"a", "b", "hive:Gone"}, // gone: left the ACTIVE gen after epoch 8
+		9:  {"a", "b"},
+		10: {"pend"}, // pend: only in a Pending (not fund-holding) gen
+	}
+	for _, tc := range []struct {
+		acct string
+		want bool
+	}{
+		{"a", true},     // current member
+		{"gone", true},  // an earlier epoch of the active gen (prefix and case normalised)
+		{"old0", true},  // an earlier epoch of a retiring gen: not released at rotation
+		{"pend", false}, // Pending gen holds no funds
+		{"nobody", false},
+	} {
+		got, err := holdCheck(t, vaults, rows, elecs, tc.acct)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: held=%v err=%v, want %v", tc.acct, got, err, tc.want)
+		}
+	}
+	// Once the generations are drained (Purged), nothing holds.
+	purged := []btcvault.Vault{{Generation: 0, Status: btcvault.VaultStatusPurged}, {Generation: 1, Status: btcvault.VaultStatusPurged}}
+	if got, _ := holdCheck(t, purged, rows, elecs, "gone"); got {
+		t.Fatal("a purged generation still locks its former holders")
+	}
+}
+
+// An emptied (Inactive) generation no longer locks its past parties; Retiring
+// and Draining still do, and a late deposit that turns it back to Draining
+// locks again. Mainnet case: ex-members who held a share of gen 0 months ago
+// are free once gen 0 is swept, not ~30 days later at its purge.
+func TestPoa1_InactiveGenerationReleasesItsPastParties(t *testing.T) {
+	rows := map[string][]tss_db.TssCommitment{
+		vaultKey(0): {{Epoch: 3, Commitment: bits(0, 1, 2)}, {Epoch: 5, Commitment: bits(0, 1)}},
+		vaultKey(1): {{Epoch: 8, Commitment: bits(0, 1)}},
+	}
+	elecs := map[uint64][]string{
+		3: {"a", "b", "exmember"}, // exmember: only in an early epoch of gen 0
+		5: {"a", "b"},
+		8: {"a", "b"},
+	}
+	for _, tc := range []struct {
+		name string
+		gen0 btcvault.VaultStatus
+		acct string
+		want bool
+	}{
+		{"retiring gen0 holds its old party", btcvault.VaultStatusRetiring, "exmember", true},
+		{"draining gen0 holds its old party", btcvault.VaultStatusDraining, "exmember", true},
+		{"inactive gen0 releases its old party", btcvault.VaultStatusInactive, "exmember", false},
+		{"purged gen0 releases its old party", btcvault.VaultStatusPurged, "exmember", false},
+		{"party of the active gen still held", btcvault.VaultStatusInactive, "a", true},
+	} {
+		vaults := []btcvault.Vault{
+			{Generation: 0, Status: tc.gen0},
+			{Generation: 1, Status: btcvault.VaultStatusActive},
+		}
+		got, err := holdCheck(t, vaults, rows, elecs, tc.acct)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: held=%v err=%v, want %v", tc.name, got, err, tc.want)
+		}
+	}
+	// Only Inactive generations left (no Active one): nothing locks, not even a
+	// current member (the funded gate).
+	onlyInactive := []btcvault.Vault{{Generation: 0, Status: btcvault.VaultStatusInactive}}
+	if got, _ := holdCheckWith(t, onlyInactive, rows, elecs, []string{"a"}, "a"); got {
+		t.Fatal("an Inactive-only registry still locks a current member")
+	}
+	// The status set itself: Inactive is still fund-holding everywhere else.
+	if !btcvault.IsFundHoldingStatus(btcvault.VaultStatusInactive) || poaLocksBond(btcvault.VaultStatusInactive) {
+		t.Fatal("poaLocksBond must drop Inactive without changing IsFundHoldingStatus")
+	}
+	for _, s := range []btcvault.VaultStatus{btcvault.VaultStatusActive, btcvault.VaultStatusRetiring, btcvault.VaultStatusDraining} {
+		if !poaLocksBond(s) {
+			t.Fatalf("status %d must lock", s)
+		}
+	}
+	for _, s := range []btcvault.VaultStatus{btcvault.VaultStatusPending, btcvault.VaultStatusPurged} {
+		if poaLocksBond(s) {
+			t.Fatalf("status %d must not lock", s)
+		}
+	}
+}
+
+func TestPoa1_ReadErrorIsReturnedNotDecided(t *testing.T) {
+	got, err := accountInFundedVaultCommittees([]btcvault.Vault{{Generation: 1, Status: btcvault.VaultStatusActive}}, "vsc1BTC", "a", nil,
+		func(string) ([]tss_db.TssCommitment, error) { return nil, errors.New("transient") },
+		func(uint64) (*elections.ElectionResult, error) { return nil, nil })
+	if err == nil || !got {
+		t.Fatalf("held=%v err=%v: a read error must be returned (and hold)", got, err)
+	}
+}
+
+// Wiring through ExecuteTx (the registry read is replaced via the test seam).
+func TestPoa1_UnstakeIsRefusedWhileTheBondedNodeHoldsAFundedShareAt090(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ver      uint64
+		from, to string
+		held     bool
+		wantOK   bool
+		wantText string
+	}{
+		{"self, holds a share, 0.9.0", 9, "hive:plain", "hive:plain", true, false, "this node is electable, recently active as a witness, in the current committee, or holds a share"},
+		{"delegator, node holds a share, 0.9.0", 9, "hive:alt", "hive:plainnode", true, false, "the node you delegated to is electable, recently active as a witness, in the current committee, or holds a share"},
+		{"no share, 0.9.0", 9, "hive:plain", "hive:plain", false, true, ""},
+		{"holds a share, below 0.9.0", 7, "hive:plain", "hive:plain", true, true, ""},
+	} {
+		se, _, _ := poaEnv(t, tc.ver)
+		var asked string
+		se.heldShareCheck = func(account string, height uint64) (bool, error) {
+			asked = account
+			return tc.held, nil
+		}
+		led := &recordingLedger{}
+		res := delegatedUnstake(tc.from, tc.to, 200).ExecuteTx(se, led, nil, nil, "")
+		if res.Success != tc.wantOK || (tc.wantOK && led.unstakes != 1) || (!tc.wantOK && led.unstakes != 0) {
+			t.Fatalf("%s: success=%v ledger calls=%d ret=%q", tc.name, res.Success, led.unstakes, res.Ret)
+		}
+		if tc.wantText != "" && !strings.Contains(res.Ret, tc.wantText) {
+			t.Fatalf("%s: refusal %q, want it to say %q", tc.name, res.Ret, tc.wantText)
+		}
+		if tc.ver >= 9 && asked != tc.to {
+			t.Fatalf("%s: checked %q, want the bonded node %q", tc.name, asked, tc.to)
+		}
+	}
+}
+
+func TestPoa1_TransientReadRetriesInsteadOfDeciding(t *testing.T) {
+	se, _, _ := poaEnv(t, 9)
+	calls := 0
+	se.heldShareCheck = func(string, uint64) (bool, error) {
+		calls++
+		if calls < 3 {
+			return true, errors.New("transient")
+		}
+		return false, nil
+	}
+	led := &recordingLedger{}
+	res := delegatedUnstake("hive:plain", "hive:plain", 200).ExecuteTx(se, led, nil, nil, "")
+	if !res.Success || calls != 3 {
+		t.Fatalf("success=%v calls=%d: a transient read must be retried until it succeeds", res.Success, calls)
+	}
+}
+
+// Regression: a member of the current election unstaked before the
+// election's reshare landed, so the lock (read at submission) did not see it,
+// and the bond paid out later while its new share signed. Current members are
+// now locked while any generation holds funds.
+func TestPoa1_CurrentElectionMemberLockedBeforeItsReshareLands(t *testing.T) {
+	active := []btcvault.Vault{{Generation: 1, Status: btcvault.VaultStatusActive}}
+	rows := map[string][]tss_db.TssCommitment{vaultKey(1): {{Epoch: 8, Commitment: bits(0)}}}
+	elecs := map[uint64][]string{8: {"a"}}
+	current := []string{"a", "hive:NewMember"}
+
+	got, err := holdCheckWith(t, active, rows, elecs, current, "newmember")
+	if err != nil || !got {
+		t.Fatalf("a current member with no commitment yet must be locked: got %v %v", got, err)
+	}
+	got, _ = holdCheckWith(t, active, rows, elecs, nil, "newmember")
+	if got {
+		t.Fatalf("without the current election the same account is free (the bypass)")
+	}
+	pending := []btcvault.Vault{{Generation: 2, Status: btcvault.VaultStatusPending}}
+	got, _ = holdCheckWith(t, pending, rows, elecs, current, "newmember")
+	if got {
+		t.Fatalf("no generation holds funds: current membership alone must not lock")
+	}
+}
+
+// Regression: an election's members are fixed at its anchor, before it
+// lands, so "member of the current election" misses a node elected at the
+// anchor that unstakes before the landing. The seat exit-halt already closes
+// that window for seats (electable now, or witness activity within the exit
+// window); POA-1 now applies the same guard to every bonded account.
+func TestPoa1_ElectableOrRecentlyActiveWitnessLocked(t *testing.T) {
+	se, seats, wits := poaEnv(t, 9)
+	seats.seats["topup"] = poaseats.Seat{Account: "topup"} // listed as a witness by the fake
+	window := se.sconf.ConsensusParams().EffectivePoaExitHalt()
+	const h = uint64(1_000_000)
+
+	if held, err := se.electableOrRecentlyActive("topup", h); err != nil || !held {
+		t.Fatalf("an enabled witness can be elected at the next anchor: must hold, got %v %v", held, err)
+	}
+	wits.disable("topup", h-10)
+	if held, _ := se.electableOrRecentlyActive("topup", h); !held {
+		t.Fatalf("disabled 10 blocks ago: an election anchored before that may not have landed: must hold")
+	}
+	wits.disable("topup", h-window-1)
+	if held, _ := se.electableOrRecentlyActive("topup", h); held {
+		t.Fatalf("witness-silent for a full window: must be free")
+	}
+	if held, _ := se.electableOrRecentlyActive("neverwitness", h); held {
+		t.Fatalf("never a witness: must be free")
+	}
+}
+
+// countingCommits and countingElections count the POA-1 reads.
+type countingCommits struct {
+	tss_db.TssCommitments
+	rows  []tss_db.TssCommitment
+	scans int
+}
+
+func (c *countingCommits) FindCommitmentsSimple(*string, []string, *uint64, *uint64, *uint64, int) ([]tss_db.TssCommitment, error) {
+	c.scans++
+	return c.rows, nil
+}
+
+type countingElections struct {
+	fakeElections
+	reads int
+}
+
+func (c *countingElections) GetElectionStrict(uint64) (*elections.ElectionResult, error) {
+	c.reads++
+	return &elections.ElectionResult{ElectionDataInfo: elections.ElectionDataInfo{
+		Members: []elections.ElectionMember{{Account: "hive:a"}, {Account: "hive:b"}},
+	}}, nil
+}
+
+// Regression (review of the 0.9.0 batch): every unstake re-read every
+// commitment of the generation and one election per commitment epoch, and any
+// account could trigger it with a tiny unstake. Now one scan per height and
+// stored-commitment count, and each election is read once.
+func TestPoa1_PartySetReadOncePerHeightAndElectionsOnce(t *testing.T) {
+	const epochs = 796
+	rows := make([]tss_db.TssCommitment, 0, epochs)
+	for e := uint64(1); e <= epochs; e++ {
+		rows = append(rows, tss_db.TssCommitment{Epoch: e, Commitment: bits(1)})
+	}
+	commits := &countingCommits{rows: rows}
+	elecs := &countingElections{}
+	se := &StateEngine{tssCommitments: commits, electionDb: elecs}
+	vaults := []btcvault.Vault{{Generation: 0, Status: btcvault.VaultStatusActive}}
+	rawV := []byte("registry")
+
+	for i := 0; i < 50; i++ { // 50 unstakes in one block
+		parties, err := se.fundedVaultParties("vsc1BTC", rawV, vaults, 999)
+		if err != nil || !parties["b"] || parties["a"] {
+			t.Fatalf("parties=%v err=%v", parties, err)
+		}
+	}
+	if commits.scans != 1 || elecs.reads != epochs {
+		t.Fatalf("one block: scans=%d election reads=%d, want 1 and %d", commits.scans, elecs.reads, epochs)
+	}
+	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000) // next block
+	if commits.scans != 2 || elecs.reads != epochs {
+		t.Fatalf("next block: scans=%d election reads=%d, want 2 and %d (elections cached)", commits.scans, elecs.reads, epochs)
+	}
+	se.tssCommitWrites.Add(1) // a commitment landed: rows may have changed
+	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000)
+	if commits.scans != 3 {
+		t.Fatalf("after a stored commitment: scans=%d, want a rescan", commits.scans)
+	}
+	se.fundedVaultParties("vsc1BTC", []byte("registry2"), vaults, 1000)
+	if commits.scans != 4 {
+		t.Fatalf("after a registry change: scans=%d, want a rescan", commits.scans)
+	}
+}
+
+// Regression: a stored row that does not decode is the same on every node. It
+// used to count as transient, so the unstake retried forever and block
+// processing halted on every node. It now holds the bond, once.
+func TestPoa1_DecodeErrorHoldsInsteadOfRetrying(t *testing.T) {
+	se, _, _ := poaEnv(t, 9)
+	calls := 0
+	se.heldShareCheck = func(string, uint64) (bool, error) {
+		calls++
+		return true, fmt.Errorf("commitments of x: %w", vdb.ErrDecode)
+	}
+	led := &recordingLedger{}
+	res := delegatedUnstake("hive:plain", "hive:plain", 200).ExecuteTx(se, led, nil, nil, "")
+	if res.Success || led.unstakes != 0 || calls != 1 {
+		t.Fatalf("success=%v ledger=%d calls=%d: a decode error must hold, once", res.Success, led.unstakes, calls)
+	}
+}
+
+// Same for the exit-halt (POA-10): a seat row that does not decode holds the
+// bond instead of retrying forever.
+func TestPoa10_DecodeErrorHoldsInsteadOfRetrying(t *testing.T) {
+	se, seats, _ := poaEnv(t, 9)
+	seats.getSeatErr = fmt.Errorf("poa_seats: get x: %w", vdb.ErrDecode)
+	done := make(chan bool, 1)
+	go func() {
+		halted, _, armed := se.PoaExitHaltOrBlock("hive:x", 200)
+		done <- halted && !armed
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatalf("a decode error must hold with no release height")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("still retrying a decode error after 5s")
+	}
+}

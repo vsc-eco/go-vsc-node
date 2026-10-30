@@ -68,6 +68,12 @@ type ContractTest struct {
 	// (contract tests exercise the feature as it will run once activated on the
 	// network); set false to test the pre-activation legacy trap behaviour.
 	TryCatchActive bool
+	// VaultRotationV2 makes TssGetKey append the BRK-2 check-signature flag as
+	// the node does from 0.8.0; KeyReshared adds the 0.11.0 fifth field (whether
+	// the key has been reshared since its keygen). Both default to false, the
+	// legacy three-field output.
+	VaultRotationV2 bool
+	KeyReshared     bool
 }
 
 // stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
@@ -131,6 +137,7 @@ func NewContractTest() ContractTest {
 		&tssCommitments,
 		&tssRequests,
 		nil, // governanceDb
+		nil, // poaSeatsDb
 		nil, // pendulumSettlementsDb
 		nil, // consensusStateDb
 		nil, // wasm
@@ -158,7 +165,7 @@ func NewContractTest() ContractTest {
 		LedgerSession:   ledgerSession,
 		RcSession:       se.RcSystem.NewSession(ledgerSession),
 		RcDb:            &rc,
-		CallSession:     contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, 0, nil),
+		CallSession:     contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, &tssCommitments, 0, nil),
 		DataLayer:       dl,
 		StateEngine:     se,
 		PendulumApplier: se.PendulumApplier(),
@@ -275,11 +282,14 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		}
 	}
 
-	gas := min(uint(availableRCs), tx.RcLimit)
-	const maxGas = ^uint(0) / params.CYCLE_GAS_PER_RC
+	gas := min(uint64(availableRCs), tx.RcLimit)
+	const maxGas = ^uint64(0) / params.CYCLE_GAS_PER_RC
 	if gas > maxGas {
 		gas = maxGas
 	}
+	// uint64->uint narrowing forced by WasmEdge's uint gas meter; lossless on
+	// 64-bit and bounded by the maxGas cap. See TxVscCallContract.ExecuteTx.
+	gasCycles := uint(gas * params.CYCLE_GAS_PER_RC)
 
 	// fmt.Println("tx intents:", tx.Intents)
 
@@ -300,16 +310,18 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 			Intents:              tx.Intents,
 			PendulumOracle:       ct.StateEngine.PendulumOracleEnv(),
 		},
-		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gas*params.CYCLE_GAS_PER_RC, ct.LedgerSession, ct.CallSession, 0,
+		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gasCycles, ct.LedgerSession, ct.CallSession, 0,
 		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
 		contract_execution_context.WithTryCatch(ct.TryCatchActive),
+		contract_execution_context.WithVaultRotationV2(ct.VaultRotationV2),
+		contract_execution_context.WithKeyReshared(ct.KeyReshared),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
 		wasm_context.WasmExecCodeCtxKey,
 		hex.EncodeToString(code),
 	)
-	res := w.Execute(ctx, gas*params.CYCLE_GAS_PER_RC, tx.Action, string(tx.Payload), wasm_runtime.Go)
+	res := w.Execute(ctx, gasCycles, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
 	ct.RcSession.Consume(rcPayer, ct.BlockHeight, rcUsed)
 	ct.StateEngine.RcMap[rcPayer] = ct.StateEngine.RcMap[rcPayer] + rcUsed

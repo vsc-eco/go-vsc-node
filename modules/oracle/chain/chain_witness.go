@@ -3,6 +3,7 @@ package chain
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -26,6 +27,13 @@ func witnessChainData(c *ChainOracle, msg *chainOracleMessage) (*chainRelayRespo
 	chainSymbol, _, startBlock, endBlock, err := parseChainSessionID(msg.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
+	}
+
+	// the range is peer-controlled and sizes the relayer's make()/RPC loop; a
+	// producer never relays more than maxRelayBlocks per session, so refuse
+	// anything else before fetching.
+	if startBlock == 0 || endBlock < startBlock || endBlock-startBlock >= maxRelayBlocks || endBlock > math.MaxInt64 {
+		return nil, fmt.Errorf("invalid block range %d-%d", startBlock, endBlock)
 	}
 
 	// Look up the local chain relayer for this symbol

@@ -3,6 +3,7 @@ package oracle
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
 	"vsc-node/lib/vsclog"
@@ -62,6 +63,17 @@ type Oracle struct {
 
 	// priceOracle *price.PriceOracle
 	chainOracle *chain.ChainOracle
+
+	// chainRelays counts chain-relay rounds in flight (fetch, signature
+	// collection, submission). It backs the devnet block pacemaker's quiescence
+	// probe (ChainRelaysInFlight) and carries no consensus state.
+	chainRelays atomic.Int64
+}
+
+// ChainRelaysInFlight is how many chain-relay rounds are running. Read-only;
+// used by the devnet block pacemaker.
+func (o *Oracle) ChainRelaysInFlight() int64 {
+	return o.chainRelays.Load()
 }
 
 func New(
