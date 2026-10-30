@@ -237,6 +237,46 @@ var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
 // 7200 blocks @3s; cf. ELECTION_INTERVAL = 6*60*20). Mainnet only — testnet and
 // devnet run the fix immediately (Config.ActivationHeight 0).
 var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
+
+// PENDULUM_WHITELIST_V2_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the expanded pendulum pool whitelist (adds HBD:LASSECASH).
+//
+// Still consensus-affecting even though this particular addition is swap-only
+// (Collateral: false, so P and therefore the fee split do not move): below the
+// height every node REFUSES a LASSECASH swap, at/after it every node accepts
+// one. Witnesses on either side of the height would disagree about whether the
+// transaction succeeded at all. A future addition marked Collateral would
+// additionally shift P — hence the same coordinated-height treatment for both.
+//
+// RE-PINNED 2026-09-29 (third pin that day): head 110,337,627 +403,200 blocks
+// (14 DAYS at 3 s), Tue 13 Oct ~14:00 UTC.
+//
+// Widens the ~2-day window merged minutes earlier. That one was cut short on
+// the assumption the release would ship straight after the merge, but the
+// blocker is still open: CircleCI publishes no image because the
+// docker-hub-creds context is not granted to the pushing user, and the GitHub
+// Actions replacement is not merged yet. A two-day height with no build behind
+// it just expires like the four before it, and an expired height fails OPEN —
+// the addition goes live the moment a node upgrades, which is precisely the
+// staggered rollout this gate exists to prevent. Two weeks is sized for the
+// release actually reaching every witness, not for the mechanical minimum.
+//
+// Previously: 09-29 110,391,000 (+2 d) and 110,734,900 (+14 d), 09-27
+// 110,338,100 (+48 h), 09-23 +1 d from 110,193,400, 09-22 from head
+// 110,135,804 +57,600, after the original 09-20 pin eroded to ~8 h — cf. the
+// 0.3.0 rollout, where un-upgraded nodes dropped the committee 18 -> 12.
+//
+// NOTE: the develop branch deliberately carries a DIFFERENT, shorter height.
+// This constant is consensus input, so the branch a binary is built from
+// decides when the addition activates — binaries from the two branches must
+// never be mixed on one network.
+//
+// RE-PIN AGAIN BEFORE RELEASE if this window erodes too. A height already in
+// the past makes the addition immediate on upgrade, i.e. exactly the staggered
+// rollout this exists to prevent — the gate fails open, and silently.
+// Mainnet only — testnet and devnet apply their lists immediately (height 0).
+var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────
