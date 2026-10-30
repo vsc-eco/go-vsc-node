@@ -116,11 +116,13 @@ func TestEVMBridge_ZK_VerifierRejectPaths(t *testing.T) {
 	// node 1 (the deployer), so the checkOwner() gate (main.go:105) passes.
 	// The beacon light-client bootstrap (genesis_root, the trusted sync
 	// committee hash at initial_head) is required since the verifier's
-	// beacon-chain anchoring; placeholders do, as no proof is accepted here.
+	// beacon-chain anchoring; placeholders do for the committee, as no proof
+	// is accepted here, but the genesis root must be Sepolia's own (A05: a
+	// public chain's label takes only its canonical root).
 	initPayload := fmt.Sprintf(
 		`{"groth16_vk":"%s","vk_root":"%s","sp1_vkey_hash":"%s","max_retention":10000,"initial_height":1,"initial_block_hash":"%s","is_testnet":true,"expected_chain_id":%d,"genesis_root":"%s","initial_sync_committee_hash":"%s","initial_head":%d}`,
 		zkGroth16VkPlaceholder, zkVkRoot, zkSp1VkeyHash, zkInitialBlockHash, zkExpectedChainId,
-		"0x"+strings.Repeat("ce", 32), "0x"+strings.Repeat("5c", 32), 8192,
+		"0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078", "0x"+strings.Repeat("5c", 32), 8192,
 	)
 	initTx, err := e.callOnce(e.ownerNode, verifierID, "init", initPayload)
 	if err != nil {
