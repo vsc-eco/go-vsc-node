@@ -86,7 +86,7 @@ func (m *MockBlockClient) GetDynamicGlobalProps() ([]byte, error) {
 	// to contribute to innate thread randomness since these tests because of that can't be 100% deterministic anyway
 	time.Sleep(time.Millisecond * time.Duration(10+rand.IntN(90)))
 	props, _ := json.Marshal(map[string]interface{}{
-		"head_block_number": float64(dummyBlockHead), // dummy head, whatever it may be
+		"last_irreversible_block_num": float64(dummyBlockHead), // dummy head, whatever it may be
 	})
 	return props, nil
 }
@@ -681,7 +681,7 @@ func TestHeadBlock(t *testing.T) {
 	err = json.Unmarshal(dynData, &headBlock)
 	assert.NoError(t, err)
 
-	headBlockNum := uint64(headBlock["head_block_number"].(float64))
+	headBlockNum := uint64(headBlock["last_irreversible_block_num"].(float64))
 
 	s := streamer.NewStreamer(mockClient, mockHiveBlocks, nil, nil, nil)
 

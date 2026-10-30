@@ -448,13 +448,13 @@ func updateHead(bc BlockClient) (uint64, error) {
 	}
 
 	var data struct {
-		HeadBlockNumber uint64 `json:"head_block_number"`
+		LastIrreversibleBlockNum uint64 `json:"last_irreversible_block_num"`
 	}
 	if err := json.Unmarshal(props, &data); err != nil {
 		return 0, fmt.Errorf("failed to unmarshal dynamic global properties: %v", err)
 	}
 
-	return data.HeadBlockNumber, nil
+	return data.LastIrreversibleBlockNum, nil
 }
 
 // updates the head height of the streamer at intervals, and since this endpiont is sensitive
