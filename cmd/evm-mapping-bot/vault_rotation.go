@@ -100,8 +100,10 @@ func decodeVaultView(contract, rawHex string) (vaultView, error) {
 	return view, nil
 }
 
+// fetchVaultView reads "v" hex-encoded, as decodeVaultView takes it
+// (fetchContractStateHex would hand it the decoded bytes).
 func fetchVaultView(ctx context.Context, gql *vscGraphQL, contract string) (vaultView, error) {
-	st, err := gql.fetchContractStateHex(ctx, contract, []string{"v"})
+	st, err := gql.fetchContractStateEnc(ctx, contract, []string{"v"}, "hex")
 	if err != nil {
 		return vaultView{}, err
 	}

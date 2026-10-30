@@ -2942,7 +2942,11 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		// address and key serve withdrawals; every fund-holding generation's
 		// address is scanned for deposits.
 		var view vaultView
-		if v, vErr := fetchVaultView(loopCtx, gql, cfg.ContractID); vErr == nil && v.Registry && v.Active != nil && v.Active.Address != "" {
+		v, vErr := fetchVaultView(loopCtx, gql, cfg.ContractID)
+		if vErr != nil {
+			slog.Warn("A01: vault registry unreadable; rotation ops wait", "err", vErr)
+		}
+		if vErr == nil && v.Registry && v.Active != nil && v.Active.Address != "" {
 			view = v
 			if !strings.EqualFold(cfg.VaultAddress, v.Active.Address) {
 				slog.Info("vault generation is active", "generation", v.Active.Gen, "vault", v.Active.Address, "key", v.Active.KeyID)

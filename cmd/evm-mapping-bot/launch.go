@@ -418,7 +418,7 @@ func prefetchHistoryProofs(ctx context.Context, rpc *ethRPC, f uint64, needs []u
 	var xs []uint64
 	for _, x := range needs {
 		if x < f && f-x <= historyServeWindow {
-			slots = append(slots, fmt.Sprintf(`"0x%x"`, x%historyServeWindow))
+			slots = append(slots, `"`+historySlotKey(x)+`"`)
 			xs = append(xs, x)
 		}
 	}
@@ -459,6 +459,14 @@ func prefetchHistoryProofs(ctx context.Context, rpc *ethRPC, f uint64, needs []u
 		}
 	}
 	return e
+}
+
+// historySlotKey is block x's EIP-2935 storage slot as eth_getProof takes a
+// storage key: 32 bytes of hex. A shorter quantity ("0x20e") is refused by
+// spec-strict clients (anvil: "odd number of digits", "invalid string length"),
+// which left every attest on the submitHeaders fallback.
+func historySlotKey(x uint64) string {
+	return fmt.Sprintf("0x%064x", x%historyServeWindow)
 }
 
 func joinHexNodes(nodes []string) string {

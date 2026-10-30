@@ -107,6 +107,20 @@ func TestRP7_ScanFindsTheDepositAndItsPayingTransfer(t *testing.T) {
 
 // RP-9: headerRLP re-encodes a header from its JSON, including Glamsterdam's
 // fields (Sepolia), and checks it hashes to the block hash.
+// eth_getProof storage keys are 32-byte DATA; anvil (and other alloy-based
+// clients) refuse "0x20e" and "0x20", so the history proof never served.
+func TestRP9_HistorySlotKeyIs32Bytes(t *testing.T) {
+	for x, want := range map[uint64]string{
+		526:                    "0x000000000000000000000000000000000000000000000000000000000000020e",
+		32:                     "0x0000000000000000000000000000000000000000000000000000000000000020",
+		historyServeWindow + 5: "0x0000000000000000000000000000000000000000000000000000000000000005",
+	} {
+		if got := historySlotKey(x); got != want {
+			t.Fatalf("slot key of block %d: %s, want %s", x, got, want)
+		}
+	}
+}
+
 func TestRP9_HeaderRLPFromJSON(t *testing.T) {
 	raw, err := os.ReadFile("testdata/headers.json")
 	if err != nil {

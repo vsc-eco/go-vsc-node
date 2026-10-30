@@ -75,6 +75,25 @@ func TestA01Bot_DecodesTheVaultRegistry(t *testing.T) {
 	}
 }
 
+// The registry as the main loop reads it: through the node's GraphQL, not
+// handed in as hex (devnet run 3: a double hex decode left the bot with no
+// generations, so it never swept).
+func TestA01Bot_FetchesTheVaultRegistry(t *testing.T) {
+	l2 := newFakeL2()
+	gql := l2.gql(t)
+	l2.set("vsc1b", "v", string(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusRetiring}, rotEntry{1, 2, btcvault.VaultStatusActive})))
+	v, err := fetchVaultView(context.Background(), gql, "vsc1b")
+	if err != nil || !v.Registry || v.Active == nil || v.Active.Gen != 1 || v.Active.Address != rotAddr(2) {
+		t.Fatalf("view %+v %v", v, err)
+	}
+	if got := v.fundHolding(); len(got) != 2 || got[0] != rotAddr(1) {
+		t.Fatalf("fund-holding %v", got)
+	}
+	if v, err := fetchVaultView(context.Background(), gql, "vsc1none"); err != nil || v.Registry {
+		t.Fatalf("no registry: %+v %v", v, err)
+	}
+}
+
 // BOT-RC-1, as the BTC bot: twice the dry run, at least the floor, at most the
 // ceiling.
 func TestA01Bot_RcFromDryRun(t *testing.T) {
