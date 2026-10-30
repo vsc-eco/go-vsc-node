@@ -90,9 +90,16 @@ type config struct {
 	// staged rollout exists to keep default-configured nodes in step, not to
 	// second-guess an operator who set the value deliberately.
 	pendulumWhitelistOverridden bool
-  // Network-baked free-RC allowance for Hive accounts. Deliberately absent from
+	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-  rcHiveFreeAmount      int64
+	rcHiveFreeAmount int64
+	// evmBridgesBaked: the EVM bridge map (OracleParams.EvmBridgeContracts and
+	// EvmBridgeFromHeight) is this network's, set here, and an operator's
+	// override of it is ignored (A21). It is a consensus input from 0.13.0
+	// (custody, bond lock, the rolling vault's signing rules), and a per-operator
+	// map gave nodes different answers. A bridge ships in a build, with a height
+	// the chain has not reached.
+	evmBridgesBaked bool
 }
 
 func (c *config) OnMainnet() bool {
@@ -285,8 +292,14 @@ func (c *config) LoadOverrides(path string) error {
 		}
 	}
 	if raw.OracleParams != nil {
+		bridges, from := c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight
+		c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = copyMap(bridges), copyMap(from)
 		if err := json.Unmarshal(raw.OracleParams, &c.oracleParams); err != nil {
 			return fmt.Errorf("applying oracle overrides: %w", err)
+		}
+		if c.evmBridgesBaked && (!sameMap(bridges, c.oracleParams.EvmBridgeContracts) || !sameMap(from, c.oracleParams.EvmBridgeFromHeight)) {
+			fmt.Fprintf(os.Stderr, "sysconfig: the EVM bridge map is part of the %s build; the override of evmBridgeContracts/evmBridgeFromHeight is ignored (A21)\n", c.network)
+			c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = bridges, from
 		}
 	}
 	if raw.TssParams != nil {
@@ -304,6 +317,29 @@ func (c *config) LoadOverrides(path string) error {
 	return nil
 }
 
+func copyMap[V comparable](m map[string]V) map[string]V {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func sameMap[V comparable](a, b map[string]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *config) StartHeight() uint64 {
 	return c.startHeight
 }
@@ -313,9 +349,12 @@ func MainnetConfig() SystemConfig {
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
-		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
-		gatewayWallet:  "vsc.gateway",
-		startHeight:    94601000,
+		// A21: no EVM bridge yet; one ships here (oracleParams
+		// EvmBridgeContracts + EvmBridgeFromHeight), never per operator.
+		evmBridgesBaked: true,
+		hiveChainId:     "beeab0de00000000000000000000000000000000000000000000000000000000",
+		gatewayWallet:   "vsc.gateway",
+		startHeight:     94601000,
 		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
@@ -463,9 +502,12 @@ func TestnetConfig() SystemConfig {
 		bootstrapPeers: TESTNET_BOOTSTRAP,
 		network:        "testnet",
 		netId:          "vsc-testnet",
-		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
-		gatewayWallet:  "vsc.gateway",
-		startHeight:    2,
+		// A21: no EVM bridge yet; one ships here (oracleParams
+		// EvmBridgeContracts + EvmBridgeFromHeight), never per operator.
+		evmBridgesBaked: true,
+		hiveChainId:     "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet:   "vsc.gateway",
+		startHeight:     2,
 		// Short (~90s) timelock so the mechanism is testable on testnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
