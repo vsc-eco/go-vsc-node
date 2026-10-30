@@ -19,6 +19,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
 )
 
@@ -144,7 +145,14 @@ func rwMine(t *testing.T, c rwChain, ps *PendingSpend, n uint64, status uint64) 
 		t.Fatalf("withdrawal tx %q is not an unsigned EIP-1559 tx", ps.UnsignedTxHex)
 	}
 	chain := &fakeChain{}
-	tx := chain.addTx(t, c.vaultKey, &types.DynamicFeeTx{Nonce: f.Nonce, GasTipCap: f.GasTipCap, GasFeeCap: f.GasFeeCap, Gas: f.Gas, To: f.To, Value: f.Value, Data: f.Data})
+	// A token's transfer emits its Transfer log when it succeeds (A36: the
+	// bridge counts an ERC-20 withdrawal paid only with it).
+	var logs []*types.Log
+	if status == types.ReceiptStatusSuccessful && len(f.Data) == 68 && f.To != nil {
+		logs = append(logs, &types.Log{Address: *f.To, Topics: []common.Hash{ethCrypto.Keccak256Hash([]byte("Transfer(address,address,uint256)")),
+			common.BytesToHash(c.vault.Bytes()), common.BytesToHash(f.Data[16:36])}, Data: f.Data[36:68]})
+	}
+	tx := chain.addTx(t, c.vaultKey, &types.DynamicFeeTx{Nonce: f.Nonce, GasTipCap: f.GasTipCap, GasFeeCap: f.GasFeeCap, Gas: f.Gas, To: f.To, Value: f.Value, Data: f.Data}, logs...)
 	chain.receipts[0].Status = status
 	rwHeaderAt(c.ct, n, chain, rwBlockTime)
 	return chain, tx

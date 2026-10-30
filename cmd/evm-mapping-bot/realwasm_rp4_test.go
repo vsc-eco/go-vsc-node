@@ -198,7 +198,8 @@ func TestRealWasm_USDC1B_RevertFeeIsKept(t *testing.T) {
 	mined, tx := rwMine(t, c, ps, 103, types.ReceiptStatusFailed)
 	rwConfirm(t, c, mined, tx, 103, ps)
 	rwExpect(t, ct, "a-"+user+"-usdc", "24750000")
-	rwExpect(t, ct, "a-hive:owner-usdc", "250000")
+	rwExpect(t, ct, "a-hive:altera.app-usdc", "250000") // A35: to the operator, not the owner
+	rwExpect(t, ct, "a-hive:owner-usdc", "")
 	rwExpect(t, ct, "s-usdc", "25000000|25000000|0|0")
 }
 
