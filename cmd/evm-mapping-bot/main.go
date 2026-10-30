@@ -1708,9 +1708,11 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 		}
 	}
 
-	// Detect ETH deposits: direct transfers to a vault
+	// Detect ETH deposits: direct transfers to a vault. A transfer FROM one of
+	// the vault's own addresses (a migration sweep, A01) is the vault moving
+	// its funds, not a deposit: the bridge refuses it.
 	for i, tx := range block.Transactions {
-		if isVault[strings.ToLower(tx.To)] && hexNonZero(tx.Value) {
+		if isVault[strings.ToLower(tx.To)] && hexNonZero(tx.Value) && !isVault[strings.ToLower(tx.From)] {
 			// FAILDEP-1: a reverted transfer is in the block but moved nothing
 			// (Glamsterdam reverts one that creates the vault's account at
 			// 21,000 gas); the bridge refuses it, so it is not a deposit.
@@ -1738,7 +1740,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 		if vaultAddr == "" {
 			continue
 		}
-		if err := scanVaultLogs(rpc, height, strings.ToLower(vaultAddr), tokens, result); err != nil {
+		if err := scanVaultLogs(rpc, height, strings.ToLower(vaultAddr), isVault, tokens, result); err != nil {
 			return nil, err
 		}
 	}
@@ -1747,7 +1749,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 
 // scanVaultLogs adds the ERC-20 and MagiDeposit deposits of one vault address
 // in block height to result.
-func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, tokens map[string]string, result *blockScanResult) error {
+func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[string]bool, tokens map[string]string, result *blockScanResult) error {
 	// Detect ERC-20 deposits: Transfer events to vault
 	for tokenAddr := range tokens {
 		vaultPadded := "0x000000000000000000000000" + strings.TrimPrefix(vaultLower, "0x")
@@ -1764,16 +1766,22 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, tokens map[str
 		}
 
 		var logs []struct {
-			TransactionIndex string `json:"transactionIndex"`
-			TransactionHash  string `json:"transactionHash"`
-			LogIndex         string `json:"logIndex"`
-			Data             string `json:"data"`
+			TransactionIndex string   `json:"transactionIndex"`
+			TransactionHash  string   `json:"transactionHash"`
+			LogIndex         string   `json:"logIndex"`
+			Data             string   `json:"data"`
+			Topics           []string `json:"topics"`
 		}
 		if err := json.Unmarshal(logsData, &logs); err != nil {
 			return fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
 
 		for _, log := range logs {
+			// A01: a token transfer from one of the vault's own addresses (a
+			// migration sweep) is not a deposit; the bridge refuses it.
+			if len(log.Topics) > 1 && len(log.Topics[1]) >= 40 && isVault["0x"+strings.ToLower(log.Topics[1][len(log.Topics[1])-40:])] {
+				continue
+			}
 			// W4-A CRIT #14 + F2 hardening: the contract reader expects the
 			// PER-RECEIPT log position (0..N-1 within the receipt's own logs
 			// list), but eth_getLogs returns the BLOCK-LEVEL logIndex.

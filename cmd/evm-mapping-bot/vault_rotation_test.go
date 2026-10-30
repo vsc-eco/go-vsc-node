@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -256,5 +258,71 @@ func TestA01Bot_UnminedSweepIsReposted(t *testing.T) {
 	}
 	if n := run(time.Now().Add(-time.Hour), true); n != 0 {
 		t.Fatalf("mined: %d re-posts, want 0", n)
+	}
+}
+
+// A01: a migration sweep is a transfer from the retiring generation's address
+// to the active one's, both scanned as vault addresses. It is the vault moving
+// its own funds, not a deposit, and the bridge refuses it; the scanner must not
+// map it (devnet weather wave: a mapped ETH sweep minted 6 ETH a second time
+// on the old bridge). A user's deposit in the same block still is one.
+func TestA01Bot_ScanSkipsTheVaultsOwnTransfers(t *testing.T) {
+	vault0, vault1 := rotAddr(1), rotAddr(2)
+	user := "0x00000000000000000000000000000000000a11ce"
+	token := "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
+	pad := func(a string) string { return "0x" + strings.Repeat("0", 24) + strings.TrimPrefix(a, "0x") }
+	word := "0x" + strings.Repeat("0", 56) + "017d7840" // 25 USDC
+	transfer := func(from, logIndex string) map[string]any {
+		return map[string]any{"address": token, "topics": []string{"0x" + TransferEventSig, pad(from), pad(vault1)}, "data": word,
+			"transactionIndex": "0x2", "transactionHash": "0xt" + logIndex, "logIndex": logIndex}
+	}
+	logs := []map[string]any{transfer(vault0, "0x0"), transfer(user, "0x1")}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var res any
+		switch req.Method {
+		case "eth_getBlockByNumber":
+			res = map[string]any{"transactions": []map[string]string{
+				{"hash": "0xsweep", "from": vault0, "to": vault1, "value": "0x4563918244f40000"},
+				{"hash": "0xuser", "from": user, "to": vault1, "value": "0xde0b6b3a7640000"},
+			}}
+		case "eth_getTransactionReceipt":
+			var h string
+			_ = json.Unmarshal(req.Params[0], &h)
+			res = map[string]any{"status": "0x1", "logs": []map[string]any{}}
+			for _, l := range logs {
+				if l["transactionHash"] == h {
+					res = map[string]any{"status": "0x1", "logs": []map[string]any{l}}
+				}
+			}
+		case "eth_getLogs":
+			var p struct {
+				Address string `json:"address"`
+				Topics  []any  `json:"topics"`
+			}
+			_ = json.Unmarshal(req.Params[0], &p)
+			out := []map[string]any{}
+			if strings.EqualFold(p.Address, token) && len(p.Topics) > 2 && p.Topics[2] == pad(vault1) {
+				out = logs
+			}
+			res = out
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": res})
+	}))
+	defer srv.Close()
+	got, err := scanBlock(newEthRPC(srv.URL), 300, []string{vault1, vault0}, map[string]string{token: "usdc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, d := range got.Deposits {
+		kinds = append(kinds, d.DepositType+":"+d.TxHash)
+	}
+	if len(got.Deposits) != 2 || kinds[0] != "eth:0xuser" || kinds[1] != "erc20:0xt0x1" {
+		t.Fatalf("deposits %v: want the user's ETH and token deposits only, not the sweeps", kinds)
 	}
 }

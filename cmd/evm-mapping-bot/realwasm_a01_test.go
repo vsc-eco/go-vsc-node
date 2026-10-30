@@ -269,6 +269,25 @@ func TestRealWasm_A01_RotationEndToEnd(t *testing.T) {
 		t.Fatalf("after the batch: msr=%q usdc book %q", ct.StateGet(rwBridge, "msr"), ct.StateGet(rwBridge, "vb-0-usdc"))
 	}
 
+	// A sweep is a transfer between two of the vault's own addresses, not a
+	// deposit: mapping it (mapping is permissionless) must not credit
+	// anyone or add supply (devnet weather wave: the ETH sweep was mapped and
+	// the books ran 6 ETH over custody).
+	supplyEth, supplyUsdc := ct.StateGet(rwBridge, "s-eth"), ct.StateGet(rwBridge, "s-usdc")
+	ethSweepDep := detectedDeposit{BlockHeight: 106, TxIndex: 0, LogIndex: -1, TxHash: ch106.txs[0].Hash().Hex(), DepositType: "eth"}
+	if r := rwCall(ct, "hive:anyone", "map", buildMapPayloadFromRPC(context.Background(), ch106.rpc(t), ethSweepDep, 106)); r.Success {
+		t.Errorf("the ETH sweep was accepted as a deposit: s-eth %q -> %q, credited %q", supplyEth, ct.StateGet(rwBridge, "s-eth"),
+			ct.StateGet(rwBridge, "a-"+rwDID(vault0)+"-eth"))
+	}
+	usdcSweepDep := detectedDeposit{BlockHeight: 106, TxIndex: 1, LogIndex: 0, TxHash: ch106.txs[1].Hash().Hex(), DepositType: "erc20", TokenAddress: rwUSDC}
+	if r := rwCall(ct, "hive:anyone", "map", buildMapPayloadFromRPC(context.Background(), ch106.rpc(t), usdcSweepDep, 106)); r.Success {
+		t.Errorf("the USDC sweep was accepted as a deposit: s-usdc %q -> %q, credited %q", supplyUsdc, ct.StateGet(rwBridge, "s-usdc"),
+			ct.StateGet(rwBridge, "a-"+rwDID(vault0)+"-usdc"))
+	}
+	if ct.StateGet(rwBridge, "s-eth") != supplyEth || ct.StateGet(rwBridge, "s-usdc") != supplyUsdc {
+		t.Fatalf("supply moved by mapping a sweep: eth %q -> %q, usdc %q -> %q", supplyEth, ct.StateGet(rwBridge, "s-eth"), supplyUsdc, ct.StateGet(rwBridge, "s-usdc"))
+	}
+
 	// Hand-off: the queued withdrawal issues from generation 1 at nonce 0,
 	// signed by its key; it mines and settles.
 	rc.call(rwRelayer, "drainWithdrawalQueue", []byte(`{"max":8}`))
