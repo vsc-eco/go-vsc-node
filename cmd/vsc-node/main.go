@@ -338,7 +338,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se)
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se, sysConfig.NetId())
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
