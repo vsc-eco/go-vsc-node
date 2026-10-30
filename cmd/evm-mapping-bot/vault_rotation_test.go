@@ -151,6 +151,7 @@ func TestA01Bot_RetiringGenerationsWithdrawalUsesItsKey(t *testing.T) {
 	l2.set("vsc1bridge", "d-0", string(b))
 	l2.set("vsc1bridge", "wnh", "0")
 	sh, _ := computeSighash(tx)
+	l2.sigs[sh] = tssSigWith(t, rotKey(1), tx)
 	l2.sigKey = map[string]string{sh: "vsc1bridge-primary"}
 	v, _ := decodeVaultView("vsc1bridge", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining}, rotEntry{1, 2, btcvault.VaultStatusActive})))
 	cfg.VaultAddress, cfg.ActiveGen, cfg.VaultGens = v.Active.Address, 1, v.Gens
@@ -176,5 +177,20 @@ func TestA01Bot_RedrivesOnlyTheLowestOpenNonce(t *testing.T) {
 	sweeps := []sweepRecord{{Gen: 0, Nonce: 5}, {Gen: 0, Nonce: 4}, {Gen: 2, Nonce: 9}, {Gen: 0, Nonce: 6}}
 	if lowestOpenNonce(sweeps, 0) != 4 || lowestOpenNonce(sweeps, 2) != 9 {
 		t.Fatalf("lowest: gen 0 %d, gen 2 %d", lowestOpenNonce(sweeps, 0), lowestOpenNonce(sweeps, 2))
+	}
+}
+
+// The health check watches the key of every generation that holds or may
+// receive funds, and of a pending one (renewKey renews it too), not a purged
+// one; with no registry, the one key.
+func TestA01Bot_HealthWatchesEveryLiveKey(t *testing.T) {
+	v, _ := decodeVaultView("vsc1b", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining},
+		rotEntry{1, 2, btcvault.VaultStatusActive}, rotEntry{2, 3, btcvault.VaultStatusPending}, rotEntry{3, 4, btcvault.VaultStatusPurged})))
+	got := EVMBotConfig{VaultGens: v.Gens}.healthKeys("vsc1b-primary")
+	if strings.Join(got, ",") != "vsc1b-primary,vsc1b-primaryv1,vsc1b-primaryv2" {
+		t.Fatalf("keys %v", got)
+	}
+	if got := (EVMBotConfig{}).healthKeys("vsc1b-primary"); len(got) != 1 || got[0] != "vsc1b-primary" {
+		t.Fatalf("no registry: %v", got)
 	}
 }

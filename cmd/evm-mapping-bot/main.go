@@ -558,6 +558,8 @@ type ethRPC struct {
 	// B-R4: index of the endpoint that last answered; calls start there, so a
 	// hung primary costs its timeout once rather than on every call.
 	start atomic.Int64
+	// heads is the highest block each endpoint has reported (A19).
+	heads []atomic.Uint64
 }
 
 func newEthRPC(urls string) *ethRPC {
@@ -567,7 +569,74 @@ func newEthRPC(urls string) *ethRPC {
 			e.urls = append(e.urls, u)
 		}
 	}
+	e.heads = make([]atomic.Uint64, len(e.urls))
 	return e
+}
+
+// logsAt is eth_getLogs for a range ending at toBlock (A19, BI1). With
+// several endpoints a call fails over per call, and a lagging endpoint
+// answers [] for a block it has not seen (geth clamps a log range to its
+// head): the block was then marked scanned and its ERC-20 and MagiDeposit
+// deposits were never mapped, with no error and no alarm. An empty answer is
+// now taken only from an endpoint whose head has reached toBlock; otherwise
+// the next endpoint is asked, and with none the block fails and is retried.
+// A non-empty answer stands (a lagging node has no logs past its head). With
+// one endpoint the block itself came from it, so no check is needed.
+func (e *ethRPC) logsAt(ctx context.Context, params string, toBlock uint64) (json.RawMessage, error) {
+	if len(e.urls) <= 1 {
+		return e.callCtx(ctx, "eth_getLogs", params)
+	}
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[%s],"id":1}`, params)
+	var lastErr error
+	first := int(e.start.Load())
+	for k := range e.urls {
+		i := (first + k) % len(e.urls)
+		res, answered, err := e.callOne(ctx, e.urls[i], "eth_getLogs", body)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !answered {
+			lastErr = err
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var logs []json.RawMessage
+		if json.Unmarshal(res, &logs) == nil && len(logs) == 0 && !e.reached(ctx, i, toBlock) {
+			lastErr = fmt.Errorf("A19: endpoint %d has not reached block %d; its empty logs answer is not taken", i, toBlock)
+			slog.Warn("A19: an endpoint behind the block answered no logs; asking the next", "endpoint", i, "block", toBlock)
+			continue
+		}
+		if i != first {
+			e.start.Store(int64(i))
+		}
+		return res, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no ETH RPC endpoint configured")
+	}
+	return nil, lastErr
+}
+
+// reached reports whether endpoint i's head is at least block (cached: a head
+// only moves forward).
+func (e *ethRPC) reached(ctx context.Context, i int, block uint64) bool {
+	if e.heads[i].Load() >= block {
+		return true
+	}
+	res, answered, err := e.callOne(ctx, e.urls[i], "eth_blockNumber", `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	if !answered || err != nil {
+		return false
+	}
+	var h string
+	if json.Unmarshal(res, &h) != nil {
+		return false
+	}
+	head := hexToUint64(h)
+	for cur := e.heads[i].Load(); head > cur && !e.heads[i].CompareAndSwap(cur, head); cur = e.heads[i].Load() {
+	}
+	return head >= block
 }
 
 // maxHTTPResponseBytes caps how many bytes we will read from any single HTTP
@@ -1689,7 +1758,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, tokens map[str
 		// B-R2: any error below fails the block, which is retried next tick
 		// (runOnce stops at the first failed block); skipping it lost the
 		// deposit while the block was marked scanned.
-		logsData, err := rpc.call("eth_getLogs", logsParams)
+		logsData, err := rpc.logsAt(context.Background(), logsParams, height)
 		if err != nil {
 			return fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
@@ -2893,7 +2962,10 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		health.recordTick(time.Now(), err, cp)
 		if health.due(time.Now()) {
 			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
-			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, tssKeyID, did.String(), cfg.VaultAddress, cfg.Tokens)
+			cp.mu.Lock()
+			wantSince := cp.WantProofSince
+			cp.mu.Unlock()
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, cfg.healthKeys(tssKeyID), did.String(), cfg.scanVaults(), cfg.Tokens, wantSince)
 			hcancel()
 		}
 
@@ -3541,78 +3613,89 @@ func broadcastWithdrawal(
 		return
 	}
 
-	var v byte = 0
-
-	signedTxHex, err := attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
-	if err != nil {
-		slog.Error("attach signature failed", "err", err)
-		return
+	// A20 (BI4): the recovery id is found here, against the address the
+	// withdrawal is sent from (as the vault check and the sweeps do), not by
+	// which broadcast an RPC accepts: one that does not check the sender took
+	// v=0 whatever it was (15 of 40 in the probe), and the bot recorded and
+	// re-sent a transaction from nobody. S is made low (EIP-2). A record from
+	// before VaultAtQueue keeps both tries.
+	vs := []byte{0, 1}
+	if isValidEthAddress(ps.VaultAtQueue) {
+		rsv, rerr := vaultCheckRSV(sig.Bytes, sighash, ps.VaultAtQueue)
+		if rerr != nil {
+			slog.Error("withdrawal signature does not recover the vault it is sent from", "nonce", nonce, "vault", ps.VaultAtQueue, "err", rerr)
+			return
+		}
+		r, s, vs = rsv[:32], rsv[32:64], []byte{rsv[64]}
 	}
 
-	txHash, err := rpc.broadcastTx(signedTxHex)
-	if err != nil {
-		slog.Debug("broadcast with v=0 failed, trying v=1", "err", err)
-		v = 1
-		signedTxHex, err = attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
-		if err != nil {
-			slog.Error("attach signature v=1 failed", "err", err)
+	var signedTxHex, txHash string
+	var bErr error
+	for _, v := range vs {
+		cand, aErr := attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
+		if aErr != nil {
+			slog.Error("attach signature failed", "err", aErr)
 			return
 		}
-		txHash, err = rpc.broadcastTx(signedTxHex)
-		if err != nil {
-			slog.Warn("broadcast failed with both v values, checking if already mined", "err", err)
-			for _, tryV := range []byte{0, 1} {
-				candidate, aErr := attachSignatureToTx(ps.UnsignedTxHex, tryV, r, s)
-				if aErr != nil {
-					continue
-				}
-				candidateBytes, _ := hex.DecodeString(candidate)
-				candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
-				receiptData, rErr := rpc.getReceipt(candidateHash)
-				if rErr != nil || receiptData == nil {
-					continue
-				}
-				// MED-50 (F-M22-MED-8): do NOT trust a receipt blindly. A
-				// hostile RPC can fabricate a receipt for a hash we never
-				// landed, making the bot record a phantom SentTx and stall the
-				// confirmation loop forever. Cross-check that the RPC also
-				// returns a real transaction object for this exact hash, AND
-				// that the canonical tx hash it reports matches what we asked
-				// for.
-				txData, txErr := rpc.getTransactionByHash(candidateHash)
-				if txErr != nil || txData == nil {
-					slog.Warn("MED-50: receipt present but no matching transaction object — ignoring (possible hostile RPC)",
-						"candidateHash", candidateHash)
-					continue
-				}
-				var txObj struct {
-					Hash string `json:"hash"`
-				}
-				if json.Unmarshal(txData, &txObj) != nil ||
-					!strings.EqualFold(txObj.Hash, candidateHash) {
-					slog.Warn("MED-50: transaction object hash mismatch — ignoring (possible hostile RPC)",
-						"candidateHash", candidateHash, "rpcHash", txObj.Hash)
-					continue
-				}
-				var receipt struct {
-					Status string `json:"status"`
-				}
-				if json.Unmarshal(receiptData, &receipt) != nil || receipt.Status == "" {
-					continue
-				}
-				slog.Info("withdrawal TX already mined on chain, recovering",
-					"txHash", candidateHash, "status", receipt.Status, "nonce", nonce)
-				recordSent(cp, nonceKey, SentTx{
-					Vault:       spendVault(ps, cfg.VaultAddress),
-					SignedTxHex: candidate,
-					TxHash:      candidateHash,
-					Nonce:       nonce,
-					SentAt:      time.Now().Unix(),
-				}, ps.UnsignedTxHex, existing, alreadySent)
-				return
+		if txHash, bErr = rpc.broadcastTx(cand); bErr == nil {
+			signedTxHex = cand
+			break
+		}
+		slog.Debug("withdrawal broadcast failed", "v", v, "err", bErr)
+	}
+	if bErr != nil {
+		slog.Warn("withdrawal broadcast failed, checking if already mined", "err", bErr)
+		for _, tryV := range vs {
+			candidate, aErr := attachSignatureToTx(ps.UnsignedTxHex, tryV, r, s)
+			if aErr != nil {
+				continue
 			}
+			candidateBytes, _ := hex.DecodeString(candidate)
+			candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
+			receiptData, rErr := rpc.getReceipt(candidateHash)
+			if rErr != nil || receiptData == nil {
+				continue
+			}
+			// MED-50 (F-M22-MED-8): do NOT trust a receipt blindly. A
+			// hostile RPC can fabricate a receipt for a hash we never
+			// landed, making the bot record a phantom SentTx and stall the
+			// confirmation loop forever. Cross-check that the RPC also
+			// returns a real transaction object for this exact hash, AND
+			// that the canonical tx hash it reports matches what we asked
+			// for.
+			txData, txErr := rpc.getTransactionByHash(candidateHash)
+			if txErr != nil || txData == nil {
+				slog.Warn("MED-50: receipt present but no matching transaction object — ignoring (possible hostile RPC)",
+					"candidateHash", candidateHash)
+				continue
+			}
+			var txObj struct {
+				Hash string `json:"hash"`
+			}
+			if json.Unmarshal(txData, &txObj) != nil ||
+				!strings.EqualFold(txObj.Hash, candidateHash) {
+				slog.Warn("MED-50: transaction object hash mismatch — ignoring (possible hostile RPC)",
+					"candidateHash", candidateHash, "rpcHash", txObj.Hash)
+				continue
+			}
+			var receipt struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(receiptData, &receipt) != nil || receipt.Status == "" {
+				continue
+			}
+			slog.Info("withdrawal TX already mined on chain, recovering",
+				"txHash", candidateHash, "status", receipt.Status, "nonce", nonce)
+			recordSent(cp, nonceKey, SentTx{
+				Vault:       spendVault(ps, cfg.VaultAddress),
+				SignedTxHex: candidate,
+				TxHash:      candidateHash,
+				Nonce:       nonce,
+				SentAt:      time.Now().Unix(),
+			}, ps.UnsignedTxHex, existing, alreadySent)
 			return
 		}
+		return
 	}
 
 	slog.Info("withdrawal TX broadcast to Ethereum",

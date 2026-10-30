@@ -95,7 +95,12 @@ func (h *botHealth) due(now time.Time) bool {
 // check reads the bot's RC, the bridge's gas reserve and ETH custody, and the
 // vault's L1 balance, and keeps (and logs) every alarm. A read that fails is
 // itself reported, never taken as healthy.
-func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID, tssKeyID, did, vault string, tokens map[string]string) {
+// A01: vaults and keyIDs are every vault generation that holds or may
+// receive funds (and a pending one's key): during a rotation the custody is
+// split across them, and a retiring generation's key must not expire before
+// it is swept. wantSince is when the bot started asking for a header proof (0:
+// it is not asking).
+func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID string, keyIDs []string, did string, vaults []string, tokens map[string]string, wantSince int64) {
 	var alarms []string
 	warn := func(msg string, args ...any) {
 		alarms = append(alarms, msg)
@@ -108,12 +113,20 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(fmt.Sprintf("B11: bot RC %d is below %d: maps and confirms will stop", rc, h.rcAlarm), "did", did)
 	}
 
-	if status, expiry, epoch, err := gql.fetchKeyExpiry(ctx, tssKeyID); err != nil {
-		warn("D7: cannot read the vault key's expiry", "err", err)
-	} else if status == "deprecated" {
-		warn("D7: the vault key has expired: run renewKey now; it retires ~14 days after expiring and then can never sign", "key", tssKeyID)
-	} else if status == "active" && expiry > 0 && expiry <= epoch+keyExpiryWarnEpochs {
-		warn(fmt.Sprintf("D7: the vault key expires in %d epochs (~%dh): run renewKey", expiry-min(expiry, epoch), 6*(expiry-min(expiry, epoch))), "key", tssKeyID)
+	for _, tssKeyID := range keyIDs {
+		if status, expiry, epoch, err := gql.fetchKeyExpiry(ctx, tssKeyID); err != nil {
+			warn("D7: cannot read the vault key's expiry", "key", tssKeyID, "err", err)
+		} else if status == "deprecated" {
+			warn("D7: the vault key has expired: run renewKey now; it retires ~14 days after expiring and then can never sign", "key", tssKeyID)
+		} else if status == "active" && expiry > 0 && expiry <= epoch+keyExpiryWarnEpochs {
+			warn(fmt.Sprintf("D7: the vault key expires in %d epochs (~%dh): run renewKey", expiry-min(expiry, epoch), 6*(expiry-min(expiry, epoch))), "key", tssKeyID)
+		}
+	}
+
+	// A10 (BI7): a header proof wanted for hours means the operator is not
+	// proving (PROVE spent, or down) while deposits and withdrawals wait.
+	if wantSince > 0 && now.Sub(time.Unix(wantSince, 0)) > wantProofAlarmAfter {
+		warn(fmt.Sprintf("A10: a header proof has been wanted for %s: check the operator and its PROVE balance", now.Sub(time.Unix(wantSince, 0)).Round(time.Minute)))
 	}
 
 	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid"})
@@ -135,12 +148,12 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		custody, ok := supplyActive(st["s-eth"])
 		if !ok {
 			warn("C4: cannot parse the bridge's ETH custody", "s-eth", st["s-eth"])
-		} else if bal, berr := rpc.getBalance(vault); berr != nil {
+		} else if bal, berr := sumBalances(vaults, rpc.getBalance); berr != nil {
 			warn("C4: cannot read the vault's L1 balance", "err", berr)
 		} else if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
-			warn(fmt.Sprintf("C4: vault %s holds %s wei, %s short of the %s wei of ETH the bridge has credited", vault, bal, short, custody))
+			warn(fmt.Sprintf("C4: vault %s holds %s wei, %s short of the %s wei of ETH the bridge has credited", strings.Join(vaults, "+"), bal, short, custody))
 		}
-		checkTokenCustody(ctx, warn, gql, rpc, contractID, st["chainid"], vault, tokens)
+		checkTokenCustody(ctx, warn, gql, rpc, contractID, st["chainid"], vaults, tokens)
 	}
 
 	h.mu.Lock()
@@ -154,7 +167,8 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 // transfer is credited back after it mined). The token's symbol, which names
 // its custody record s-<symbol>, is read from the bridge's own registry entry
 // t-<chainid>-<address hex>, so no symbol is configured on the bot.
-func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscGraphQL, rpc *ethRPC, contractID, chainID, vault string, tokens map[string]string) {
+func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscGraphQL, rpc *ethRPC, contractID, chainID string, vaults []string, tokens map[string]string) {
+	vault := strings.Join(vaults, "+")
 	if len(tokens) == 0 {
 		return
 	}
@@ -191,7 +205,7 @@ func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscG
 			warn(fmt.Sprintf("C4: cannot parse the bridge's %s custody", sym), "s-"+sym, st["s-"+sym])
 			continue
 		}
-		bal, err := rpc.erc20BalanceOf(a, vault)
+		bal, err := sumBalances(vaults, func(v string) (*big.Int, error) { return rpc.erc20BalanceOf(a, v) })
 		if err != nil {
 			warn(fmt.Sprintf("C4: cannot read the vault's %s balance", sym), "token", a, "err", err)
 			continue
@@ -200,6 +214,23 @@ func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscG
 			warn(fmt.Sprintf("C4: vault %s holds %s %s, %s short of the %s %s the bridge has credited", vault, bal, sym, short, custody, sym))
 		}
 	}
+}
+
+// wantProofAlarmAfter is how long a header proof may be wanted before /health
+// alarms (A10): the operator batches proofs every 10 minutes.
+var wantProofAlarmAfter = 6 * time.Hour
+
+// sumBalances is the total of balance over vaults.
+func sumBalances(vaults []string, balance func(string) (*big.Int, error)) (*big.Int, error) {
+	total := new(big.Int)
+	for _, v := range vaults {
+		b, err := balance(v)
+		if err != nil {
+			return nil, err
+		}
+		total.Add(total, b)
+	}
+	return total, nil
 }
 
 // supplyActive is the custody field (Active, the first) of a bridge supply

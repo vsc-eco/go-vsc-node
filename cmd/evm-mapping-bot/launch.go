@@ -102,7 +102,7 @@ func pairedTransferIdx(logs []receiptLog, i int, sender, token, vault string, am
 // are not plain ERC-20 deposits (the bridge refuses them on that path).
 func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detectedDeposit, map[string]bool, error) {
 	paid := map[string]bool{}
-	logsData, err := rpc.call("eth_getLogs", fmt.Sprintf(`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s"]}`, height, height, dc, depositEventSig))
+	logsData, err := rpc.logsAt(context.Background(), fmt.Sprintf(`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s"]}`, height, height, dc, depositEventSig), height)
 	if err != nil {
 		return nil, nil, fmt.Errorf("eth_getLogs MagiDeposit block %d: %w", height, err)
 	}
@@ -513,7 +513,8 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 	}
 
 	// Prefetch at the newest finalized block, once.
-	if f, err := rpc.getFinalizedBlock(); err == nil {
+	fin, finErr := rpc.getFinalizedBlock()
+	if f, err := fin, finErr; err == nil {
 		cp.mu.Lock()
 		_, have := cp.AttestCache[f]
 		cp.mu.Unlock()
@@ -581,7 +582,12 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 		if x >= tip || covered[x] {
 			continue
 		}
-		if window != -1 && tip-x > linkNearMax {
+		// A10 (BI7): a new proof's root only helps a block within the
+		// EIP-2935 window of the block it proves (the newest finalized one).
+		// An older need wanted a proof on every tick, forever (~100+ paid
+		// proofs a day), and skipped the RP-9 CRITICAL alarm below; it now
+		// goes on to the link-down or the alarm.
+		if window != -1 && tip-x > linkNearMax && (finErr != nil || fin < x+historyServeWindow) {
 			wantRoot = true
 			continue
 		}

@@ -361,7 +361,7 @@ func queuedTxNonce(t *testing.T, nonce uint64) string {
 
 func spendJSONNonce(unsignedHex string, nonce uint64) string {
 	raw, _ := json.Marshal(contractPendingSpend{Nonce: nonce, Amount: big.NewInt(1e18), From: "hive:alice", To: wdTo.Hex(), Asset: "eth",
-		UnsignedTxHex: unsignedHex, BlockHeight: 100, VaultAtQueue: "0x00000000000000000000000000000000000000fa"})
+		UnsignedTxHex: unsignedHex, BlockHeight: 100, VaultAtQueue: wdVault.Hex()})
 	_ = strconv.Itoa
 	return string(raw)
 }
@@ -400,6 +400,30 @@ func TestRP9_UncoveredBlockBelowTheTipAsksForANewRoot(t *testing.T) {
 	handleHeaderNeeds(context.Background(), l1.rpc(t), gql, sub, cp, sub.cfg)
 	if m := read(); m["want_proof"] != false {
 		t.Fatalf("no proof window: %v, want no proof asked for (it links down)", m)
+	}
+}
+
+// A10 (BI7): a needed block too far below the newest finalized one for a new
+// proof's EIP-2935 window to reach asks for no proof (it wanted one every tick,
+// forever, ~100+ paid proofs a day, with the RP-9 CRITICAL alarm skipped).
+func TestA10_UnreachableNeedAsksForNoProof(t *testing.T) {
+	l1 := newFakeL1()
+	l1.block(10_000)
+	l2, sub := poolWorld(t)
+	l2.set("vsc1bridge", "zkverifier", "vsc1verifier")
+	l2.set("vsc1verifier", "h", "9900")
+	l2.onDemand = true
+	gql := l2.gql(t)
+	path := t.TempDir() + "/needs.json"
+	t.Setenv("NEEDS_FILE", path)
+	cp := &Checkpoint{HeaderNeeds: map[uint64]int64{1500: time.Now().Unix()}, ProofWindow: 1,
+		AttestCache: map[uint64]*attestEntry{10_000: {Err: ""}}}
+	handleHeaderNeeds(context.Background(), l1.rpc(t), gql, sub, cp, sub.cfg)
+	var m map[string]any
+	b, _ := os.ReadFile(path)
+	_ = json.Unmarshal(b, &m)
+	if m["want_proof"] != false {
+		t.Fatalf("block 1500 with the newest finalized 10,000 (8,500 back): %v, want no proof asked for", m)
 	}
 }
 

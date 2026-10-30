@@ -758,3 +758,18 @@ func sweepTxPaysOnly(unsignedHex string, successor common.Address) bool {
 	return len(tx.Data) == 68 && bytes.Equal(tx.Data[:4], []byte{0xa9, 0x05, 0x9c, 0xbb}) &&
 		bytes.Equal(tx.Data[4:36], common.LeftPadBytes(successor.Bytes(), 32))
 }
+
+// healthKeys is the TSS key of every generation that holds or may receive
+// funds, or waits to activate (A01), else the one key.
+func (c EVMBotConfig) healthKeys(fallback string) []string {
+	var keys []string
+	for _, g := range c.VaultGens {
+		if g.Address != "" && (btcvault.IsFundHoldingStatus(g.Status) || g.Status == btcvault.VaultStatusPending) {
+			keys = append(keys, g.KeyID)
+		}
+	}
+	if len(keys) == 0 {
+		return []string{fallback}
+	}
+	return keys
+}

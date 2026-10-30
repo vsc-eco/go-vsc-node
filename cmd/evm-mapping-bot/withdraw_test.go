@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,10 +30,20 @@ func queuedTx(t *testing.T, feeCap int64) string {
 	return hex.EncodeToString(append([]byte{0x02}, b...))
 }
 
-// tssSig is a DER signature over the queued tx's sighash, as getTssRequests returns.
-func tssSig(t *testing.T, unsignedHex string) string {
+// wdVaultKey signs the test withdrawals; wdVault (its address) is the vault
+// their records name, as the TSS key that signs a withdrawal is its vault's.
+var (
+	wdVaultKey, _ = ethCrypto.ToECDSA(common.LeftPadBytes([]byte{0xfa}, 32))
+	wdVault       = ethCrypto.PubkeyToAddress(wdVaultKey.PublicKey)
+)
+
+// tssSig is the vault's DER signature over the queued tx's sighash, as
+// getTssRequests returns.
+func tssSig(t *testing.T, unsignedHex string) string { return tssSigWith(t, wdVaultKey, unsignedHex) }
+
+// tssSigWith is tssSig by key.
+func tssSigWith(t *testing.T, key *ecdsa.PrivateKey, unsignedHex string) string {
 	t.Helper()
-	key, _ := ethCrypto.GenerateKey()
 	sh, _ := computeSighash(unsignedHex)
 	h, _ := hex.DecodeString(sh)
 	sig, err := ethCrypto.Sign(h, key)
@@ -51,7 +63,7 @@ func tssSig(t *testing.T, unsignedHex string) string {
 
 func spendJSON(unsignedHex string) string {
 	raw, _ := json.Marshal(contractPendingSpend{Nonce: 0, Amount: big.NewInt(1e18), From: "hive:alice", To: wdTo.Hex(), Asset: "eth",
-		UnsignedTxHex: unsignedHex, BlockHeight: 100, VaultAtQueue: "0x00000000000000000000000000000000000000fa"})
+		UnsignedTxHex: unsignedHex, BlockHeight: 100, VaultAtQueue: wdVault.Hex()})
 	return string(raw)
 }
 
@@ -233,5 +245,36 @@ func TestBR5_AV1EntryAdoptsOnlyTheTxItSigned(t *testing.T) {
 	got = cp.SentWithdrawals["0"]
 	if len(l1.sent) != 0 || got.TxHash != "0xold" || len(got.PrevTxHashes) != 0 {
 		t.Fatalf("unreplaced v1 entry: %d broadcasts, entry %+v; want it left waiting on its tx", len(l1.sent), got)
+	}
+}
+
+// A20 (BI4): on an RPC that takes any decodable transaction without checking
+// its sender, the bot used to send v=0 whatever the signature's recovery id
+// (15 of 40 recovered a wrong address) and record it. The id is now recovered
+// against the vault the withdrawal is sent from.
+func TestA20_WithdrawalIsSentFromItsVault(t *testing.T) {
+	ones := 0
+	for i := 0; i < 40; i++ {
+		tx := queuedTx(t, int64(40e9)+int64(i))
+		l1, _, rpc, gql, cp, cfg := wdWorld(t, tx)
+		handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primary")
+		if len(l1.sent) != 1 {
+			t.Fatalf("case %d: %d broadcasts", i, len(l1.sent))
+		}
+		b, _ := hex.DecodeString(strings.TrimPrefix(l1.sent[0], "0x"))
+		var sent types.Transaction
+		if err := sent.UnmarshalBinary(b); err != nil {
+			t.Fatal(err)
+		}
+		from, err := types.Sender(types.LatestSignerForChainID(sent.ChainId()), &sent)
+		if err != nil || from != wdVault {
+			t.Fatalf("case %d: sent from %s (%v), want the vault %s", i, from.Hex(), err, wdVault.Hex())
+		}
+		if v, _, _ := sent.RawSignatureValues(); v.Sign() == 1 {
+			ones++
+		}
+	}
+	if ones == 0 {
+		t.Fatal("no case needed recovery id 1: the test proves nothing")
 	}
 }

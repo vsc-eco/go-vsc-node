@@ -39,7 +39,7 @@ func checked(t *testing.T, gql *vscGraphQL, rpc *ethRPC, cp *Checkpoint) healthR
 	h := newBotHealth(12 * time.Second)
 	now := time.Now()
 	h.recordTick(now, nil, cp)
-	h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault, nil)
+	h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, nil, 0)
 	return h.report(now)
 }
 
@@ -175,7 +175,7 @@ func TestC4_TokenCustodyAlarm(t *testing.T) {
 		h := newBotHealth(12 * time.Second)
 		now := time.Now()
 		h.recordTick(now, nil, emptyCP())
-		h.check(context.Background(), now, gql, rpc, "vsc1bridge", "vsc1bridge-primary", "did:bot", healthVault, tokens)
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, tokens, 0)
 		return h.report(now)
 	}
 
@@ -300,5 +300,45 @@ func TestHealthCheckEvery(t *testing.T) {
 		if h.due(now.Add(want-time.Millisecond)) || !h.due(now.Add(want)) {
 			t.Errorf("HEALTH_CHECK_EVERY=%q: due cadence is not %s", env, want)
 		}
+	}
+}
+
+// A01: during a rotation the custody is split across the vault generations:
+// C4 sums them (it alarmed on every rotation, the active vault alone holding
+// part); a real shortfall across them still alarms; a retiring generation's
+// key nearing expiry warns too. A10: a header proof wanted for hours alarms.
+func TestA01Health_RotationAwareAlarms(t *testing.T) {
+	const oldVault = "0x00000000000000000000000000000000000000bb"
+	run := func(l1 *fakeL1, gql *vscGraphQL, rpc *ethRPC, keys, vaults []string, wantSince int64) healthReport {
+		t.Helper()
+		h := newBotHealth(12 * time.Second)
+		now := time.Now()
+		h.recordTick(now, nil, emptyCP())
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", keys, "did:bot", vaults, nil, wantSince)
+		return h.report(now)
+	}
+	l1, l2, gql, rpc := healthWorld(t, 4) // 4 of the 10 ETH at the active vault
+	l1.balances[oldVault] = eth(6)        // 6 still at the retiring one
+	l2.keys["vsc1bridge-primaryv1"] = [2]string{"active", tssPubG}
+	l2.expiry["vsc1bridge-primaryv1"] = 365
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primary", "vsc1bridge-primaryv1"}, []string{healthVault, oldVault}, 0); hasIssue(r, "C4") {
+		t.Fatalf("C4 alarmed on a custody split across generations: %v", r.Issues)
+	}
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, 0); !hasIssue(r, "C4") {
+		t.Fatal("the active vault alone short: no alarm (control)")
+	}
+	l1.balances[oldVault] = eth(5)
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primary"}, []string{healthVault, oldVault}, 0); !hasIssue(r, "C4") {
+		t.Fatalf("1 ETH short across both generations: no alarm: %v", r.Issues)
+	}
+	l2.expiry["vsc1bridge-primary"] = 101 // the retiring key expires next epoch
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1", "vsc1bridge-primary"}, []string{healthVault, oldVault}, 0); !hasIssue(r, "D7: the vault key expires") {
+		t.Fatalf("the retiring generation's key expiring: no warning: %v", r.Issues)
+	}
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-7*time.Hour).Unix()); !hasIssue(r, "A10") {
+		t.Fatalf("a proof wanted for 7h: no alarm: %v", r.Issues)
+	}
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-time.Hour).Unix()); hasIssue(r, "A10") {
+		t.Fatalf("a proof wanted for 1h alarmed: %v", r.Issues)
 	}
 }
