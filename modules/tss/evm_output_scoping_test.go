@@ -307,3 +307,74 @@ type noStateOutputs struct{ contracts.ContractState }
 func (noStateOutputs) GetLastOutput(string, uint64) (contracts.ContractOutput, error) {
 	return contracts.ContractOutput{}, nil
 }
+
+// spendAt is the bridge's d-{nonce} record of an ETH withdrawal of 1 ETH to
+// 0x..e2 at nonce n on chain, issued from vault.
+func spendAt(chain, n uint64, vault string) ([]byte, []byte) {
+	to := common.HexToAddress("0x00000000000000000000000000000000000000e2")
+	b, _ := rlp.EncodeToBytes(evmUnsignedTx{ChainID: new(big.Int).SetUint64(chain), Nonce: n, GasTipCap: big.NewInt(2e9),
+		GasFeeCap: big.NewInt(4e9), Gas: 21000, To: &to, Value: big.NewInt(1e18)})
+	unsigned := append([]byte{0x02}, b...)
+	raw, _ := json.Marshal(map[string]any{"nonce": n, "unsigned_tx_hex": hex.EncodeToString(unsigned), "vault_at_queue": vault})
+	return raw, crypto.Keccak256(unsigned)
+}
+
+// A01 ROT-HALT-1: a retiring generation re-signs its own withdrawals still
+// open from before its cut-over (the contract's records, below its ceiling,
+// from its own address), and nothing else of the kind.
+func TestA01_EvmRetiringSignsItsOwnInFlightWithdrawal(t *testing.T) {
+	gen0 := "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf" // key 1, as the bridge stores it
+	w := rotatedWorld()
+	w.state["wnc-0"] = []byte("5")
+	rec, sh := spendAt(1, 4, gen0)
+	w.state["d-4"] = rec
+	if got := w.deps().evaluate(key(0), sh); got != scopeOwnWithdrawal {
+		t.Fatalf("own in-flight withdrawal: verdict %v", got)
+	}
+	cases := map[string]func(w *scopeWorld) []byte{
+		"no ceiling": func(w *scopeWorld) []byte { delete(w.state, "wnc-0"); return sh },
+		"at the ceiling": func(w *scopeWorld) []byte {
+			r, h := spendAt(1, 5, gen0)
+			w.state["d-5"] = r
+			return h
+		},
+		"issued from the new generation": func(w *scopeWorld) []byte {
+			r, h := spendAt(1, 4, evmAdr2)
+			w.state["d-4"] = r
+			return h
+		},
+		"record nonce differs from the tx": func(w *scopeWorld) []byte {
+			r, h := spendAt(1, 3, gen0)
+			w.state["d-4"] = r
+			return h
+		},
+		"another chain": func(w *scopeWorld) []byte {
+			r, h := spendAt(11155111, 4, gen0)
+			w.state["d-4"] = r
+			return h
+		},
+		"below the in-flight window": func(w *scopeWorld) []byte {
+			w.state["wnc-0"] = []byte("20")
+			return sh
+		},
+		"not a recorded tx":          func(w *scopeWorld) []byte { return crypto.Keccak256([]byte("x")) },
+		"retiring key not committed": func(w *scopeWorld) []byte { delete(w.keys, key(0)); return sh },
+	}
+	for name, mut := range cases {
+		w := rotatedWorld()
+		w.state["wnc-0"] = []byte("5")
+		w.state["d-4"] = rec
+		h := mut(w)
+		if got := w.deps().evaluate(key(0), h); got != scopeRefuse {
+			t.Errorf("%s: verdict %v, want refuse", name, got)
+		}
+	}
+	// A Purged generation signs nothing, records or not.
+	w = rotatedWorld()
+	w.state["wnc-3"] = []byte("5")
+	w.keys[key(3)] = activeKey(evmPub1)
+	w.state["d-4"] = rec
+	if got := w.deps().evaluate(key(3), sh); got != scopeRefuse {
+		t.Fatalf("purged generation: verdict %v", got)
+	}
+}

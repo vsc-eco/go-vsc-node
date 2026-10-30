@@ -122,6 +122,9 @@ func (d evmScopeDeps) evaluate(keyId string, sighash []byte) scopeVerdict {
 		if d.sweepPaysSuccessor(v.Generation, d.keyName(vaults[active].Generation), sighash) {
 			return scopeSuccessorSweep
 		}
+		if d.ownInFlightWithdrawal(v.Generation, sighash) {
+			return scopeOwnWithdrawal
+		}
 		return scopeRefuse
 	default:
 		return scopeRefuse // inactive / purged: holds nothing to sign for
@@ -222,6 +225,84 @@ func (d evmScopeDeps) sweepPaysSuccessor(gen uint32, successorKeyId string, sigh
 	return false
 }
 
+// evmMaxInFlightWithdrawals mirrors the bridge's MaxInFlightWithdrawals: a
+// cut-over leaves at most this many of the retiring generation's withdrawals
+// open, at the nonces just below its ceiling.
+const evmMaxInFlightWithdrawals = 8
+
+// evmPendingSpend is the part of the bridge's PendingSpend (d-{nonce}) the gate
+// reads.
+type evmPendingSpend struct {
+	UnsignedTxHex string `json:"unsigned_tx_hex"`
+	VaultAtQueue  string `json:"vault_at_queue"`
+}
+
+// ownInFlightWithdrawal reports whether sighash signs one of generation gen's
+// own withdrawals still open from before its cut-over (A01 ROT-HALT-1): the
+// bridge cuts over without waiting for them, and the retiring key must be able
+// to sign a replacement (higher fee) or a roll of one, or its nonce, and every
+// sweep after it, would stay unspent. The transaction must be the bridge's
+// record at d-{n}, issued from this generation's address (derived from its
+// committed key), at n below the generation's ceiling wnc-{gen} (the first
+// nonce after the withdrawals it issued while active), on this chain. At most
+// evmMaxInFlightWithdrawals records are read.
+func (d evmScopeDeps) ownInFlightWithdrawal(gen uint32, sighash []byte) bool {
+	pub, ok := d.committedPub(d.keyName(gen))
+	if !ok {
+		return false
+	}
+	ecpub, err := crypto.DecompressPubkey(pub)
+	if err != nil {
+		return false
+	}
+	own := crypto.PubkeyToAddress(*ecpub)
+	chainId, ok := d.chainId()
+	if !ok {
+		return false
+	}
+	raw, ok, err := d.readKeyStrict("wnc-" + strconv.FormatUint(uint64(gen), 10))
+	if err != nil || !ok {
+		return false
+	}
+	ceiling, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil {
+		return false
+	}
+	lo := uint64(0)
+	if ceiling > evmMaxInFlightWithdrawals {
+		lo = ceiling - evmMaxInFlightWithdrawals
+	}
+	for n := lo; n < ceiling; n++ {
+		raw, ok, err := d.readKeyStrict("d-" + strconv.FormatUint(n, 10))
+		if err != nil || !ok {
+			continue
+		}
+		var ps evmPendingSpend
+		if json.Unmarshal(raw, &ps) != nil || !strings.EqualFold(ps.VaultAtQueue, own.Hex()) {
+			continue
+		}
+		unsigned, err := hex.DecodeString(ps.UnsignedTxHex)
+		if err != nil || !bytes.Equal(crypto.Keccak256(unsigned), sighash) {
+			continue
+		}
+		return evmTxAt(unsigned, chainId, n)
+	}
+	return false
+}
+
+// evmTxAt reports whether unsigned is an EIP-1559 transaction on chainId at
+// nonce.
+func evmTxAt(unsigned []byte, chainId, nonce uint64) bool {
+	if len(unsigned) < 2 || unsigned[0] != types.DynamicFeeTxType {
+		return false
+	}
+	var tx evmUnsignedTx
+	if rlp.DecodeBytes(unsigned[1:], &tx) != nil || tx.ChainID == nil {
+		return false
+	}
+	return tx.ChainID.Cmp(new(big.Int).SetUint64(chainId)) == 0 && tx.Nonce == nonce
+}
+
 // evmTxPaysOnly decodes an unsigned EIP-1559 transaction and reports whether it
 // can only move funds to successor: an ETH transfer to it with no calldata, or
 // a zero-value ERC-20 transfer(successor, x). An approve, any other call, a
@@ -268,6 +349,8 @@ func (tssMgr *TssManager) evmSignRefused(keyId string, sighash []byte, bh uint64
 		log.Info("EVM vault keysign is a pending generation's check signature; issuing", "keyId", keyId, "bh", bh)
 	case scopeSuccessorSweep:
 		log.Info("EVM vault keysign is a sweep to the active generation; issuing", "keyId", keyId, "bh", bh)
+	case scopeOwnWithdrawal:
+		log.Info("EVM vault keysign re-signs a withdrawal the generation issued before its cut-over; issuing", "keyId", keyId, "bh", bh)
 	}
 	return false
 }

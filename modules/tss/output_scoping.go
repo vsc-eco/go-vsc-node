@@ -164,6 +164,7 @@ const (
 	scopeRefuse                             // retiring-gen sign that is NOT a successor sweep, or an unknown/non-fund-holding gen
 	scopeSuccessorSweep                     // retiring-gen sign PROVEN to pay only the successor (V-8: exempt from the halt)
 	scopeCheckSig                           // pending-gen sign PROVEN to be the canonical BRK-2 check-signature M (halt-exempt; moves no funds)
+	scopeOwnWithdrawal                      // EVM (A01): retiring-gen sign PROVEN to be one of its own withdrawals issued before its cut-over
 )
 
 // evaluateScope applies S3 output scoping for a BTC-vault keyId whose sign
