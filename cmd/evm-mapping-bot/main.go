@@ -60,6 +60,54 @@ type EVMBotConfig struct {
 	CheckpointFile string
 	NetID          string // vsc-mainnet or vsc-testnet
 	RcLimit        uint64
+	// A01: the bridge's vault generations. Vaults are the fund-holding
+	// addresses whose deposits the bridge credits (VaultAddress, the active
+	// one, among them); ActiveGen is the active generation (0 before any
+	// rotation). Refreshed every tick from the bridge's registry.
+	Vaults    []string
+	ActiveGen uint32
+	// VaultGens is every generation of the last registry read; a withdrawal is
+	// signed by the key of the generation it was issued from (ROT-HALT-1: a
+	// retiring generation finishes its own in-flight withdrawals).
+	VaultGens []vaultGen
+}
+
+// vaultGen returns generation gen of the last registry read.
+func (c EVMBotConfig) vaultGen(gen uint32) *vaultGen {
+	for i := range c.VaultGens {
+		if c.VaultGens[i].Gen == gen {
+			return &c.VaultGens[i]
+		}
+	}
+	return nil
+}
+
+// spendKeyID is the TSS key that signs a withdrawal issued from vault: that
+// generation's key (a retiring one finishes its own in-flight withdrawals),
+// else fallback (the active key, or a bridge before any rotation).
+func (c EVMBotConfig) spendKeyID(vault, fallback string) string {
+	for _, g := range c.VaultGens {
+		if g.Address != "" && strings.EqualFold(g.Address, vault) {
+			return g.KeyID
+		}
+	}
+	return fallback
+}
+
+// spendVault is the address a pending spend was issued from, lowercase.
+func spendVault(ps *PendingSpend, fallback string) string {
+	if isValidEthAddress(ps.VaultAtQueue) {
+		return strings.ToLower(ps.VaultAtQueue)
+	}
+	return fallback
+}
+
+// scanVaults is the set of vault addresses whose deposits are scanned.
+func (c EVMBotConfig) scanVaults() []string {
+	if len(c.Vaults) > 0 {
+		return c.Vaults
+	}
+	return []string{c.VaultAddress}
 }
 
 // l2Submitter handles L2 transaction signing and submission.
@@ -297,6 +345,8 @@ type Checkpoint struct {
 	// ProofWindow: whether the L1 RPC served the last eth_getProof at a
 	// finalized block (1), refused it (-1), or was not asked yet (0).
 	ProofWindow int `json:"proof_window,omitempty"`
+	// SentSweeps: A01 migration sweeps the bot broadcast, by "{gen}-{nonce}".
+	SentSweeps map[string]SentSweep `json:"sent_sweeps,omitempty"`
 	// BlockMapped: the deposits (depositKey) of an unfinished block whose
 	// maps were already submitted, so the block's retry skips them
 	// (TICKSTALL-1). Dropped when the block finishes.
@@ -347,7 +397,10 @@ type SentTx struct {
 	SignedTxHex string `json:"signed_tx_hex"`
 	TxHash      string `json:"tx_hash"`
 	Nonce       uint64 `json:"nonce"`
-	SentAt      int64  `json:"sent_at"`
+	// Vault is the address that sent it (A01: each vault generation counts its
+	// nonces from 0, so an entry is only meaningful for its own vault).
+	Vault  string `json:"vault,omitempty"`
+	SentAt int64  `json:"sent_at"`
 	// UnsignedTxHex is the PendingSpend tx this broadcast signed; a different
 	// one at the same nonce means an admin replaceWithdrawal re-signed it (B1).
 	UnsignedTxHex string `json:"unsigned_tx_hex,omitempty"`
@@ -1520,7 +1573,7 @@ func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg E
 				// rather than killing the bridge. Never record a silent success:
 				// on panic we write an error entry, so the block is treated as
 				// failed and re-scanned, not skipped.
-				res, err := scanBlockSafe(rpc, h, cfg.VaultAddress, cfg.Tokens)
+				res, err := scanBlockSafe(rpc, h, cfg.scanVaults(), cfg.Tokens)
 				mu.Lock()
 				out[h] = blockScanEntry{result: res, err: err}
 				mu.Unlock()
@@ -1546,17 +1599,20 @@ feed:
 // (recover is per-goroutine), so without this a malformed-RPC-induced panic in
 // scanBlock would crash the whole bot. On panic we return a non-nil error so
 // the block is treated as failed (re-scanned), never a silent success.
-func scanBlockSafe(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (res *blockScanResult, err error) {
+func scanBlockSafe(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (res *blockScanResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			res = nil
 			err = fmt.Errorf("scanBlock panic at height %d: %v", height, r)
 		}
 	}()
-	return scanBlock(rpc, height, vaultAddr, tokens)
+	return scanBlock(rpc, height, vaults, tokens)
 }
 
-func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (*blockScanResult, error) {
+// A01: vaults are every fund-holding vault generation's address; the block is
+// fetched once and each address is scanned (late deposits to a superseded
+// generation are credited and swept).
+func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (*blockScanResult, error) {
 	blockHex := fmt.Sprintf("0x%x", height)
 	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
 	if err != nil {
@@ -1576,11 +1632,16 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 	}
 
 	result := &blockScanResult{BlockRaw: blockData}
-	vaultLower := strings.ToLower(vaultAddr)
+	isVault := map[string]bool{}
+	for _, v := range vaults {
+		if v != "" {
+			isVault[strings.ToLower(v)] = true
+		}
+	}
 
-	// Detect ETH deposits: direct transfers to vault
+	// Detect ETH deposits: direct transfers to a vault
 	for i, tx := range block.Transactions {
-		if strings.ToLower(tx.To) == vaultLower && hexNonZero(tx.Value) {
+		if isVault[strings.ToLower(tx.To)] && hexNonZero(tx.Value) {
 			// FAILDEP-1: a reverted transfer is in the block but moved nothing
 			// (Glamsterdam reverts one that creates the vault's account at
 			// 21,000 gas); the bridge refuses it, so it is not a deposit.
@@ -1604,6 +1665,20 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 		}
 	}
 
+	for _, vaultAddr := range vaults {
+		if vaultAddr == "" {
+			continue
+		}
+		if err := scanVaultLogs(rpc, height, strings.ToLower(vaultAddr), tokens, result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// scanVaultLogs adds the ERC-20 and MagiDeposit deposits of one vault address
+// in block height to result.
+func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, tokens map[string]string, result *blockScanResult) error {
 	// Detect ERC-20 deposits: Transfer events to vault
 	for tokenAddr := range tokens {
 		vaultPadded := "0x000000000000000000000000" + strings.TrimPrefix(vaultLower, "0x")
@@ -1616,7 +1691,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 		// deposit while the block was marked scanned.
 		logsData, err := rpc.call("eth_getLogs", logsParams)
 		if err != nil {
-			return nil, fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
+			return fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
 
 		var logs []struct {
@@ -1626,7 +1701,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			Data             string `json:"data"`
 		}
 		if err := json.Unmarshal(logsData, &logs); err != nil {
-			return nil, fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
+			return fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
 
 		for _, log := range logs {
@@ -1640,11 +1715,11 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			// block-level index gives each deposit a distinct per-receipt
 			// position.
 			if log.LogIndex == "" {
-				return nil, fmt.Errorf("eth_getLogs returned a log with no logIndex (non-standard RPC), tx %s token %s", log.TransactionHash, tokenAddr)
+				return fmt.Errorf("eth_getLogs returned a log with no logIndex (non-standard RPC), tx %s token %s", log.TransactionHash, tokenAddr)
 			}
 			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
 			if lookupErr != nil {
-				return nil, fmt.Errorf("CRIT #14: per-receipt logIndex lookup, tx %s token %s: %w", log.TransactionHash, tokenAddr, lookupErr)
+				return fmt.Errorf("CRIT #14: per-receipt logIndex lookup, tx %s token %s: %w", log.TransactionHash, tokenAddr, lookupErr)
 			}
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight:  height,
@@ -1663,7 +1738,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 	if dc := depositContractAddress(vaultLower); dc != "" {
 		deps, paid, err := scanContractDeposits(rpc, height, dc, vaultLower)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		kept := result.Deposits[:0]
 		for _, d := range result.Deposits {
@@ -1674,8 +1749,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 		}
 		result.Deposits = append(kept, deps...)
 	}
-
-	return result, nil
+	return nil
 }
 
 // lookupPerReceiptLogIndex resolves the per-receipt logIndex (0..N-1 within
@@ -2795,10 +2869,24 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 		loopCtx, loopCancel := context.WithTimeout(ctx, 60*time.Second)
 
+		// A01: follow the bridge's vault generations. The active generation's
+		// address and key serve withdrawals; every fund-holding generation's
+		// address is scanned for deposits.
+		var view vaultView
+		if v, vErr := fetchVaultView(loopCtx, gql, cfg.ContractID); vErr == nil && v.Registry && v.Active != nil && v.Active.Address != "" {
+			view = v
+			if !strings.EqualFold(cfg.VaultAddress, v.Active.Address) {
+				slog.Info("vault generation is active", "generation", v.Active.Gen, "vault", v.Active.Address, "key", v.Active.KeyID)
+			}
+			cfg.VaultAddress, cfg.ActiveGen, cfg.Vaults, tssKeyID = v.Active.Address, v.Active.Gen, v.fundHolding(), v.Active.KeyID
+			cfg.VaultGens = v.Gens
+		}
+
 		err := runOnceSafe(loopCtx, rpc, gql, submitter, cp, cfg, tssKeyID)
 		if err != nil {
 			slog.Error("loop tick failed", "err", err)
 		}
+		driveVaultRotationSafe(loopCtx, rpc, gql, submitter, cp, cfg, view)
 
 		loopCancel()
 
@@ -3329,7 +3417,7 @@ func handleWithdrawals(
 	cfg EVMBotConfig,
 	tssKeyID string,
 ) {
-	state, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"n", "np"})
+	state, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"n", "np", "wnh"})
 	if err != nil {
 		slog.Debug("fetch nonce state failed", "err", err)
 		return
@@ -3337,12 +3425,24 @@ func handleWithdrawals(
 
 	confirmedNonce, _ := strconv.ParseUint(state["n"], 10, 64)
 	pendingNonce, _ := strconv.ParseUint(state["np"], 10, 64)
+	// The nonces belong to the active generation, or (wnh) to a superseded
+	// one still settling the withdrawals it issued before its cut-over.
+	owner := cfg.VaultAddress
+	if h, err := strconv.ParseUint(state["wnh"], 10, 32); err == nil && state["wnh"] != "" {
+		if g := cfg.vaultGen(uint32(h)); g != nil && g.Address != "" {
+			owner = g.Address
+		}
+	}
 
 	// LOW 17: drop entries for nonces the contract has already closed (a
 	// withdrawal settled by another bot, or cleared by an admin).
 	cp.mu.Lock()
 	for k, stx := range cp.SentWithdrawals {
-		if stx.Nonce < confirmedNonce {
+		// A01: an entry of another vault generation than the one holding the
+		// nonces (they restart at a hand-off), or one from before the field
+		// once the nonces belong to a rotated vault.
+		otherVault := owner != "" && ((stx.Vault != "" && !strings.EqualFold(stx.Vault, owner)) || (stx.Vault == "" && cfg.ActiveGen > 0 && strings.EqualFold(owner, cfg.VaultAddress)))
+		if stx.Nonce < confirmedNonce || otherVault {
 			delete(cp.SentWithdrawals, k)
 		}
 	}
@@ -3423,7 +3523,7 @@ func broadcastWithdrawal(
 		"sighash", sighash,
 	)
 
-	signatures, err := gql.fetchTssSignatures(ctx, tssKeyID, []string{sighash})
+	signatures, err := gql.fetchTssSignatures(ctx, cfg.spendKeyID(ps.VaultAtQueue, tssKeyID), []string{sighash})
 	if err != nil {
 		slog.Warn("fetch TSS signatures failed", "err", err)
 		return
@@ -3503,6 +3603,7 @@ func broadcastWithdrawal(
 				slog.Info("withdrawal TX already mined on chain, recovering",
 					"txHash", candidateHash, "status", receipt.Status, "nonce", nonce)
 				recordSent(cp, nonceKey, SentTx{
+					Vault:       spendVault(ps, cfg.VaultAddress),
 					SignedTxHex: candidate,
 					TxHash:      candidateHash,
 					Nonce:       nonce,
@@ -3523,6 +3624,7 @@ func broadcastWithdrawal(
 	)
 
 	recordSent(cp, nonceKey, SentTx{
+		Vault:       spendVault(ps, cfg.VaultAddress),
 		SignedTxHex: signedTxHex,
 		TxHash:      txHash,
 		Nonce:       nonce,
@@ -3534,6 +3636,9 @@ func broadcastWithdrawal(
 // hashes at this nonce (PrevTxHashes) and the original send time.
 func recordSent(cp *Checkpoint, nonceKey string, stx SentTx, unsignedTxHex string, prev SentTx, replacing bool) {
 	stx.UnsignedTxHex = unsignedTxHex
+	if stx.Vault == "" {
+		stx.Vault = prev.Vault
+	}
 	stx.LastBroadcastAt = time.Now().Unix()
 	if replacing {
 		stx.PrevTxHashes = append(append([]string{}, prev.PrevTxHashes...), prev.TxHash)

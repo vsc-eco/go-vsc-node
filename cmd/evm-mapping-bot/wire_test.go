@@ -441,7 +441,7 @@ func TestScanBlock_DetectsETHDepositAtMultipleOf2To64Wei(t *testing.T) {
 			Nonce: uint64(i), GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: v,
 		})
 	}
-	res, err := scanBlock(c.rpc(t), 101, vault.Hex(), map[string]string{})
+	res, err := scanBlock(c.rpc(t), 101, []string{vault.Hex()}, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}

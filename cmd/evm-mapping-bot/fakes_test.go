@@ -166,6 +166,7 @@ type fakeL2 struct {
 	mu        sync.Mutex
 	state     map[string]map[string]string // contract id -> key -> value
 	sigs      map[string]string            // sighash hex -> DER hex
+	sigKey    map[string]string            // sighash hex -> the only key id it is served for (absent: any)
 	submitted [][]byte                     // signed L2 txs, decoded from base64
 	status    func(txID string) string     // nil: every tx is CONFIRMED
 	errMsg    func(txID string) string     // a tx's contract error in its block output (nil: none)
@@ -306,6 +307,9 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 		case strings.Contains(req.Query, "getTssRequests"):
 			reqs := []map[string]string{}
 			for _, m := range req.Variables["msgHex"].([]any) {
+				if want, ok := f.sigKey[m.(string)]; ok && want != fmt.Sprint(req.Variables["keyId"]) {
+					continue
+				}
 				if s, ok := f.sigs[m.(string)]; ok {
 					reqs = append(reqs, map[string]string{"msg": m.(string), "sig": s, "status": "complete"})
 				}

@@ -186,7 +186,7 @@ func TestTICKSTALL1_DepositBudgetLeavesTimeForConfirmations(t *testing.T) {
 	var all []string
 	for h := uint64(102); h <= 121; h++ {
 		all = append(all, busyBlock(t, l1.block(h), 100, vault, 7)...)
-		res, err := scanBlock(rpc, h, cfg.VaultAddress, cfg.Tokens)
+		res, err := scanBlock(rpc, h, cfg.scanVaults(), cfg.Tokens)
 		if err != nil || len(res.Deposits) != 1 {
 			t.Fatalf("scan block %d: %v %+v", h, err, res)
 		}

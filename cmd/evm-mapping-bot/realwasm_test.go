@@ -72,6 +72,10 @@ func rwVaultKey(t *testing.T, ct *test_utils.ContractTest) (*ecdsa.PrivateKey, c
 	key, _ := ethCrypto.GenerateKey()
 	pub := hex.EncodeToString(ethCrypto.CompressPubkey(&key.PublicKey))
 	ct.Tss.Keys.SetKey(tss_db.TssKey{Id: rwBridge + "-primary", Status: tss_db.TssKeyActive, Algo: tss_db.EcdsaType, PublicKey: pub})
+	// The relayer is the bot, which holds RC as the BTC bot does: the vault
+	// setup (attestVault folds the key into the registry and caches its
+	// address, ~5.7k RC once) is beyond the free allowance.
+	ct.Deposit(rwRelayer, 1_000_000, ledgerDb.AssetHbd)
 	sig, _ := ethCrypto.Sign(vaultCheckDigest(rwBridge, wireChainID, pub), key)
 	if r := rwCall(ct, rwRelayer, "attestVault", []byte(`{"signature":"`+hex.EncodeToString(sig)+`"}`)); !r.Success {
 		t.Fatalf("attestVault: %s: %s", r.Err, r.ErrMsg)
@@ -86,10 +90,15 @@ func rwHeader(ct *test_utils.ContractTest, c *fakeChain) { rwHeaderAt(ct, 101, c
 // rwHeaderAt stores block n with c's roots and the given timestamp as the
 // verifier's newest header.
 func rwHeaderAt(ct *test_utils.ContractTest, n uint64, c *fakeChain, timestamp uint64) {
+	rwHeaderState(ct, n, common.Hash{}, c, timestamp)
+}
+
+// rwHeaderState is rwHeaderAt with a state root (an account proof's anchor).
+func rwHeaderState(ct *test_utils.ContractTest, n uint64, stateRoot common.Hash, c *fakeChain, timestamp uint64) {
 	b := []byte{0x01}
 	u := func(v uint64) { b = binary.BigEndian.AppendUint64(b, v) }
 	u(n)
-	b = append(b, make([]byte, 32)...) // state root (unused here)
+	b = append(b, stateRoot.Bytes()...)
 	b = append(b, c.txRoot().Bytes()...)
 	b = append(b, c.receiptRoot().Bytes()...)
 	u(1e9)

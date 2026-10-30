@@ -19,7 +19,7 @@ func TestFAILDEP1_ScanSkipsARevertedVaultTransfer(t *testing.T) {
 	reverted := c.addTx(t, userKey, &types.DynamicFeeTx{Nonce: 0, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: big.NewInt(5e18)})
 	c.receipts[0].Status = types.ReceiptStatusFailed
 	ok := c.addTx(t, userKey, &types.DynamicFeeTx{Nonce: 1, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 250000, To: &vault, Value: big.NewInt(1e18)})
-	res, err := scanBlock(c.rpc(t), 101, vault.Hex(), nil)
+	res, err := scanBlock(c.rpc(t), 101, []string{vault.Hex()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
