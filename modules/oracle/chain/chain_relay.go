@@ -55,6 +55,8 @@ var (
 	errInvalidChainSymbol = errors.New("invalid chain symbol")
 )
 
+const maxRelayBlocks = 50
+
 // chainRelay is the interface that chain-specific relayers must implement.
 // To add a new chain, implement this interface and register it via
 // RegisterChain() in an init() function.
