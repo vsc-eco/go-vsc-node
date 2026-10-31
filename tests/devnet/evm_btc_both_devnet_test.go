@@ -415,3 +415,49 @@ func TestBothBridges_FS12_MixedFleet012(t *testing.T) {
 		b.note("mixed fleet still converged at block %d after the cycle", after)
 	}})
 }
+
+// FS13 (worst case of a departure, owner 10-31: "a mass departure can be
+// reversed if they come back"): two of the five key holders leave AND switch
+// off right after both vaults are funded. L2 goes on with the three left
+// (devnet floor 3), but both vault keys need 4 of their 5 holders. Measures:
+// does either bridge sign while they are gone (an EVM and a BTC withdrawal),
+// and does everything sign again once they return. If they never return, the
+// BTC coins still open to the CSV backup key; the EVM vault is a plain address
+// of the TSS key (A18), with no other way out.
+func TestBothBridges_FS13_HoldersGoneThenBack(t *testing.T) {
+	bbSkipShort(t)
+	b := newBothEnv(t, 240*time.Minute, bbWeatherLevel("none"), true)
+	d := b.d
+	gone := []int{4, 5}
+	for _, n := range gone {
+		disableWitnessEverywhere(t, d, b.ctx, d.witnessAccount(n), d.cfg.Nodes)
+		if err := d.StopNode(b.ctx, n); err != nil {
+			t.Errorf("stop magi-%d: %v", n, err)
+		}
+	}
+	start := devnetNow()
+	b.note("magi-4/5 left and switched off; 3 of 5 key holders remain")
+	recip := b.evmWithdraw(bbEth(1))
+	evmGone := b.botPoll(20*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }) == nil
+	b.note("EVM withdrawal while 2 of 5 holders are gone: paid=%v", evmGone)
+	btcGone := b.btcWithdraw(0, 100_000) != ""
+	b.note("BTC withdrawal while 2 of 5 holders are gone: settled=%v", btcGone)
+	b.mark("holders gone (both withdrawals tried)", start)
+
+	back := devnetNow()
+	for _, n := range gone {
+		if err := d.StartNode(b.ctx, n); err != nil {
+			t.Errorf("start magi-%d: %v", n, err)
+		}
+		setWitnessEnabledEverywhere(t, d, b.ctx, d.witnessAccount(n), d.cfg.Nodes, true)
+	}
+	evmBack := evmGone || b.botPoll(45*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }) == nil
+	b.note("EVM withdrawal after magi-4/5 returned: paid=%v", evmBack)
+	btcBack := b.btcWithdraw(0, 100_000) != ""
+	b.note("BTC withdrawal after magi-4/5 returned: settled=%v", btcBack)
+	b.mark("holders back -> both bridges sign", back)
+	t.Logf("SUMMARY FS13: holders gone: EVM paid=%v BTC settled=%v; back: EVM paid=%v BTC settled=%v", evmGone, btcGone, evmBack, btcBack)
+	if !evmBack || !btcBack {
+		t.Errorf("a bridge did not recover after the key holders returned (EVM %v, BTC %v)", evmBack, btcBack)
+	}
+}
