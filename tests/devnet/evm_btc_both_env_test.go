@@ -224,6 +224,10 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The weather is the cycle's: setup runs clean (applyWeather turns the
+		// faults on). BB-2's first run had them on from the start and the bot,
+		// scanning ~2 blocks a minute under them, never reached the deposit.
+		r.SetFaults(false)
 		b.rpc = r
 		rpcURL = r.URL
 	}
@@ -407,6 +411,9 @@ func (b *bothEnv) at(start time.Time, after time.Duration, name string, fn func(
 
 // applyWeather schedules the level's node outages and inter-node latency.
 func (b *bothEnv) applyWeather(start time.Time) {
+	if b.rpc != nil {
+		b.rpc.SetFaults(true)
+	}
 	if b.w.latencyMs > 0 {
 		n := b.d.cfg.Nodes
 		for i := 1; i <= n; i++ {

@@ -101,21 +101,23 @@ func TestBothBridges_FS4_BtcHaltEvmKeepsSigning(t *testing.T) {
 	bbSkipShort(t)
 	b := newBothEnv(t, 200*time.Minute, bbWeatherLevel("none"), true)
 	d := b.d
-	var keys = devnetGatewayKeys(t, d)
 	halt := func(active bool) int {
-		payload, _ := json.Marshal(map[string]any{"active": active, "keyId": b.btcKeyID(0)})
+		// keyId is reserved (the halt is BTC-global), as TestVaultTssHalt sends it.
+		payload, _ := json.Marshal(map[string]any{"active": active, "keyId": "btc"})
 		want := 0
 		if active {
 			want = d.cfg.Nodes
 		}
 		got := -1
-		for i := 0; i < 20; i++ {
-			if _, err := broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), keys); err == nil {
-				if got = countHaltFlag(t, b.ctx, d, vfAllNodes(d.cfg.Nodes)); got == want {
-					break
-				}
+		for deadline := devnetNow().Add(15 * time.Minute); devnetNow().Before(deadline); devnetSleep(15 * time.Second) {
+			_, err := broadcastGatewayMultisig(t, d, "vsc.tss_halt", []string{"vsc.gateway"}, string(payload), devnetGatewayKeys(t, d))
+			if err != nil {
+				b.note("tss_halt(active=%v) broadcast: %s", active, firstLine(err.Error()))
+				continue
 			}
-			devnetSleep(15 * time.Second)
+			if got = countHaltFlag(t, b.ctx, d, vfAllNodes(d.cfg.Nodes)); got == want {
+				break
+			}
 		}
 		return got
 	}
@@ -138,12 +140,30 @@ func TestBothBridges_FS4_BtcHaltEvmKeepsSigning(t *testing.T) {
 	b.mark("BTC withdrawal settled after the halt", start)
 }
 
+// devnetGatewayKeys: witness gateway keys that are in vsc.gateway's active
+// authority, exactly as many as its threshold (weight 1 each): Hive refuses a
+// transaction with an unnecessary signature, so a fixed 4 (a 6-node devnet's
+// threshold) fails on 5 nodes, where it is 3. FS4's first run broadcast nothing.
 func devnetGatewayKeys(t *testing.T, d *Devnet) []*hivego.KeyPair {
-	var ks []*hivego.KeyPair
-	for n := 1; n <= d.cfg.Nodes; n++ {
-		ks = append(ks, devnetGatewayKeypair(t, fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, n)))
+	hc := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
+	accs, err := hc.GetAccount([]string{"vsc.gateway"})
+	if err != nil || len(accs) != 1 {
+		return nil
 	}
-	return ks[:4]
+	in := map[string]bool{}
+	for _, ka := range accs[0].Active.KeyAuths {
+		if k, ok := ka[0].(string); ok {
+			in[k] = true
+		}
+	}
+	var ks []*hivego.KeyPair
+	for n := 1; n <= d.cfg.Nodes && len(ks) < int(accs[0].Active.WeightThreshold); n++ {
+		kp := devnetGatewayKeypair(t, fmt.Sprintf("%s%d", d.cfg.WitnessPrefix, n))
+		if in[*kp.GetPublicKeyString()] {
+			ks = append(ks, kp)
+		}
+	}
+	return ks
 }
 
 // FS5 (F23 x both, I14): the EVM bridge is paused through the whole BTC
