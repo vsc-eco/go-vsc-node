@@ -729,11 +729,12 @@ func (b *bothEnv) l1Balance(addr ethcommon.Address) *big.Int {
 	return v
 }
 
-// evmMigrated: the bot's batch is confirmed (no open sweep records) and gen
-// `retiring` is retired and purged.
+// evmMigrated: the bot's batch is confirmed (no open sweep records) and gen 0
+// is purged. A purge only follows inactivation, and the bot does not always log
+// the inactivation result (FS6 with 68335e76: "retire: purged=0" alone), so the
+// purge is the signal.
 func (b *bothEnv) evmMigrated() bool {
-	logs := b.botLogs()
-	return b.e.stateStr("msr") == "" && strings.Contains(logs, "inactivated=0") && strings.Contains(logs, "purged=0")
+	return b.e.stateStr("msr") == "" && strings.Contains(b.botLogs(), "purged=0")
 }
 
 // ---- the cycle ----
