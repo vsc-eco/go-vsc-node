@@ -135,7 +135,7 @@ func TestGatewayTopUpCapture(t *testing.T) {
 	thief := d.witnessAccount(10)
 	steal := func(label string, keys []*hivego.KeyPair) bool {
 		before := gwL1Hive(t, d, thief)
-		_, err := gwTransferSigned(d, thief, "1.000", keys)
+		_, err := gwTransferSigned(d, thief, "1.000", label, keys)
 		if err != nil {
 			t.Logf("RESULT %s: refused by Hive: %s", label, firstLine(err.Error()))
 			return false
@@ -159,14 +159,16 @@ func TestGatewayTopUpCapture(t *testing.T) {
 }
 
 // gwTransferSigned broadcasts a transfer out of vsc.gateway signed only by keys.
-func gwTransferSigned(d *Devnet, to, amount string, keys []*hivego.KeyPair) (string, error) {
+// memo makes each attempt a distinct transaction (the control first ran with
+// the capture's exact op and was refused as a duplicate, proving nothing).
+func gwTransferSigned(d *Devnet, to, amount, memo string, keys []*hivego.KeyPair) (string, error) {
 	client := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
 	client.ChainID = devnetChainID
 	creator := libhive.LiveTransactionCreator{
 		TransactionBroadcaster: libhive.TransactionBroadcaster{Client: client},
 		TransactionCrafter:     libhive.TransactionCrafter{},
 	}
-	op := creator.Transfer("vsc.gateway", to, amount, "TESTS", "GW-C capture test")
+	op := creator.Transfer("vsc.gateway", to, amount, "TESTS", memo)
 	tx := creator.MakeTransaction([]hivego.HiveOperation{op})
 	if err := creator.PopulateSigningProps(&tx, nil); err != nil {
 		return "", err

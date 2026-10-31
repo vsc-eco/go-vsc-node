@@ -134,6 +134,7 @@ func TestGatewayActivationTopHoldersOffline(t *testing.T) {
 			t.Fatalf("0.12 never activated (line 0.%d)", vfActiveConsensus(d, ctx))
 		}
 	}
+	activatedAt := devnetNow()
 	mark := gwRotationMark(t, d)
 	for _, n := range []int{1, 2} {
 		if err := d.StopNode(ctx, n); err != nil {
@@ -146,7 +147,7 @@ func TestGatewayActivationTopHoldersOffline(t *testing.T) {
 	before, paid := withdraw("GW-A2 withdrawal with the top two offline", 15*time.Minute)
 	h1 := blockHeaderCount(t, d, ctx, 3)
 	rotated := gwRotationMark(t, d) > mark
-	t.Logf("RESULT GW-A2: rotation landed=%v, withdrawal paid=%v, L2 block headers on magi-3 %d -> %d", rotated, paid, h0, h1)
+	t.Logf("RESULT GW-A2: rotation landed=%v, withdrawal paid=%v, L2 block headers on magi-3 %d -> %d (unchanged = L2 halted too: the committee is still stake-weighted right after the activation)", rotated, paid, h0, h1)
 
 	// P3: one top holder returns.
 	if err := d.StartNode(ctx, 1); err != nil {
@@ -156,6 +157,17 @@ func TestGatewayActivationTopHoldersOffline(t *testing.T) {
 	for end := devnetNow().Add(25 * time.Minute); devnetNow().Before(end) && !recovered; devnetSleep(10 * time.Second) {
 		recovered = gwL1Hbd(t, d, payeeAcct) >= before+1000
 	}
+	// Equal weights need an election on the 0.9+ rules with flat weights, which
+	// needs the POA seats the first post-activation election seeds: so the
+	// second election after activation. Measure how long that takes here.
+	equalAt := time.Duration(-1)
+	for end := devnetNow().Add(25 * time.Minute); devnetNow().Before(end); devnetSleep(15 * time.Second) {
+		if _, _, b := shares(); equalWeights(b) {
+			equalAt = devnetSince(activatedAt).Round(time.Second)
+			break
+		}
+	}
+	t.Logf("RESULT GW-A3: equal gateway weights %s after the activation (-1: not within the wait)", equalAt)
 	thr, total, by = shares()
 	equal := equalWeights(by)
 	t.Logf("RESULT GW-A3: after magi-1 returned: withdrawal paid=%v, rotation landed=%v, authority threshold %d of %d, equal weights=%v %v",
