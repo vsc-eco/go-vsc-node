@@ -530,7 +530,13 @@ func (b *bothEnv) btcMigrate(retiring int, activePrimary string) string {
 		b.onSigning = nil
 		f()
 	}
+	// Real cadence for the signature wait: after a fault the restarted nodes
+	// need wall-clock minutes (pubsub reconnect, readiness) while the fast clock
+	// would spend the wait's budget in seconds (FS2 run 2: "the retiring key
+	// never signed every input" right after a 3-min halt).
+	b.botWaits.Add(1)
 	raw, ok := vfAwaitSweepSignatures(t, d, ctx, b.btcKeyID(retiring), sd)
+	b.botWaits.Add(-1)
 	if !ok {
 		b.note("BTC sweep %s: the retiring key never signed every input", txid)
 		return ""
