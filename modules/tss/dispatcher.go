@@ -19,6 +19,7 @@ import (
 
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common/consensusversion"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v3/common"
@@ -104,6 +105,24 @@ type ReshareDispatcher struct {
 // verifyResharedKey checks that the reshared public key matches the original.
 // extractPub deserializes the stored key data and returns the original (X, Y).
 func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
+	// C-R5 (TSS-KG-1, 0.13.0): for a keygen-born epoch the reference is the
+	// key's on-chain public key, not this node's slot. A node in a late
+	// keygen's committee only holds that keygen's share in the slot; as a
+	// new-only party of the first reshare (which loads no old share, so
+	// loadKeyShare never repairs the slot) it refused the correctly reshared
+	// key and kept no share while the reshare commitment names it.
+	if dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen" {
+		if key, err := dispatcher.tssMgr.tssKeys.FindKey(dispatcher.keyId); err == nil && key.PublicKey != "" {
+			got, perr := pointPubHex(dispatcher.algo, newX, newY)
+			if perr == nil && got == key.PublicKey {
+				return nil
+			}
+			log.Error("RESHARE KEY MISMATCH - public key is not the key's on-chain key, aborting reshare",
+				"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId, "algo", algo,
+				"keyPubKey", key.PublicKey, "newPubKey", got)
+			return fmt.Errorf("reshare produced a public key other than key %s's on-chain key", dispatcher.keyId)
+		}
+	}
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
 	if err != nil {
 		return fmt.Errorf("keystore encryption key: %w", err)
@@ -231,17 +250,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	var err error
 	var savedKeyData []byte
 	if myParty != nil {
-		encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-		if encErr != nil {
-			log.Error("keystore encryption key error", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-			return encErr
-		}
-		savedKeyData, err = keystoreGetDecrypted(
-			context.Background(),
-			dispatcher.keystore,
-			makeKey("key", dispatcher.keyId, int(dispatcher.epoch)),
-			encKey,
-		)
+		savedKeyData, err = dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 		log.Verbose("key retrieval result", "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "err", err, "dataLen", len(savedKeyData), "sessionId", dispatcher.sessionId)
 		if err != nil {
 			log.Error("failed to retrieve key data", "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "err", err, "sessionId", dispatcher.sessionId)
@@ -1204,14 +1213,7 @@ func (dispatcher *SignDispatcher) Start() error {
 			return err
 		}
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
-		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-
-		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-		if err != nil {
-			log.Trace("sign keystore encryption key error", "err", err)
-			return err
-		}
-		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
+		rawKey, err := dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 
 		if err != nil {
 			log.Trace("sign key retrieval error", "err", err)
@@ -1286,13 +1288,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		}
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
-		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-
-		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-		if err != nil {
-			return err
-		}
-		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
+		rawKey, err := dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 
 		if err != nil {
 			return err
@@ -1460,8 +1456,12 @@ type BaseDispatcher struct {
 	// culprit is not the author of the bad data without that culprit. Set once
 	// from the session height, so every node decides the same way.
 	dropUnattributableCulprits bool
-	timeout                    bool
-	p2pMu                      sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
+	// keygenShareCheck (TSS-KG-1, 0.13.0): a share born of the key's keygen
+	// must be the key's on-chain public key's (loadKeyShare). Set once from the
+	// session height, so every node decides the same way.
+	keygenShareCheck bool
+	timeout          bool
+	p2pMu            sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	// shareErr is set when this node finished a keygen or reshare but could
@@ -2143,7 +2143,26 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-	if err == nil {
+	// TSS-KG-1 (0.13.0): keep this keygen's share under its public key, so the
+	// share of whichever keygen the chain activates can be found (loadKeyShare).
+	// Below the line nothing extra is written.
+	if err == nil && dispatcher.keygenShareCheck {
+		if cerr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, keygenShareKey(hex.EncodeToString(pubBytes)), saved, encKey); cerr != nil {
+			log.Warn("keygen share copy NOT saved", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", cerr)
+		}
+	}
+	// From 0.13.0 a keygen that finishes after another keygen activated the key
+	// leaves the slot alone: it holds, or will hold, the activated key's share.
+	// The activating keygen itself can finish here after its own commitment
+	// landed (on a node slower than the 2/3 that signed it); it writes the slot.
+	stale := false
+	if err == nil && dispatcher.keygenShareCheck {
+		if key, kerr := dispatcher.tssMgr.tssKeys.FindKey(dispatcher.keyId); kerr == nil && key.Status != tss_db.TssKeyCreated && key.PublicKey != hex.EncodeToString(pubBytes) {
+			stale = true
+			log.Warn("keygen finished after the key was activated; slot share kept", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "keyPubKey", key.PublicKey)
+		}
+	}
+	if err == nil && !stale {
 		err = keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey)
 	}
 	if err != nil {

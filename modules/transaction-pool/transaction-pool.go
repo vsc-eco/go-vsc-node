@@ -50,6 +50,10 @@ type TransactionPool struct {
 	conf common.IdentityConfig
 
 	processingGate TxProcessingGate
+
+	// netId is this node's network (vsc-mainnet, vsc-testnet, ...); "" skips
+	// the check (A18).
+	netId string
 }
 
 type IngestOptions struct {
@@ -93,6 +97,14 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	txShell := VSCTransactionShell{}
 	if err := common.DecodeCbor(sTx.Tx, &txShell); err != nil {
 		return nil, err
+	}
+	// A18: a transaction signed for another network (a testnet did:pkh
+	// transaction replayed here; the EIP-712 domain carries no chain id) was
+	// admitted, and its execution refused only its effect: its nonce and 100 RC
+	// were spent, stalling the account's real transactions. It is refused here,
+	// before anything is spent.
+	if tp.netId != "" && txShell.Headers.NetId != tp.netId {
+		return nil, fmt.Errorf("transaction is for network %q, this node runs %q", txShell.Headers.NetId, tp.netId)
 	}
 
 	ops := make([]VSCTransactionSignOp, 0, len(txShell.Tx))
@@ -470,7 +482,7 @@ func (tp *TransactionPool) Stop() error {
 	return tp.stopP2P()
 }
 
-func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem, gate TxProcessingGate) *TransactionPool {
+func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem, gate TxProcessingGate, netId string) *TransactionPool {
 	return &TransactionPool{
 		TxDb:           txDb,
 		nonceDb:        nonceDb,
@@ -481,6 +493,7 @@ func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.N
 		rcs:            rcSystem,
 		electionDb:     electionDb,
 		processingGate: gate,
+		netId:          netId,
 	}
 }
 

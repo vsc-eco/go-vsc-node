@@ -20,20 +20,28 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"vsc-node/lib/dids"
+	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
 
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multicodec"
+	"github.com/multiformats/go-multihash"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -44,7 +52,7 @@ import (
 type EVMBotConfig struct {
 	EthRPC         string
 	VaultAddress   string            // 0x... lowercase
-	Tokens         map[string]string // address → symbol (lowercase keys)
+	Tokens         map[string]string // ERC-20 address (lowercase) → name for logs (parseTokens)
 	ContractID     string
 	GraphQLURLs    []string
 	PollInterval   time.Duration
@@ -52,6 +60,54 @@ type EVMBotConfig struct {
 	CheckpointFile string
 	NetID          string // vsc-mainnet or vsc-testnet
 	RcLimit        uint64
+	// A01: the bridge's vault generations. Vaults are the fund-holding
+	// addresses whose deposits the bridge credits (VaultAddress, the active
+	// one, among them); ActiveGen is the active generation (0 before any
+	// rotation). Refreshed every tick from the bridge's registry.
+	Vaults    []string
+	ActiveGen uint32
+	// VaultGens is every generation of the last registry read; a withdrawal is
+	// signed by the key of the generation it was issued from (ROT-HALT-1: a
+	// retiring generation finishes its own in-flight withdrawals).
+	VaultGens []vaultGen
+}
+
+// vaultGen returns generation gen of the last registry read.
+func (c EVMBotConfig) vaultGen(gen uint32) *vaultGen {
+	for i := range c.VaultGens {
+		if c.VaultGens[i].Gen == gen {
+			return &c.VaultGens[i]
+		}
+	}
+	return nil
+}
+
+// spendKeyID is the TSS key that signs a withdrawal issued from vault: that
+// generation's key (a retiring one finishes its own in-flight withdrawals),
+// else fallback (the active key, or a bridge before any rotation).
+func (c EVMBotConfig) spendKeyID(vault, fallback string) string {
+	for _, g := range c.VaultGens {
+		if g.Address != "" && strings.EqualFold(g.Address, vault) {
+			return g.KeyID
+		}
+	}
+	return fallback
+}
+
+// spendVault is the address a pending spend was issued from, lowercase.
+func spendVault(ps *PendingSpend, fallback string) string {
+	if isValidEthAddress(ps.VaultAtQueue) {
+		return strings.ToLower(ps.VaultAtQueue)
+	}
+	return fallback
+}
+
+// scanVaults is the set of vault addresses whose deposits are scanned.
+func (c EVMBotConfig) scanVaults() []string {
+	if len(c.Vaults) > 0 {
+		return c.Vaults
+	}
+	return []string{c.VaultAddress}
 }
 
 // l2Submitter handles L2 transaction signing and submission.
@@ -61,16 +117,32 @@ type l2Submitter struct {
 	gql    *vscGraphQL
 	cfg    EVMBotConfig
 	mu     sync.Mutex // serializes L2 submissions for nonce ordering
+
+	// B-R1: the node's account nonce counts only transactions a block has
+	// included, and its pool takes a second transaction at that nonce, then
+	// deletes it once the first is included. next is the nonce after this
+	// bot's last accepted submission, so the calls of one tick take n, n+1, ...
+	// Guarded by mu.
+	next      uint64
+	haveNext  bool
+	seeded    bool      // the bot's own pending transactions were read once at start
+	holeSince time.Time // first "missing previous nonce" refusal since the last accepted submission
 }
+
+// nonceHoleGrace: how long the node may keep refusing the bot's next nonce
+// for a missing previous one before the bot starts again from the account
+// nonce. Short refusals are gossip catching up (the previous transaction went
+// to another node); a longer one means that transaction is gone.
+var nonceHoleGrace = 2 * time.Minute
 
 func main() {
 	cfg := parseConfig()
 
 	// Initialize L2 signing key
-	ethKey, did := initEthKey()
+	ethKey, did := initEthKey(cfg)
 
 	slog.Info("evm-mapping-bot starting",
-		"rpc", cfg.EthRPC,
+		"rpc", rpcHosts(cfg.EthRPC),
 		"vault", cfg.VaultAddress,
 		"contract", cfg.ContractID,
 		"tokens", len(cfg.Tokens),
@@ -104,32 +176,69 @@ func parseConfig() EVMBotConfig {
 		PollInterval:   12 * time.Second,
 		Network:        envOrDefault("NETWORK", "mainnet"),
 		Tokens:         map[string]string{},
-		GraphQLURLs:    strings.Split(envOrDefault("GRAPHQL_URLS", "https://api.vsc.eco/api/v1/graphql"), ","),
+		GraphQLURLs:    strings.Split(os.Getenv("GRAPHQL_URLS"), ","),
 		CheckpointFile: envOrDefault("CHECKPOINT_FILE", "evm-bot-checkpoint.json"),
 		NetID:          envOrDefault("NET_ID", "vsc-mainnet"),
 		RcLimit:        rcLimit,
 	}
 
-	if cfg.Network == "mainnet" {
-		cfg.Tokens["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] = "usdc"
+	tokens, err := parseTokens(cfg.Network, os.Getenv("TOKENS"))
+	if err != nil {
+		slog.Error("bad TOKENS", "err", err)
+		os.Exit(1)
 	}
+	cfg.Tokens = tokens
 
-	if cfg.VaultAddress == "" || cfg.ContractID == "" {
-		slog.Error("VAULT_ADDRESS and CONTRACT_ID must be set")
+	if cfg.ContractID == "" {
+		slog.Error("CONTRACT_ID must be set")
+		os.Exit(1)
+	}
+	// B17: the old default, api.vsc.eco, has been dead since 2026-09-17, so a
+	// bot started without GRAPHQL_URLS silently did nothing. Require it.
+	if os.Getenv("GRAPHQL_URLS") == "" {
+		slog.Error("GRAPHQL_URLS must be set (comma-separated Magi GraphQL endpoints)")
 		os.Exit(1)
 	}
 
+	// A18: the vault is the bridge's TSS key address, which RunLoop reads from
+	// the node; VAULT_ADDRESS is optional and, when set, must match it.
+	//
 	// MED-44 (EVM-B-M4): validate the vault address FORMAT, not just non-empty.
 	// A zero address (0x000...0) or any non-20-byte / non-hex string previously
 	// passed the "!= \"\"" check, after which the bot would treat burns to
 	// address(0) as deposits and sign withdrawals the contract can never confirm.
-	if !isValidEthAddress(cfg.VaultAddress) {
+	if cfg.VaultAddress != "" && !isValidEthAddress(cfg.VaultAddress) {
 		slog.Error("VAULT_ADDRESS is not a valid 20-byte hex Ethereum address (or is the zero address)",
 			"vault", cfg.VaultAddress)
 		os.Exit(1)
 	}
 
 	return cfg
+}
+
+// parseTokens is the set of ERC-20 contracts the bot watches for deposits:
+// USDC on mainnet, plus TOKENS, comma-separated token addresses, on any
+// network (a testnet bridge has no tokens otherwise). A malformed entry is an
+// error, never skipped: its deposits would go unmapped. The value names the
+// token in logs only; the bridge's registry holds its symbol.
+func parseTokens(network, tokensEnv string) (map[string]string, error) {
+	tokens := map[string]string{}
+	if network == "mainnet" {
+		tokens["0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"] = "usdc"
+	}
+	for _, a := range strings.Split(tokensEnv, ",") {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		if !isValidEthAddress(a) {
+			return nil, fmt.Errorf("token %q is not a 0x-prefixed 20-byte hex address", a)
+		}
+		if _, ok := tokens[a]; !ok {
+			tokens[a] = a
+		}
+	}
+	return tokens, nil
 }
 
 // isValidEthAddress reports whether s is a 0x-prefixed 20-byte hex address that
@@ -156,35 +265,44 @@ func isValidEthAddress(s string) bool {
 	return !allZero
 }
 
-// initEthKey loads or generates the secp256k1 private key for L2 signing.
-func initEthKey() (*ecdsa.PrivateKey, dids.EthDID) {
-	keyHex := os.Getenv("BOT_ETH_PRIVKEY")
+// initEthKey loads or generates the secp256k1 private key for L2 signing:
+// BOT_ETH_PRIVKEY if set, else the key file (BOT_ETH_KEY_FILE, default the
+// checkpoint path + ".key"), else a new key written to that file (0600).
+//
+// LOW 71: a generated key used to be written to the log in hex. The key holds
+// the bot's HBD (its RC) and its relayer registration, and logs are copied
+// around; it is now kept only in the key file and never logged.
+func initEthKey(cfg EVMBotConfig) (*ecdsa.PrivateKey, dids.EthDID) {
+	keyHex, source := os.Getenv("BOT_ETH_PRIVKEY"), "BOT_ETH_PRIVKEY"
+	keyFile := envOrDefault("BOT_ETH_KEY_FILE", cfg.CheckpointFile+".key")
+	if keyHex == "" {
+		if b, err := os.ReadFile(keyFile); err == nil {
+			keyHex, source = strings.TrimSpace(string(b)), keyFile
+		}
+	}
 	if keyHex != "" {
 		priv, err := ethCrypto.HexToECDSA(keyHex)
 		if err != nil {
-			slog.Error("invalid BOT_ETH_PRIVKEY", "err", err)
+			slog.Error("invalid L2 signing key", "source", source, "err", err)
 			os.Exit(1)
 		}
-		addr := ethCrypto.PubkeyToAddress(priv.PublicKey).Hex()
-		did := dids.NewEthDID(addr)
-		slog.Info("loaded L2 signing key from BOT_ETH_PRIVKEY", "did", did.String())
+		did := dids.NewEthDID(ethCrypto.PubkeyToAddress(priv.PublicKey).Hex())
+		slog.Info("loaded L2 signing key", "source", source, "did", did.String())
 		return priv, did
 	}
 
-	// Auto-generate
 	priv, err := ethCrypto.GenerateKey()
 	if err != nil {
 		slog.Error("failed to generate signing key", "err", err)
 		os.Exit(1)
 	}
-	addr := ethCrypto.PubkeyToAddress(priv.PublicKey).Hex()
-	did := dids.NewEthDID(addr)
-	privHex := hex.EncodeToString(ethCrypto.FromECDSA(priv))
-	slog.Warn("generated new L2 signing key — fund this DID with HBD before the bot can submit transactions",
-		"did", did.String(),
-		"privkey_hex", privHex,
-	)
-	slog.Warn("set BOT_ETH_PRIVKEY to persist this key across restarts")
+	if err := os.WriteFile(keyFile, []byte(hex.EncodeToString(ethCrypto.FromECDSA(priv))), 0600); err != nil {
+		slog.Error("cannot save the generated L2 signing key; set BOT_ETH_PRIVKEY or a writable BOT_ETH_KEY_FILE", "path", keyFile, "err", err)
+		os.Exit(1)
+	}
+	did := dids.NewEthDID(ethCrypto.PubkeyToAddress(priv.PublicKey).Hex())
+	slog.Warn("generated a new L2 signing key: fund this DID with HBD and register it as a relayer before the bot can map deposits",
+		"did", did.String(), "keyFile", keyFile)
 	return priv, did
 }
 
@@ -205,27 +323,148 @@ type Checkpoint struct {
 	LastScannedBlock uint64            `json:"last_scanned_block"`
 	SentWithdrawals  map[string]SentTx `json:"sent_withdrawals"`
 	BlockRetries     map[uint64]int    `json:"block_retries,omitempty"`
-	Version          int               `json:"version"`
-	mu               sync.Mutex
+	// PendingMaps: map calls submitted to L2 whose on-chain result is not
+	// known yet, keyed by L2 tx id (B4).
+	PendingMaps map[string]PendingMap `json:"pending_maps,omitempty"`
+	// DeadLetters: deposits the bot will not map automatically, with the
+	// reason, kept for an operator (B4/B6).
+	DeadLetters []DeadLetter `json:"dead_letters,omitempty"`
+	// RP-9: blocks whose header the bot needs stored (first seen, unix), the
+	// EIP-2935 proofs fetched for them by root block, and since when the
+	// operator has been asked for a proof (NEEDS_FILE).
+	HeaderNeeds map[uint64]int64 `json:"header_needs,omitempty"`
+	// WaitingDeposits: deposits found in blocks whose header is not stored yet.
+	WaitingDeposits map[uint64][]detectedDeposit `json:"waiting_deposits,omitempty"`
+	AttestCache     map[uint64]*attestEntry      `json:"attest_cache,omitempty"`
+	WantProofSince  int64                        `json:"want_proof_since,omitempty"`
+	// AttestSentAt / LinkSentAt: when attestations from a root, and a run of
+	// linked headers, were last submitted. An L2 call executes a few blocks
+	// later; resending it every tick until then would burn RC.
+	AttestSentAt map[uint64]int64 `json:"attest_sent_at,omitempty"`
+	LinkSentAt   int64            `json:"link_sent_at,omitempty"`
+	// ProofWindow: whether the L1 RPC served the last eth_getProof at a
+	// finalized block (1), refused it (-1), or was not asked yet (0).
+	ProofWindow int `json:"proof_window,omitempty"`
+	// SentSweeps: A01 migration sweeps the bot broadcast, by "{gen}-{nonce}".
+	SentSweeps map[string]SentSweep `json:"sent_sweeps,omitempty"`
+	// BlockMapped: the deposits (depositKey) of an unfinished block whose
+	// maps were already submitted, so the block's retry skips them
+	// (TICKSTALL-1). Dropped when the block finishes.
+	BlockMapped map[uint64][]string `json:"block_mapped,omitempty"`
+	Version     int                 `json:"version"`
+	mu          sync.Mutex
+	// depositWork: a deposit was submitted or dead-lettered earlier in this
+	// tick (not saved). A block that then runs out of time is not blamed.
+	depositWork bool
+}
+
+// PendingMap is a submitted map call awaiting its on-chain result.
+type PendingMap struct {
+	Block       uint64 `json:"block"`
+	DepositTx   string `json:"deposit_tx"`
+	SubmittedAt int64  `json:"submitted_at"`
+}
+
+// DeadLetter is a deposit the bot gave up mapping, and why.
+type DeadLetter struct {
+	Block     uint64 `json:"block"`
+	DepositTx string `json:"deposit_tx"`
+	MapTxId   string `json:"map_tx_id,omitempty"`
+	Reason    string `json:"reason"`
+	At        int64  `json:"at"`
+}
+
+// deadLetter records a deposit the bot will not map automatically. Caller
+// must not hold cp.mu.
+func (cp *Checkpoint) deadLetter(block uint64, depositTx, mapTxId, reason string) {
+	slog.Error("deposit dead-lettered: it will not be mapped automatically",
+		"block", block, "tx", depositTx, "mapTx", mapTxId, "reason", reason)
+	cp.mu.Lock()
+	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix()})
+	cp.mu.Unlock()
 }
 
 const blockRetryAlertThreshold = 10
 
 // checkpointVersion is the on-disk schema version. Bumping the struct layout
 // MUST bump this so a future bot refuses to silently consume a stale layout.
-const checkpointVersion = 1
+// Version 2 added PendingMaps and DeadLetters; a version 1 file loads as is
+// (the new fields start empty), and a version 1 bot refuses a version 2 file.
+// Version 3 added BlockMapped; version 1 and 2 files load as is.
+const checkpointVersion = 3
 
 type SentTx struct {
 	SignedTxHex string `json:"signed_tx_hex"`
 	TxHash      string `json:"tx_hash"`
 	Nonce       uint64 `json:"nonce"`
-	SentAt      int64  `json:"sent_at"`
+	// Vault is the address that sent it (A01: each vault generation counts its
+	// nonces from 0, so an entry is only meaningful for its own vault).
+	Vault  string `json:"vault,omitempty"`
+	SentAt int64  `json:"sent_at"`
+	// UnsignedTxHex is the PendingSpend tx this broadcast signed; a different
+	// one at the same nonce means an admin replaceWithdrawal re-signed it (B1).
+	UnsignedTxHex string `json:"unsigned_tx_hex,omitempty"`
+	// PrevTxHashes are earlier broadcasts at this nonce (replaced ones): any of
+	// them may be the one that mines.
+	PrevTxHashes []string `json:"prev_tx_hashes,omitempty"`
+	// LastBroadcastAt drives re-posting an unmined tx (B8).
+	LastBroadcastAt int64 `json:"last_broadcast_at,omitempty"`
+	// ConfirmTxId is the submitted confirmSpend awaiting its on-chain result;
+	// ConfirmFailures / NextConfirmAt back off after it fails (B4, B16).
+	ConfirmTxId     string `json:"confirm_tx_id,omitempty"`
+	ConfirmFailures int    `json:"confirm_failures,omitempty"`
+	NextConfirmAt   int64  `json:"next_confirm_at,omitempty"`
+	// ConfirmSubmittedAt: when ConfirmTxId was submitted (B-R1). One the node
+	// still does not know confirmVanishGrace later is gone, and is re-sent.
+	ConfirmSubmittedAt int64 `json:"confirm_submitted_at,omitempty"`
+	// FinalAt: when the bot first saw the withdrawal mined and final (RP-6
+	// confirm-lag alarm).
+	FinalAt int64 `json:"final_at,omitempty"`
+}
+
+// confirmVanishGrace: a submitted confirmSpend the node has no record of after
+// this long was deleted from the pool (it lost its nonce) and never ran.
+var confirmVanishGrace = 10 * time.Minute
+
+// checkRelayerRegistered logs at ERROR when the bot's DID is not a registered
+// relayer (B10): the contract refuses ETH deposit maps from any other caller, so
+// every ETH deposit would fail on chain and be dead-lettered. Non-fatal: ERC-20
+// maps and withdrawals do not need the registration, and it can be added later.
+func checkRelayerRegistered(ctx context.Context, gql *vscGraphQL, contractID, did string) {
+	state, err := gql.fetchContractState(ctx, contractID, []string{"rl-" + did})
+	if err != nil {
+		slog.Warn("could not check the relayer registration", "did", did, "err", err)
+		return
+	}
+	if state["rl-"+did] != "1" {
+		slog.Error("this bot's DID is not a registered relayer: the contract refuses its ETH deposit maps until registerRelayer runs",
+			"did", did, "contract", contractID)
+	}
+}
+
+// rebroadcastInterval: an unmined withdrawal tx is re-posted this often (B8).
+var rebroadcastInterval = 5 * time.Minute
+
+// confirmBackoffBase: after the nth on-chain failure of a confirmSpend the bot
+// waits confirmBackoffBase * 2^(n-1), at most an hour, before re-submitting.
+var confirmBackoffBase = 5 * time.Minute
+
+func confirmBackoff(failures int) time.Duration {
+	d := confirmBackoffBase
+	for i := 1; i < failures && d < time.Hour; i++ {
+		d *= 2
+	}
+	if d > time.Hour {
+		d = time.Hour
+	}
+	return d
 }
 
 func loadCheckpoint(path string) *Checkpoint {
 	cp := &Checkpoint{
 		SentWithdrawals: make(map[string]SentTx),
 		BlockRetries:    make(map[uint64]int),
+		PendingMaps:     make(map[string]PendingMap),
 		Version:         checkpointVersion,
 	}
 	data, err := os.ReadFile(path)
@@ -244,7 +483,7 @@ func loadCheckpoint(path string) *Checkpoint {
 	}
 	// MED-43: reject an unknown on-disk schema version rather than mis-reading
 	// fields written by an incompatible build.
-	if cp.Version != 0 && cp.Version != checkpointVersion {
+	if cp.Version != 0 && cp.Version != 1 && cp.Version != 2 && cp.Version != checkpointVersion {
 		slog.Error("checkpoint schema version mismatch — refusing to start",
 			"path", path, "fileVersion", cp.Version, "expected", checkpointVersion)
 		os.Exit(1)
@@ -255,6 +494,9 @@ func loadCheckpoint(path string) *Checkpoint {
 	}
 	if cp.BlockRetries == nil {
 		cp.BlockRetries = make(map[uint64]int)
+	}
+	if cp.PendingMaps == nil {
+		cp.PendingMaps = make(map[string]PendingMap)
 	}
 	return cp
 }
@@ -304,13 +546,97 @@ func acquireCheckpointLock(path string) (*os.File, error) {
 // Ethereum RPC client — thin wrapper for JSON-RPC calls.
 // ---------------------------------------------------------------------------
 
+// ethRPC is the bot's L1 JSON-RPC client. ETH_RPC may list several
+// endpoints, comma separated (B14): a call moves to the next one only when an
+// endpoint does not answer (transport, HTTP status, or an unreadable body),
+// never on a JSON-RPC error or null result, which are the chain's answer. A
+// lying endpoint can only stall the bot: every proof is checked against the
+// verifier's ZK-proven headers.
 type ethRPC struct {
-	url    string
+	urls   []string
 	client *http.Client
+	// B-R4: index of the endpoint that last answered; calls start there, so a
+	// hung primary costs its timeout once rather than on every call.
+	start atomic.Int64
+	// heads is the highest block each endpoint has reported (A19).
+	heads []atomic.Uint64
 }
 
-func newEthRPC(url string) *ethRPC {
-	return &ethRPC{url: url, client: &http.Client{Timeout: 30 * time.Second}}
+func newEthRPC(urls string) *ethRPC {
+	e := &ethRPC{client: &http.Client{Timeout: 30 * time.Second}}
+	for _, u := range strings.Split(urls, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			e.urls = append(e.urls, u)
+		}
+	}
+	e.heads = make([]atomic.Uint64, len(e.urls))
+	return e
+}
+
+// logsAt is eth_getLogs for a range ending at toBlock (A19, BI1). With
+// several endpoints a call fails over per call, and a lagging endpoint
+// answers [] for a block it has not seen (geth clamps a log range to its
+// head): the block was then marked scanned and its ERC-20 and MagiDeposit
+// deposits were never mapped, with no error and no alarm. An empty answer is
+// now taken only from an endpoint whose head has reached toBlock; otherwise
+// the next endpoint is asked, and with none the block fails and is retried.
+// A non-empty answer stands (a lagging node has no logs past its head). With
+// one endpoint the block itself came from it, so no check is needed.
+func (e *ethRPC) logsAt(ctx context.Context, params string, toBlock uint64) (json.RawMessage, error) {
+	if len(e.urls) <= 1 {
+		return e.callCtx(ctx, "eth_getLogs", params)
+	}
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[%s],"id":1}`, params)
+	var lastErr error
+	first := int(e.start.Load())
+	for k := range e.urls {
+		i := (first + k) % len(e.urls)
+		res, answered, err := e.callOne(ctx, e.urls[i], "eth_getLogs", body)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !answered {
+			lastErr = err
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var logs []json.RawMessage
+		if json.Unmarshal(res, &logs) == nil && len(logs) == 0 && !e.reached(ctx, i, toBlock) {
+			lastErr = fmt.Errorf("A19: endpoint %d has not reached block %d; its empty logs answer is not taken", i, toBlock)
+			slog.Warn("A19: an endpoint behind the block answered no logs; asking the next", "endpoint", i, "block", toBlock)
+			continue
+		}
+		if i != first {
+			e.start.Store(int64(i))
+		}
+		return res, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no ETH RPC endpoint configured")
+	}
+	return nil, lastErr
+}
+
+// reached reports whether endpoint i's head is at least block (cached: a head
+// only moves forward).
+func (e *ethRPC) reached(ctx context.Context, i int, block uint64) bool {
+	if e.heads[i].Load() >= block {
+		return true
+	}
+	res, answered, err := e.callOne(ctx, e.urls[i], "eth_blockNumber", `{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+	if !answered || err != nil {
+		return false
+	}
+	var h string
+	if json.Unmarshal(res, &h) != nil {
+		return false
+	}
+	head := hexToUint64(h)
+	for cur := e.heads[i].Load(); head > cur && !e.heads[i].CompareAndSwap(cur, head); cur = e.heads[i].Load() {
+	}
+	return head >= block
 }
 
 // maxHTTPResponseBytes caps how many bytes we will read from any single HTTP
@@ -347,16 +673,87 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 }
 
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
+	return e.callCtx(context.Background(), method, params)
+}
+
+// callCtx is call bounded by ctx: a call still waiting when ctx ends is
+// abandoned (TICKSTALL-1: a block's proof fetch must not outlast the tick).
+func (e *ethRPC) callCtx(ctx context.Context, method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
-	resp, err := e.client.Post(e.url, "application/json", strings.NewReader(body))
+	var lastErr error
+	first := int(e.start.Load())
+	for k := range e.urls {
+		i := (first + k) % len(e.urls)
+		res, answered, err := e.callOne(ctx, e.urls[i], method, body)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if answered {
+			if i != first {
+				e.start.Store(int64(i))
+			}
+			return res, err
+		}
+		lastErr = err
+		if k+1 < len(e.urls) {
+			slog.Warn("B14: ETH RPC endpoint did not answer, trying the next", "endpoint", i, "method", method, "err", err)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no ETH RPC endpoint configured")
+	}
+	return nil, lastErr
+}
+
+// redactURL keeps only the scheme and host of the URL in an HTTP request
+// error: hosted RPC URLs carry the provider's API key in the path or query,
+// and the error reaches the logs and the /health report (S-1).
+func redactURL(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) {
+		if p, perr := neturl.Parse(ue.URL); perr == nil && p.Host != "" {
+			ue.URL = p.Scheme + "://" + p.Host
+		} else {
+			ue.URL = "(endpoint)"
+		}
+	}
+	return err
+}
+
+// rpcHosts names the configured ETH RPC endpoints by host only: hosted RPC
+// URLs usually carry the provider's API key in the path or query.
+func rpcHosts(urls string) string {
+	var hosts []string
+	for _, u := range strings.Split(urls, ",") {
+		if p, err := neturl.Parse(strings.TrimSpace(u)); err == nil && p.Host != "" {
+			hosts = append(hosts, p.Host)
+		} else if strings.TrimSpace(u) != "" {
+			hosts = append(hosts, "(unparsed)")
+		}
+	}
+	return strings.Join(hosts, ",")
+}
+
+// callOne sends body to url. answered is false when the endpoint gave no
+// usable answer (the caller tries the next one).
+func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res json.RawMessage, answered bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, false, redactURL(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, false, redactURL(err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("rpc HTTP %d", resp.StatusCode)
+	}
 	// MED-57: bound the response body so a hostile RPC cannot OOM the bot.
 	raw, err := readBodyCapped(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read rpc response: %w", err)
+		return nil, false, fmt.Errorf("read rpc response: %w", err)
 	}
 
 	var result struct {
@@ -364,15 +761,16 @@ func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 		Error  *struct{ Message string } `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("malformed rpc response: %w", err)
+		return nil, false, fmt.Errorf("malformed rpc response: %w", err)
 	}
+	res, err = result.Result, nil
 	if result.Error != nil {
-		return nil, fmt.Errorf("rpc error: %s", result.Error.Message)
+		return nil, true, fmt.Errorf("rpc error: %s", result.Error.Message)
 	}
 	if result.Result == nil || string(result.Result) == "null" {
-		return nil, fmt.Errorf("null result from %s", method)
+		return nil, true, fmt.Errorf("null result from %s", method)
 	}
-	return result.Result, nil
+	return res, true, nil
 }
 
 func (e *ethRPC) getFinalizedBlock() (uint64, error) {
@@ -524,6 +922,28 @@ func (g *vscGraphQL) doGQL(ctx context.Context, url string, body []byte) (json.R
 
 // fetchContractState reads keys from the EVM mapping contract's state.
 func (g *vscGraphQL) fetchContractState(ctx context.Context, contractID string, keys []string) (map[string]string, error) {
+	return g.fetchContractStateEnc(ctx, contractID, keys, "raw")
+}
+
+// fetchContractStateHex reads binary state values (the verifier's b-, hr-):
+// the node returns each hex-encoded; this decodes them. A raw read would carry
+// non-UTF-8 bytes through JSON, which mangles them.
+func (g *vscGraphQL) fetchContractStateHex(ctx context.Context, contractID string, keys []string) (map[string]string, error) {
+	st, err := g.fetchContractStateEnc(ctx, contractID, keys, "hex")
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range st {
+		b, derr := hex.DecodeString(v)
+		if derr != nil {
+			return nil, fmt.Errorf("state %s is not hex: %w", k, derr)
+		}
+		st[k] = string(b)
+	}
+	return st, nil
+}
+
+func (g *vscGraphQL) fetchContractStateEnc(ctx context.Context, contractID string, keys []string, encoding string) (map[string]string, error) {
 	data, err := g.query(ctx,
 		`query GetState($contractId: String!, $keys: [String!]!, $encoding: String) {
 			getStateByKeys(contractId: $contractId, keys: $keys, encoding: $encoding)
@@ -531,7 +951,7 @@ func (g *vscGraphQL) fetchContractState(ctx context.Context, contractID string, 
 		map[string]interface{}{
 			"contractId": contractID,
 			"keys":       keys,
-			"encoding":   "raw",
+			"encoding":   encoding,
 		},
 	)
 	if err != nil {
@@ -563,6 +983,136 @@ func (g *vscGraphQL) fetchContractState(ctx context.Context, contractID string, 
 	}
 
 	return result, nil
+}
+
+// fetchTransactionStatus returns an L2 transaction's status (UNCONFIRMED,
+// INCLUDED, CONFIRMED, FAILED), as the BTC mapping bot reads it.
+func (g *vscGraphQL) fetchTransactionStatus(ctx context.Context, txID string) (string, error) {
+	data, err := g.query(ctx,
+		`query FindTransaction($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				status
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byId": txID}},
+	)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Status string `json:"status"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("decode transaction: %w", err)
+	}
+	if len(parsed.FindTransaction) == 0 {
+		return "", fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
+	}
+	return parsed.FindTransaction[0].Status, nil
+}
+
+// fetchTransactionError returns the contract error a FAILED transaction ended
+// with: its result in the contract output of the block that ran it ("" when
+// none is recorded).
+func (g *vscGraphQL) fetchTransactionError(ctx context.Context, txID string) (string, error) {
+	data, err := g.query(ctx,
+		`query FindTransaction($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				output { id }
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byId": txID}},
+	)
+	if err != nil {
+		return "", err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Output []struct {
+				ID string `json:"id"`
+			} `json:"output"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", fmt.Errorf("decode transaction: %w", err)
+	}
+	if len(parsed.FindTransaction) == 0 {
+		return "", fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
+	}
+	for _, o := range parsed.FindTransaction[0].Output {
+		raw, err := g.query(ctx, `query($c: String!) { getDagByCID(cidString: $c) }`, map[string]interface{}{"c": o.ID})
+		if err != nil {
+			return "", err
+		}
+		var dag struct {
+			GetDagByCID string `json:"getDagByCID"`
+		}
+		var out struct {
+			Inputs  []string `json:"inputs"`
+			Results []struct {
+				ErrMsg string `json:"errMsg"`
+			} `json:"results"`
+		}
+		if err := json.Unmarshal(raw, &dag); err != nil {
+			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+		}
+		if err := json.Unmarshal([]byte(dag.GetDagByCID), &out); err != nil {
+			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+		}
+		for i, in := range out.Inputs {
+			if in == txID && i < len(out.Results) {
+				return out.Results[i].ErrMsg, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+// errAlreadyProcessed is the bridge's refusal of a deposit it has credited
+// (account-mapping ErrAlreadyObserved).
+const errAlreadyProcessed = "deposit already processed"
+
+// errTxNotFound: the node holds no transaction with that id. Right after a
+// submission that can be gossip; much later the transaction is gone (the pool
+// deletes one that loses its nonce to another).
+var errTxNotFound = errors.New("transaction not found")
+
+// fetchTopPendingNonce returns the highest nonce among the account's own
+// transactions still waiting in the node's pool (found=false: none).
+func (g *vscGraphQL) fetchTopPendingNonce(ctx context.Context, account string) (top uint64, found bool, err error) {
+	data, err := g.query(ctx,
+		`query PendingTxs($filterOptions: TransactionFilter) {
+			findTransaction(filterOptions: $filterOptions) {
+				nonce
+				required_auths
+			}
+		}`,
+		map[string]interface{}{"filterOptions": map[string]interface{}{"byAccount": account, "byStatus": "UNCONFIRMED", "limit": 100}},
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	var parsed struct {
+		FindTransaction []struct {
+			Nonce         uint64   `json:"nonce"`
+			RequiredAuths []string `json:"required_auths"`
+		} `json:"findTransaction"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return 0, false, fmt.Errorf("decode pending transactions: %w", err)
+	}
+	for _, tx := range parsed.FindTransaction {
+		// byAccount also matches transactions that only pay the account.
+		if len(tx.RequiredAuths) != 1 || tx.RequiredAuths[0] != account {
+			continue
+		}
+		if !found || tx.Nonce > top {
+			top, found = tx.Nonce, true
+		}
+	}
+	return top, found, nil
 }
 
 // fetchTssSignatures queries getTssRequests for completed signatures.
@@ -718,6 +1268,10 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 // L2 contract call — mirrors mapper.Bot.callContractL2
 // ---------------------------------------------------------------------------
 
+// errPayloadTooLarge: callContractL2 refused a payload over the node's
+// contract-payload cap before submitting it.
+var errPayloadTooLarge = errors.New("contract call payload over the node's cap")
+
 // callContractL2 submits a vsc.call contract invocation through the VSC L2
 // transaction pool using the bot's did:pkh:eip155 identity.
 func (s *l2Submitter) callContractL2(
@@ -727,13 +1281,26 @@ func (s *l2Submitter) callContractL2(
 	payload json.RawMessage,
 	rcOverride uint64,
 ) (string, error) {
+	// EVM-T1: every node fails a contract call whose payload is over
+	// MAX_CONTRACT_PAYLOAD_SIZE (state-processing, checked before execution),
+	// which is below the pool's MAX_TX_SIZE checked further down. Refuse it here
+	// and log it, rather than submit a call that cannot succeed.
+	if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
+		slog.Error("contract call payload exceeds the node's payload cap",
+			"action", action,
+			"payload_size", n,
+			"limit", params.MAX_CONTRACT_PAYLOAD_SIZE,
+		)
+		return "", fmt.Errorf("%w: %s payload is %d bytes as the node counts it (limit %d)", errPayloadTooLarge, action, n, params.MAX_CONTRACT_PAYLOAD_SIZE)
+	}
+
 	// Serialize concurrent L2 submissions for nonce ordering.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	did := s.did
 
-	nonce, err := s.gql.FetchAccountNonce(ctx, did.String())
+	nonce, err := s.nextNonce(ctx, did.String())
 	if err != nil {
 		return "", fmt.Errorf("fetch L2 nonce: %w", err)
 	}
@@ -789,6 +1356,19 @@ func (s *l2Submitter) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Tx),
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
+	if err != nil && isMissingPrevNonceErr(err) {
+		// B-R1: the node does not hold the bot's previous transaction. Give
+		// gossip nonceHoleGrace to bring it; past that, refill from the
+		// account nonce.
+		if s.holeSince.IsZero() {
+			s.holeSince = time.Now()
+		} else if time.Since(s.holeSince) > nonceHoleGrace {
+			slog.Warn("B-R1: the node still lacks the bot's previous L2 transaction; continuing from the account nonce",
+				"action", action, "nonce", nonce, "since", s.holeSince)
+			s.haveNext, s.holeSince = false, time.Time{}
+		}
+		return "", fmt.Errorf("broadcast L2 tx: %w", err)
+	}
 	if err != nil {
 		// MED-98 (M33-M4): the bot uses a single freshly-fetched L2 account
 		// nonce per submission. If a prior attempt actually landed (but the bot
@@ -799,12 +1379,17 @@ func (s *l2Submitter) callContractL2(
 		// terminal-progress (errNonceConsumed) so the retry layer stops cleanly
 		// instead of wedging — the next tick re-derives a fresh nonce.
 		if isNonceConsumedErr(err) {
+			// B-R7: the transaction that holds the nonce is most likely this
+			// one (an earlier attempt that reached the node): its id is the
+			// CID of these bytes, so the caller can still follow its result.
+			id := localTxID(sTx.Tx)
 			slog.Warn("MED-98: L2 nonce already consumed (prior submission likely landed) — not stalling on a stale-nonce retry",
-				"action", action, "nonce", nonce, "err", err)
-			return "", fmt.Errorf("%w: %v", errNonceConsumed, err)
+				"action", action, "nonce", nonce, "id", id, "err", err)
+			return id, fmt.Errorf("%w: %v", errNonceConsumed, err)
 		}
 		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
+	s.next, s.haveNext, s.holeSince = nonce+1, true, time.Time{}
 
 	slog.Info("L2 tx broadcast",
 		"id", txID,
@@ -824,13 +1409,13 @@ func (s *l2Submitter) callWithRetry(
 	action string,
 	payload json.RawMessage,
 	maxAttempts int,
-) error {
+) (string, error) {
 	var lastErr error
 	var rcOverride uint64 // 0 = use configured default
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		_, err := s.callContractL2(ctx, contractID, action, payload, rcOverride)
+		txID, err := s.callContractL2(ctx, contractID, action, payload, rcOverride)
 		if err == nil {
-			return nil
+			return txID, nil
 		}
 		// MED-98 (M33-M4): if the prior submission already consumed the nonce
 		// (it landed), do NOT keep retrying at a stale nonce — that would stall
@@ -838,8 +1423,8 @@ func (s *l2Submitter) callWithRetry(
 		// nonce and the contract dedupes the already-landed action.
 		if errors.Is(err, errNonceConsumed) {
 			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
-				"action", action)
-			return nil
+				"action", action, "id", txID)
+			return txID, nil
 		}
 		lastErr = err
 		slog.Warn("L2 submission failed",
@@ -855,7 +1440,7 @@ func (s *l2Submitter) callWithRetry(
 		// withdrawals, risking a second L1 broadcast). Stop retrying on an
 		// ambiguous context-done outcome rather than risk a double-submit.
 		if ctx.Err() != nil {
-			return fmt.Errorf("L2 submission aborted (context done; prior attempt outcome ambiguous, not retrying to avoid double-submit): %w", lastErr)
+			return "", fmt.Errorf("L2 submission aborted (context done; prior attempt outcome ambiguous, not retrying to avoid double-submit): %w", lastErr)
 		}
 		// MED-99 (M33-M6) + MED-96 (M33-H1): on an RC-exhaustion error (a
 		// gas-bomb payload) OR an RC-contention rejection (a competing bot
@@ -882,17 +1467,59 @@ func (s *l2Submitter) callWithRetry(
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return ctx.Err()
+				return "", ctx.Err()
 			}
 		}
 	}
-	return fmt.Errorf("all %d L2 submission attempts failed: %w", maxAttempts, lastErr)
+	return "", fmt.Errorf("all %d L2 submission attempts failed: %w", maxAttempts, lastErr)
 }
 
 // errNonceConsumed is a sentinel: the L2 account nonce used for a submission was
 // already consumed by a prior attempt that actually landed. MED-98 — callers
 // must treat this as terminal-progress, NOT a retryable failure.
 var errNonceConsumed = errors.New("l2 nonce already consumed")
+
+// nextNonce picks the nonce for the next submission (caller holds s.mu): the
+// account nonce, or the one after the bot's last accepted submission while
+// that is higher. At start it reads the bot's own transactions still in the
+// pool, so a restart does not reuse the nonce of a call made before it.
+func (s *l2Submitter) nextNonce(ctx context.Context, account string) (uint64, error) {
+	confirmed, err := s.gql.FetchAccountNonce(ctx, account)
+	if err != nil {
+		return 0, err
+	}
+	if !s.seeded {
+		top, found, err := s.gql.fetchTopPendingNonce(ctx, account)
+		if err != nil {
+			return 0, fmt.Errorf("read pending L2 transactions: %w", err)
+		}
+		s.seeded = true
+		if found && top+1 > confirmed {
+			s.next, s.haveNext = top+1, true
+		}
+	}
+	if s.haveNext && s.next > confirmed {
+		return s.next, nil
+	}
+	return confirmed, nil
+}
+
+// localTxID is the id the node gives a submitted transaction: the CID
+// (dag-cbor, sha2-256) of its bytes, signature excluded
+// (transactionpool.IngestTx).
+func localTxID(tx []byte) string {
+	c, err := cid.Prefix{Version: 1, Codec: uint64(multicodec.DagCbor), MhType: uint64(multihash.SHA2_256), MhLength: -1}.Sum(tx)
+	if err != nil {
+		return ""
+	}
+	return c.String()
+}
+
+// isMissingPrevNonceErr: the pool refused a nonce above the account nonce
+// because it holds no transaction at the nonce before it.
+func isMissingPrevNonceErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "missing previous nonce")
+}
 
 // isNonceConsumedErr reports whether an L2 submission error indicates the nonce
 // was already used (the prior attempt landed). MED-98.
@@ -953,8 +1580,11 @@ type detectedDeposit struct {
 	TxIndex      int
 	LogIndex     int // -1 for native ETH
 	TxHash       string
-	DepositType  string // "eth" or "erc20"
-	TokenAddress string
+	DepositType  string // "eth", "erc20" or "contract"
+	TokenAddress string // the token (erc20, or a MagiDeposit token deposit)
+	// Amount deposited (wei or token units; nil in a checkpoint from before
+	// DUST-1), checked against the bridge's minimum deposit.
+	Amount *big.Int `json:",omitempty"`
 }
 
 type blockScanResult struct {
@@ -1012,7 +1642,7 @@ func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg E
 				// rather than killing the bridge. Never record a silent success:
 				// on panic we write an error entry, so the block is treated as
 				// failed and re-scanned, not skipped.
-				res, err := scanBlockSafe(rpc, h, cfg.VaultAddress, cfg.Tokens)
+				res, err := scanBlockSafe(rpc, h, cfg.scanVaults(), cfg.Tokens)
 				mu.Lock()
 				out[h] = blockScanEntry{result: res, err: err}
 				mu.Unlock()
@@ -1038,17 +1668,20 @@ feed:
 // (recover is per-goroutine), so without this a malformed-RPC-induced panic in
 // scanBlock would crash the whole bot. On panic we return a non-nil error so
 // the block is treated as failed (re-scanned), never a silent success.
-func scanBlockSafe(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (res *blockScanResult, err error) {
+func scanBlockSafe(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (res *blockScanResult, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			res = nil
 			err = fmt.Errorf("scanBlock panic at height %d: %v", height, r)
 		}
 	}()
-	return scanBlock(rpc, height, vaultAddr, tokens)
+	return scanBlock(rpc, height, vaults, tokens)
 }
 
-func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]string) (*blockScanResult, error) {
+// A01: vaults are every fund-holding vault generation's address; the block is
+// fetched once and each address is scanned (late deposits to a superseded
+// generation are credited and swept).
+func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (*blockScanResult, error) {
 	blockHex := fmt.Sprintf("0x%x", height)
 	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
 	if err != nil {
@@ -1068,21 +1701,55 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 	}
 
 	result := &blockScanResult{BlockRaw: blockData}
-	vaultLower := strings.ToLower(vaultAddr)
+	isVault := map[string]bool{}
+	for _, v := range vaults {
+		if v != "" {
+			isVault[strings.ToLower(v)] = true
+		}
+	}
 
-	// Detect ETH deposits: direct transfers to vault
+	// Detect ETH deposits: direct transfers to a vault. A transfer FROM one of
+	// the vault's own addresses (a migration sweep, A01) is the vault moving
+	// its funds, not a deposit: the bridge refuses it.
 	for i, tx := range block.Transactions {
-		if strings.ToLower(tx.To) == vaultLower && hexToUint64(tx.Value) > 0 {
+		if isVault[strings.ToLower(tx.To)] && hexNonZero(tx.Value) && !isVault[strings.ToLower(tx.From)] {
+			// FAILDEP-1: a reverted transfer is in the block but moved nothing
+			// (Glamsterdam reverts one that creates the vault's account at
+			// 21,000 gas); the bridge refuses it, so it is not a deposit.
+			ok, err := txSucceeded(rpc, tx.Hash)
+			if err != nil {
+				return nil, fmt.Errorf("receipt of %s in block %d: %w", tx.Hash, height, err)
+			}
+			if !ok {
+				slog.Warn("FAILDEP-1: a transfer to the vault reverted on L1; nothing arrived, not mapped", "block", height, "tx", tx.Hash)
+				continue
+			}
+			amount, _ := new(big.Int).SetString(strings.TrimPrefix(tx.Value, "0x"), 16)
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight: height,
 				TxIndex:     i,
 				LogIndex:    -1,
 				TxHash:      tx.Hash,
 				DepositType: "eth",
+				Amount:      amount,
 			})
 		}
 	}
 
+	for _, vaultAddr := range vaults {
+		if vaultAddr == "" {
+			continue
+		}
+		if err := scanVaultLogs(rpc, height, strings.ToLower(vaultAddr), isVault, tokens, result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// scanVaultLogs adds the ERC-20 and MagiDeposit deposits of one vault address
+// in block height to result.
+func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[string]bool, tokens map[string]string, result *blockScanResult) error {
 	// Detect ERC-20 deposits: Transfer events to vault
 	for tokenAddr := range tokens {
 		vaultPadded := "0x000000000000000000000000" + strings.TrimPrefix(vaultLower, "0x")
@@ -1090,20 +1757,31 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s",null,"%s"]}`,
 			height, height, tokenAddr, TransferEventSig, vaultPadded,
 		)
-		logsData, err := rpc.call("eth_getLogs", logsParams)
+		// B-R2: any error below fails the block, which is retried next tick
+		// (runOnce stops at the first failed block); skipping it lost the
+		// deposit while the block was marked scanned.
+		logsData, err := rpc.logsAt(context.Background(), logsParams, height)
 		if err != nil {
-			slog.Warn("eth_getLogs failed", "token", tokenAddr, "block", height, "err", err)
-			continue
+			return fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
 
 		var logs []struct {
-			TransactionIndex string `json:"transactionIndex"`
-			TransactionHash  string `json:"transactionHash"`
-			LogIndex         string `json:"logIndex"`
+			TransactionIndex string   `json:"transactionIndex"`
+			TransactionHash  string   `json:"transactionHash"`
+			LogIndex         string   `json:"logIndex"`
+			Data             string   `json:"data"`
+			Topics           []string `json:"topics"`
 		}
-		json.Unmarshal(logsData, &logs)
+		if err := json.Unmarshal(logsData, &logs); err != nil {
+			return fmt.Errorf("parse eth_getLogs token %s block %d: %w", tokenAddr, height, err)
+		}
 
 		for _, log := range logs {
+			// A01: a token transfer from one of the vault's own addresses (a
+			// migration sweep) is not a deposit; the bridge refuses it.
+			if len(log.Topics) > 1 && len(log.Topics[1]) >= 40 && isVault["0x"+strings.ToLower(log.Topics[1][len(log.Topics[1])-40:])] {
+				continue
+			}
 			// W4-A CRIT #14 + F2 hardening: the contract reader expects the
 			// PER-RECEIPT log position (0..N-1 within the receipt's own logs
 			// list), but eth_getLogs returns the BLOCK-LEVEL logIndex.
@@ -1114,15 +1792,11 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 			// block-level index gives each deposit a distinct per-receipt
 			// position.
 			if log.LogIndex == "" {
-				slog.Warn("eth_getLogs returned a log with no logIndex (non-standard RPC); skipping deposit",
-					"tx", log.TransactionHash, "token", tokenAddr)
-				continue
+				return fmt.Errorf("eth_getLogs returned a log with no logIndex (non-standard RPC), tx %s token %s", log.TransactionHash, tokenAddr)
 			}
 			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
 			if lookupErr != nil {
-				slog.Warn("CRIT #14: per-receipt logIndex lookup failed; skipping deposit",
-					"tx", log.TransactionHash, "token", tokenAddr, "err", lookupErr)
-				continue
+				return fmt.Errorf("CRIT #14: per-receipt logIndex lookup, tx %s token %s: %w", log.TransactionHash, tokenAddr, lookupErr)
 			}
 			result.Deposits = append(result.Deposits, detectedDeposit{
 				BlockHeight:  height,
@@ -1131,11 +1805,28 @@ func scanBlock(rpc *ethRPC, height uint64, vaultAddr string, tokens map[string]s
 				TxHash:       log.TransactionHash,
 				DepositType:  "erc20",
 				TokenAddress: tokenAddr,
+				Amount:       new(big.Int).SetBytes(hexToBytes(log.Data)),
 			})
 		}
 	}
 
-	return result, nil
+	// RP-7: MagiDeposit deposits. The token Transfer that paid one is credited
+	// through its Deposit log; the bridge refuses it as a plain ERC-20 deposit.
+	if dc := depositContractAddress(vaultLower); dc != "" {
+		deps, paid, err := scanContractDeposits(rpc, height, dc, vaultLower)
+		if err != nil {
+			return err
+		}
+		kept := result.Deposits[:0]
+		for _, d := range result.Deposits {
+			if d.DepositType == "erc20" && paid[strings.ToLower(d.TxHash)+"#"+strconv.Itoa(d.LogIndex)] {
+				continue
+			}
+			kept = append(kept, d)
+		}
+		result.Deposits = append(kept, deps...)
+	}
+	return nil
 }
 
 // lookupPerReceiptLogIndex resolves the per-receipt logIndex (0..N-1 within
@@ -1186,8 +1877,10 @@ func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic s
 	return -1, fmt.Errorf("log with block-level index %d not found in receipt %s for token %s", blockLogIndex, txHash, tokenAddr)
 }
 
-// buildMapPayload constructs the JSON for a "map" contract call.
-func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]byte) json.RawMessage {
+// buildMapPayload constructs the JSON for a "map" contract call from a
+// proven trie leaf (the transaction for an ETH deposit, the receipt for an
+// ERC-20 deposit) and its proof nodes.
+func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes, receiptNodes [][]byte) json.RawMessage {
 	proofHex := ""
 	for _, node := range proofNodes {
 		proofHex += hex.EncodeToString(node)
@@ -1196,13 +1889,16 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 	txData := map[string]interface{}{
 		"block_height":     deposit.BlockHeight,
 		"tx_index":         deposit.TxIndex,
-		"raw_hex":          hex.EncodeToString(receiptRLP),
+		"raw_hex":          hex.EncodeToString(leaf),
 		"merkle_proof_hex": proofHex,
 		"deposit_type":     deposit.DepositType,
 	}
 	if deposit.DepositType == "erc20" {
 		txData["log_index"] = deposit.LogIndex
 		txData["token_address"] = deposit.TokenAddress
+	}
+	if receiptNodes != nil { // FAILDEP-1: base64, the receipt is the leaf
+		txData["receipt_proof"] = base64.StdEncoding.EncodeToString(bytes.Join(receiptNodes, nil))
 	}
 
 	payload := map[string]interface{}{
@@ -1231,15 +1927,15 @@ func buildMapPayload(deposit detectedDeposit, receiptRLP []byte, proofNodes [][]
 // entirely absent from the bot struct (the contract ecrecovers confirmSpend
 // against it). Both are now present.
 type PendingSpend struct {
-	Nonce         uint64 `json:"nonce"`
-	Amount        int64  `json:"amount"`
-	From          string `json:"from"`
-	To            string `json:"to"`
-	Asset         string `json:"asset"`
-	UnsignedTxHex string `json:"unsigned_tx_hex"`
-	BlockHeight   uint64 `json:"block_height"`
-	VaultAtQueue  string `json:"vault_at_queue"`
-	TokenAddress  string `json:"token_address,omitempty"`
+	Nonce         uint64   `json:"nonce"`
+	Amount        *big.Int `json:"amount"` // wei; the contract stores a big.Int
+	From          string   `json:"from"`
+	To            string   `json:"to"`
+	Asset         string   `json:"asset"`
+	UnsignedTxHex string   `json:"unsigned_tx_hex"`
+	BlockHeight   uint64   `json:"block_height"`
+	VaultAtQueue  string   `json:"vault_at_queue"`
+	TokenAddress  string   `json:"token_address,omitempty"`
 }
 
 // parsePendingSpend decodes the contract's JSON-encoded PendingSpend (H-F1).
@@ -1254,7 +1950,7 @@ func parsePendingSpend(nonce uint64, raw string) *PendingSpend {
 	// The contract keys the entry by nonce; trust the caller's nonce over any
 	// in-band value (mirrors contract GetPendingSpend which sets ps.Nonce=nonce).
 	ps.Nonce = nonce
-	if ps.Amount <= 0 {
+	if ps.Amount == nil || ps.Amount.Sign() <= 0 {
 		return nil
 	}
 	if ps.UnsignedTxHex == "" {
@@ -1418,6 +2114,27 @@ func computeSighash(unsignedTxHex string) (string, error) {
 	return hex.EncodeToString(hash), nil
 }
 
+// signedTxSigns reports whether signedHex (attachSignatureToTx's output) is
+// unsignedHex with a signature attached: the signed list's items are the
+// unsigned list's followed by v, r and s, so its content starts with the
+// unsigned content.
+func signedTxSigns(signedHex, unsignedHex string) bool {
+	content := func(h string) ([]byte, bool) {
+		b, err := hex.DecodeString(strings.TrimPrefix(h, "0x"))
+		if err != nil || len(b) < 2 || b[0] != 0x02 {
+			return nil, false
+		}
+		start, n, err := decodeRLPListHeader(b[1:])
+		if err != nil || start+n > len(b)-1 {
+			return nil, false
+		}
+		return b[1+start : 1+start+n], true
+	}
+	sc, ok1 := content(signedHex)
+	uc, ok2 := content(unsignedHex)
+	return ok1 && ok2 && len(sc) > len(uc) && bytes.Equal(sc[:len(uc)], uc)
+}
+
 // ---------------------------------------------------------------------------
 // Minimal RLP helpers — just enough for signature attachment.
 // ---------------------------------------------------------------------------
@@ -1545,124 +2262,255 @@ type receiptForProof struct {
 // nested {tx_data:{block_height,tx_index,raw_hex,merkle_proof_hex}} (the DEPOSIT
 // envelope), which the flat intent-bound confirmSpend ABI ignores entirely —
 // every field decoded zero → confirmSpend ALWAYS reverted on the intent gate.
-// The contract verifies BOTH a transactions-trie proof (tx_hex + tx_proof_hex
-// against header.TransactionsRoot) AND a receipts-trie proof (receipt_hex +
-// receipt_proof_hex against header.ReceiptsRoot) for the SAME tx_index, plus the
-// 4 intent_* fields (verified == PendingSpend BEFORE any proof work, HIGH #13).
+// The contract verifies BOTH a transactions-trie proof (tx_proof against
+// header.TransactionsRoot) AND a receipts-trie proof (receipt_proof against
+// header.ReceiptsRoot) for the SAME tx_index, plus the 4 intent_* fields
+// (verified == PendingSpend BEFORE any proof work, HIGH #13).
+//
+// EVM-T1: the proofs are base64 and the tx and receipt are not sent on their
+// own (the contract takes them from the proven leaves). The hex payload with
+// both leaves repeated went over the node's 8,192-byte contract-payload cap for
+// a withdrawal mined late in a large block, and then no withdrawal could settle.
 type confirmSpendRequest struct {
-	BlockHeight     uint64 `json:"block_height"`
-	TxIndex         uint64 `json:"tx_index"`
-	TxHex           string `json:"tx_hex"`
-	TxProofHex      string `json:"tx_proof_hex"`
-	ReceiptHex      string `json:"receipt_hex"`
-	ReceiptProofHex string `json:"receipt_proof_hex"`
-	IntentNonce     uint64 `json:"intent_nonce"`
-	IntentTo        string `json:"intent_to"`
-	IntentAmount    int64  `json:"intent_amount"`
-	IntentAsset     string `json:"intent_asset"`
+	BlockHeight  uint64 `json:"block_height"`
+	TxIndex      uint64 `json:"tx_index"`
+	TxProof      string `json:"tx_proof"`      // base64 (standard, padded): concatenated tx-trie nodes
+	ReceiptProof string `json:"receipt_proof"` // base64 (standard, padded): concatenated receipt-trie nodes
+	IntentNonce  uint64 `json:"intent_nonce"`
+	IntentTo     string `json:"intent_to"`
+	IntentAmount string `json:"intent_amount"` // decimal wei; the contract decodes it as a string
+	IntentAsset  string `json:"intent_asset"`
 }
 
-// buildConfirmSpendPayload assembles the flat 10-field ConfirmSpendRequest
+// buildConfirmSpendPayload assembles the flat 8-field ConfirmSpendRequest
 // (H-F2). It builds a transactions-trie proof and a receipts-trie proof for the
 // withdrawal tx at txIndex, and carries the intent fields from the PendingSpend
 // the bot already parsed (ps). The contract uses the same tx_index as the trie
-// key for BOTH proofs (handlers.go:492,593), so a single index drives both legs.
-//
-// All proof hex is BARE (no 0x prefix): the contract decodes via Go's
-// encoding/hex which rejects a 0x prefix (proof.go / handlers.go hex.DecodeString).
-func buildConfirmSpendPayload(rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
+// key for BOTH proofs, so a single index drives both legs.
+func buildConfirmSpendPayload(ctx context.Context, rpc *ethRPC, txHash string, blockHeight uint64, txIndex int, ps *PendingSpend) (json.RawMessage, error) {
 	if ps == nil {
 		return nil, fmt.Errorf("confirmSpend: nil pending spend (intent fields unavailable)")
 	}
-
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, blockHeight))
+	bp, err := fetchBlockProofs(ctx, rpc, blockHeight, true)
 	if err != nil {
-		return nil, fmt.Errorf("fetch block %d for confirmSpend: %w", blockHeight, err)
+		return nil, fmt.Errorf("confirmSpend: %w", err)
+	}
+	if txIndex < 0 || txIndex >= len(bp.hashes) {
+		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(bp.hashes))
 	}
 
+	// --- Transactions-trie leg: tx_proof (its leaf is the raw typed tx RLP).
+	// Mirrors the deposit path (buildMapPayloadFrom): the raw tx bytes
+	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
+	// so the reconstructed root matches header.TransactionsRoot. The contract
+	// parses the proven leaf as the withdrawal tx.
+	_, txProofNodes, err := bp.txProof(txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend: %w", err)
+	}
+	// --- Receipts-trie leg: receipt_proof (its leaf is the receipt).
+	_, rcptProofNodes, err := bp.receiptProof(txIndex)
+	if err != nil {
+		return nil, fmt.Errorf("confirmSpend: %w", err)
+	}
+
+	return confirmSpendPayload(blockHeight, txIndex, txProofNodes, rcptProofNodes, ps)
+}
+
+// blockProofs is what proving a block's txs and receipts takes: its tx hashes
+// and, in block order, the raw txs and the consensus-encoded receipts.
+//
+// TICKSTALL-1: this was fetched again for every deposit of a block and every
+// confirmSpend, one serial RPC call per tx (2N+1 calls for an ETH deposit in
+// an N-tx block: 601 calls, 12 s at 20 ms a call, for 300 txs), and the calls
+// ignored the tick's deadline. A block with a few deposits outlasted the 60 s
+// tick, was retried from its first deposit and never finished, and every
+// later step of the tick ran on the expired context. It is now fetched once
+// per block, proofFetchWorkers calls at a time, within the caller's context.
+type blockProofs struct {
+	hashes   []string
+	raw      [][]byte // nil unless fetched with raw
+	receipts [][]byte
+}
+
+// proofFetchWorkers bounds one block's concurrent RPC calls, like the scan's
+// worker pool (MED-47).
+const proofFetchWorkers = 8
+
+// fetchBlockProofs fetches block height's tx hashes and receipts, and its raw
+// txs when raw is set (an ETH deposit or a confirmSpend proves the tx too).
+func fetchBlockProofs(ctx context.Context, rpc *ethRPC, height uint64, raw bool) (*blockProofs, error) {
+	blockData, err := rpc.callCtx(ctx, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, height))
+	if err != nil {
+		return nil, fmt.Errorf("fetch block %d: %w", height, err)
+	}
 	var block struct {
 		Transactions []string `json:"transactions"`
 	}
 	if err := json.Unmarshal(blockData, &block); err != nil {
-		return nil, fmt.Errorf("parse block %d: %w", blockHeight, err)
+		return nil, fmt.Errorf("parse block %d: %w", height, err)
 	}
-	if txIndex < 0 || txIndex >= len(block.Transactions) {
-		return nil, fmt.Errorf("confirmSpend: txIndex %d out of range (block has %d txs)", txIndex, len(block.Transactions))
-	}
+	bp := &blockProofs{hashes: block.Transactions}
+	return bp, bp.fetch(ctx, rpc, raw)
+}
 
-	// --- Transactions-trie leg: tx_hex (raw typed tx RLP) + tx_proof_hex.
-	// Mirrors the deposit path (buildMapPayloadFromRPC): the raw tx bytes
-	// returned by eth_getRawTransactionByHash are exactly the trie leaf value,
-	// so the reconstructed root matches header.TransactionsRoot. The contract
-	// compares the proven leaf byte-for-byte against tx_hex.
-	rawTxs := make([][]byte, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
+// fetch fills bp's receipts, and its raw txs when raw is set, from its hashes.
+func (bp *blockProofs) fetch(ctx context.Context, rpc *ethRPC, raw bool) error {
+	n := len(bp.hashes)
+	bp.receipts = make([][]byte, n)
+	if raw {
+		bp.raw = make([][]byte, n)
+	}
+	return forEachParallel(ctx, n, proofFetchWorkers, func(i int) error {
+		hash := fmt.Sprintf(`"%s"`, bp.hashes[i])
+		rData, err := callRetry(ctx, rpc, "eth_getTransactionReceipt", hash)
 		if err != nil {
-			return nil, fmt.Errorf("fetch raw tx %d/%d for confirmSpend: %w", i, len(block.Transactions), err)
+			return fmt.Errorf("fetch receipt %d/%d: %w", i, n, err)
+		}
+		var r receiptForProof
+		if err := json.Unmarshal(rData, &r); err != nil {
+			return fmt.Errorf("parse receipt %d: %w", i, err)
+		}
+		bp.receipts[i] = encodeReceiptRLP(&r)
+		if !raw {
+			return nil
+		}
+		tData, err := callRetry(ctx, rpc, "eth_getRawTransactionByHash", hash)
+		if err != nil {
+			return fmt.Errorf("fetch raw tx %d/%d: %w", i, n, err)
 		}
 		var rawHex string
-		if err := json.Unmarshal(rData, &rawHex); err != nil {
-			return nil, fmt.Errorf("parse raw tx %d: %w", i, err)
+		if err := json.Unmarshal(tData, &rawHex); err != nil {
+			return fmt.Errorf("parse raw tx %d: %w", i, err)
 		}
-		rawTxs[i] = hexToBytes(rawHex)
-		if rawTxs[i] == nil {
-			return nil, fmt.Errorf("confirmSpend: raw tx %d decoded to nil (RPC returned %q)", i, rawHex)
+		if bp.raw[i] = hexToBytes(rawHex); bp.raw[i] == nil {
+			return fmt.Errorf("raw tx %d decoded to nil (RPC returned %q)", i, rawHex)
 		}
-	}
-	txKeys := make([][]byte, len(rawTxs))
-	for i := range txKeys {
-		txKeys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, txProofNodes, txTargetRLP := buildMPTProof(txKeys, rawTxs, txIndex)
-	if txProofNodes == nil {
-		return nil, fmt.Errorf("confirmSpend tx proof construction failed: txIndex %d / %d txs", txIndex, len(rawTxs))
-	}
+		return nil
+	})
+}
 
-	// --- Receipts-trie leg: receipt_hex (RLP receipt) + receipt_proof_hex.
-	allReceipts := make([]receiptForProof, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.getReceipt(hash)
-		if err != nil {
-			return nil, fmt.Errorf("fetch receipt %d/%d: %w", i, len(block.Transactions), err)
-		}
-		if err := json.Unmarshal(rData, &allReceipts[i]); err != nil {
-			return nil, fmt.Errorf("parse receipt %d: %w", i, err)
-		}
+// txProof is the tx at index i (the trie leaf) and its proof against the
+// block's TransactionsRoot.
+func (bp *blockProofs) txProof(i int) ([]byte, [][]byte, error) {
+	if bp.raw == nil {
+		return nil, nil, errors.New("tx proof: raw txs not fetched")
 	}
-	encodedReceipts := make([][]byte, len(allReceipts))
-	for i := range allReceipts {
-		encodedReceipts[i] = encodeReceiptRLP(&allReceipts[i])
-	}
-	rcptKeys := make([][]byte, len(encodedReceipts))
-	for i := range rcptKeys {
-		rcptKeys[i] = rlpEncodeUint64(uint64(i))
-	}
-	_, rcptProofNodes, rcptTargetRLP := buildMPTProof(rcptKeys, encodedReceipts, txIndex)
-	if rcptProofNodes == nil {
-		return nil, fmt.Errorf("confirmSpend receipt proof construction failed: txIndex %d / %d receipts", txIndex, len(encodedReceipts))
-	}
+	return trieProof("tx", bp.raw, i)
+}
 
-	txProofHex := ""
-	for _, node := range txProofNodes {
-		txProofHex += hex.EncodeToString(node)
-	}
-	rcptProofHex := ""
-	for _, node := range rcptProofNodes {
-		rcptProofHex += hex.EncodeToString(node)
-	}
+// receiptProof is the receipt at index i (the trie leaf) and its proof
+// against the block's ReceiptsRoot.
+func (bp *blockProofs) receiptProof(i int) ([]byte, [][]byte, error) {
+	return trieProof("receipt", bp.receipts, i)
+}
 
+func trieProof(what string, values [][]byte, i int) ([]byte, [][]byte, error) {
+	if i < 0 || i >= len(values) {
+		return nil, nil, fmt.Errorf("txIndex %d out of range (block has %d txs)", i, len(values))
+	}
+	keys := make([][]byte, len(values))
+	for k := range keys {
+		keys[k] = rlpEncodeUint64(uint64(k))
+	}
+	_, nodes, leaf := buildMPTProof(keys, values, i)
+	if nodes == nil {
+		return nil, nil, fmt.Errorf("%s proof construction failed: txIndex %d / %d txs", what, i, len(values))
+	}
+	return leaf, nodes, nil
+}
+
+// callRetry is callCtx retried a few times after a short pause: one block's
+// proof is hundreds of calls made proofFetchWorkers at a time, and one call a
+// rate-limited RPC refuses (HTTP 429) or drops must not fail the whole fetch.
+func callRetry(ctx context.Context, rpc *ethRPC, method, params string) (json.RawMessage, error) {
+	var err error
+	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(callRetryPauses[attempt-1]):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		var res json.RawMessage
+		if res, err = rpc.callCtx(ctx, method, params); err == nil || ctx.Err() != nil {
+			return res, err
+		}
+	}
+	return nil, err
+}
+
+// callRetryPauses: the pauses before callRetry's retries.
+var callRetryPauses = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+
+// forEachParallel runs f(0..n-1) on up to workers goroutines and returns the
+// first error, or ctx's once it ends; no new f starts after either. A panic
+// in f (hostile RPC data) is that index's error: recover does not cross
+// goroutines, so it would otherwise kill the bot (C-ER1).
+func forEachParallel(ctx context.Context, n, workers int, f func(i int) error) error {
+	if workers > n {
+		workers = n
+	}
+	var (
+		next  atomic.Int64
+		mu    sync.Mutex
+		first error
+		wg    sync.WaitGroup
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if first == nil {
+			first = err
+		}
+		mu.Unlock()
+	}
+	failed := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return first != nil
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !failed() && ctx.Err() == nil {
+				i := int(next.Add(1) - 1)
+				if i >= n {
+					return
+				}
+				if err := func() (err error) {
+					defer func() {
+						if r := recover(); r != nil {
+							err = fmt.Errorf("panic at index %d: %v", i, r)
+						}
+					}()
+					return f(i)
+				}(); err != nil {
+					fail(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if first != nil {
+		return first
+	}
+	return ctx.Err()
+}
+
+// confirmSpendPayload encodes a ConfirmSpendRequest from the two proofs' nodes.
+func confirmSpendPayload(blockHeight uint64, txIndex int, txProofNodes, rcptProofNodes [][]byte, ps *PendingSpend) (json.RawMessage, error) {
 	req := confirmSpendRequest{
-		BlockHeight:     blockHeight,
-		TxIndex:         uint64(txIndex),
-		TxHex:           hex.EncodeToString(txTargetRLP),
-		TxProofHex:      txProofHex,
-		ReceiptHex:      hex.EncodeToString(rcptTargetRLP),
-		ReceiptProofHex: rcptProofHex,
-		IntentNonce:     ps.Nonce,
-		IntentTo:        ps.To,
-		IntentAmount:    ps.Amount,
-		IntentAsset:     ps.Asset,
+		BlockHeight:  blockHeight,
+		TxIndex:      uint64(txIndex),
+		TxProof:      base64.StdEncoding.EncodeToString(bytes.Join(txProofNodes, nil)),
+		ReceiptProof: base64.StdEncoding.EncodeToString(bytes.Join(rcptProofNodes, nil)),
+		IntentNonce:  ps.Nonce,
+		IntentTo:     ps.To,
+		IntentAmount: ps.Amount.String(),
+		IntentAsset:  ps.Asset,
 	}
 
 	data, err := json.Marshal(req)
@@ -2032,13 +2880,30 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	// EVM contract creates key with ID "primary" (BTC contract uses "main")
 	tssKeyID := cfg.ContractID + "-primary"
 
-	// MED-4 (CHAIN-V2-14): cross-validate that the TSS key's derived ETH
-	// address matches the configured vault. A mismatch means every withdrawal
-	// would be signed by a key the vault does not recognize → confirmSpend
-	// rejects it → funds stuck. This is a non-fatal startup WARN: the pubkey
-	// encoding is not guaranteed, so we never brick a working bot on a parse
-	// failure — we only alarm on a confidently-derived mismatch.
-	validateTssVaultBinding(ctx, gql, tssKeyID, cfg.VaultAddress)
+	checkRelayerRegistered(ctx, gql, cfg.ContractID, did.String())
+
+	// A18: the contract credits only deposits to its TSS key's address, so that
+	// address is the vault. MED-4 used to only log a mismatch with
+	// VAULT_ADDRESS, and the bot then scanned for deposits the contract
+	// refuses. Wait for keygen, and refuse a VAULT_ADDRESS that differs.
+	vault, err := waitForTssVault(ctx, gql, submitter, cfg.ContractID, tssKeyID, cfg.VaultAddress, cfg.PollInterval)
+	if err != nil {
+		return err
+	}
+	cfg.VaultAddress = vault
+
+	if err := checkChainID(ctx, rpc, gql, cfg.ContractID); err != nil {
+		return err
+	}
+	if err := startBlock(ctx, gql, cp, cfg); err != nil {
+		return err
+	}
+	slog.Info("MagiDeposit address (RP-7)", "address", depositContractAddress(vault))
+
+	health := newBotHealth(cfg.PollInterval)
+	if addr := os.Getenv("HEALTH_ADDR"); addr != "" {
+		go serveHealth(addr, health)
+	}
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
 
@@ -2063,6 +2928,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		if pErr == nil && paused {
 			slog.Warn("contract is paused — skipping tick and backing off",
 				"backoff", pausedBackoff.String())
+			health.recordTick(time.Now(), errors.New("contract is paused"), cp)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -2080,12 +2946,40 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 		loopCtx, loopCancel := context.WithTimeout(ctx, 60*time.Second)
 
+		// A01: follow the bridge's vault generations. The active generation's
+		// address and key serve withdrawals; every fund-holding generation's
+		// address is scanned for deposits.
+		var view vaultView
+		v, vErr := fetchVaultView(loopCtx, gql, cfg.ContractID)
+		if vErr != nil {
+			slog.Warn("A01: vault registry unreadable; rotation ops wait", "err", vErr)
+		}
+		if vErr == nil && v.Registry && v.Active != nil && v.Active.Address != "" {
+			view = v
+			if !strings.EqualFold(cfg.VaultAddress, v.Active.Address) {
+				slog.Info("vault generation is active", "generation", v.Active.Gen, "vault", v.Active.Address, "key", v.Active.KeyID)
+			}
+			cfg.VaultAddress, cfg.ActiveGen, cfg.Vaults, tssKeyID = v.Active.Address, v.Active.Gen, v.fundHolding(), v.Active.KeyID
+			cfg.VaultGens = v.Gens
+		}
+
 		err := runOnceSafe(loopCtx, rpc, gql, submitter, cp, cfg, tssKeyID)
 		if err != nil {
 			slog.Error("loop tick failed", "err", err)
 		}
+		driveVaultRotationSafe(loopCtx, rpc, gql, submitter, cp, cfg, view)
 
 		loopCancel()
+
+		health.recordTick(time.Now(), err, cp)
+		if health.due(time.Now()) {
+			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+			cp.mu.Lock()
+			wantSince := cp.WantProofSince
+			cp.mu.Unlock()
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, cfg.healthKeys(tssKeyID), did.String(), cfg.scanVaults(), cfg.Tokens, wantSince)
+			hcancel()
+		}
 
 		cp.save(cfg.CheckpointFile)
 
@@ -2119,43 +3013,180 @@ func runOnceSafe(
 	return runOnce(ctx, rpc, gql, submitter, cp, cfg, tssKeyID)
 }
 
-// validateTssVaultBinding fetches the TSS key's aggregated public key and
-// checks that the ETH address it derives to equals the configured vault.
-// MED-4 (CHAIN-V2-14). Non-fatal: logs CRITICAL on a confident mismatch,
-// DEBUG when the pubkey cannot be parsed (unknown encoding) so a working bot
-// is never bricked by this check.
-func validateTssVaultBinding(ctx context.Context, gql *vscGraphQL, tssKeyID, vault string) {
-	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	data, err := gql.query(qctx,
-		`query GetKey($id: String!){ getTssKey(keyId: $id){ public_key } }`,
+// fetchTssVault returns the ETH address of the bridge's TSS key when the key
+// holds one the way the contract reads it (mapping.TssVaultAddress): active,
+// or deprecated and renewable. ok=false: no key yet (before keygen), a retired
+// key, or a public key that is not a secp256k1 point.
+func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault, pubHex string, active, ok bool, err error) {
+	data, err := gql.query(ctx,
+		`query GetKey($id: String!){ getTssKey(keyId: $id){ status public_key } }`,
 		map[string]interface{}{"id": tssKeyID},
 	)
 	if err != nil {
-		slog.Warn("MED-4: could not fetch TSS key to validate vault binding (continuing)", "err", err)
-		return
+		return "", "", false, false, err
 	}
 	var parsed struct {
 		GetTssKey *struct {
+			Status    string `json:"status"`
 			PublicKey string `json:"public_key"`
 		} `json:"getTssKey"`
 	}
-	if err := json.Unmarshal(data, &parsed); err != nil || parsed.GetTssKey == nil {
-		slog.Warn("MED-4: TSS key not found / undecodable — skipping vault binding check", "keyId", tssKeyID)
-		return
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", "", false, false, err
 	}
-	addr, ok := tssPubKeyToAddress(parsed.GetTssKey.PublicKey)
-	if !ok {
-		slog.Debug("MED-4: TSS public_key encoding not recognized — skipping vault binding check (non-fatal)",
-			"keyId", tssKeyID)
-		return
+	k := parsed.GetTssKey
+	if k == nil || (k.Status != "active" && k.Status != "deprecated") {
+		return "", "", false, false, nil
 	}
-	if !strings.EqualFold(addr, vault) {
-		slog.Error("MED-4 CRITICAL: TSS-derived ETH address does NOT match configured VAULT_ADDRESS — withdrawals will be unconfirmable; verify configuration before funds move",
-			"keyId", tssKeyID, "derived", addr, "vault", vault)
-		return
+	addr, ok := tssPubKeyToAddress(k.PublicKey)
+	return addr, strings.ToLower(strings.TrimPrefix(k.PublicKey, "0x")), k.Status == "active", ok, nil
+}
+
+// waitForTssVault blocks until the bridge's TSS key exists and the contract
+// treats its address as the vault, and returns that address. A configured
+// VAULT_ADDRESS that is a different address is an error: the bot would watch an
+// address the contract does not credit.
+//
+// E23: the contract refuses deposits to the key's address until the key has
+// signed the vault check message and someone has shown it the signature
+// (account-mapping mapping/vaultcheck.go). While it waits the bot does both
+// (driveVaultCheck), so a fresh bridge goes live on its own.
+func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, configured string, poll time.Duration) (string, error) {
+	var vc vaultCheckTimes
+	for {
+		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		vault, pub, active, ok, err := fetchTssVault(qctx, gql, tssKeyID)
+		cancel()
+		switch {
+		case err != nil:
+			slog.Warn("A18: could not fetch the TSS key (retrying)", "keyId", tssKeyID, "err", err)
+		case !ok:
+			slog.Info("A18: waiting for the bridge's TSS key", "keyId", tssKeyID)
+		case configured != "" && !strings.EqualFold(vault, configured):
+			return "", fmt.Errorf("VAULT_ADDRESS %s is not the bridge's TSS key address %s; the contract credits only deposits to the key's address", configured, vault)
+		default:
+			dctx, dcancel := context.WithTimeout(ctx, time.Minute)
+			live, derr := driveVaultCheck(dctx, gql, sub, contractID, tssKeyID, vault, pub, active, &vc)
+			dcancel()
+			if live {
+				slog.Info("A18: vault is the TSS key's address", "keyId", tssKeyID, "vault", vault)
+				return vault, nil
+			}
+			if derr != nil {
+				slog.Warn("E23: vault check step failed (retrying)", "vault", vault, "err", derr)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(poll):
+		}
 	}
-	slog.Info("MED-4: TSS-derived ETH address matches configured vault", "vault", vault)
+}
+
+// vaultCheckRetry is how long the bot waits for the TSS group's check
+// signature before asking for it again (the node keeps one request per
+// message, so a repeat only costs the call's RC).
+const vaultCheckRetry = 10 * time.Minute
+
+// vaultAttestRetry: after submitting attestVault, how long the bot waits for
+// the contract to show the key verified before attesting again (B-R6: it
+// attested on every poll until the first call landed).
+const vaultAttestRetry = 2 * time.Minute
+
+// vaultCheckTimes: when driveVaultCheck last asked for the check signature
+// (or warned about a deprecated key) and last attested it.
+type vaultCheckTimes struct {
+	requested, attested time.Time
+}
+
+// vaultCheckDigest mirrors account-mapping mapping.VaultCheckDigest: the
+// personal_sign digest of the text naming the contract, its L1 chain and the key.
+func vaultCheckDigest(contractID string, chainID uint64, pubHex string) []byte {
+	msg := "magi evm vault check-signature v1:" + contractID + ":" + strconv.FormatUint(chainID, 10) + ":" + pubHex
+	return ethCrypto.Keccak256([]byte("\x19Ethereum Signed Message:\n" + strconv.Itoa(len(msg)) + msg))
+}
+
+// driveVaultCheck reports whether the contract has verified the key pub. If
+// not, it attests the key's check signature once the TSS group has produced
+// it, or asks for one (again after vaultCheckRetry).
+func driveVaultCheck(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, vault, pub string, active bool, vc *vaultCheckTimes) (bool, error) {
+	st, err := gql.fetchContractState(ctx, contractID, []string{"vaultok", "chainid"})
+	if err != nil {
+		return false, err
+	}
+	if st["vaultok"] != "" && strings.EqualFold(st["vaultok"], pub) {
+		return true, nil
+	}
+	if !active {
+		// B-R6: the contract takes requestVaultCheck and attestVault only for
+		// an active key, so for a deprecated one both calls fail on chain and
+		// only burn RC. Its vault was never verified: deposits stay refused
+		// until the key is renewed.
+		if time.Since(vc.requested) >= vaultCheckRetry {
+			slog.Warn("E23: the bridge's TSS key is deprecated and its vault was never verified; waiting for a renewed key",
+				"keyId", tssKeyID, "vault", vault)
+			vc.requested = time.Now()
+		}
+		return false, nil
+	}
+	chainID, _ := strconv.ParseUint(st["chainid"], 10, 64)
+	if chainID == 0 {
+		chainID = 1 // the contract's chainId() default
+	}
+	digest := hex.EncodeToString(vaultCheckDigest(contractID, chainID, pub))
+	sigs, err := gql.fetchTssSignatures(ctx, tssKeyID, []string{digest})
+	if err != nil {
+		return false, err
+	}
+	if sig, ok := sigs[digest]; ok {
+		if time.Since(vc.attested) < vaultAttestRetry {
+			return false, nil // the last attest has not landed yet
+		}
+		rsv, err := vaultCheckRSV(sig.Bytes, digest, vault)
+		if err != nil {
+			return false, err
+		}
+		payload, _ := json.Marshal(map[string]string{"signature": hex.EncodeToString(rsv)})
+		tx, err := sub.callWithRetry(ctx, contractID, "attestVault", payload, 3)
+		if err == nil {
+			vc.attested = time.Now()
+			slog.Info("E23: attested the vault key's check signature", "vault", vault, "tx", tx)
+		}
+		return false, err // live once the call lands; the next poll reads it
+	}
+	if time.Since(vc.requested) < vaultCheckRetry {
+		return false, nil
+	}
+	tx, err := sub.callWithRetry(ctx, contractID, "requestVaultCheck", json.RawMessage(`{}`), 3)
+	if err != nil {
+		return false, err
+	}
+	vc.requested = time.Now()
+	slog.Info("E23: asked the TSS key to sign the vault check message", "vault", vault, "tx", tx)
+	return false, nil
+}
+
+// vaultCheckRSV turns the TSS group's DER signature over digestHex into the
+// r||s||v attestVault takes: s low (the contract recovers strictly) and the v
+// that recovers vault.
+func vaultCheckRSV(der []byte, digestHex, vault string) ([]byte, error) {
+	r, s, err := parseDERSignature(der)
+	if err != nil {
+		return nil, err
+	}
+	n := ethCrypto.S256().Params().N
+	if sv := new(big.Int).SetBytes(s); sv.Cmp(new(big.Int).Rsh(n, 1)) > 0 {
+		s = sv.Sub(n, sv).FillBytes(make([]byte, 32))
+	}
+	digest, _ := hex.DecodeString(digestHex)
+	for v := byte(0); v < 2; v++ {
+		sig := append(append(append([]byte{}, r...), s...), v)
+		if pub, err := ethCrypto.SigToPub(digest, sig); err == nil && strings.EqualFold(ethCrypto.PubkeyToAddress(*pub).Hex(), vault) {
+			return sig, nil
+		}
+	}
+	return nil, errors.New("the TSS signature over the vault check message does not recover the vault")
 }
 
 // tssPubKeyToAddress derives the lowercase 0x ETH address from a hex-encoded
@@ -2202,39 +3233,32 @@ func runOnce(
 		return fmt.Errorf("get finalized block: %w", err)
 	}
 
-	if finalized <= cp.LastScannedBlock && len(cp.SentWithdrawals) == 0 {
-		return nil // nothing to do
-	}
-
 	// ---------------------------------------------------------------
-	// STEP 2: Check contract's last ingested block height.
-	// ---------------------------------------------------------------
-	contractHeight, err := fetchContractLastHeight(ctx, gql, cfg.ContractID)
-	if err != nil {
-		slog.Warn("couldn't fetch contract height, proceeding with deposits only up to finalized", "err", err)
-		contractHeight = finalized
-	}
-
-	// MED-48 (F-M22-MED-4): if the contract's ingested height is behind our
-	// checkpoint (e.g. the ZK verifier has stalled), the scan window below is
-	// empty and the bot would silently do no deposit work. Surface a WARN so
-	// the stall is observable instead of looking like a healthy idle bot.
-	if err == nil && contractHeight < cp.LastScannedBlock {
-		slog.Warn("contract ingested height is behind bot checkpoint — verifier may be stalled; no new deposits will be mapped this tick",
-			"contractHeight", contractHeight, "checkpoint", cp.LastScannedBlock)
-	}
-
-	// ---------------------------------------------------------------
-	// STEP 3: Scan new blocks for deposits
+	// STEP 2-3: Scan finalized blocks for deposits.
+	// RP-9: the verifier stores a header only for blocks the bridge uses, so
+	// the scan runs to the finalized block; a block's deposits are parked
+	// (WaitingDeposits) and mapped once its header is stored (handleHeaderNeeds
+	// asks for it). Blocks without deposits need no header.
+	// TICKSTALL-1: every deposit block is parked, also one whose header is
+	// already stored (it is mapped below in the same tick), so each block is
+	// scanned once: re-scanning an unfinished block every tick cost a receipt
+	// call per deposit and could use up the deposit phase before any mapping.
 	// ---------------------------------------------------------------
 	scanUpTo := finalized
-	if contractHeight < scanUpTo {
-		scanUpTo = contractHeight
-	}
 	const maxBlocksPerTick = 100
 	if scanUpTo > cp.LastScannedBlock+maxBlocksPerTick {
 		scanUpTo = cp.LastScannedBlock + maxBlocksPerTick
 	}
+
+	// TICKSTALL-1: scanning and mapping deposits get at most
+	// depositPhaseBudget of the tick, so the withdrawal, confirmation and
+	// header steps below always run with time left. A block not finished in
+	// time keeps its progress and continues next tick.
+	depCtx, depCancel := context.WithTimeout(ctx, depositPhaseBudget)
+	defer depCancel()
+	cp.mu.Lock()
+	cp.depositWork = false
+	cp.mu.Unlock()
 
 	// MED-47 (EVM-B-M7): scanBlock issues many serial RPC calls per block
 	// (1 eth_getBlockByNumber + N eth_getLogs + per-log receipt lookups). Done
@@ -2244,15 +3268,11 @@ func runOnce(
 	// PREFETCH the scan results concurrently with a bounded worker pool, then
 	// process them below in STRICT block order. The checkpoint-advancement and
 	// stop-at-first-failure semantics are unchanged — only the I/O is parallel.
-	scanResults := scanBlocksParallel(ctx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
+	scanResults := scanBlocksParallel(depCtx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
 
+	var tokenMins map[string]*big.Int
+	minsRead := false
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
 		sr, ok := scanResults[h]
 		if !ok || sr.err != nil {
 			if ok && sr.err != nil {
@@ -2260,67 +3280,42 @@ func runOnce(
 			}
 			break // stop scanning at the first gap/failure; retry next tick
 		}
-		result := sr.result
-
-		if len(result.Deposits) == 0 {
-			cp.mu.Lock()
-			cp.LastScannedBlock = h
-			cp.mu.Unlock()
-			continue
-		}
-
-		slog.Info("deposits detected", "block", h, "count", len(result.Deposits))
-
-		// ---------------------------------------------------------------
-		// STEP 4: Build proofs and submit map calls.
-		// If ANY deposit fails after retries, do NOT advance the checkpoint.
-		// The entire block will be retried next tick. Re-submissions of
-		// already-processed deposits are harmless — the L2 layer accepts
-		// them and the contract deduplicates via the observed block list.
-		// ---------------------------------------------------------------
-		blockFailed := false
-		for _, dep := range result.Deposits {
-			payload := buildMapPayloadFromRPC(ctx, rpc, dep, h)
-			if payload == nil {
-				slog.Error("failed to build map payload", "block", h, "tx", dep.TxHash)
-				blockFailed = true
-				continue
+		deps := sr.result.Deposits
+		if len(deps) > 0 {
+			if !minsRead {
+				tokenMins, minsRead = tokenDepositMins(depCtx, gql, cfg), true
 			}
-
-			if err := submitter.callWithRetry(ctx, cfg.ContractID, "map", payload, 3); err != nil {
-				slog.Error("map submission failed — block checkpoint will NOT advance",
-					"block", h, "tx", dep.TxHash, "err", err)
-				blockFailed = true
-			}
+			deps = creditable(deps, tokenMins) // DUST-1
 		}
-
-		if blockFailed {
-			cp.mu.Lock()
-			cp.BlockRetries[h]++
-			retries := cp.BlockRetries[h]
-			cp.mu.Unlock()
-
-			if retries >= blockRetryAlertThreshold {
-				slog.Error("CRITICAL: block has been failing for multiple ticks — manual intervention required",
-					"block", h,
-					"retries", retries,
-					"minutes_stuck", retries*int(cfg.PollInterval.Seconds())/60,
-				)
-			} else {
-				slog.Warn("one or more deposits failed in block, will retry next tick",
-					"block", h, "retries", retries)
-			}
-			break
+		if n := len(deps); n > 0 {
+			slog.Info("deposits detected", "block", h, "count", n)
 		}
-
 		cp.mu.Lock()
-		delete(cp.BlockRetries, h)
-		cp.mu.Unlock()
-
-		cp.mu.Lock()
+		if len(deps) > 0 {
+			if cp.WaitingDeposits == nil {
+				cp.WaitingDeposits = map[uint64][]detectedDeposit{}
+			}
+			cp.WaitingDeposits[h] = deps
+		}
 		cp.LastScannedBlock = h
 		cp.mu.Unlock()
 	}
+
+	// ---------------------------------------------------------------
+	// STEP 4: Build proofs and submit map calls for the parked blocks whose
+	// header is stored, oldest first. A block whose map fails, or that runs
+	// out of the deposit phase's time, stays parked and continues next tick,
+	// skipping the deposits whose maps were already submitted (TICKSTALL-1). A
+	// re-submission of a processed deposit is harmless — the contract
+	// deduplicates via the observed block list.
+	// ---------------------------------------------------------------
+	mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// B4: resolve the map calls submitted on earlier ticks.
+	resolvePendingMaps(ctx, gql, cp)
 
 	// ---------------------------------------------------------------
 	// STEP 5: Handle withdrawals
@@ -2332,7 +3327,170 @@ func runOnce(
 	// ---------------------------------------------------------------
 	handleConfirmations(ctx, rpc, gql, submitter, cp, cfg)
 
+	// RP-11: issue queued withdrawals into free slots.
+	drainIfQueued(ctx, gql, submitter, cfg)
+
+	// RP-9: store the headers deposits and confirmations wait on; tell the
+	// operator when a proof is needed.
+	handleHeaderNeeds(ctx, rpc, gql, submitter, cp, cfg)
+
 	return nil
+}
+
+// mapDeposits submits a map for each deposit of block h. It reports whether
+// any failed (the block is then retried next tick; re-sending one already
+// processed is harmless, the bridge deduplicates).
+func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, h uint64, deps []detectedDeposit) bool {
+	// TICKSTALL-1: the block's proof material is fetched once for all its
+	// deposits, and a deposit whose map was submitted on an earlier tick of an
+	// unfinished block is not sent again, so a block that takes several ticks
+	// still finishes.
+	cp.mu.Lock()
+	done := map[string]bool{}
+	for _, k := range cp.BlockMapped[h] {
+		done[k] = true
+	}
+	othersWorked := cp.depositWork
+	cp.mu.Unlock()
+	needRaw := false
+	for _, dep := range deps {
+		if !done[depositKey(dep)] && dep.DepositType == "eth" {
+			needRaw = true
+		}
+	}
+	var bp *blockProofs
+	blockFailed, progressed, noTime := false, false, false
+	for _, dep := range deps {
+		if done[depositKey(dep)] {
+			continue
+		}
+		if ctx.Err() != nil {
+			// Out of time for deposits this tick: the rest wait for the next.
+			// A block given no time at all has not failed.
+			blockFailed, noTime = true, bp == nil && !progressed
+			break
+		}
+		if bp == nil {
+			var err error
+			if bp, err = fetchBlockProofs(ctx, rpc, h, needRaw); err != nil {
+				slog.Error("fetch block for proof", "block", h, "err", err)
+				blockFailed = true
+				break
+			}
+		}
+		payload := buildMapPayloadFrom(bp, dep)
+		if payload == nil {
+			slog.Error("failed to build map payload", "block", h, "tx", dep.TxHash)
+			blockFailed = true
+			continue
+		}
+		// B6: a map payload over the node's contract-payload cap can never
+		// be submitted, on any retry. Anyone can make one (a 1-wei deposit
+		// with ~2 KB of calldata), so holding the block for it would stop
+		// every later deposit. Dead-letter it and move on.
+		if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
+			cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("map payload is %d bytes as the node counts it, over the node's %d-byte contract-payload cap", n, params.MAX_CONTRACT_PAYLOAD_SIZE))
+			markMapped(cp, h, dep)
+			continue
+		}
+
+		txID, err := submitter.callWithRetry(ctx, cfg.ContractID, "map", payload, 3)
+		if err != nil {
+			slog.Error("map submission failed — block checkpoint will NOT advance",
+				"block", h, "tx", dep.TxHash, "err", err)
+			blockFailed = true
+			continue
+		}
+		if txID != "" {
+			cp.mu.Lock()
+			cp.PendingMaps[txID] = PendingMap{Block: h, DepositTx: dep.TxHash, SubmittedAt: time.Now().Unix()}
+			cp.mu.Unlock()
+		}
+		markMapped(cp, h, dep)
+		progressed = true
+	}
+
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	if !blockFailed {
+		delete(cp.BlockRetries, h)
+		delete(cp.BlockMapped, h)
+		return false
+	}
+	if progressed {
+		// Unfinished but moving: not a stuck block.
+		delete(cp.BlockRetries, h)
+		slog.Info("block's deposits continue next tick", "block", h, "submitted", len(cp.BlockMapped[h]), "deposits", len(deps))
+		return true
+	}
+	if noTime || ctx.Err() != nil && othersWorked {
+		return true // out of time after other blocks' work this tick
+	}
+	cp.BlockRetries[h]++
+	retries := cp.BlockRetries[h]
+	if retries >= blockRetryAlertThreshold {
+		slog.Error("CRITICAL: block has been failing for multiple ticks — manual intervention required",
+			"block", h,
+			"retries", retries,
+			"minutes_stuck", retries*int(cfg.PollInterval.Seconds())/60,
+		)
+	} else {
+		slog.Warn("one or more deposits failed in block, will retry next tick",
+			"block", h, "retries", retries)
+	}
+	return true
+}
+
+// depositKey names a deposit within its block: its tx and, for a log-based
+// deposit, the log's position in the receipt (ETH deposits have -1).
+func depositKey(d detectedDeposit) string {
+	return strings.ToLower(d.TxHash) + "#" + strconv.Itoa(d.LogIndex)
+}
+
+// markMapped records that dep's map was submitted (or dead-lettered) while its
+// block h is unfinished (TICKSTALL-1).
+func markMapped(cp *Checkpoint, h uint64, dep detectedDeposit) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	if cp.BlockMapped == nil {
+		cp.BlockMapped = map[uint64][]string{}
+	}
+	cp.BlockMapped[h] = append(cp.BlockMapped[h], depositKey(dep))
+	cp.depositWork = true
+}
+
+// mapWaitingDeposits maps the parked deposit blocks whose header is stored,
+// oldest first, and asks for the headers of the others (RP-9).
+func mapWaitingDeposits(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig) {
+	cp.mu.Lock()
+	var blocks []uint64
+	for h := range cp.WaitingDeposits {
+		blocks = append(blocks, h)
+	}
+	cp.mu.Unlock()
+	if len(blocks) == 0 {
+		return
+	}
+	sort.Slice(blocks, func(i, j int) bool { return blocks[i] < blocks[j] })
+	stored, err := headersStored(ctx, gql, cfg.ContractID, blocks)
+	if err != nil {
+		return
+	}
+	for _, h := range blocks {
+		if !stored[h] {
+			noteHeaderNeed(cp, h)
+			continue
+		}
+		cp.mu.Lock()
+		deps := cp.WaitingDeposits[h]
+		cp.mu.Unlock()
+		if mapDeposits(ctx, rpc, submitter, cp, cfg, h, deps) {
+			continue
+		}
+		cp.mu.Lock()
+		delete(cp.WaitingDeposits, h)
+		cp.mu.Unlock()
+	}
 }
 
 func handleWithdrawals(
@@ -2343,7 +3501,7 @@ func handleWithdrawals(
 	cfg EVMBotConfig,
 	tssKeyID string,
 ) {
-	state, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"n", "np"})
+	state, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"n", "np", "wnh"})
 	if err != nil {
 		slog.Debug("fetch nonce state failed", "err", err)
 		return
@@ -2351,50 +3509,105 @@ func handleWithdrawals(
 
 	confirmedNonce, _ := strconv.ParseUint(state["n"], 10, 64)
 	pendingNonce, _ := strconv.ParseUint(state["np"], 10, 64)
-
-	if pendingNonce <= confirmedNonce {
-		return
+	// The nonces belong to the active generation, or (wnh) to a superseded
+	// one still settling the withdrawals it issued before its cut-over.
+	owner := cfg.VaultAddress
+	if h, err := strconv.ParseUint(state["wnh"], 10, 32); err == nil && state["wnh"] != "" {
+		if g := cfg.vaultGen(uint32(h)); g != nil && g.Address != "" {
+			owner = g.Address
+		}
 	}
 
-	nonceKey := strconv.FormatUint(confirmedNonce, 10)
-	if _, alreadySent := cp.SentWithdrawals[nonceKey]; alreadySent {
-		return
+	// LOW 17: drop entries for nonces the contract has already closed (a
+	// withdrawal settled by another bot, or cleared by an admin).
+	cp.mu.Lock()
+	for k, stx := range cp.SentWithdrawals {
+		// A01: an entry of another vault generation than the one holding the
+		// nonces (they restart at a hand-off), or one from before the field
+		// once the nonces belong to a rotated vault.
+		otherVault := owner != "" && ((stx.Vault != "" && !strings.EqualFold(stx.Vault, owner)) || (stx.Vault == "" && cfg.ActiveGen > 0 && strings.EqualFold(owner, cfg.VaultAddress)))
+		if stx.Nonce < confirmedNonce || otherVault {
+			delete(cp.SentWithdrawals, k)
+		}
 	}
+	cp.mu.Unlock()
+
+	// RP-11: up to maxInFlightWithdrawals are in flight on consecutive vault
+	// nonces; broadcast each (L1 mines them in nonce order).
+	for nonce := confirmedNonce; nonce < pendingNonce && nonce < confirmedNonce+maxInFlightWithdrawals; nonce++ {
+		broadcastWithdrawal(ctx, rpc, gql, cp, cfg, tssKeyID, nonce)
+	}
+}
+
+// broadcastWithdrawal broadcasts the TSS-signed withdrawal at nonce once its
+// signature is out, or re-posts / follows a replacement of one already sent.
+func broadcastWithdrawal(
+	ctx context.Context,
+	rpc *ethRPC,
+	gql *vscGraphQL,
+	cp *Checkpoint,
+	cfg EVMBotConfig,
+	tssKeyID string,
+	nonce uint64,
+) {
+	nonceKey := strconv.FormatUint(nonce, 10)
+	cp.mu.Lock()
+	existing, alreadySent := cp.SentWithdrawals[nonceKey]
+	cp.mu.Unlock()
 
 	spendKey := "d-" + nonceKey
 	spendState, err := gql.fetchContractState(ctx, cfg.ContractID, []string{spendKey})
 	if err != nil {
-		slog.Warn("fetch pending spend failed", "nonce", confirmedNonce, "err", err)
+		slog.Warn("fetch pending spend failed", "nonce", nonce, "err", err)
 		return
 	}
 
 	spendData, ok := spendState[spendKey]
 	if !ok || spendData == "" {
-		slog.Warn("pending spend not found in contract state", "nonce", confirmedNonce)
+		slog.Warn("pending spend not found in contract state", "nonce", nonce)
 		return
 	}
 
-	ps := parsePendingSpend(confirmedNonce, spendData)
+	ps := parsePendingSpend(nonce, spendData)
 	if ps == nil {
-		slog.Error("failed to parse pending spend", "nonce", confirmedNonce, "raw", spendData)
+		slog.Error("failed to parse pending spend", "nonce", nonce, "raw", spendData)
 		return
+	}
+
+	if alreadySent {
+		// A checkpoint v1 entry has no UnsignedTxHex. B-R5: adopt the queued
+		// tx only if the entry's signed tx is that tx; one an admin replaced
+		// before the upgrade falls through to the replacement below.
+		if existing.UnsignedTxHex == "" && signedTxSigns(existing.SignedTxHex, ps.UnsignedTxHex) {
+			existing.UnsignedTxHex = ps.UnsignedTxHex
+		}
+		if ps.UnsignedTxHex == existing.UnsignedTxHex {
+			rebroadcastIfUnmined(rpc, cp, nonceKey, existing)
+			return
+		}
+		// B1: an admin replaceWithdrawal re-signed this nonce (a higher fee for
+		// a tx stuck underpriced). The bot used to keep waiting on the old tx
+		// forever. Broadcast the replacement; the old hash stays tracked, since
+		// whichever of the two mines settles the nonce.
+		slog.Info("withdrawal re-signed (replaceWithdrawal or rollWithdrawal), broadcasting the new tx",
+			"nonce", nonce, "oldTxHash", existing.TxHash)
 	}
 
 	sighash, err := computeSighash(ps.UnsignedTxHex)
 	if err != nil {
-		slog.Error("compute sighash failed", "nonce", confirmedNonce, "err", err)
+		slog.Error("compute sighash failed", "nonce", nonce, "err", err)
 		return
 	}
 
 	slog.Info("pending withdrawal found, checking for TSS signature",
-		"nonce", confirmedNonce,
+		"nonce", nonce,
 		"asset", ps.Asset,
 		"amount", ps.Amount,
 		"to", ps.To,
 		"sighash", sighash,
 	)
 
-	signatures, err := gql.fetchTssSignatures(ctx, tssKeyID, []string{sighash})
+	signatures, err := gql.fetchTssSignatures(ctx, cfg.spendKeyID(ps.VaultAtQueue, tssKeyID), []string{sighash})
 	if err != nil {
 		slog.Warn("fetch TSS signatures failed", "err", err)
 		return
@@ -2412,96 +3625,148 @@ func handleWithdrawals(
 		return
 	}
 
-	var v byte = 0
-
-	signedTxHex, err := attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
-	if err != nil {
-		slog.Error("attach signature failed", "err", err)
-		return
+	// A20 (BI4): the recovery id is found here, against the address the
+	// withdrawal is sent from (as the vault check and the sweeps do), not by
+	// which broadcast an RPC accepts: one that does not check the sender took
+	// v=0 whatever it was (15 of 40 in the probe), and the bot recorded and
+	// re-sent a transaction from nobody. S is made low (EIP-2). A record from
+	// before VaultAtQueue keeps both tries.
+	vs := []byte{0, 1}
+	if isValidEthAddress(ps.VaultAtQueue) {
+		rsv, rerr := vaultCheckRSV(sig.Bytes, sighash, ps.VaultAtQueue)
+		if rerr != nil {
+			slog.Error("withdrawal signature does not recover the vault it is sent from", "nonce", nonce, "vault", ps.VaultAtQueue, "err", rerr)
+			return
+		}
+		r, s, vs = rsv[:32], rsv[32:64], []byte{rsv[64]}
 	}
 
-	txHash, err := rpc.broadcastTx(signedTxHex)
-	if err != nil {
-		slog.Debug("broadcast with v=0 failed, trying v=1", "err", err)
-		v = 1
-		signedTxHex, err = attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
-		if err != nil {
-			slog.Error("attach signature v=1 failed", "err", err)
+	var signedTxHex, txHash string
+	var bErr error
+	for _, v := range vs {
+		cand, aErr := attachSignatureToTx(ps.UnsignedTxHex, v, r, s)
+		if aErr != nil {
+			slog.Error("attach signature failed", "err", aErr)
 			return
 		}
-		txHash, err = rpc.broadcastTx(signedTxHex)
-		if err != nil {
-			slog.Warn("broadcast failed with both v values, checking if already mined", "err", err)
-			for _, tryV := range []byte{0, 1} {
-				candidate, aErr := attachSignatureToTx(ps.UnsignedTxHex, tryV, r, s)
-				if aErr != nil {
-					continue
-				}
-				candidateBytes, _ := hex.DecodeString(candidate)
-				candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
-				receiptData, rErr := rpc.getReceipt(candidateHash)
-				if rErr != nil || receiptData == nil {
-					continue
-				}
-				// MED-50 (F-M22-MED-8): do NOT trust a receipt blindly. A
-				// hostile RPC can fabricate a receipt for a hash we never
-				// landed, making the bot record a phantom SentTx and stall the
-				// confirmation loop forever. Cross-check that the RPC also
-				// returns a real transaction object for this exact hash, AND
-				// that the canonical tx hash it reports matches what we asked
-				// for.
-				txData, txErr := rpc.getTransactionByHash(candidateHash)
-				if txErr != nil || txData == nil {
-					slog.Warn("MED-50: receipt present but no matching transaction object — ignoring (possible hostile RPC)",
-						"candidateHash", candidateHash)
-					continue
-				}
-				var txObj struct {
-					Hash string `json:"hash"`
-				}
-				if json.Unmarshal(txData, &txObj) != nil ||
-					!strings.EqualFold(txObj.Hash, candidateHash) {
-					slog.Warn("MED-50: transaction object hash mismatch — ignoring (possible hostile RPC)",
-						"candidateHash", candidateHash, "rpcHash", txObj.Hash)
-					continue
-				}
-				var receipt struct {
-					Status string `json:"status"`
-				}
-				if json.Unmarshal(receiptData, &receipt) != nil || receipt.Status == "" {
-					continue
-				}
-				slog.Info("withdrawal TX already mined on chain, recovering",
-					"txHash", candidateHash, "status", receipt.Status, "nonce", confirmedNonce)
-				cp.mu.Lock()
-				cp.SentWithdrawals[nonceKey] = SentTx{
-					SignedTxHex: candidate,
-					TxHash:      candidateHash,
-					Nonce:       confirmedNonce,
-					SentAt:      time.Now().Unix(),
-				}
-				cp.mu.Unlock()
-				return
+		if txHash, bErr = rpc.broadcastTx(cand); bErr == nil {
+			signedTxHex = cand
+			break
+		}
+		slog.Debug("withdrawal broadcast failed", "v", v, "err", bErr)
+	}
+	if bErr != nil {
+		slog.Warn("withdrawal broadcast failed, checking if already mined", "err", bErr)
+		for _, tryV := range vs {
+			candidate, aErr := attachSignatureToTx(ps.UnsignedTxHex, tryV, r, s)
+			if aErr != nil {
+				continue
 			}
+			candidateBytes, _ := hex.DecodeString(candidate)
+			candidateHash := fmt.Sprintf("0x%x", keccak256(candidateBytes))
+			receiptData, rErr := rpc.getReceipt(candidateHash)
+			if rErr != nil || receiptData == nil {
+				continue
+			}
+			// MED-50 (F-M22-MED-8): do NOT trust a receipt blindly. A
+			// hostile RPC can fabricate a receipt for a hash we never
+			// landed, making the bot record a phantom SentTx and stall the
+			// confirmation loop forever. Cross-check that the RPC also
+			// returns a real transaction object for this exact hash, AND
+			// that the canonical tx hash it reports matches what we asked
+			// for.
+			txData, txErr := rpc.getTransactionByHash(candidateHash)
+			if txErr != nil || txData == nil {
+				slog.Warn("MED-50: receipt present but no matching transaction object — ignoring (possible hostile RPC)",
+					"candidateHash", candidateHash)
+				continue
+			}
+			var txObj struct {
+				Hash string `json:"hash"`
+			}
+			if json.Unmarshal(txData, &txObj) != nil ||
+				!strings.EqualFold(txObj.Hash, candidateHash) {
+				slog.Warn("MED-50: transaction object hash mismatch — ignoring (possible hostile RPC)",
+					"candidateHash", candidateHash, "rpcHash", txObj.Hash)
+				continue
+			}
+			var receipt struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(receiptData, &receipt) != nil || receipt.Status == "" {
+				continue
+			}
+			slog.Info("withdrawal TX already mined on chain, recovering",
+				"txHash", candidateHash, "status", receipt.Status, "nonce", nonce)
+			recordSent(cp, nonceKey, SentTx{
+				Vault:       spendVault(ps, cfg.VaultAddress),
+				SignedTxHex: candidate,
+				TxHash:      candidateHash,
+				Nonce:       nonce,
+				SentAt:      time.Now().Unix(),
+			}, ps.UnsignedTxHex, existing, alreadySent)
 			return
 		}
+		return
 	}
 
 	slog.Info("withdrawal TX broadcast to Ethereum",
 		"txHash", txHash,
-		"nonce", confirmedNonce,
+		"nonce", nonce,
 		"asset", ps.Asset,
 		"amount", ps.Amount,
 		"to", ps.To,
 	)
 
-	cp.mu.Lock()
-	cp.SentWithdrawals[nonceKey] = SentTx{
+	recordSent(cp, nonceKey, SentTx{
+		Vault:       spendVault(ps, cfg.VaultAddress),
 		SignedTxHex: signedTxHex,
 		TxHash:      txHash,
-		Nonce:       confirmedNonce,
+		Nonce:       nonce,
 		SentAt:      time.Now().Unix(),
+	}, ps.UnsignedTxHex, existing, alreadySent)
+}
+
+// recordSent stores the broadcast at nonceKey. A replacement keeps the earlier
+// hashes at this nonce (PrevTxHashes) and the original send time.
+func recordSent(cp *Checkpoint, nonceKey string, stx SentTx, unsignedTxHex string, prev SentTx, replacing bool) {
+	stx.UnsignedTxHex = unsignedTxHex
+	if stx.Vault == "" {
+		stx.Vault = prev.Vault
 	}
+	stx.LastBroadcastAt = time.Now().Unix()
+	if replacing {
+		stx.PrevTxHashes = append(append([]string{}, prev.PrevTxHashes...), prev.TxHash)
+		stx.SentAt = prev.SentAt
+	}
+	cp.mu.Lock()
+	cp.SentWithdrawals[nonceKey] = stx
+	cp.mu.Unlock()
+}
+
+// rebroadcastIfUnmined re-posts an unmined withdrawal tx every
+// rebroadcastInterval. B8: an L1 tx can leave every mempool (its fee cap fell
+// below a rising base fee, the RPC node restarted), and the bot used to poll its
+// receipt forever; with one withdrawal queue that froze every withdrawal.
+// Re-posting the same signed tx is harmless: same hash, and a node that still
+// holds it answers "already known".
+func rebroadcastIfUnmined(rpc *ethRPC, cp *Checkpoint, nonceKey string, stx SentTx) {
+	if time.Since(time.Unix(stx.LastBroadcastAt, 0)) < rebroadcastInterval {
+		return
+	}
+	for _, h := range append([]string{stx.TxHash}, stx.PrevTxHashes...) {
+		if r, err := rpc.getReceipt(h); err == nil && r != nil {
+			return // mined: handleConfirmations takes it from here
+		}
+	}
+	if _, err := rpc.broadcastTx(stx.SignedTxHex); err != nil {
+		slog.Warn("re-posting the unmined withdrawal tx", "nonce", stx.Nonce, "txHash", stx.TxHash, "err", err)
+	} else {
+		slog.Info("withdrawal tx not mined yet, re-posted", "nonce", stx.Nonce, "txHash", stx.TxHash)
+	}
+	stx.LastBroadcastAt = time.Now().Unix()
+	cp.mu.Lock()
+	cp.SentWithdrawals[nonceKey] = stx
 	cp.mu.Unlock()
 }
 
@@ -2524,15 +3789,97 @@ func handleConfirmations(
 		return
 	}
 
-	for nonceKey, stx := range sent {
+	store := func(nonceKey string, stx SentTx) {
+		cp.mu.Lock()
+		cp.SentWithdrawals[nonceKey] = stx
+		cp.mu.Unlock()
+	}
+	// RP-11: several withdrawals can be in flight; the bridge confirms them in
+	// nonce order (confirmSpend checks the head). Walk them in that order: a
+	// withdrawal is confirmed once every one before it is confirmed or has its
+	// confirmSpend submitted (the bot's L2 calls execute in submission order).
+	nst, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"n"})
+	if err != nil {
+		return
+	}
+	nextConfirmable, _ := strconv.ParseUint(nst["n"], 10, 64)
+	keys := make([]string, 0, len(sent))
+	for k := range sent {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return sent[keys[i]].Nonce < sent[keys[j]].Nonce })
+	for _, nonceKey := range keys {
+		stx := sent[nonceKey]
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
 
-		receiptData, err := rpc.getReceipt(stx.TxHash)
-		if err != nil {
+		// B4 / B16: a submitted confirmSpend is settled by its on-chain result.
+		// The bot used to drop the withdrawal as soon as the L2 pool took the
+		// call; one that then failed on chain was re-found and re-sent every
+		// couple of ticks, burning RC. Now: CONFIRMED closes it, FAILED waits a
+		// backoff before re-sending, anything else is still pending.
+		if stx.ConfirmTxId != "" {
+			status, err := gql.fetchTransactionStatus(ctx, stx.ConfirmTxId)
+			switch {
+			case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
+				slog.Info("confirmSpend confirmed on chain", "nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId)
+				cp.mu.Lock()
+				delete(cp.SentWithdrawals, nonceKey)
+				cp.mu.Unlock()
+				if stx.Nonce == nextConfirmable {
+					nextConfirmable++
+				}
+			case err == nil && status == "FAILED":
+				stx.ConfirmFailures++
+				wait := confirmBackoff(stx.ConfirmFailures)
+				slog.Error("confirmSpend failed on chain, re-sending after a backoff",
+					"nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId, "failures", stx.ConfirmFailures, "backoff", wait)
+				stx.ConfirmTxId = ""
+				stx.NextConfirmAt = time.Now().Add(wait).Unix()
+				store(nonceKey, stx)
+			case errors.Is(err, errTxNotFound):
+				// B-R1: the pool deletes a transaction that loses its nonce
+				// to another, so one the node still does not know is gone.
+				// Without this the withdrawal was never closed.
+				switch {
+				case stx.ConfirmSubmittedAt == 0: // an entry from before the field
+					stx.ConfirmSubmittedAt = time.Now().Unix()
+					store(nonceKey, stx)
+				case time.Since(time.Unix(stx.ConfirmSubmittedAt, 0)) > confirmVanishGrace:
+					slog.Error("confirmSpend is unknown to the node long after its submission; re-sending",
+						"nonce", stx.Nonce, "l2Tx", stx.ConfirmTxId, "submittedAt", stx.ConfirmSubmittedAt)
+					stx.ConfirmTxId, stx.ConfirmSubmittedAt = "", 0
+					store(nonceKey, stx)
+				}
+			default:
+				// Still pending: the next withdrawal's confirm may follow it.
+				if stx.Nonce == nextConfirmable {
+					nextConfirmable++
+				}
+			}
+			continue
+		}
+		if stx.Nonce != nextConfirmable {
+			continue // an earlier withdrawal is not confirmed yet
+		}
+		if stx.NextConfirmAt != 0 && time.Now().Unix() < stx.NextConfirmAt {
+			continue
+		}
+
+		// The tx that mined: this broadcast, or an earlier one at the same
+		// nonce that a replacement superseded (B1).
+		var receiptData json.RawMessage
+		var err error
+		for _, h := range append([]string{stx.TxHash}, stx.PrevTxHashes...) {
+			if receiptData, err = rpc.getReceipt(h); err == nil && receiptData != nil {
+				stx.TxHash = h
+				break
+			}
+		}
+		if err != nil || receiptData == nil {
 			slog.Debug("receipt not available yet", "txHash", stx.TxHash, "err", err)
 			continue
 		}
@@ -2560,13 +3907,23 @@ func handleConfirmations(
 			continue
 		}
 
-		contractHeight, err := fetchContractLastHeight(ctx, gql, cfg.ContractID)
-		if err != nil || contractHeight < blockNum {
-			slog.Debug("contract hasn't ingested confirmation block yet",
-				"txHash", stx.TxHash,
-				"block", blockNum,
-				"contractHeight", contractHeight,
-			)
+		// RP-6: a withdrawal mined and final but not confirmed for long holds
+		// the queue head; confirmSpend is permissionless, so alert loudly.
+		if stx.FinalAt == 0 {
+			stx.FinalAt = time.Now().Unix()
+			store(nonceKey, stx)
+		} else if lag := time.Since(time.Unix(stx.FinalAt, 0)); lag > confirmLagAlarm {
+			slog.Error("RP-6 CRITICAL: a mined withdrawal is still unconfirmed; it holds every later withdrawal",
+				"nonce", stx.Nonce, "txHash", stx.TxHash, "block", blockNum, "finalFor", lag.Round(time.Minute))
+		}
+
+		// RP-9: confirmSpend proves against the header of the block it mined
+		// in; ask for it until the verifier stores it.
+		if st, err := headersStored(ctx, gql, cfg.ContractID, []uint64{blockNum}); err != nil || !st[blockNum] {
+			if err == nil {
+				noteHeaderNeed(cp, blockNum)
+			}
+			slog.Debug("waiting for the header of the withdrawal's block", "txHash", stx.TxHash, "block", blockNum)
 			continue
 		}
 
@@ -2605,14 +3962,15 @@ func handleConfirmations(
 			continue
 		}
 
-		payload, err := buildConfirmSpendPayload(rpc, stx.TxHash, blockNum, txIndex, ps)
+		payload, err := buildConfirmSpendPayload(ctx, rpc, stx.TxHash, blockNum, txIndex, ps)
 		if err != nil {
 			slog.Error("build confirmSpend payload failed", "txHash", stx.TxHash, "err", err)
 			continue
 		}
 
 		// Submit confirmSpend via L2 with retry.
-		if err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3); err != nil {
+		confirmTxID, err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3)
+		if err != nil {
 			slog.Error("confirmSpend submission failed", "txHash", stx.TxHash, "err", err)
 			// Check if nonce already advanced (another instance confirmed it).
 			// If so, clear the stale entry to stop perpetual retries.
@@ -2630,17 +3988,78 @@ func handleConfirmations(
 			continue
 		}
 
-		cp.mu.Lock()
-		delete(cp.SentWithdrawals, nonceKey)
-		cp.mu.Unlock()
-
-		slog.Info("confirmSpend submitted", "txHash", stx.TxHash, "nonce", stx.Nonce)
+		if confirmTxID == "" {
+			// No id for the submission (none is expected): the entry goes once
+			// the contract's confirmed nonce passes it.
+			continue
+		}
+		stx.ConfirmTxId = confirmTxID
+		stx.ConfirmSubmittedAt = time.Now().Unix()
+		store(nonceKey, stx)
+		nextConfirmable++
+		slog.Info("confirmSpend submitted", "txHash", stx.TxHash, "nonce", stx.Nonce, "l2Tx", confirmTxID)
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// depositPhaseBudget: how much of a tick (60 s) scanning and mapping deposits
+// may take; the rest is left for withdrawals, confirmations and headers
+// (TICKSTALL-1).
+var depositPhaseBudget = 30 * time.Second
+
+// mapResultTimeout: a submitted map with no on-chain result after this long is
+// dead-lettered (the L2 pool dropped it, or the node lost it).
+var mapResultTimeout = 30 * time.Minute
+
+// resolvePendingMaps reads the on-chain result of every map submitted on an
+// earlier tick (B4: the bot used to advance past a deposit as soon as the L2
+// pool accepted its map, so a map that then failed on chain left the deposit
+// uncredited with nobody told). CONFIRMED drops the entry; FAILED, or no result
+// within mapResultTimeout, dead-letters the deposit.
+func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
+	cp.mu.Lock()
+	pending := make(map[string]PendingMap, len(cp.PendingMaps))
+	for id, pm := range cp.PendingMaps {
+		pending[id] = pm
+	}
+	cp.mu.Unlock()
+	for txID, pm := range pending {
+		status, err := gql.fetchTransactionStatus(ctx, txID)
+		switch {
+		case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
+			slog.Info("map confirmed on chain", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+		case err == nil && status == "FAILED":
+			// DEADLETTER-DUP: a map that failed because the deposit was already
+			// credited (another mapper's map landed first, RP-8, or this bot's
+			// own earlier one) is done, not dead. Phase C5: with two bots, every
+			// deposit was dead-lettered by the one that lost, and /health stayed
+			// unhealthy.
+			msg, merr := gql.fetchTransactionError(ctx, txID)
+			if merr != nil && time.Since(time.Unix(pm.SubmittedAt, 0)) <= mapResultTimeout {
+				continue // the failure's reason is not readable yet
+			}
+			if strings.Contains(msg, errAlreadyProcessed) {
+				slog.Info("map not needed: the deposit was already credited", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+				break
+			}
+			reason := "map failed on chain"
+			if msg != "" {
+				reason += ": " + msg
+			}
+			cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)
+		case time.Since(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout:
+			cp.deadLetter(pm.Block, pm.DepositTx, txID, fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err))
+		default:
+			continue // not final yet
+		}
+		cp.mu.Lock()
+		delete(cp.PendingMaps, txID)
+		cp.mu.Unlock()
+	}
+}
 
 func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID string) (uint64, error) {
 	// M23-F5 (#31): the account-mapping contract no longer stores "h" in its own
@@ -2661,53 +4080,97 @@ func fetchContractLastHeight(ctx context.Context, gql *vscGraphQL, contractID st
 	if verifierID == "" {
 		return 0, nil // no verifier wired — contract refuses bridge ops anyway
 	}
-	vState, err := gql.fetchContractState(ctx, verifierID, []string{"h"})
+	vState, err := gql.fetchContractState(ctx, verifierID, []string{"h", "gapb"})
 	if err != nil {
 		return 0, err
 	}
 	h, _ := strconv.ParseUint(vState["h"], 10, 64)
+	// E5: while a header gap is open, "h" is the proven tip but the blocks
+	// between the stored chain's tip ("gapb") and the backfill have no header
+	// yet; a map or confirmSpend for one fails on chain (a failed map is
+	// dead-lettered). Every header up to gapb is stored.
+	if b, err := strconv.ParseUint(vState["gapb"], 10, 64); err == nil && b < h {
+		h = b
+	}
 	return h, nil
 }
 
 func buildMapPayloadFromRPC(ctx context.Context, rpc *ethRPC, dep detectedDeposit, blockHeight uint64) json.RawMessage {
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", false`, blockHeight))
+	bp, err := fetchBlockProofs(ctx, rpc, blockHeight, dep.DepositType == "eth")
 	if err != nil {
 		slog.Error("fetch block for proof", "block", blockHeight, "err", err)
 		return nil
 	}
+	return buildMapPayloadFrom(bp, dep)
+}
 
-	var block struct {
-		Transactions []string `json:"transactions"`
-	}
-	if err := json.Unmarshal(blockData, &block); err != nil {
-		slog.Error("parse block for proof", "block", blockHeight, "err", err)
-		return nil
-	}
-
-	rawTxs := make([][]byte, len(block.Transactions))
-	for i, hash := range block.Transactions {
-		rData, err := rpc.call("eth_getRawTransactionByHash", fmt.Sprintf(`"%s"`, hash))
+// buildMapPayloadFrom builds dep's map payload from its block's proof
+// material (fetched with raw txs for an ETH deposit).
+func buildMapPayloadFrom(bp *blockProofs, dep detectedDeposit) json.RawMessage {
+	// An ERC-20 deposit is proven by its receipt (the Transfer log) against
+	// header.ReceiptsRoot (contract VerifyERC20Deposit); a native ETH deposit
+	// by the transaction against header.TransactionsRoot.
+	if dep.DepositType == "contract" { // RP-7
+		_, proofNodes, err := bp.receiptProof(dep.TxIndex)
 		if err != nil {
-			slog.Error("fetch raw tx for proof", "block", blockHeight, "tx", i, "err", err)
+			slog.Error("contract deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 			return nil
 		}
-		var rawHex string
-		json.Unmarshal(rData, &rawHex)
-		rawTxs[i] = hexToBytes(rawHex)
+		return contractMapPayload(dep, proofNodes)
+	}
+	if dep.DepositType == "erc20" {
+		_, proofNodes, err := bp.receiptProof(dep.TxIndex)
+		if err != nil {
+			slog.Error("erc20 deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
+			return nil
+		}
+		// ERC20-PAYLOAD-1: base64, the receipt taken from the proof's leaf
+		// (the hex form sent it twice and capped a deposit at ~5 logs).
+		return erc20MapPayload(dep, proofNodes)
 	}
 
-	keys := make([][]byte, len(rawTxs))
-	for i := range keys {
-		keys[i] = rlpEncodeUint64(uint64(i))
+	targetRLP, proofNodes, err := bp.txProof(dep.TxIndex)
+	if err != nil {
+		slog.Error("eth deposit tx proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
+		return nil
 	}
-
-	_, proofNodes, targetRLP := buildMPTProof(keys, rawTxs, dep.TxIndex)
-	if proofNodes == nil {
-		slog.Error("proof construction failed", "block", blockHeight, "txIndex", dep.TxIndex, "txCount", len(rawTxs))
+	// FAILDEP-1: the receipt at the same index proves the transfer succeeded.
+	_, rcptNodes, err := bp.receiptProof(dep.TxIndex)
+	if err != nil {
+		slog.Error("eth deposit receipt proof", "block", dep.BlockHeight, "txIndex", dep.TxIndex, "err", err)
 		return nil
 	}
 
-	return buildMapPayload(dep, targetRLP, proofNodes)
+	return buildMapPayload(dep, targetRLP, proofNodes, rcptNodes)
+}
+
+// txSucceeded reports whether an L1 tx's receipt has status 1.
+func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
+	data, err := rpc.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
+	if err != nil {
+		return false, err
+	}
+	var r struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil || r.Status == "" {
+		return false, fmt.Errorf("no receipt status for %s", hash)
+	}
+	return hexToUint64(r.Status) == 1, nil
+}
+
+// nodePayloadSize is a contract-call payload's size as the node checks it
+// against MAX_CONTRACT_PAYLOAD_SIZE. The node keeps the payload as a
+// json.RawMessage decoded from the call's CBOR string (transaction-pool
+// DecodeTxCbor -> go-ipld-cbor MarshalJSON, encoding/json), so it counts the
+// JSON string literal: two quotes more, and one backslash per '"' or '\\'.
+// Six real Sepolia headers were 8,187 raw and 8,215 to the node (phase C4).
+func nodePayloadSize(payload []byte) int {
+	b, err := json.Marshal(string(payload))
+	if err != nil {
+		return len(payload)
+	}
+	return len(b)
 }
 
 func hexToUint64(s string) uint64 {
@@ -2725,6 +4188,12 @@ func hexToUint64(s string) uint64 {
 		}
 	}
 	return v
+}
+
+// hexNonZero reports whether a hex quantity is non-zero at full width. A tx
+// value is a uint256; hexToUint64 keeps only the low 64 bits.
+func hexNonZero(s string) bool {
+	return strings.Trim(strings.TrimPrefix(s, "0x"), "0") != ""
 }
 
 func hexToBytes(s string) []byte {

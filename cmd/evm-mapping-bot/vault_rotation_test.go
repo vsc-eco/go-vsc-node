@@ -1,0 +1,328 @@
+package main
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"vsc-node/lib/btcvault"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	gethrlp "github.com/ethereum/go-ethereum/rlp"
+)
+
+// rotKey is secp256k1 private key n.
+func rotKey(n byte) *ecdsa.PrivateKey {
+	k, _ := ethCrypto.ToECDSA(common.LeftPadBytes([]byte{n}, 32))
+	return k
+}
+
+func rotAddr(n byte) string {
+	return strings.ToLower(ethCrypto.PubkeyToAddress(rotKey(n).PublicKey).Hex())
+}
+
+type rotEntry struct {
+	gen    uint32
+	key    byte // 0: no key yet
+	status btcvault.VaultStatus
+}
+
+// rotRegistry is the bridge's "v" blob (91-byte entries).
+func rotRegistry(es ...rotEntry) []byte {
+	var out []byte
+	for _, e := range es {
+		b := make([]byte, btcvault.VaultEntrySize)
+		binary.BigEndian.PutUint32(b, e.gen)
+		if e.key != 0 {
+			copy(b[4:37], ethCrypto.CompressPubkey(&rotKey(e.key).PublicKey))
+		}
+		b[70] = byte(e.status)
+		out = append(out, b...)
+	}
+	return out
+}
+
+func TestA01Bot_DecodesTheVaultRegistry(t *testing.T) {
+	raw := rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining}, rotEntry{1, 2, btcvault.VaultStatusActive},
+		rotEntry{2, 0, btcvault.VaultStatusPending}, rotEntry{3, 3, btcvault.VaultStatusPurged})
+	v, err := decodeVaultView("vsc1b", hex.EncodeToString(raw))
+	if err != nil || !v.Registry || len(v.Gens) != 4 || v.Active == nil || v.Active.Gen != 1 {
+		t.Fatalf("view %+v %v", v, err)
+	}
+	if v.Active.Address != rotAddr(2) || v.Active.KeyID != "vsc1b-primaryv1" || v.Gens[0].KeyID != "vsc1b-primary" {
+		t.Fatalf("active %+v, gen 0 key %s", v.Active, v.Gens[0].KeyID)
+	}
+	if v.Gens[2].Address != "" {
+		t.Fatal("a pending generation with no key has an address")
+	}
+	got := v.fundHolding()
+	if len(got) != 2 || got[0] != rotAddr(1) || got[1] != rotAddr(2) {
+		t.Fatalf("fund-holding %v: want generations 0 and 1, not the pending or purged", got)
+	}
+	if v, err := decodeVaultView("vsc1b", ""); err != nil || v.Registry {
+		t.Fatalf("empty registry: %+v %v", v, err)
+	}
+	if _, err := decodeVaultView("vsc1b", "zz"); err == nil {
+		t.Fatal("bad hex accepted")
+	}
+}
+
+// The registry as the main loop reads it: through the node's GraphQL, not
+// handed in as hex (devnet run 3: a double hex decode left the bot with no
+// generations, so it never swept).
+func TestA01Bot_FetchesTheVaultRegistry(t *testing.T) {
+	l2 := newFakeL2()
+	gql := l2.gql(t)
+	l2.set("vsc1b", "v", string(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusRetiring}, rotEntry{1, 2, btcvault.VaultStatusActive})))
+	v, err := fetchVaultView(context.Background(), gql, "vsc1b")
+	if err != nil || !v.Registry || v.Active == nil || v.Active.Gen != 1 || v.Active.Address != rotAddr(2) {
+		t.Fatalf("view %+v %v", v, err)
+	}
+	if got := v.fundHolding(); len(got) != 2 || got[0] != rotAddr(1) {
+		t.Fatalf("fund-holding %v", got)
+	}
+	if v, err := fetchVaultView(context.Background(), gql, "vsc1none"); err != nil || v.Registry {
+		t.Fatalf("no registry: %+v %v", v, err)
+	}
+}
+
+// BOT-RC-1, as the BTC bot: twice the dry run, at least the floor, at most the
+// ceiling.
+func TestA01Bot_RcFromDryRun(t *testing.T) {
+	for _, c := range []struct {
+		used int64
+		want uint64
+	}{{0, dryRunRcFloor}, {-5, dryRunRcFloor}, {9_000, dryRunRcFloor}, {15_000, 30_000}, {600_000, vaultOpRcLimit}} {
+		if got := rcFromDryRun(c.used, vaultOpRcLimit); got != c.want {
+			t.Errorf("rc_used %d: rc_limit %d, want %d", c.used, got, c.want)
+		}
+	}
+}
+
+// rotUnsigned is 0x02 || rlp(the nine unsigned EIP-1559 fields).
+func rotUnsigned(to common.Address, value *big.Int, data []byte) string {
+	b, _ := gethrlp.EncodeToBytes([]any{big.NewInt(1), uint64(7), big.NewInt(2e9), big.NewInt(4e9), uint64(65000), to, value, data, types.AccessList{}})
+	return hex.EncodeToString(append([]byte{0x02}, b...))
+}
+
+// The bot will not broadcast a signed sweep that could pay anyone but the
+// active generation (the node would not have signed it).
+func TestA01Bot_SweepTxPaysOnly(t *testing.T) {
+	succ, other, token := common.HexToAddress(rotAddr(2)), common.HexToAddress("0xee"), common.HexToAddress("0xc0")
+	transfer := func(to common.Address) []byte {
+		d := append([]byte{0xa9, 0x05, 0x9c, 0xbb}, common.LeftPadBytes(to.Bytes(), 32)...)
+		return append(d, common.LeftPadBytes([]byte{5}, 32)...)
+	}
+	if !sweepTxPaysOnly(rotUnsigned(succ, big.NewInt(5), nil), succ) || !sweepTxPaysOnly(rotUnsigned(token, new(big.Int), transfer(succ)), succ) {
+		t.Fatal("a successor sweep was refused")
+	}
+	approve := append([]byte{0x09, 0x5e, 0xa7, 0xb3}, transfer(succ)[4:]...)
+	for name, tx := range map[string]string{
+		"ETH elsewhere":       rotUnsigned(other, big.NewInt(5), nil),
+		"token elsewhere":     rotUnsigned(token, new(big.Int), transfer(other)),
+		"value with calldata": rotUnsigned(succ, big.NewInt(5), []byte{1}),
+		"approve":             rotUnsigned(token, new(big.Int), approve),
+		"long calldata":       rotUnsigned(token, new(big.Int), append(transfer(succ), 0)),
+		"not EIP-1559":        "01" + rotUnsigned(succ, big.NewInt(5), nil)[2:],
+		"garbage":             "02ff",
+	} {
+		if sweepTxPaysOnly(tx, succ) {
+			t.Errorf("%s passed", name)
+		}
+	}
+}
+
+// Deposits to every fund-holding generation's address are found in one block.
+func TestA01Bot_ScansEveryVaultGeneration(t *testing.T) {
+	c := &fakeChain{}
+	user, _ := ethCrypto.GenerateKey()
+	old, cur := common.HexToAddress(rotAddr(1)), common.HexToAddress(rotAddr(2))
+	c.addTx(t, user, &types.DynamicFeeTx{Nonce: 0, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &old, Value: big.NewInt(1e18)})
+	c.addTx(t, user, &types.DynamicFeeTx{Nonce: 1, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &cur, Value: big.NewInt(2e18)})
+	res, err := scanBlock(c.rpc(t), 101, []string{rotAddr(1), rotAddr(2)}, nil)
+	if err != nil || len(res.Deposits) != 2 {
+		t.Fatalf("deposits %+v %v: want both generations' deposits", res, err)
+	}
+	res, _ = scanBlock(c.rpc(t), 101, []string{rotAddr(2)}, nil)
+	if len(res.Deposits) != 1 || res.Deposits[0].Amount.Cmp(big.NewInt(2e18)) != 0 {
+		t.Fatalf("active only: %+v", res.Deposits)
+	}
+}
+
+// ROT-HALT-1: after a cut-over the retiring generation finishes its own
+// in-flight withdrawal: the bot fetches that generation's signature (not the
+// active key's) and keeps its entry until the nonces are handed off.
+func TestA01Bot_RetiringGenerationsWithdrawalUsesItsKey(t *testing.T) {
+	tx := queuedTx(t, 40e9)
+	l1, l2, rpc, gql, cp, cfg := wdWorld(t, tx)
+	ps := spendJSON(tx)
+	var rec map[string]any
+	_ = json.Unmarshal([]byte(ps), &rec)
+	rec["vault_at_queue"] = rotAddr(1)
+	b, _ := json.Marshal(rec)
+	l2.set("vsc1bridge", "d-0", string(b))
+	l2.set("vsc1bridge", "wnh", "0")
+	sh, _ := computeSighash(tx)
+	l2.sigs[sh] = tssSigWith(t, rotKey(1), tx)
+	l2.sigKey = map[string]string{sh: "vsc1bridge-primary"}
+	v, _ := decodeVaultView("vsc1bridge", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining}, rotEntry{1, 2, btcvault.VaultStatusActive})))
+	cfg.VaultAddress, cfg.ActiveGen, cfg.VaultGens = v.Active.Address, 1, v.Gens
+
+	handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primaryv1")
+	if len(l1.sent) != 1 || cp.SentWithdrawals["0"].Vault != rotAddr(1) {
+		t.Fatalf("broadcasts %d, entry %+v: want generation 0's withdrawal sent with its key", len(l1.sent), cp.SentWithdrawals["0"])
+	}
+	handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primaryv1")
+	if _, ok := cp.SentWithdrawals["0"]; !ok || len(l1.sent) != 1 {
+		t.Fatalf("generation 0's in-flight entry pruned (and re-sent, %d broadcasts) while it holds the nonces", len(l1.sent))
+	}
+	// Hand-off: the nonces restart at 0 for generation 1; the old entry goes.
+	l2.set("vsc1bridge", "wnh", "")
+	l2.set("vsc1bridge", "np", "0")
+	handleWithdrawals(context.Background(), rpc, gql, cp, cfg, "vsc1bridge-primaryv1")
+	if _, ok := cp.SentWithdrawals["0"]; ok {
+		t.Fatal("generation 0's entry kept after the hand-off")
+	}
+}
+
+func TestA01Bot_RedrivesOnlyTheLowestOpenNonce(t *testing.T) {
+	sweeps := []sweepRecord{{Gen: 0, Nonce: 5}, {Gen: 0, Nonce: 4}, {Gen: 2, Nonce: 9}, {Gen: 0, Nonce: 6}}
+	if lowestOpenNonce(sweeps, 0) != 4 || lowestOpenNonce(sweeps, 2) != 9 {
+		t.Fatalf("lowest: gen 0 %d, gen 2 %d", lowestOpenNonce(sweeps, 0), lowestOpenNonce(sweeps, 2))
+	}
+}
+
+// The health check watches the key of every generation that holds or may
+// receive funds, and of a pending one (renewKey renews it too), not a purged
+// one; with no registry, the one key.
+func TestA01Bot_HealthWatchesEveryLiveKey(t *testing.T) {
+	v, _ := decodeVaultView("vsc1b", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining},
+		rotEntry{1, 2, btcvault.VaultStatusActive}, rotEntry{2, 3, btcvault.VaultStatusPending}, rotEntry{3, 4, btcvault.VaultStatusPurged})))
+	got := EVMBotConfig{VaultGens: v.Gens}.healthKeys("vsc1b-primary")
+	if strings.Join(got, ",") != "vsc1b-primary,vsc1b-primaryv1,vsc1b-primaryv2" {
+		t.Fatalf("keys %v", got)
+	}
+	if got := (EVMBotConfig{}).healthKeys("vsc1b-primary"); len(got) != 1 || got[0] != "vsc1b-primary" {
+		t.Fatalf("no registry: %v", got)
+	}
+}
+
+// A sweep that has not mined is re-posted every rebroadcastInterval (as an
+// unmined withdrawal, B8): after a shallow reorg or a mempool drop it would
+// otherwise wait for a re-drive. A recent send or a mined sweep is left alone.
+func TestA01Bot_UnminedSweepIsReposted(t *testing.T) {
+	succ := common.HexToAddress(rotAddr(2))
+	unsigned := rotUnsigned(succ, big.NewInt(5), nil)
+	sh, _ := computeSighash(unsigned)
+	view, _ := decodeVaultView("vsc1bridge", hex.EncodeToString(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusDraining}, rotEntry{1, 2, btcvault.VaultStatusActive})))
+	rec := sweepRecord{Gen: 0, Nonce: 7, Asset: "eth", Versions: []sweepVersion{{Unsigned: unsigned}}}
+	run := func(lastSent time.Time, mined bool) int {
+		t.Helper()
+		l1, l2 := newFakeL1(), newFakeL2()
+		l2.sigs[sh] = tssSigWith(t, rotKey(1), unsigned)
+		rpc, gql := l1.rpc(t), l2.gql(t)
+		cp := &Checkpoint{SentSweeps: map[string]SentSweep{}}
+		driveSweep(context.Background(), rpc, gql, nil, cp, EVMBotConfig{ContractID: "vsc1bridge"}, view, rec, false)
+		if len(l1.sent) != 1 {
+			t.Fatalf("first drive: %d broadcasts", len(l1.sent))
+		}
+		ss := cp.SentSweeps["0-7"]
+		ss.LastBroadcastAt = lastSent.Unix()
+		cp.SentSweeps["0-7"] = ss
+		if mined {
+			b, _ := hex.DecodeString(strings.TrimPrefix(l1.sent[0], "0x"))
+			var tx types.Transaction
+			_ = tx.UnmarshalBinary(b)
+			c := l1.block(50)
+			c.txs, c.receipts = append(c.txs, &tx), append(c.receipts, &types.Receipt{Type: 2, Status: 1, TxHash: tx.Hash()})
+			l1.finalized = 0 // not final yet: the bot waits, no confirm
+		}
+		driveSweep(context.Background(), rpc, gql, nil, cp, EVMBotConfig{ContractID: "vsc1bridge"}, view, rec, false)
+		return len(l1.sent) - 1
+	}
+	if n := run(time.Now().Add(-time.Hour), false); n != 1 {
+		t.Fatalf("unmined for an hour: %d re-posts, want 1", n)
+	}
+	if n := run(time.Now(), false); n != 0 {
+		t.Fatalf("just sent: %d re-posts, want 0", n)
+	}
+	if n := run(time.Now().Add(-time.Hour), true); n != 0 {
+		t.Fatalf("mined: %d re-posts, want 0", n)
+	}
+}
+
+// A01: a migration sweep is a transfer from the retiring generation's address
+// to the active one's, both scanned as vault addresses. It is the vault moving
+// its own funds, not a deposit, and the bridge refuses it; the scanner must not
+// map it (devnet weather wave: a mapped ETH sweep minted 6 ETH a second time
+// on the old bridge). A user's deposit in the same block still is one.
+func TestA01Bot_ScanSkipsTheVaultsOwnTransfers(t *testing.T) {
+	vault0, vault1 := rotAddr(1), rotAddr(2)
+	user := "0x00000000000000000000000000000000000a11ce"
+	token := "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
+	pad := func(a string) string { return "0x" + strings.Repeat("0", 24) + strings.TrimPrefix(a, "0x") }
+	word := "0x" + strings.Repeat("0", 56) + "017d7840" // 25 USDC
+	transfer := func(from, logIndex string) map[string]any {
+		return map[string]any{"address": token, "topics": []string{"0x" + TransferEventSig, pad(from), pad(vault1)}, "data": word,
+			"transactionIndex": "0x2", "transactionHash": "0xt" + logIndex, "logIndex": logIndex}
+	}
+	logs := []map[string]any{transfer(vault0, "0x0"), transfer(user, "0x1")}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var res any
+		switch req.Method {
+		case "eth_getBlockByNumber":
+			res = map[string]any{"transactions": []map[string]string{
+				{"hash": "0xsweep", "from": vault0, "to": vault1, "value": "0x4563918244f40000"},
+				{"hash": "0xuser", "from": user, "to": vault1, "value": "0xde0b6b3a7640000"},
+			}}
+		case "eth_getTransactionReceipt":
+			var h string
+			_ = json.Unmarshal(req.Params[0], &h)
+			res = map[string]any{"status": "0x1", "logs": []map[string]any{}}
+			for _, l := range logs {
+				if l["transactionHash"] == h {
+					res = map[string]any{"status": "0x1", "logs": []map[string]any{l}}
+				}
+			}
+		case "eth_getLogs":
+			var p struct {
+				Address string `json:"address"`
+				Topics  []any  `json:"topics"`
+			}
+			_ = json.Unmarshal(req.Params[0], &p)
+			out := []map[string]any{}
+			if strings.EqualFold(p.Address, token) && len(p.Topics) > 2 && p.Topics[2] == pad(vault1) {
+				out = logs
+			}
+			res = out
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": res})
+	}))
+	defer srv.Close()
+	got, err := scanBlock(newEthRPC(srv.URL), 300, []string{vault1, vault0}, map[string]string{token: "usdc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, d := range got.Deposits {
+		kinds = append(kinds, d.DepositType+":"+d.TxHash)
+	}
+	if len(got.Deposits) != 2 || kinds[0] != "eth:0xuser" || kinds[1] != "erc20:0xt0x1" {
+		t.Fatalf("deposits %v: want the user's ETH and token deposits only, not the sweeps", kinds)
+	}
+}

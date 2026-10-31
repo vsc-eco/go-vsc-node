@@ -145,9 +145,17 @@ import (
 //     (TssAccuseStackActive), so testnet nodes take that build together: while
 //     an accusation is live the two builds can pick different parties, form
 //     different sessions and both fail until every node runs the same build.
+//   - 0.13.0 (consensusversion.V0_13_0): the EVM bridge batch. The key-custody
+//     rules cover the EVM bridge's vault key (OracleParams.EvmBridgeContracts,
+//     each bridge from its EvmBridgeFromHeight): its holders stay able to sign
+//     and reshare it after they leave the election, and their bond stays
+//     locked while it holds funds (EvmVaultCustodyActive). A keygen for a key
+//     an earlier keygen activated is dropped (KeygenOnceActive, TSS-KG-1). A
+//     new line because 0.12.0 ships first without the EVM bridge. Inert until
+//     0.13.0 is chain-active.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 12
+	currentConsensus    uint64 = 13
 	currentNonConsensus uint64 = 0
 )
 

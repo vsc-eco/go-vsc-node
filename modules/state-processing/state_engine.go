@@ -336,15 +336,23 @@ func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) (
 	// version costs an election read, and the overwhelming majority of calls here
 	// are for keys that are not BTC vault keys at all.
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
-	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
-		return nil, false
-	}
-	if !se.vaultRotationV2InForce(bh) {
-		return nil, false
-	}
-	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
-	if !ok {
-		return nil, false
+	var gen uint32
+	if btcContract != "" && strings.HasPrefix(keyId, btcContract+"-") {
+		if !se.vaultRotationV2InForce(bh) {
+			return nil, false
+		}
+		g, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+		if !ok {
+			return nil, false
+		}
+		gen = g
+	} else {
+		// A01: an EVM bridge's vault generation (0.13.0) proves its key the same way.
+		g, ok := se.evmVaultGenOfKey(keyId, bh)
+		if !ok {
+			return nil, false
+		}
+		gen = g
 	}
 	pub, err := hex.DecodeString(pubKeyHex)
 	if err != nil || len(pub) != 33 {
@@ -1606,9 +1614,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
-								if err != nil {
-									log.Debug("failed to find key", "keyId", sigPack.KeyId, "err", err)
+								tssKey, found := se.findKeyBlocking(sigPack.KeyId)
+								if !found {
+									log.Debug("failed to find key", "keyId", sigPack.KeyId)
 									continue
 								}
 								if tssKey.Status != tss_db.TssKeyActive {
@@ -1827,6 +1835,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						// TSS-KG-1 (0.13.0): a keygen for a key an earlier keygen
+						// already activated is dropped before it is stored. Its row
+						// would become the key's newest keygen commitment, and
+						// reshares and signs would then use that keygen's shares
+						// for a key whose on-chain pubkey is the first keygen's.
+						// The status read decides consensus state, so a read that
+						// failed on this node alone (a Mongo blip) blocks and
+						// retries instead of deciding differently from its peers;
+						// only a key that does not exist falls through.
+						if commitment.Type == "keygen" && consensusversion.KeygenOnceActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+							k, found := se.findKeyBlocking(commitment.KeyId)
+							if found && k.Status != tss_db.TssKeyCreated {
+								tssLog.Warn("dropping keygen commitment for a key already activated by an earlier keygen", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "epoch", commitment.Epoch, "keyEpoch", k.Epoch, "status", k.Status)
+								continue
+							}
+						}
 						se.tssLogSync(block.BlockNumber, "writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
@@ -1854,14 +1878,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 
-						var newKey bool
-						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-						if savedKeyInfo.Status == "created" {
-							newKey = true
-						}
+						// C-R6: one fail-stop read; a missing key reads as the zero
+						// key, as before.
+						savedKeyInfo, _ := se.findKeyBlocking(commitment.KeyId)
+						newKey := savedKeyInfo.Status == "created"
 
 						if commitment.Type == "keygen" || commitment.Type == "reshare" {
-							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							keyInfo := savedKeyInfo
 							if newKey && commitment.PublicKey != nil {
 								keyInfo.PublicKey = *commitment.PublicKey
 								keyInfo.CreatedHeight = int64(block.BlockNumber)
@@ -3106,6 +3129,28 @@ func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool)
 	return -unstakedAmount, true
 }
 
+// findKeyBlocking reads a TSS key row for a consensus decision (C-R6): a read
+// that failed on this node alone (a Mongo blip) blocks and retries, so the
+// node does not decide differently from its peers; found=false only when the
+// key does not exist. The vsc.tss_commitment and vsc.tss_sign handlers used
+// to treat any error as an absent key.
+func (se *StateEngine) findKeyBlocking(keyId string) (tss_db.TssKey, bool) {
+	var k tss_db.TssKey
+	found := false
+	blockingRetry("FindKey "+keyId, func() error {
+		got, err := se.tssKeys.FindKey(keyId)
+		if err != nil {
+			if isTransientReadErr(err) {
+				return err
+			}
+			return nil
+		}
+		k, found = got, true
+		return nil
+	})
+	return k, found
+}
+
 func blockingRetry(what string, read func() error, stallHook ...func(time.Duration)) {
 	const (
 		baseDelay = 100 * time.Millisecond
@@ -4032,4 +4077,22 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 		out = append(out, acct)
 	}
 	return out
+}
+
+// evmVaultGenOfKey parses keyId as a rotating EVM vault's generation key at bh
+// ("<contract>-primary" or "-primaryv<N>"). The contract list is checked first
+// (local and cheap), the consensus version only for a matching key.
+func (se *StateEngine) evmVaultGenOfKey(keyId string, bh uint64) (uint32, bool) {
+	if se.sconf == nil {
+		return 0, false
+	}
+	for _, c := range se.sconf.OracleParams().EvmBridgeContractIds(bh) {
+		if g, ok := btcvault.VaultGenFromKeyIdFor(c, btcvault.EvmVaultKeyBase, keyId); ok {
+			if !consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(bh)) {
+				return 0, false
+			}
+			return g, true
+		}
+	}
+	return 0, false
 }

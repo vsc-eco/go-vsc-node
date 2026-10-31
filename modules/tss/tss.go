@@ -1364,6 +1364,13 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				} else {
 					log.Info("keystore deleted (retired)", "keyId", key.Id, "epoch", key.Epoch)
 				}
+				// The activating keygen's copy (TSS-KG-1) is the same share; flatfs
+				// returns nil for a key that is not there.
+				if key.PublicKey != "" {
+					if delErr := tssMgr.keyStore.Delete(context.Background(), keygenShareKey(key.PublicKey)); delErr != nil {
+						log.Error("keystore delete failed (keygen copy)", "keyId", key.Id, "err", delErr)
+					}
+				}
 			}
 		}
 	}
@@ -1918,6 +1925,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					blockHeight: bh,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)),
 				},
 			}
 			dispatcher.msgCtx, dispatcher.cancelMsgs = context.WithCancel(context.Background())
@@ -1938,7 +1946,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Placed before any sessionId/commitment/dispatcher work, so it can
 			// never affect party lists or commitment CIDs (repo CLAUDE.md TSS
 			// Constraints 1-3). btcSignRefused logs the specific reason.
-			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) {
+			// A01: an EVM bridge's rotating vault is scoped the same way
+			// (evm_output_scoping.go); evmSignRefused passes every other key.
+			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) || tssMgr.evmSignRefused(action.KeyId, action.Args, bh) {
 				// B16: leave a trace. This skip used to `continue` with no database
 				// status update at all, so a signing request refused by policy sat
 				// unsigned forever with nothing recording why — an infinite SILENT
@@ -2166,6 +2176,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					epoch: keyInfo.Epoch,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minSignVer),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(minSignVer),
 				},
 				msg:                action.Args,
 				prevCommitmentType: prevCommitType,
@@ -2474,6 +2485,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					isReshare:   true,
 
 					dropUnattributableCulprits: consensusversion.TssUnattributableCulpritsDroppedActive(minReshareVer),
+					keygenShareCheck:           consensusversion.KeygenOnceActive(minReshareVer),
 				},
 				newParticipants:    newParticipants,
 				newEpoch:           currentElection.Epoch,
@@ -3246,6 +3258,10 @@ func (tssMgr *TssManager) KeyReshare(keyId string) (int, error) {
 		(tssMgr.vaultRotationV2InForce(bh) ||
 			(bh == 0 && tssMgr.sconf.ConsensusParams().VaultRotationV2ActivationHeight != 0)) {
 		return 0, fmt.Errorf("reshare disabled for BTC vault key %q under vault-rotation-v2; it rotates by keygen", keyId)
+	}
+	// A01: the same for an EVM bridge's vault generations from 0.13.0.
+	if _, evmKey := tssMgr.evmRotatingKey(keyId, bh); evmKey {
+		return 0, fmt.Errorf("reshare disabled for EVM vault key %q under vault rotation; it rotates by keygen", keyId)
 	}
 	tssMgr.bufferLock.Lock()
 	tssMgr.queuedActions = append(tssMgr.queuedActions, QueuedAction{

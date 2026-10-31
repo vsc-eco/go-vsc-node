@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -1113,6 +1114,23 @@ type OracleParams struct {
 	// is in this map, the oracle skips BLS relay for it.
 	ZKVerifierChains map[string]string `json:"zkVerifierChains,omitempty"`
 
+	// EvmBridgeContracts maps EVM chain symbols (e.g. "ETH") to the bridge
+	// (account-mapping evm-mapping-contract) contract IDs. Each bridge's vault
+	// is its "primary" TSS key, which the key-custody rules cover from 0.13.0
+	// (consensusversion.EvmVaultCustodyActive). Consensus input: every node of a
+	// network must carry the same map, as with ChainContracts["BTC"].
+	EvmBridgeContracts map[string]string `json:"evmBridgeContracts,omitempty"`
+
+	// EvmBridgeFromHeight is, per symbol of EvmBridgeContracts, the Hive block
+	// height from which that bridge is a consensus input (C-R2). A bridge that
+	// a later build adds would otherwise change unstake results (C2) on the
+	// nodes that run that build from the moment they start it. Ship a bridge
+	// with a height the chain has not reached; nodes still on an older build
+	// at that height stop agreeing, as at any consensus upgrade. A bridge with
+	// no height is never a consensus input, and a node refuses to start with
+	// one (ValidateEvmBridges).
+	EvmBridgeFromHeight map[string]uint64 `json:"evmBridgeFromHeight,omitempty"`
+
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
 
@@ -1142,6 +1160,46 @@ func (o OracleParams) HasZKVerifier(symbol string) bool {
 	}
 	_, ok := o.ZKVerifierChains[symbol]
 	return ok
+}
+
+// EvmBridgeContractIds returns the id of each EVM bridge contract that is a
+// consensus input at height (its EvmBridgeFromHeight is set and <= height),
+// sorted so every node iterates them in one order.
+func (o OracleParams) EvmBridgeContractIds(height uint64) []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for sym, c := range o.EvmBridgeContracts {
+		if from, ok := o.EvmBridgeFromHeight[sym]; c != "" && ok && from <= height {
+			ids = append(ids, c)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// EvmVaultKeyIds returns the TSS key id of each EVM bridge's vault
+// (<contract id>-primary) that is a consensus input at height (its
+// EvmBridgeFromHeight is set and <= height), sorted so every node iterates
+// them in one order.
+func (o OracleParams) EvmVaultKeyIds(height uint64) []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for sym, c := range o.EvmBridgeContracts {
+		if from, ok := o.EvmBridgeFromHeight[sym]; c != "" && ok && from <= height {
+			ids = append(ids, c+"-primary")
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ValidateEvmBridges refuses an EVM bridge without an activation height
+// (EvmBridgeFromHeight), which would otherwise never be a consensus input.
+func (o OracleParams) ValidateEvmBridges() error {
+	for sym, c := range o.EvmBridgeContracts {
+		if _, ok := o.EvmBridgeFromHeight[sym]; c != "" && !ok {
+			return fmt.Errorf("EVM bridge %s (%s) has no evmBridgeFromHeight", sym, c)
+		}
+	}
+	return nil
 }
 
 // ContractId returns the relay contract ID for the given chain symbol.

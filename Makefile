@@ -220,17 +220,20 @@ test-e2e:
 	@echo "==> In-process devnet e2e (E2E_DEVNET=1)"
 	E2E_DEVNET=1 $(GO_TEST) $(VERBOSE) -timeout 30m -run 'TestE2E|TestPostEVM' ./modules/e2e
 
-# EVM bridge e2e tests (TestEVMBridgeE2E, TestEVMAutoExpiry). These are gated
-# behind the `evm_e2e` build tag so the rest of modules/e2e builds without them,
-# and they load the EVM mapping contract wasm at run time rather than embedding a
-# committed binary. The wasm is built from the external vsc-eco/account-mapping
-# contract — point EVM_MAPPING_WASM at the compiled binary (defaults to
-# modules/e2e/artifacts/evm_mapping.wasm). Without the artifact the tests skip.
-# Requires Docker + MongoDB (9-node devnet). Example:
-#   make test-evm-e2e EVM_MAPPING_WASM=/abs/path/to/evm_mapping.wasm
+# EVM bridge devnet waves (tests/devnet/evm_bridge_*_devnet_test.go, build tag
+# evm_devnet): anvil as L1, the real evm-mapping-bot, TSS keygen and signing on
+# a docker devnet, the mock ZK verifier planting real headers. The artifacts are
+# built from account-mapping and zk-header-verifier checkouts next to this repo
+# (ACCOUNT_MAPPING_DIR / ZK_VERIFIER_DIR override). Needs Docker and anvil.
+# W0 and WMock bring up their own devnet, so they run after the shared waves.
+#   make test-evm-e2e
+EVM_SHARED_WAVES = TestEVMBridge_(W1|W2|W3|W5|W6Neg|W7|BotHFinding|BotResilience|ZK)
 test-evm-e2e:
-	@echo "==> EVM bridge e2e (build tag: evm_e2e)"
-	$(GO_TEST) $(VERBOSE) -tags evm_e2e -timeout 30m -run 'TestEVMBridgeE2E|TestEVMAutoExpiry' ./modules/e2e
+	@echo "==> EVM bridge devnet waves (build tag: evm_devnet)"
+	exports="$$(tests/devnet/suite/evm-artifacts.sh)" && eval "$$exports" && \
+	$(GO_TEST) $(VERBOSE) -tags evm_devnet -parallel 3 -timeout 180m -run '$(EVM_SHARED_WAVES)' ./tests/devnet/ && \
+	$(GO_TEST) $(VERBOSE) -tags evm_devnet -timeout 60m -run 'TestEVMBridge_W0_2_HostInstantiate' ./tests/devnet/ && \
+	$(GO_TEST) $(VERBOSE) -tags evm_devnet -timeout 60m -run 'TestEVMBridge_WMock_HeaderInjection' ./tests/devnet/
 
 clean:
 	rm -rf $(BUILD_DIR)
