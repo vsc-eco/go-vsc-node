@@ -249,7 +249,7 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 		t.Fatal(err)
 	}
 	b.botCfg = BotConfig{EthRPC: rpcURL, ContractID: e.amID, GraphQLURL: b.d.GQLEndpoint(e.gqlNode),
-		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey))}
+		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey)), NeedsFile: filepath.Join(t.TempDir(), "needs.json")}
 	b.bot = StartBot(t, ctx, b.botCfg)
 	// Real cadence while the test waits on the bot and while the bot is
 	// working (it logs each step; a deposit's steps are up to ~15 s apart).
@@ -271,14 +271,8 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	if err := b.anvil.SetBalance(ctx, userAddr, bbEth(20)); err != nil {
 		t.Fatal(err)
 	}
-	_, depBlock, err := b.anvil.SendETH(ctx, b.userKey, vault0, bbEth(10))
-	if err != nil {
+	if _, _, err := b.anvil.SendETH(ctx, b.userKey, vault0, bbEth(10)); err != nil {
 		t.Fatalf("user deposit: %v", err)
-	}
-	// As the A01 waves: the mock verifier gets the deposit's header at once
-	// (the background planter covers later blocks once a minute).
-	if err := e.plantFinalized(b.anvil, depBlock); err != nil {
-		t.Fatalf("plant the deposit's header: %v", err)
 	}
 	if err := e.fundDID(b.user, "10000.000"); err != nil {
 		t.Fatalf("fund user DID: %v", err)
@@ -288,23 +282,41 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	}
 }
 
-// l1Background mines an anvil block every 12 s of chain time and plants the
-// newest header at most once a minute (one L1 call per ~20 Hive blocks:
-// planting every block starves L2, SLOT-BOUNDARY-TX-1). The head, not anvil's
-// "finalized" (head - 64, 13 min of mining at 12 s): the mock verifier stands
-// for a prover that is keeping up; a late prover is the weather's proverPause.
+// l1Background mines an anvil block every 12 s of chain time and stands in
+// for the prover. It plants every block the bot lists in its NEEDS_FILE, as
+// the A01 waves plant each deposit's and withdrawal's block (the bot only links
+// a header down from the tip when it is within 32 blocks; past that it waits
+// for a proof at the block it asked for), and the newest finalized header at
+// most once a minute (one L1 call per ~20 Hive blocks: planting every block
+// starves L2, SLOT-BOUNDARY-TX-1). The weather's proverHold (late prover)
+// stops both. BB-1 runs 2-3 planted only the finalized block: the deposit
+// waited 15 min for a header that never came.
 func (b *bothEnv) l1Background(ctx context.Context) {
 	var planted uint64
+	done := map[uint64]bool{}
 	lastPlant := devnetNow()
 	for ctx.Err() == nil {
 		_ = b.anvil.Mine(ctx, 1)
 		b.mu.Lock()
 		held := devnetNow().Before(b.proverHold)
 		b.mu.Unlock()
-		if !held && devnetSince(lastPlant) >= time.Minute {
-			if f, err := b.anvil.cli.BlockNumber(ctx); err == nil && f > planted {
-				if err := b.e.plantFinalized(b.anvil, f); err == nil {
-					planted, lastPlant = f, devnetNow()
+		if !held {
+			for _, x := range b.neededBlocks() {
+				if done[x] {
+					continue
+				}
+				if f, err := b.anvil.Finalized(ctx); err == nil && f < x {
+					_ = b.anvil.Mine(ctx, 70) // anvil finalizes head - 64
+				}
+				if err := b.e.plantFinalized(b.anvil, x); err == nil {
+					done[x] = true
+				}
+			}
+			if devnetSince(lastPlant) >= time.Minute {
+				if f, err := b.anvil.Finalized(ctx); err == nil && f > planted {
+					if err := b.e.plantFinalized(b.anvil, f); err == nil {
+						planted, lastPlant = f, devnetNow()
+					}
 				}
 			}
 		}
@@ -313,6 +325,22 @@ func (b *bothEnv) l1Background(ctx context.Context) {
 		case <-devnetAfter(12 * time.Second):
 		}
 	}
+}
+
+// neededBlocks reads the bot's NEEDS_FILE: the L1 blocks whose headers it is
+// waiting for.
+func (b *bothEnv) neededBlocks() []uint64 {
+	raw, err := os.ReadFile(b.botCfg.NeedsFile)
+	if err != nil {
+		return nil
+	}
+	var n struct {
+		Blocks []uint64 `json:"blocks"`
+	}
+	if json.Unmarshal(raw, &n) != nil {
+		return nil
+	}
+	return n.Blocks
 }
 
 // botPoll is pollUntil for a condition only the bot brings about. The bot runs
