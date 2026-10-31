@@ -41,6 +41,15 @@ type Bot struct {
 	cmd  *exec.Cmd
 	mu   sync.Mutex
 	logs []string
+	last time.Time // wall time of the last log line (BusyWithin)
+}
+
+// BusyWithin reports whether the bot logged within d of wall time: it logs each
+// action it takes, so this is "the bot is working" for AddExternalHold.
+func (b *Bot) BusyWithin(d time.Duration) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return !b.last.IsZero() && time.Since(b.last) < d // wall: the bot runs on wall time
 }
 
 // StartBot launches the bot; it streams logs into the Bot for assertions.
@@ -93,6 +102,7 @@ func StartBot(t *testing.T, ctx context.Context, cfg BotConfig) *Bot {
 			line := r.Text()
 			b.mu.Lock()
 			b.logs = append(b.logs, line)
+			b.last = time.Now() // wall: the bot runs on wall time
 			b.mu.Unlock()
 		}
 	}
