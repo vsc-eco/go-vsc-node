@@ -502,8 +502,8 @@ func TestnetConfig() SystemConfig {
 		bootstrapPeers: TESTNET_BOOTSTRAP,
 		network:        "testnet",
 		netId:          "vsc-testnet",
-		// A21: no EVM bridge yet; one ships here (oracleParams
-		// EvmBridgeContracts + EvmBridgeFromHeight), never per operator.
+		// A21: the EVM bridge ships here (oracleParams EvmBridgeContracts +
+		// EvmBridgeFromHeight), never per operator.
 		evmBridgesBaked: true,
 		hiveChainId:     "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
 		gatewayWallet:   "vsc.gateway",
@@ -589,8 +589,14 @@ func TestnetConfig() SystemConfig {
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
 			ZKVerifierChains: map[string]string{
-				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
+				"ETH": "vsc1BUdUnJymESf3bBuZmunPQxZumfTMF4TDRW",
 			},
+			// The Sepolia bridge (account-mapping a68320d, deployed 2026-10-31
+			// at Hive block 7,817,502). Its rules apply only once 0.13.0 is
+			// chain-active (EvmVaultRotationActive), so the height can be the
+			// deploy height.
+			EvmBridgeContracts:  map[string]string{"ETH": "vsc1Bo8h3TMFAYX5rkgCeauXFywZGiMbUftQL2"},
+			EvmBridgeFromHeight: map[string]uint64{"ETH": 7_817_502},
 			// BTC keysign solvency SIGNAL: testnet esplora endpoint.
 			BtcL1BaseURL: "https://mempool.space/testnet/api",
 		},

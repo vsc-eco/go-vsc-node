@@ -26,13 +26,20 @@ func TestA21_EvmBridgeMapIsTheBuildsOnPublicNetworks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, net := range []string{"mainnet", "testnet"} {
+		built := FromNetwork(net).OracleParams()
 		c := FromNetwork(net)
 		if err := c.LoadOverrides(path); err != nil {
 			t.Fatal(err)
 		}
 		op := c.OracleParams()
-		if len(op.EvmBridgeContracts) != 0 || len(op.EvmBridgeFromHeight) != 0 || len(op.EvmBridgeContractIds(1_000_000)) != 0 {
-			t.Errorf("%s: the operator's bridge map took effect: %v %v", net, op.EvmBridgeContracts, op.EvmBridgeFromHeight)
+		if !sameMap(op.EvmBridgeContracts, built.EvmBridgeContracts) || !sameMap(op.EvmBridgeFromHeight, built.EvmBridgeFromHeight) {
+			t.Errorf("%s: the operator's bridge map took effect: %v %v, the build's is %v %v", net,
+				op.EvmBridgeContracts, op.EvmBridgeFromHeight, built.EvmBridgeContracts, built.EvmBridgeFromHeight)
+		}
+		for _, id := range op.EvmBridgeContractIds(1_000_000) {
+			if id == "vsc1Operators" {
+				t.Errorf("%s: the operator's bridge is a consensus input", net)
+			}
 		}
 		if op.BtcL1BaseURL != "https://example.invalid/api" {
 			t.Errorf("%s: another oracle override was dropped too", net)
