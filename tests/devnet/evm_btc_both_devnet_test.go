@@ -232,31 +232,39 @@ func TestBothBridges_FS7_ShareLossBothVaults(t *testing.T) {
 	}})
 }
 
-// FS8 (I6, I7): a member holding shares of BOTH vaults asks to unstake: held
-// while either vault's generation that it holds is funded. Records the verdict
-// with both funded, and again once the EVM side is drained (BTC alone must
-// still hold it: the lock is the union).
+// FS8 (I6, I7): the bond lock is the UNION of the BTC and EVM retiring vaults.
+// A committee member holding shares of a retiring, still-funded generation
+// cannot unstake its consensus bond (transactions.go:896, its own refusal text,
+// checked BEFORE the POA exit-halt, which refuses any seated member too). So the
+// verdict is the refusal TEXT, not the status. Three points in one cycle:
+//   - both gen-0s retiring and funded: refused by the bond lock;
+//   - BTC gen-0 swept, EVM gen-0 still draining: still refused by the bond lock;
+//   - both drained: not refused by the bond lock (the exit-halt may still refuse).
+//
+// The first version unstaked before any rotation (no retiring generation, the
+// lock cannot fire) and passed on the exit-halt's refusal: it proved nothing.
 func TestBothBridges_FS8_BondLockUnion(t *testing.T) {
 	bbSkipShort(t)
-	b := newBothEnv(t, 200*time.Minute, bbWeatherLevel("none"), true)
-	st, pending := vfUnstakeVerdict(t, b.d, b.ctx, 5, 10*time.Minute)
-	b.note("unstake with both vaults funded: status=%s pending=%d (want refused: FAILED or pending 0)", st, pending)
-	if st == "CONFIRMED" && pending > 0 {
-		t.Errorf("magi-5 could unstake while holding shares of two funded vaults")
-	}
-	// Drain the user's ETH from the bridge: the EVM vault keeps only dust.
-	bal, _ := strconv.ParseInt(strings.SplitN(b.e.stateStr("a-"+b.user+"-eth"), "|", 2)[0], 10, 64)
-	if bal > 0 {
-		recip := b.evmWithdraw(bbEth(9))
-		if err := b.botPoll(30*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
-			t.Fatalf("draining the EVM side: the withdrawal never reached L1\nbot:\n%s", b.botLogs())
+	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
+	const lockText = "consensus bond is locked: your committee holds a retiring"
+	check := func(node int, when string, wantLock bool) {
+		st, errText := b.unstakeVerdict(node)
+		b.note("unstake magi-%d (%s): status=%s error=%q", node, when, st, errText)
+		if locked := strings.Contains(errText, lockText); locked != wantLock {
+			t.Errorf("unstake magi-%d (%s): bond-lock refusal=%v, want %v (status=%s error=%q)", node, when, locked, wantLock, st, errText)
 		}
 	}
-	st, pending = vfUnstakeVerdict(t, b.d, b.ctx, 4, 10*time.Minute)
-	b.note("unstake with the EVM side drained, BTC funded: status=%s pending=%d (want refused)", st, pending)
-	if st == "CONFIRMED" && pending > 0 {
-		t.Errorf("magi-4 could unstake while the BTC vault it holds a share of is funded (union broken)")
-	}
+	b.runCycle(cycleHooks{
+		afterActivate: func() { check(5, "both gen-0 retiring + funded", true) },
+		btcSwept: func() {
+			if b.evmMigrated() {
+				b.note("FS8: the EVM batch finished before the BTC sweep; the EVM-only lock point is not measured this run")
+				return
+			}
+			check(4, "BTC gen-0 swept, EVM gen-0 still draining", true)
+		},
+		settled: func() { check(3, "both gen-0 drained", false) },
+	})
 }
 
 // FS9 (I15): the network runs 0.12 (EVM custody rules inert) while the BTC

@@ -468,6 +468,34 @@ func (b *bothEnv) outage(node int, span time.Duration) {
 
 // ---- BTC primitives ----
 
+// unstakeVerdict submits a 1.000 HIVE consensus_unstake from the node's witness
+// and returns its terminal status and refusal text (TransactionRecord.error).
+func (b *bothEnv) unstakeVerdict(node int) (string, string) {
+	tx, err := b.d.ConsensusUnstake(node, "1.000")
+	if err != nil {
+		return "BROADCAST_ERR", err.Error()
+	}
+	var st, errText string
+	_ = pollUntil(b.ctx, 10*time.Minute, func() bool {
+		var out struct {
+			FindTransaction []struct {
+				Status string  `json:"status"`
+				Error  *string `json:"error"`
+			} `json:"findTransaction"`
+		}
+		q := `query($id:String!){findTransaction(filterOptions:{byId:$id}){status error}}`
+		if b.d.gqlQuery(b.ctx, 1, q, map[string]any{"id": tx}, &out) != nil || len(out.FindTransaction) == 0 {
+			return false
+		}
+		st = out.FindTransaction[0].Status
+		if e := out.FindTransaction[0].Error; e != nil {
+			errText = *e
+		}
+		return st == "CONFIRMED" || st == "FAILED"
+	})
+	return st, errText
+}
+
 // tssKeyExists: node 1 has the TSS key record (created by a contract's
 // create_key, before its keygen).
 func (b *bothEnv) tssKeyExists(id string) bool {
@@ -721,6 +749,7 @@ type cycleHooks struct {
 	afterActivate   func()                // both new generations active
 	migrating       func()                // both migrations started
 	btcSigning      func()                // the BTC sweep's signatures requested, the EVM batch running
+	btcSwept        func()                // the BTC sweep confirmed, the EVM batch maybe still running
 	settled         func()                // everything settled
 }
 
@@ -795,6 +824,9 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 		t.Fatalf("BTC migration did not settle next to the EVM batch\n%s", strings.Join(b.notes, "\n"))
 	}
 	b.mark("BTC migration sweep confirmed (EVM batch running)", mig)
+	if h.btcSwept != nil {
+		h.btcSwept()
+	}
 	if st := b.btcWithdraw(1, 100_000); st != "" {
 		b.mark("BTC gen-1 withdrawal settled (EVM sweeps settling)", mig)
 	}
