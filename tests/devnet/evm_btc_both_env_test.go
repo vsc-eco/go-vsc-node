@@ -34,6 +34,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // bothDevnet starts the devnet with both bridges. floor13: pin consensus 0.13
@@ -72,6 +73,12 @@ func bothDevnet(t *testing.T, timeout time.Duration, floor13 bool, opts ...func(
 		cfg.SysConfigOverrides.TssParams = &params.TssParams{}
 	}
 	cfg.SysConfigOverrides.TssParams.RotateInterval = 60
+	// Witness BLS seeds = sha256("devnet-bls-"+witness), so devnetGatewayKeypair
+	// re-derives the gateway multisig keys (FS4 halt, FS11 leaver's key).
+	if cfg.MagiEnv == nil {
+		cfg.MagiEnv = map[string]string{}
+	}
+	cfg.MagiEnv["DEVNET_DETERMINISTIC_BLS"] = "1"
 	for _, o := range opts {
 		o(cfg)
 	}
@@ -189,12 +196,15 @@ type bothEnv struct {
 	mu         sync.Mutex
 	proverHold time.Time // no header planted before this (late prover)
 	timings    map[string]time.Duration
-	notes   []string
-	stop    context.CancelFunc
-	meter   *bbMeter
+	notes      []string
+	stop       context.CancelFunc
+	meter      *bbMeter
 	// botWaits counts the waits in flight on something only the bot brings
 	// about (botPoll); while any is, the pacemaker holds real cadence.
 	botWaits atomic.Int32
+	// onSigning runs once, when the BTC sweep's signatures are requested
+	// (cycleHooks.btcSigning).
+	onSigning func()
 }
 
 func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool, opts ...func(*Config)) *bothEnv {
@@ -458,6 +468,18 @@ func (b *bothEnv) outage(node int, span time.Duration) {
 
 // ---- BTC primitives ----
 
+// tssKeyExists: node 1 has the TSS key record (created by a contract's
+// create_key, before its keygen).
+func (b *bothEnv) tssKeyExists(id string) bool {
+	client, err := b.d.mongoClient(b.ctx)
+	if err != nil {
+		return false
+	}
+	defer client.Disconnect(b.ctx)
+	n, err := client.Database(b.d.nodeDbName(1)).Collection("tss_keys").CountDocuments(b.ctx, bson.M{"id": id})
+	return err == nil && n > 0
+}
+
 func (b *bothEnv) btcKeyID(gen int) string {
 	if gen == 0 {
 		return b.v.cid + "-main"
@@ -475,6 +497,10 @@ func (b *bothEnv) btcMigrate(retiring int, activePrimary string) string {
 	if sd == nil {
 		b.note("BTC sweep: no signing data (txid=%q migrateVault=%s)", txid, st)
 		return ""
+	}
+	if f := b.onSigning; f != nil {
+		b.onSigning = nil
+		f()
 	}
 	raw, ok := vfAwaitSweepSignatures(t, d, ctx, b.btcKeyID(retiring), sd)
 	if !ok {
@@ -593,7 +619,9 @@ func (b *bothEnv) loadGen(perHour int, stop <-chan struct{}) {
 		return
 	}
 	evmOK, evmErr, btcOK, btcErr := 0, 0, 0, 0
-	defer func() { b.note("load: EVM withdrawals %d ok / %d refused, BTC unmaps %d ok / %d refused", evmOK, evmErr, btcOK, btcErr) }()
+	defer func() {
+		b.note("load: EVM withdrawals %d ok / %d refused, BTC unmaps %d ok / %d refused", evmOK, evmErr, btcOK, btcErr)
+	}()
 	for {
 		select {
 		case <-stop:
@@ -682,10 +710,17 @@ func (b *bothEnv) evmMigrated() bool {
 
 // ---- the cycle ----
 
+// Faults that take L2 down belong in btcKeygen / btcSigning: they fire while the
+// network itself works (keygens, sweep signing, the bot's batch), not while the
+// harness makes its own owner calls, which single-bridge helpers treat as fatal
+// when L2 is down (FS1/FS3 first runs: "unmap rejected (INCLUDED)", "fee-reserve
+// addBlocks: INCLUDED").
 type cycleHooks struct {
-	afterCreateKeys func(start time.Time) // both keygens requested
+	afterCreateKeys func(start time.Time) // EVM keygen requested
+	btcKeygen       func()                // the BTC next-generation key is created, EVM keygen still pending
 	afterActivate   func()                // both new generations active
 	migrating       func()                // both migrations started
+	btcSigning      func()                // the BTC sweep's signatures requested, the EVM batch running
 	settled         func()                // everything settled
 }
 
@@ -705,6 +740,15 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 	if h.afterCreateKeys != nil {
 		h.afterCreateKeys(start)
 	}
+	if h.btcKeygen != nil {
+		go func() {
+			if err := pollUntil(b.ctx, 30*time.Minute, func() bool { return b.tssKeyExists(b.btcKeyID(1)) }); err == nil {
+				b.note("BTC key %s created at +%s", b.btcKeyID(1), devnetSince(start).Round(time.Second))
+				h.btcKeygen()
+			}
+		}()
+	}
+	b.onSigning = h.btcSigning
 	if st := b.btcWithdraw(0, 100_000); st != "" {
 		b.mark("BTC gen-0 withdrawal settled (EVM keygen running)", start)
 	}

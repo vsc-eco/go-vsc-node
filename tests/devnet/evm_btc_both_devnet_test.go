@@ -54,10 +54,11 @@ func TestBothBridges_BB2_FullCycleWeather(t *testing.T) {
 func TestBothBridges_FS1_KeygenQuorumLoss(t *testing.T) {
 	bbSkipShort(t)
 	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
-	b.runCycle(cycleHooks{afterCreateKeys: func(start time.Time) {
+	b.runCycle(cycleHooks{btcKeygen: func() {
+		now := devnetNow()
 		for _, n := range []int{4, 5} {
 			n := n
-			b.at(start, 20*time.Second, fmt.Sprintf("magi-%d down 4 min (quorum lost)", n), func() { b.outage(n, 4*time.Minute) })
+			b.at(now, 20*time.Second, fmt.Sprintf("magi-%d down 4 min (quorum lost, both keygens pending)", n), func() { b.outage(n, 4*time.Minute) })
 		}
 	}})
 }
@@ -67,11 +68,11 @@ func TestBothBridges_FS1_KeygenQuorumLoss(t *testing.T) {
 func TestBothBridges_FS2_HaltMidBothMigrations(t *testing.T) {
 	bbSkipShort(t)
 	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
-	b.runCycle(cycleHooks{migrating: func() {
+	b.runCycle(cycleHooks{btcSigning: func() {
 		now := devnetNow()
 		for _, n := range []int{4, 5} {
 			n := n
-			b.at(now, 45*time.Second, fmt.Sprintf("magi-%d down 3 min (L2 halted mid-migrations)", n), func() { b.outage(n, 3*time.Minute) })
+			b.at(now, 10*time.Second, fmt.Sprintf("magi-%d down 3 min (L2 halted mid-migrations)", n), func() { b.outage(n, 3*time.Minute) })
 		}
 	}})
 }
@@ -89,8 +90,8 @@ func TestBothBridges_FS3_FleetRestartMidBoth(t *testing.T) {
 		}
 	}
 	b.runCycle(cycleHooks{
-		afterCreateKeys: func(start time.Time) { b.at(start, 2*time.Minute, "fleet restart (keygens running)", restart("keygens")) },
-		migrating:       func() { b.at(devnetNow(), time.Minute, "fleet restart (migrations running)", restart("migrations")) },
+		btcKeygen:  func() { b.at(devnetNow(), 20*time.Second, "fleet restart (keygens running)", restart("keygens")) },
+		btcSigning: func() { b.at(devnetNow(), 10*time.Second, "fleet restart (migrations running)", restart("migrations")) },
 	})
 }
 
@@ -203,8 +204,8 @@ func TestBothBridges_FS5_PauseOneBridge(t *testing.T) {
 func TestBothBridges_FS6_PartitionDuringBothMigrations(t *testing.T) {
 	bbSkipShort(t)
 	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
-	b.runCycle(cycleHooks{migrating: func() {
-		b.at(devnetNow(), 30*time.Second, "magi-5 partitioned 4 min", func() {
+	b.runCycle(cycleHooks{btcSigning: func() {
+		b.at(devnetNow(), 10*time.Second, "magi-5 partitioned 4 min", func() {
 			for n := 1; n <= 4; n++ {
 				_ = b.d.Partition(b.ctx, 5, n)
 			}
