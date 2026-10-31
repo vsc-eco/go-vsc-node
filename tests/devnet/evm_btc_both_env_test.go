@@ -271,8 +271,14 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	if err := b.anvil.SetBalance(ctx, userAddr, bbEth(20)); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := b.anvil.SendETH(ctx, b.userKey, vault0, bbEth(10)); err != nil {
+	_, depBlock, err := b.anvil.SendETH(ctx, b.userKey, vault0, bbEth(10))
+	if err != nil {
 		t.Fatalf("user deposit: %v", err)
+	}
+	// As the A01 waves: the mock verifier gets the deposit's header at once
+	// (the background planter covers later blocks once a minute).
+	if err := e.plantFinalized(b.anvil, depBlock); err != nil {
+		t.Fatalf("plant the deposit's header: %v", err)
 	}
 	if err := e.fundDID(b.user, "10000.000"); err != nil {
 		t.Fatalf("fund user DID: %v", err)
@@ -283,8 +289,10 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 }
 
 // l1Background mines an anvil block every 12 s of chain time and plants the
-// newest finalized header at most once a minute (one L1 call per ~20 Hive
-// blocks: planting every block starves L2, SLOT-BOUNDARY-TX-1).
+// newest header at most once a minute (one L1 call per ~20 Hive blocks:
+// planting every block starves L2, SLOT-BOUNDARY-TX-1). The head, not anvil's
+// "finalized" (head - 64, 13 min of mining at 12 s): the mock verifier stands
+// for a prover that is keeping up; a late prover is the weather's proverPause.
 func (b *bothEnv) l1Background(ctx context.Context) {
 	var planted uint64
 	lastPlant := devnetNow()
@@ -294,7 +302,7 @@ func (b *bothEnv) l1Background(ctx context.Context) {
 		held := devnetNow().Before(b.proverHold)
 		b.mu.Unlock()
 		if !held && devnetSince(lastPlant) >= time.Minute {
-			if f, err := b.anvil.Finalized(ctx); err == nil && f > planted {
+			if f, err := b.anvil.cli.BlockNumber(ctx); err == nil && f > planted {
 				if err := b.e.plantFinalized(b.anvil, f); err == nil {
 					planted, lastPlant = f, devnetNow()
 				}
