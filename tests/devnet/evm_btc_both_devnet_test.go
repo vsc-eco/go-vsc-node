@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -292,4 +294,93 @@ func TestBothBridges_FS10_KeyLoad(t *testing.T) {
 	}
 	b.note("%d extra TSS keys seeded before the cycle", n)
 	b.runCycle(cycleHooks{})
+}
+
+// FS11 (I8): a member stands down while both keygens run, so the next election
+// changes the committee and rotates the gateway multisig in the same window as
+// both vault rotations: three rotations at once. Every one must finish, the
+// leaver must drop out of the committee and the gateway, and L2 must keep
+// producing (the whole-cycle marks and the meter show the cost).
+func TestBothBridges_FS11_CommitteeChangeMidBoth(t *testing.T) {
+	bbSkipShort(t)
+	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
+	d := b.d
+	leaver := d.cfg.Nodes
+	acct := d.witnessAccount(leaver)
+	leaverKey := *devnetGatewayKeypair(t, acct).GetPublicKeyString()
+	hc := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
+	gatewayHas := func(key string) (bool, int) {
+		accs, err := hc.GetAccount([]string{"vsc.gateway"})
+		if err != nil || len(accs) != 1 {
+			return false, -1
+		}
+		has := false
+		for _, ka := range accs[0].Active.KeyAuths {
+			if k, _ := ka[0].(string); k == key {
+				has = true
+			}
+		}
+		return has, len(accs[0].Active.KeyAuths)
+	}
+	if has, n := gatewayHas(leaverKey); !has {
+		t.Fatalf("precondition: %s's gateway key is not in vsc.gateway's active authority (%d keys)", acct, n)
+	}
+	var epoch0 uint64
+	var start time.Time
+	b.runCycle(cycleHooks{
+		afterCreateKeys: func(s time.Time) {
+			start = s
+			epoch0 = custodyCurrentEpoch(d, b.ctx, 1)
+			n := disableWitnessEverywhere(t, d, b.ctx, acct, d.cfg.Nodes)
+			b.note("%s stood down (%d witness rows) at epoch %d while both keygens run", acct, n, epoch0)
+			go func() {
+				if err := pollUntil(b.ctx, 45*time.Minute, func() bool {
+					m, err := d.GetElectionMembers(b.ctx, 1, custodyCurrentEpoch(d, b.ctx, 1))
+					return err == nil && len(m) > 0 && !slices.Contains(m, acct)
+				}); err == nil {
+					b.mark("committee change (leaver out of the election)", start)
+				}
+				if err := pollUntil(b.ctx, 45*time.Minute, func() bool { has, _ := gatewayHas(leaverKey); return !has }); err == nil {
+					b.mark("gateway multisig rotated (leaver's key out)", start)
+				}
+			}()
+		},
+		settled: func() {
+			ep := custodyCurrentEpoch(d, b.ctx, 1)
+			m, err := d.GetElectionMembers(b.ctx, 1, ep)
+			if err != nil || slices.Contains(m, acct) {
+				t.Errorf("%s still elected at epoch %d after standing down at %d (members %v, err %v)", acct, ep, epoch0, m, err)
+			}
+			if has, n := gatewayHas(leaverKey); has {
+				t.Errorf("the gateway multisig still lists %s's key after the committee change (%d keys)", acct, n)
+			}
+			assertAllNodesHealthy(t, d, b.ctx, 20)
+		},
+	})
+}
+
+// FS12 (I15): the fleet mid-upgrade, as testnet ran on 10-31: nodes 4-5 on the
+// 0.12 release (BB_OLD_CODE_DIR, a checkout of c29e935e), 1-3 on this tree, the
+// network at 0.12. A full BOTH cycle must run with no fork: EVM keys sign on old
+// and new nodes alike (only BTC keys are scoped below 0.13). Real 3 s blocks:
+// old images have no quiescence probe. Then every node must still agree.
+func TestBothBridges_FS12_MixedFleet012(t *testing.T) {
+	bbSkipShort(t)
+	old := os.Getenv("BB_OLD_CODE_DIR")
+	if old == "" {
+		t.Skip("set BB_OLD_CODE_DIR to a go-vsc-node checkout of the 0.12 release (c29e935e)")
+	}
+	b := newBothEnv(t, 360*time.Minute, bbWeatherLevel("none"), false, func(c *Config) {
+		c.FastBlocks = false
+		c.RealCadence = true
+		c.OldCodeSourceDir = old
+		c.OldCodeNodes = []int{4, 5}
+		c.OldCodeSysconfig = true
+	})
+	base := requireConverged(t, b.ctx, b.d, b.d.cfg.Nodes, 0, 10*time.Minute)
+	b.note("mixed fleet (4-5 on %s) converged at block %d", filepath.Base(old), base)
+	b.runCycle(cycleHooks{settled: func() {
+		after := requireConverged(t, b.ctx, b.d, b.d.cfg.Nodes, base+20, 10*time.Minute)
+		b.note("mixed fleet still converged at block %d after the cycle", after)
+	}})
 }

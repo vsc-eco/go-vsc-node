@@ -37,8 +37,9 @@ import (
 
 // bothDevnet starts the devnet with both bridges. floor13: pin consensus 0.13
 // from epoch 1 (EVM rules live); false keeps the floor at 0.12 so a test can
-// activate 0.13 mid-run (FS9).
-func bothDevnet(t *testing.T, timeout time.Duration, floor13 bool) (context.Context, *evmBridgeEnv, *vfEnv) {
+// activate 0.13 mid-run (FS9). opts adjust the config last (FS12's old-code
+// nodes).
+func bothDevnet(t *testing.T, timeout time.Duration, floor13 bool, opts ...func(*Config)) (context.Context, *evmBridgeEnv, *vfEnv) {
 	t.Helper()
 	wasm := os.Getenv("BTC_MAPPING_WASM_PATH")
 	if _, err := os.Stat(wasm); wasm == "" || err != nil {
@@ -70,6 +71,9 @@ func bothDevnet(t *testing.T, timeout time.Duration, floor13 bool) (context.Cont
 		cfg.SysConfigOverrides.TssParams = &params.TssParams{}
 	}
 	cfg.SysConfigOverrides.TssParams.RotateInterval = 60
+	for _, o := range opts {
+		o(cfg)
+	}
 	d, ctx := startDevnetNoKey(t, cfg, timeout)
 	if err := bootstrapEvmOwner(ctx, d); err != nil {
 		t.Fatal(err)
@@ -189,9 +193,9 @@ type bothEnv struct {
 	meter   *bbMeter
 }
 
-func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool) *bothEnv {
+func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool, opts ...func(*Config)) *bothEnv {
 	t.Helper()
-	ctx, e, v := bothDevnet(t, budget, floor13)
+	ctx, e, v := bothDevnet(t, budget, floor13, opts...)
 	b := &bothEnv{t: t, ctx: ctx, d: e.d, e: e, v: v, w: w, timings: map[string]time.Duration{}}
 	bctx, cancel := context.WithCancel(ctx)
 	b.stop = cancel
