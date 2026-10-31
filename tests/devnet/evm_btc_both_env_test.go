@@ -532,15 +532,23 @@ func (b *bothEnv) btcMigrate(retiring int, activePrimary string) string {
 	}
 	// Real cadence for the signature wait: after a fault the restarted nodes
 	// need wall-clock minutes (pubsub reconnect, readiness) while the fast clock
-	// would spend the wait's budget in seconds (FS2 run 2: "the retiring key
-	// never signed every input" right after a 3-min halt).
+	// would spend the wait's budget in seconds. One vfAwaitSweepSignatures pass
+	// is 2 min, shorter than FS2's 3-min halt (FS2 runs 2 and 3: "the retiring
+	// key never signed every input" while magi-4/5 were still down), so passes
+	// repeat for 15 min and the time to sign is recorded.
 	b.botWaits.Add(1)
-	raw, ok := vfAwaitSweepSignatures(t, d, ctx, b.btcKeyID(retiring), sd)
+	signStart := devnetNow()
+	var raw string
+	ok := false
+	for end := devnetNow().Add(15 * time.Minute); !ok && devnetNow().Before(end); {
+		raw, ok = vfAwaitSweepSignatures(t, d, ctx, b.btcKeyID(retiring), sd)
+	}
 	b.botWaits.Add(-1)
 	if !ok {
-		b.note("BTC sweep %s: the retiring key never signed every input", txid)
+		b.note("BTC sweep %s: the retiring key never signed every input within 15 min", txid)
 		return ""
 	}
+	b.mark("BTC sweep signed (from the request)", signStart)
 	bc, h, err := vfBroadcastAndMine(t, d, ctx, raw)
 	if err != nil {
 		b.note("BTC sweep broadcast: %v", err)
