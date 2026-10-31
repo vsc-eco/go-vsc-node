@@ -3,6 +3,7 @@ package devnet
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -130,7 +131,15 @@ func TestGatewayLeaversFreeze(t *testing.T) {
 	for _, n := range []int{9, 10} {
 		disableWitnessEverywhere(t, d, ctx, d.witnessAccount(n), cfg.Nodes)
 	}
-	_ = d.waitForElectionEpoch(ctx, 1, epoch+1, 15*time.Minute)
+	// The rotation that removes them runs under the first election without
+	// them; one landing before that election re-installs the same keys.
+	for end := devnetNow().Add(15 * time.Minute); devnetNow().Before(end); devnetSleep(10 * time.Second) {
+		m, _ := d.GetElectionMembers(ctx, 1, custodyCurrentEpoch(d, ctx, 1))
+		if len(m) > 0 && !slices.Contains(m, d.witnessAccount(9)) && !slices.Contains(m, "hive:"+d.witnessAccount(9)) {
+			break
+		}
+	}
+	rot = gwRotationMark(t, d)
 	rot = waitRotation("GW-P1 rotation after a graceful leave of magi-9/10", rot, 15*time.Minute)
 	thr, hs = holders()
 	t.Logf("RESULT GW-AUTH-1: threshold %d, holders %v", thr, hs)
