@@ -441,7 +441,8 @@ func TestBothBridges_FS13_HoldersGoneThenBack(t *testing.T) {
 	}
 	start := devnetNow()
 	b.note("magi-4/5 left and switched off at epoch %d; 3 of 5 key holders remain", e0)
-	recip1 := b.evmWithdraw(bbEth(1))
+	bal0 := b.userEth()
+	recip1, tx1 := b.evmWithdrawTx(bbEth(1))
 	evmGone := b.botPoll(15*time.Minute, func() bool { return b.l1Balance(recip1).Sign() > 0 }) == nil
 	b.note("while gone: EVM withdrawal paid=%v; epoch now %d (no new epoch = L2 halted)", evmGone, custodyCurrentEpoch(d, b.ctx, 1))
 	b.mark("holders gone (withdrawals tried)", start)
@@ -458,7 +459,12 @@ func TestBothBridges_FS13_HoldersGoneThenBack(t *testing.T) {
 	b.mark("holders back -> L2 elections resume", back)
 	b.note("after the return: elections resumed=%v (epoch %d -> %d)", resumed, eBack, custodyCurrentEpoch(d, b.ctx, 1))
 	late := b.botPoll(10*time.Minute, func() bool { return b.l1Balance(recip1).Sign() > 0 }) == nil
-	b.note("the EVM withdrawal sent during the halt paid later=%v (its L2 tx may have been dropped)", late)
+	st1, _ := d.FindTransactionStatus(b.ctx, 1, tx1)
+	bal1 := b.userEth()
+	b.note("the EVM withdrawal sent during the halt: L2 tx %s status %q, paid later=%v; user ETH on the bridge %s -> %s", tx1, st1, late, bal0, bal1)
+	if !late && bal1 != bal0 && strings.EqualFold(st1, "CONFIRMED") {
+		t.Errorf("the withdrawal sent during the halt was executed (user debited %s -> %s) but never paid on L1", bal0, bal1)
+	}
 	recip2 := b.evmWithdraw(bbEth(1))
 	evmBack := b.botPoll(30*time.Minute, func() bool { return b.l1Balance(recip2).Sign() > 0 }) == nil
 	b.mark("holders back -> fresh EVM withdrawal on L1", back)

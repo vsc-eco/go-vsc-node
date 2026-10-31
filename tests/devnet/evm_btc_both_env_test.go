@@ -705,16 +705,29 @@ func evmKeyName(gen int) string {
 
 // evmWithdraw asks the bridge to send wei to a fresh L1 address; returns it.
 func (b *bothEnv) evmWithdraw(wei *big.Int) ethcommon.Address {
+	to, _ := b.evmWithdrawTx(wei)
+	return to
+}
+
+// evmWithdrawTx is evmWithdraw that also returns the L2 transaction id.
+func (b *bothEnv) evmWithdrawTx(wei *big.Int) (ethcommon.Address, string) {
 	to := ethCrypto.PubkeyToAddress(mustKey(b.t).PublicKey)
 	k, err := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(b.userKey)))
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	if _, err := b.d.CallContractEvm(b.ctx, b.e.gqlNode, k, b.e.amID, "unmapETH",
-		fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), wei.String()), 5_000_000); err != nil {
+	tx, err := b.d.CallContractEvm(b.ctx, b.e.gqlNode, k, b.e.amID, "unmapETH",
+		fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), wei.String()), 5_000_000)
+	if err != nil {
 		b.t.Fatalf("unmapETH: %v", err)
 	}
-	return to
+	return to, tx
+}
+
+// userEth is the user's ETH balance on the bridge (wei, the first field of
+// its a-<did>-eth record; "" when absent).
+func (b *bothEnv) userEth() string {
+	return strings.SplitN(b.e.stateStr("a-"+b.user+"-eth"), "|", 2)[0]
 }
 
 func (b *bothEnv) l1Balance(addr ethcommon.Address) *big.Int {
