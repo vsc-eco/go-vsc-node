@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,6 +192,9 @@ type bothEnv struct {
 	notes   []string
 	stop    context.CancelFunc
 	meter   *bbMeter
+	// botWaits counts the waits in flight on something only the bot brings
+	// about (botPoll); while any is, the pacemaker holds real cadence.
+	botWaits atomic.Int32
 }
 
 func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool, opts ...func(*Config)) *bothEnv {
@@ -247,10 +251,14 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	b.botCfg = BotConfig{EthRPC: rpcURL, ContractID: e.amID, GraphQLURL: b.d.GQLEndpoint(e.gqlNode),
 		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey))}
 	b.bot = StartBot(t, ctx, b.botCfg)
+	// Real cadence while the test waits on the bot and while the bot is
+	// working (it logs each step; a deposit's steps are up to ~15 s apart).
+	// BB-1's first run held only within 2 s of a log line: the fast clock spent
+	// the deposit wait's 15 min in 77 s of wall time, mid-pipeline.
 	b.d.AddExternalHold("evm bot", func() bool {
 		b.botMu.Lock()
 		defer b.botMu.Unlock()
-		return b.bot != nil && b.bot.BusyWithin(2*time.Second)
+		return b.bot != nil && (b.botWaits.Load() > 0 || b.bot.BusyWithin(30*time.Second))
 	})
 	if ok, msg := e.ownerCall("setVaultOperator", botDID); !ok {
 		t.Fatalf("setVaultOperator: %s", msg)
@@ -269,7 +277,7 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	if err := e.fundDID(b.user, "10000.000"); err != nil {
 		t.Fatalf("fund user DID: %v", err)
 	}
-	if err := pollUntil(ctx, 15*time.Minute, func() bool { return e.stateStr("a-"+b.user+"-eth") != "" }); err != nil {
+	if err := b.botPoll(15*time.Minute, func() bool { return e.stateStr("a-"+b.user+"-eth") != "" }); err != nil {
 		t.Fatalf("the user's ETH deposit was never mapped\nbot:\n%s", b.botLogs())
 	}
 }
@@ -297,6 +305,16 @@ func (b *bothEnv) l1Background(ctx context.Context) {
 		case <-devnetAfter(12 * time.Second):
 		}
 	}
+}
+
+// botPoll is pollUntil for a condition only the bot brings about. The bot runs
+// on wall time, so the pacemaker holds real cadence for the whole wait (the
+// "evm bot" external hold reads botWaits); otherwise a fast devnet's clock
+// spends the budget in a fraction of the bot's time.
+func (b *bothEnv) botPoll(budget time.Duration, cond func() bool) error {
+	b.botWaits.Add(1)
+	defer b.botWaits.Add(-1)
+	return pollUntil(b.ctx, budget, cond)
 }
 
 func bbEth(n int64) *big.Int { return new(big.Int).Mul(big.NewInt(n), big.NewInt(1e18)) }
@@ -656,7 +674,7 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 		t.Fatalf("EVM keygen never landed next to the BTC rotation: %v\nbot:\n%s", err, b.botLogs())
 	}
 	b.mark("EVM createKey -> keygen", start)
-	if err := pollUntil(b.ctx, 60*time.Minute, func() bool { ok, _ := e.ownerCall("activateKey", "{}"); return ok }); err != nil {
+	if err := b.botPoll(60*time.Minute, func() bool { ok, _ := e.ownerCall("activateKey", "{}"); return ok }); err != nil {
 		t.Fatalf("EVM activateKey never accepted next to the BTC rotation: %v\nbot:\n%s", err, b.botLogs())
 	}
 	b.mark("EVM createKey -> activateKey", start)
@@ -693,11 +711,11 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 	if st := b.btcWithdraw(1, 100_000); st != "" {
 		b.mark("BTC gen-1 withdrawal settled (EVM sweeps settling)", mig)
 	}
-	if err := pollUntil(b.ctx, 60*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
+	if err := b.botPoll(60*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
 		t.Fatalf("the EVM withdrawal queued during both migrations never reached L1\nbot:\n%s", b.botLogs())
 	}
 	b.mark("EVM withdrawal queued in the migration -> on L1", mig)
-	if err := pollUntil(b.ctx, 60*time.Minute, b.evmMigrated); err != nil {
+	if err := b.botPoll(60*time.Minute, b.evmMigrated); err != nil {
 		t.Fatalf("EVM generation 0 never drained, retired and purged: msr=%q\nbot:\n%s", e.stateStr("msr"), b.botLogs())
 	}
 	b.mark("EVM batch confirmed, gen 0 retired + purged", mig)

@@ -125,7 +125,7 @@ func TestBothBridges_FS4_BtcHaltEvmKeepsSigning(t *testing.T) {
 	}
 	b.mark("BTC halted", start)
 	recip := b.evmWithdraw(bbEth(1))
-	if err := pollUntil(b.ctx, 30*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
+	if err := b.botPoll(30*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
 		t.Fatalf("an EVM withdrawal did not pay out while only BTC was halted (I5)\nbot:\n%s", b.botLogs())
 	}
 	b.mark("EVM withdrawal paid while BTC halted", start)
@@ -173,7 +173,7 @@ func TestBothBridges_FS5_PauseOneBridge(t *testing.T) {
 	if err := pollUntil(b.ctx, 45*time.Minute, func() bool { return b.e.keyPub(evmKeyName(1)) != "" }); err != nil {
 		t.Fatalf("EVM keygen after unpause: %v", err)
 	}
-	if err := pollUntil(b.ctx, 60*time.Minute, func() bool { ok, _ := b.e.ownerCall("activateKey", "{}"); return ok }); err != nil {
+	if err := b.botPoll(60*time.Minute, func() bool { ok, _ := b.e.ownerCall("activateKey", "{}"); return ok }); err != nil {
 		t.Fatalf("EVM activation after unpause: %v\nbot:\n%s", err, b.botLogs())
 	}
 	b.mark("EVM rotation after unpause", start)
@@ -226,8 +226,10 @@ func TestBothBridges_FS8_BondLockUnion(t *testing.T) {
 	// Drain the user's ETH from the bridge: the EVM vault keeps only dust.
 	bal, _ := strconv.ParseInt(strings.SplitN(b.e.stateStr("a-"+b.user+"-eth"), "|", 2)[0], 10, 64)
 	if bal > 0 {
-		b.evmWithdraw(bbEth(9))
-		devnetSleep(5 * time.Minute)
+		recip := b.evmWithdraw(bbEth(9))
+		if err := b.botPoll(30*time.Minute, func() bool { return b.l1Balance(recip).Sign() > 0 }); err != nil {
+			t.Fatalf("draining the EVM side: the withdrawal never reached L1\nbot:\n%s", b.botLogs())
+		}
 	}
 	st, pending = vfUnstakeVerdict(t, b.d, b.ctx, 4, 10*time.Minute)
 	b.note("unstake with the EVM side drained, BTC funded: status=%s pending=%d (want refused)", st, pending)
@@ -271,7 +273,7 @@ func TestBothBridges_FS9_Activate013MidBtcRotation(t *testing.T) {
 	if err := pollUntil(b.ctx, 45*time.Minute, func() bool { return b.e.keyPub(evmKeyName(1)) != "" }); err != nil {
 		t.Fatalf("EVM keygen under 0.13: %v", err)
 	}
-	if err := pollUntil(b.ctx, 60*time.Minute, func() bool { ok, _ := b.e.ownerCall("activateKey", "{}"); return ok }); err != nil {
+	if err := b.botPoll(60*time.Minute, func() bool { ok, _ := b.e.ownerCall("activateKey", "{}"); return ok }); err != nil {
 		t.Fatalf("EVM activation under 0.13: %v\nbot:\n%s", err, b.botLogs())
 	}
 	b.mark("EVM rotation after 0.13 activated", start)
