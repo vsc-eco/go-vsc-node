@@ -108,6 +108,7 @@ func (a *AnnouncementsManager) Start() *promise.Promise[any] {
 	return promise.New(func(resolve func(any), reject func(error)) {
 		// run the first announcement immediately
 		go func() {
+			a.waitForReachability(a.ctx)
 			err := a.announce(a.ctx)
 			if err != nil {
 				alog.Error("error announcing", "err", err)
@@ -138,6 +139,41 @@ func (a *AnnouncementsManager) Start() *promise.Promise[any] {
 		a.cron.Start() // start the cron scheduler
 		resolve(nil)
 	})
+}
+
+// startupReachabilityWait bounds how long the first announcement after start
+// waits for libp2p to report reachability. On mainnet `enabled` is
+// ReachabilityPublic, and the p2p module records only the first
+// EvtLocalReachabilityChanged, within 30 s of start (modules/p2p/libp2p.go).
+// Announcing before it lands reads Unknown and publishes enabled=false for the
+// next 24 h; a fleet-wide restart onto a new image did exactly that to 10 of 16
+// mainnet witnesses on 2026-10-30 and starved the next election. Past this
+// bound the status cannot change until restart, so waiting longer gains
+// nothing.
+var startupReachabilityWait = 45 * time.Second
+
+// waitForReachability holds the startup announcement until the reachability
+// status is known or startupReachabilityWait passes. Mainnet only: testnet and
+// devnet announce enabled regardless of reachability, and mocknet (the e2e
+// harness) keeps its immediate announcement.
+func (a *AnnouncementsManager) waitForReachability(ctx context.Context) {
+	if a.sconf == nil || !a.sconf.OnMainnet() {
+		return
+	}
+	deadline := time.NewTimer(startupReachabilityWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for a.safeStatus() == network.ReachabilityUnknown {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			alog.Warn("reachability still unknown; announcing as not public", "waited", startupReachabilityWait)
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func (a *AnnouncementsManager) Stop() error {
