@@ -195,6 +195,9 @@ type fakePool struct {
 	confirmed uint64
 	txs       []*fakePoolTx // in submission order
 	staleRead *uint64       // set: the next getAccountNonce answers this, once
+	// stuck: transactions this node holds that no block can include (the nodes
+	// a block needs never received them: TX-GOSSIP-STALL, devnet FS2/FS6).
+	stuck map[string]bool
 }
 
 type fakePoolTx struct {
@@ -236,7 +239,7 @@ func (p *fakePool) pending(n uint64) *fakePoolTx {
 // produce includes the pending transactions from the account nonce on, one
 // per nonce, and deletes the ones that lost their nonce.
 func (p *fakePool) produce() {
-	for tx := p.pending(p.confirmed); tx != nil; tx = p.pending(p.confirmed) {
+	for tx := p.includable(p.confirmed); tx != nil; tx = p.includable(p.confirmed) {
 		tx.status = "CONFIRMED"
 		p.confirmed++
 	}
@@ -247,6 +250,16 @@ func (p *fakePool) produce() {
 		}
 	}
 	p.txs = kept
+}
+
+// includable is the first pending transaction at nonce n a block can include.
+func (p *fakePool) includable(n uint64) *fakePoolTx {
+	for _, tx := range p.txs {
+		if tx.status == "UNCONFIRMED" && tx.nonce == n && !p.stuck[tx.id] {
+			return tx
+		}
+	}
+	return nil
 }
 
 func (p *fakePool) byID(id string) *fakePoolTx {

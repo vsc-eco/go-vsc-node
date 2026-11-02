@@ -127,6 +127,37 @@ type l2Submitter struct {
 	haveNext  bool
 	seeded    bool      // the bot's own pending transactions were read once at start
 	holeSince time.Time // first "missing previous nonce" refusal since the last accepted submission
+
+	// B-R1b (TX-GOSSIP-STALL, devnet FS2/FS6): the account nonce last read and
+	// when it last moved. The bot's own node can hold its transaction while the
+	// nodes that would include it never received it; then the account nonce
+	// stops moving and every later call stacks behind the lost one. Guarded by mu.
+	lastConfirmed  uint64
+	confirmedSince time.Time
+	now            func() time.Time // nil: time.Now (tests set it)
+}
+
+// nonceStallGrace: how long the account nonce may stay put while the bot has
+// transactions above it before the bot starts again from the account nonce,
+// as the BTC mapping bot does on every call (mapper/call_contract_l2.go: a
+// fresh account nonce per submission). Longer than a short L2 halt, so a
+// healthy pipeline is not reset by an ordinary pause.
+var nonceStallGrace = 5 * time.Minute
+
+// maxPendingL2: the most of its own transactions the bot keeps above the
+// account nonce. Past it the bot waits for the chain instead of stacking more
+// (FS2 stacked 100, the node's cap, and the bridge froze).
+var maxPendingL2 uint64 = 32
+
+// errL2PipelineFull: the bot already has maxPendingL2 transactions above the
+// account nonce; the call is left for a later tick.
+var errL2PipelineFull = errors.New("bot has maxPendingL2 transactions pending above the account nonce")
+
+func (s *l2Submitter) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // nonceHoleGrace: how long the node may keep refusing the bot's next nonce
@@ -1356,6 +1387,15 @@ func (s *l2Submitter) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Tx),
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
+	if err != nil && isNonceTooFastErr(err) {
+		// B-R1b: the node caps an account at 100 pending nonces above its
+		// account nonce; reaching it means the earlier ones are not landing.
+		// Continue from the account nonce at once.
+		slog.Warn("B-R1b: the node refuses nonces this far ahead; continuing from the account nonce",
+			"action", action, "nonce", nonce, "err", err)
+		s.haveNext, s.holeSince = false, time.Time{}
+		return "", fmt.Errorf("broadcast L2 tx: %w", err)
+	}
 	if err != nil && isMissingPrevNonceErr(err) {
 		// B-R1: the node does not hold the bot's previous transaction. Give
 		// gossip nonceHoleGrace to bring it; past that, refill from the
@@ -1425,6 +1465,11 @@ func (s *l2Submitter) callWithRetry(
 			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
 				"action", action, "id", txID)
 			return txID, nil
+		}
+		// B-R1b: the bot is waiting for the chain to take its pending calls;
+		// retrying inside this tick cannot change that.
+		if errors.Is(err, errL2PipelineFull) {
+			return "", err
 		}
 		lastErr = err
 		slog.Warn("L2 submission failed",
@@ -1498,7 +1543,25 @@ func (s *l2Submitter) nextNonce(ctx context.Context, account string) (uint64, er
 			s.next, s.haveNext = top+1, true
 		}
 	}
+	now := s.clock()
+	if s.confirmedSince.IsZero() || confirmed != s.lastConfirmed {
+		s.lastConfirmed, s.confirmedSince = confirmed, now
+	}
 	if s.haveNext && s.next > confirmed {
+		if now.Sub(s.confirmedSince) > nonceStallGrace {
+			// B-R1b: the chain has not taken the bot's next transaction for
+			// nonceStallGrace. Continue from the account nonce (the BTC bot's
+			// rule): the call goes out again at the stuck nonce and reaches the
+			// nodes that lack the earlier one; the pool keeps one per nonce.
+			slog.Warn("B-R1b: the account nonce has not moved; continuing from it",
+				"confirmed", confirmed, "next", s.next, "since", s.confirmedSince)
+			s.haveNext = false
+			s.confirmedSince = now
+			return confirmed, nil
+		}
+		if s.next-confirmed >= maxPendingL2 {
+			return 0, fmt.Errorf("%w (%d above account nonce %d)", errL2PipelineFull, s.next-confirmed, confirmed)
+		}
 		return s.next, nil
 	}
 	return confirmed, nil
@@ -1513,6 +1576,12 @@ func localTxID(tx []byte) string {
 		return ""
 	}
 	return c.String()
+}
+
+// isNonceTooFastErr: the pool refused a nonce more than 100 above the
+// account nonce (transaction-pool.go "nonce incrementing too fast").
+func isNonceTooFastErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "nonce incrementing too fast")
 }
 
 // isMissingPrevNonceErr: the pool refused a nonce above the account nonce
