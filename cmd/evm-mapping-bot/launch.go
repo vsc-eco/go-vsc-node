@@ -678,9 +678,35 @@ func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter
 	slog.Info("RP-9: headers attested", "root", f, "count", len(items))
 }
 
+// linkDownRC is the rc_limit of one submitHeaders call: the node requires that
+// much available RC before it accepts the call (the call itself uses ~17.5k
+// for a full run of linkPerCall headers).
+const linkDownRC = 30_000
+
 // linkDown stores blocks x .. tip-1 with submitHeaders, newest first (each call
 // links to the parent hash the previous one stored).
+//
+// RP9-LINKDOWN-RESTART (testnet 10-31): it resumes below the headers a partial
+// earlier run already stored (the verifier re-stores a stored header and charges
+// for it again, so restarting at the tip re-paid the top runs forever), and it
+// sends only the runs the bot's available RC covers this tick (all runs at once
+// left the ones RC could not cover pending, holding every later bot nonce).
 func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid string, x, tip uint64) {
+	tip = linkedFloor(ctx, submitter.gql, vid, x, tip)
+	if tip <= x {
+		return // every needed header is stored already
+	}
+	budget := -1 // runs this tick; -1: RC unknown, no cap
+	if rc, known, err := submitter.gql.fetchAccountRC(ctx, submitter.did.String()); err == nil && known {
+		budget = int(rc / linkDownRC)
+		if need := (int(tip-x) + linkPerCall - 1) / linkPerCall; need > budget {
+			slog.Error("RP-9: linking these headers down needs more RC than the bot has; it goes on a run per tick as RC allows (fund the bot to finish sooner)",
+				"block", x, "tip", tip, "runs", need, "rc_needed", need*linkDownRC, "rc_available", rc)
+		}
+		if budget == 0 {
+			return
+		}
+	}
 	slog.Warn("RP-9: no EIP-2935 attestation for a needed header; linking down from the proven tip", "block", x, "tip", tip, "headers", tip-x)
 	// Oldest first: hs[i] is block x+i. Each call is the newest run not yet
 	// stored that fits one payload, so its last header is the parent of the
@@ -708,12 +734,48 @@ func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid stri
 			return
 		}
 		lo, top := x+uint64(end-n), x+uint64(end)-1
-		if _, err := submitter.callContractL2(ctx, vid, "submitHeaders", wrap(hs[end-n:end]), 30_000); err != nil {
+		if budget == 0 {
+			slog.Info("RP-9: link-down paused for RC; it resumes from the stored headers next tick", "stored_down_to", top+1, "block", x)
+			return
+		}
+		if _, err := submitter.callContractL2(ctx, vid, "submitHeaders", wrap(hs[end-n:end]), linkDownRC); err != nil {
 			slog.Warn("RP-9: submitHeaders", "from", lo, "to", top, "err", err)
 			return
 		}
+		if budget > 0 {
+			budget--
+		}
 		end -= n
 	}
+}
+
+// linkedFloor is the lowest block of the stored run that reaches down from
+// tip-1 (tip itself when tip-1 is not stored): a partial link-down left blocks
+// [floor, tip) stored, so the next one only needs [x, floor). A failed read
+// keeps tip (the old behaviour: link from the proven tip).
+func linkedFloor(ctx context.Context, gql *vscGraphQL, vid string, x, tip uint64) uint64 {
+	const batch = 64
+	for tip > x {
+		lo := x
+		if tip-x > batch {
+			lo = tip - batch
+		}
+		keys := make([]string, 0, tip-lo)
+		for n := lo; n < tip; n++ {
+			keys = append(keys, "b-"+strconv.FormatUint(n, 10))
+		}
+		st, err := gql.fetchContractStateHex(ctx, vid, keys)
+		if err != nil {
+			return tip
+		}
+		for n := tip; n > lo; n-- {
+			if len(st["b-"+strconv.FormatUint(n-1, 10)]) < 137 {
+				return n
+			}
+		}
+		tip = lo
+	}
+	return tip
 }
 
 // packHeaders is how many items from the front fit one call: at most max, and
