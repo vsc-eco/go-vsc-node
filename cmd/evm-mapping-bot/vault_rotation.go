@@ -339,33 +339,51 @@ const sweepRedriveL1Blocks = 33
 var (
 	vaultOpMu     sync.Mutex
 	lastVaultOpAt = map[string]time.Time{}
-	notOperator   bool
+	// notOperatorAt: when the bridge last refused an operator op because this
+	// bot is not its vault operator (zero: not latched).
+	notOperatorAt time.Time
+	vaultOpNow    = time.Now // tests set it
 )
+
+// notOperatorRecheck is how long the not-operator latch holds before the
+// driver tries again (BTC bot BOT-LATCH-1, mapper/vault_rotation.go
+// notOwnerRecheck: a latch for the life of the process left a bot appointed
+// operator after it started idle until someone restarted it). The ops are dry
+// run first, so a re-check refused again costs no RC.
+const notOperatorRecheck = 10 * time.Minute
+
+// notOperatorLatched reports whether the latch is holding. Caller holds
+// vaultOpMu.
+func notOperatorLatched() bool {
+	return !notOperatorAt.IsZero() && vaultOpNow().Sub(notOperatorAt) < notOperatorRecheck
+}
 
 func vaultOpDue(kind string) bool {
 	vaultOpMu.Lock()
 	defer vaultOpMu.Unlock()
-	if notOperator {
+	if notOperatorLatched() {
 		return false
 	}
-	return time.Since(lastVaultOpAt[kind]) >= vaultOpMinInterval
+	return vaultOpNow().Sub(lastVaultOpAt[kind]) >= vaultOpMinInterval
 }
 
 func noteVaultOp(kind string) {
 	vaultOpMu.Lock()
-	lastVaultOpAt[kind] = time.Now()
+	lastVaultOpAt[kind] = vaultOpNow()
 	vaultOpMu.Unlock()
 }
 
-// noteRefusal latches "this bot is not the vault operator": no retry of an
-// operator op can succeed, so stop issuing them (BTC bot notOwner).
+// noteRefusal latches "this bot is not the vault operator" for
+// notOperatorRecheck: until the owner appoints it no operator op can succeed,
+// so the driver stops issuing them and tries again after the latch (BTC bot
+// notOwner + BOT-LATCH-1). Reported once per latch, not once per block.
 func noteRefusal(err error) {
 	if err != nil && strings.Contains(err.Error(), "owner or the vault operator") {
 		vaultOpMu.Lock()
-		if !notOperator {
-			slog.Error("this bot is not the bridge's vault operator: rotation ops stop (setVaultOperator to this DID)")
+		if !notOperatorLatched() {
+			slog.Error("this bot is not the bridge's vault operator: rotation ops stop, re-checked every 10 min (setVaultOperator to this DID)")
 		}
-		notOperator = true
+		notOperatorAt = vaultOpNow()
 		vaultOpMu.Unlock()
 	}
 }
