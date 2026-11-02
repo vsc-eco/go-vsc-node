@@ -254,8 +254,7 @@ func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key
 	if local == nil {
 		return nil, false
 	}
-	databin := datalayer.NewDataBinFromCid(local, stateCid)
-	keyCid, err := databin.Get(key)
+	keyCid, err := datalayer.GetPathCid(local, stateCid, key) // 18u: one key, not the whole state
 	if err != nil || keyCid == nil {
 		return nil, false
 	}
@@ -319,9 +318,10 @@ func (tssMgr *TssManager) contractStateReaderAtStrict(contractID string, bh uint
 	if local == nil {
 		return fail(fmt.Errorf("local datalayer view unavailable"))
 	}
-	databin := datalayer.NewDataBinFromCid(local, stateCid)
+	// 18u: each key on its own path (datalayer.GetPathCid, identical answers to
+	// DataBin.Get), not the whole state on every BTC sign.
 	return func(key string) ([]byte, bool, error) {
-		keyCid, err := databin.Get(key)
+		keyCid, err := datalayer.GetPathCid(local, stateCid, key)
 		if err != nil {
 			// DataBin.Get returns os.ErrNotExist for a genuinely ABSENT key, NOT a
 			// (nil, nil): boxo BasicDirectory.Find maps mdag.ErrLinkNotFound ->
