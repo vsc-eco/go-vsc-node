@@ -38,7 +38,7 @@ func TestP7_RetryEndpointAuthValidationAndThrottle(t *testing.T) {
 			t.Fatalf("auth %q: %d, want 401", auth, code)
 		}
 	}
-	for _, body := range []string{`{}`, `{"deposits":[]}`, `{"deposits":["0x12"]}`, `{"deposits":["`+dlTx+`"],"x":1}`, `not json`} {
+	for _, body := range []string{`{}`, `{"deposits":[]}`, `{"deposits":["0x12"]}`, `{"deposits":["` + dlTx + `"],"x":1}`, `not json`} {
 		if code, _ := postRetry(t, r, "Bearer s3cret", body); code != http.StatusBadRequest {
 			t.Fatalf("body %s: %d, want 400", body, code)
 		}
