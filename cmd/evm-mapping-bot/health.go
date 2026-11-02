@@ -296,9 +296,12 @@ func (h *botHealth) handler() http.HandlerFunc {
 }
 
 // serveHealth serves GET /health on addr until the process exits.
-func serveHealth(addr string, h *botHealth) {
+func serveHealth(addr string, h *botHealth, retries *deadLetterRetries) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", h.handler())
+	if retries != nil {
+		mux.Handle("POST /retry", retries.handler()) // P7
+	}
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
 	slog.Info("health endpoint listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != nil {

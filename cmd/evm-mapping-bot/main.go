@@ -149,6 +149,10 @@ var nonceStallGrace = 5 * time.Minute
 // (FS2 stacked 100, the node's cap, and the bridge froze).
 var maxPendingL2 uint64 = 32
 
+// deadLetterRetryQueue: operator retry requests for dead-lettered deposits
+// (POST /retry, retry.go); nil until main sets it.
+var deadLetterRetryQueue *deadLetterRetries
+
 // errL2PipelineFull: the bot already has maxPendingL2 transactions above the
 // account nonce; the call is left for a later tick.
 var errL2PipelineFull = errors.New("bot has maxPendingL2 transactions pending above the account nonce")
@@ -3025,8 +3029,9 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	slog.Info("MagiDeposit address (RP-7)", "address", depositContractAddress(vault))
 
 	health := newBotHealth(cfg.PollInterval)
+	deadLetterRetryQueue = newDeadLetterRetries(os.Getenv("OPS_API_KEY"))
 	if addr := os.Getenv("HEALTH_ADDR"); addr != "" {
-		go serveHealth(addr, health)
+		go serveHealth(addr, health, deadLetterRetryQueue)
 	}
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
@@ -3433,6 +3438,7 @@ func runOnce(
 	// re-submission of a processed deposit is harmless — the contract
 	// deduplicates via the observed block list.
 	// ---------------------------------------------------------------
+	requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
 	mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
 	if ctx.Err() != nil {
 		return ctx.Err()
