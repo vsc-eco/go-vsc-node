@@ -105,6 +105,23 @@ func (a *Anvil) SetBalance(ctx context.Context, addr ethcommon.Address, wei *big
 	return a.rpc.CallContext(ctx, nil, "anvil_setBalance", addr.Hex(), "0x"+wei.Text(16))
 }
 
+// SetNonce sets an account's nonce via anvil_setNonce (a devnet stand-in for
+// transactions sent from the account outside the bridge, e.g. a stolen key).
+func (a *Anvil) SetNonce(ctx context.Context, addr ethcommon.Address, nonce uint64) error {
+	return a.rpc.CallContext(ctx, nil, "anvil_setNonce", addr.Hex(), fmt.Sprintf("0x%x", nonce))
+}
+
+// Nonce is an account's latest nonce.
+func (a *Anvil) Nonce(ctx context.Context, addr ethcommon.Address) (uint64, error) {
+	var h string
+	if err := a.rpc.CallContext(ctx, &h, "eth_getTransactionCount", addr.Hex(), "latest"); err != nil {
+		return 0, err
+	}
+	var n uint64
+	_, err := fmt.Sscanf(h, "0x%x", &n)
+	return n, err
+}
+
 // Mine advances n blocks (anvil_mine).
 func (a *Anvil) Mine(ctx context.Context, n int) error {
 	return a.rpc.CallContext(ctx, nil, "anvil_mine", fmt.Sprintf("0x%x", n))
