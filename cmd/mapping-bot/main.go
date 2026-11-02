@@ -259,6 +259,7 @@ func main() {
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
 			bot.HandleVaultRotation()
+			bot.WarnKeyExpiry() // B8: D7 key-expiry alarm
 			releaseBlockLease(bot, blockHeight, instanceID)
 			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
@@ -296,6 +297,7 @@ func main() {
 			// confirmations so a sweep that just settled is seen as settled. No-op on a
 			// contract with no vault registry, and internally rate-limited.
 			bot.HandleVaultRotation()
+			bot.WarnKeyExpiry() // B8: D7 key-expiry alarm
 		}()
 		wg.Wait()
 		releaseBlockLease(bot, blockHeight, instanceID)
