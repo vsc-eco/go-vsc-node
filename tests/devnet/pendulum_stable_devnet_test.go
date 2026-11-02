@@ -167,4 +167,39 @@ func TestPendulumStablePoolDevnet(t *testing.T) {
 		}
 	}
 	t.Logf("stable swap priced identically on all %d nodes: %s", cfg.Nodes, results[0])
+
+	// SP-0d: reserves past int64 (1e21 base units each, an 18-decimal pool's
+	// scale), legal from 0.13.0. Same check: identical on every node, priced.
+	bigJSON := `{"asset_in":"hive","asset_out":"hbd","x":"100000000000000000000","x_reserve":"1000000000000000000000",` +
+		`"y_reserve":"1000000000000000000000","curve":"stable","amp":"100","dec_in":"3","dec_out":"3"}`
+	bigLanded := func(n int) bool {
+		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"user_output"})
+		return err == nil && len(fmt.Sprintf("%v", st["user_output"])) > 19
+	}
+	landed = false
+	for attempt := 0; attempt < 6 && !landed; attempt++ {
+		if _, err := d.CallContract(ctx, 1, poolID, "swap", bigJSON); err != nil {
+			t.Fatalf("big swap call: %v", err)
+		}
+		for deadline := devnetNow().Add(90 * time.Second); devnetNow().Before(deadline) && !landed; devnetSleep(5 * time.Second) {
+			landed = bigLanded(3)
+		}
+	}
+	if !landed {
+		dumpDiagnostics(t, d, ctx)
+		t.Fatal("the swap with reserves past int64 never landed (SP-0d)")
+	}
+	for n := 1; n <= cfg.Nodes; n++ {
+		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"result"})
+		if err != nil {
+			t.Fatalf("magi-%d read big result: %v", n, err)
+		}
+		results[n-1] = fmt.Sprintf("%v", st["result"])
+	}
+	for n := 2; n <= cfg.Nodes; n++ {
+		if results[n-1] != results[0] {
+			t.Fatalf("big-amount swap diverged: magi-1=%s magi-%d=%s (consensus break)", results[0], n, results[n-1])
+		}
+	}
+	t.Logf("swap past int64 priced identically on all %d nodes: %s", cfg.Nodes, results[0])
 }

@@ -197,6 +197,8 @@ func (t TxVscCallContract) ExecuteTx(
 		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
 		// coordinated height and history re-executes unchanged.
 		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
+		// 0.13.0 big swap amounts (SP-0d), same gating.
+		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)

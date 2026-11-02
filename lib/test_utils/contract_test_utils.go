@@ -65,6 +65,10 @@ type ContractTest struct {
 	// fresh test). Use SetPendulumGeometry to inject deterministic geometry
 	// for manual swap-fee testing.
 	PendulumApplier wasm_context.PendulumApplier
+	// BigSwapAmountsActive: pendulum_apply_swap_fees takes big amounts
+	// (consensus 0.13.0). SetPendulumStablePools turns it on with the rest of
+	// the 0.13.0 chain.
+	BigSwapAmountsActive bool
 	// TryCatchActive gates ICCallOptions.Try in this harness. Defaults to true
 	// (contract tests exercise the feature as it will run once activated on the
 	// network); set false to test the pre-activation legacy trap behaviour.
@@ -314,6 +318,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gasCycles, ct.LedgerSession, ct.CallSession, 0,
 		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
 		contract_execution_context.WithTryCatch(ct.TryCatchActive),
+		contract_execution_context.WithBigSwapAmounts(ct.BigSwapAmountsActive),
 		contract_execution_context.WithVaultRotationV2(ct.VaultRotationV2),
 		contract_execution_context.WithKeyReshared(ct.KeyReshared),
 	)
@@ -384,6 +389,7 @@ func (ct *ContractTest) SetPendulumStablePools(out pendulumoracle.GeometryOutput
 		func(uint64) consensusversion.Version { return consensusversion.V0_13_0 },
 		cfg,
 	)
+	ct.BigSwapAmountsActive = true
 }
 
 // Add funds to an account in the ledger.

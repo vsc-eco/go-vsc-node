@@ -859,6 +859,16 @@ func StableSwapActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// BigSwapAmountsActive (0.13.0): system.pendulum_apply_swap_fees reads the
+// swap amounts and reserves as big integers and answers in them (SP-0d).
+// Before it they had to fit int64, so a pool of an 18-decimal asset (ETH in
+// wei) refused every swap once a reserve passed ~9.22 of it. The node-share
+// HBD credit is still an int64 ledger amount. Resolve `active` at the swap's
+// block.
+func BigSwapAmountsActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.

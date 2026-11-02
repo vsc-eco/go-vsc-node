@@ -1,6 +1,7 @@
 package wasm_context
 
 import (
+	"math/big"
 	wasm_types "vsc-node/modules/wasm/types"
 
 	"github.com/JustinKnueppel/go-result"
@@ -43,6 +44,23 @@ type PendulumSwapFeeArgs struct {
 	Amp    string
 	DecIn  string
 	DecOut string
+	// XBig, XReserveBig, YReserveBig (0.13.0, BigSwapAmountsActive): the
+	// amounts as big integers. When set the applier reads these instead of
+	// X/XReserve/YReserve and answers in PendulumSwapFeeResult.Big.
+	XBig        *big.Int
+	XReserveBig *big.Int
+	YReserveBig *big.Int
+}
+
+// PendulumSwapFeeBig is a big-amount answer (0.13.0): the output-side
+// amounts, which need not fit int64.
+type PendulumSwapFeeBig struct {
+	UserOutput          *big.Int
+	NewXReserve         *big.Int
+	NewYReserve         *big.Int
+	NetworkCreditOutput *big.Int
+	LpShareOutput       *big.Int
+	NodeShareOutput     *big.Int
 }
 
 // PendulumSwapFeeResult is the SDK method's return shape. The contract
@@ -70,6 +88,9 @@ type PendulumSwapFeeResult struct {
 	// Curve is "stable" when the swap was priced on the StableSwap curve,
 	// empty otherwise (and then absent from the JSON, as before 0.13.0).
 	Curve string
+	// Big carries the output-side amounts when the swap was given big
+	// amounts (0.13.0); the int64 amount fields are then unset.
+	Big *PendulumSwapFeeBig
 	// MultiplierBps is the stabilizer multiplier m the SDK applied to the base
 	// protocol fee, in basis points (10000 = 1.0). SAfterBps is the geometry
 	// ratio s = V/E sampled at the snapshot the swap consumed, also in bps.
@@ -130,6 +151,9 @@ type ExecContextValue interface {
 	// Sp1WorkPricingActive reports whether sp1_verify_groth16 is priced by work
 	// (consensus 0.10.0) rather than at the legacy flat cost.
 	Sp1WorkPricingActive() bool
+	// BigSwapAmountsActive reports whether pendulum_apply_swap_fees takes big
+	// amounts (consensus 0.13.0, SP-0d).
+	BigSwapAmountsActive() bool
 	TssKeySign(keyId string, msg string) result.Result[string]
 	PendulumApplySwapFees(args PendulumSwapFeeArgs) result.Result[PendulumSwapFeeResult]
 }

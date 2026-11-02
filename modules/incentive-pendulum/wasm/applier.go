@@ -165,8 +165,20 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errNotWhitelisted)
 	}
 
-	// Validate inputs.
-	if args.X <= 0 || args.XReserve <= 0 || args.YReserve <= 0 {
+	// Validate inputs. bigAmounts (0.13.0, SP-0d): the SDK handed big amounts.
+	bigAmounts := args.XBig != nil
+	var xBig, xReserveBig, yReserveBig *big.Int
+	if bigAmounts {
+		if args.XReserveBig == nil || args.YReserveBig == nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+		}
+		xBig = new(big.Int).Set(args.XBig)
+		xReserveBig = new(big.Int).Set(args.XReserveBig)
+		yReserveBig = new(big.Int).Set(args.YReserveBig)
+	} else {
+		xBig, xReserveBig, yReserveBig = big.NewInt(args.X), big.NewInt(args.XReserve), big.NewInt(args.YReserve)
+	}
+	if xBig.Sign() <= 0 || xReserveBig.Sign() <= 0 || yReserveBig.Sign() <= 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
 	}
 	assetIn := normalizeAsset(args.AssetIn)
@@ -199,10 +211,6 @@ func (a *Applier) ApplySwapFees(
 	if E.Sign() <= 0 || T.Sign() <= 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errSnapshotUnavailable)
 	}
-
-	xBig := big.NewInt(args.X)
-	xReserveBig := big.NewInt(args.XReserve)
-	yReserveBig := big.NewInt(args.YReserve)
 
 	// 3. Output-side gross + base fees.
 	var grossOut, baseCLP *big.Int
@@ -257,7 +265,7 @@ func (a *Applier) ApplySwapFees(
 	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
 	// corrective when its direction matches the move toward the target s_eq;
 	// any move away (including any move at exactly s = s_eq) is exacerbating.
-	rTradeBps, err := tradeRatioBps(args.X, args.XReserve)
+	rTradeBps, err := tradeRatioBpsBig(xBig, xReserveBig)
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
@@ -417,8 +425,13 @@ func (a *Applier) ApplySwapFees(
 	if newX.Sign() < 0 || newY.Sign() < 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
-	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() ||
-		!networkCreditOutput.IsInt64() || !lpFeeOutput.IsInt64() || !nodeShareOutput.IsInt64() {
+	// The node share is HBD credited on the int64 ledger in either mode; the
+	// output-side amounts need fit int64 only when answered as int64.
+	if !nodeBucketHBD.IsInt64() {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+	if !bigAmounts && (!newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() ||
+		!networkCreditOutput.IsInt64() || !lpFeeOutput.IsInt64() || !nodeShareOutput.IsInt64()) {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
@@ -433,6 +446,25 @@ func (a *Applier) ApplySwapFees(
 		}
 	}
 
+	if bigAmounts {
+		out := wasm_context.PendulumSwapFeeResult{
+			NodeBucketCreditedHBD: nodeBucketHBD.Int64(),
+			MultiplierBps:         multiplierBps,
+			SAfterBps:             sBps,
+			Big: &wasm_context.PendulumSwapFeeBig{
+				UserOutput:          userOutput,
+				NewXReserve:         newX,
+				NewYReserve:         newY,
+				NetworkCreditOutput: networkCreditOutput,
+				LpShareOutput:       lpFeeOutput,
+				NodeShareOutput:     nodeShareOutput,
+			},
+		}
+		if stable != nil {
+			out.Curve = "stable"
+		}
+		return result.Ok(out)
+	}
 	out := wasm_context.PendulumSwapFeeResult{
 		UserOutput:            userOutput.Int64(),
 		NewXReserve:           newX.Int64(),
@@ -477,20 +509,18 @@ func normalizeAsset(a string) string {
 	return string(out)
 }
 
-// tradeRatioBps returns r = x/X expressed in basis points. (0, nil) if X
-// is non-positive (the stabilizer treats that as r=0 — same as a zero-size
-// trade, no destabilization). On int64 overflow returns
-// errArithmeticOverflow so the swap fails fast rather than feeding a
-// bogus ratio into StabilizerMultiplierBps.
-func tradeRatioBps(x, X int64) (int64, error) {
-	if X <= 0 {
+// tradeRatioBpsBig returns r = x/X in basis points; it must fit int64, else
+// errArithmeticOverflow so the swap fails fast rather than feeding a bogus
+// ratio into StabilizerMultiplierBps. (0, nil) if X is non-positive (r=0).
+func tradeRatioBpsBig(x, X *big.Int) (int64, error) {
+	if X.Sign() <= 0 {
 		return 0, nil
 	}
-	v, ok := intmath.MulDivFloorI64(x, pendulum.BpsScale, X)
-	if !ok {
+	v := intmath.MulDivFloor(x, big.NewInt(pendulum.BpsScale), X)
+	if !v.IsInt64() {
 		return 0, errArithmeticOverflow
 	}
-	return v, nil
+	return v.Int64(), nil
 }
 
 // exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
