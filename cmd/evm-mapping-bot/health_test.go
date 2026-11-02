@@ -91,6 +91,14 @@ func TestB11_HealthAlarms(t *testing.T) {
 		t.Fatalf("gas reserve at the threshold raised an alarm: %+v", r)
 	}
 
+	// B6: the bridge's own halts are alarms.
+	_, l2, gql, rpc = healthWorld(t, 10)
+	l2.set("vsc1bridge", "th", "1")
+	l2.set("vsc1bridge", "si", "777")
+	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "P1: the bridge's theft halt is set") || !hasIssue(r, "C2: the bridge's custody halt is set at block 777") {
+		t.Fatalf("halts set: %+v", r)
+	}
+
 	_, _, gql, rpc = healthWorld(t, 9.5)
 	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4: vault") || !hasIssue(r, "500000000000000000 short") {
 		t.Fatalf("vault short of custody: %+v", r)

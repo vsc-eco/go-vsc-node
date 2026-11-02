@@ -3097,6 +3097,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 			slog.Error("loop tick failed", "err", err)
 		}
 		driveVaultRotationSafe(loopCtx, rpc, gql, submitter, cp, cfg, view)
+		driveReporterSafe(loopCtx, rpc, gql, submitter, cfg, view) // B6
 
 		loopCancel()
 

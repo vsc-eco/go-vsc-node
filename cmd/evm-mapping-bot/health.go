@@ -148,10 +148,17 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(fmt.Sprintf("A10: a header proof has been wanted for %s: check the operator and its PROVE balance", now.Sub(time.Unix(wantSince, 0)).Round(time.Minute)))
 	}
 
-	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid"})
+	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid", "th", "si"})
 	if err != nil {
 		warn("B12: cannot read the bridge's gas reserve and custody", "err", err)
 	} else {
+		// B6: the bridge's own halts, which stop its vault keysigns on the nodes.
+		if st["th"] != "" {
+			warn("P1: the bridge's theft halt is set (a vault address sent a transaction the bridge never authorized): vault keysigns are stopped until the owner's clearTheftHalt")
+		}
+		if st["si"] != "" {
+			warn("C2: the bridge's custody halt is set at block " + st["si"] + " (the vault holds less ETH than the bridge booked): vault keysigns are stopped until a full custody proof or the owner's setCustodyCheck")
+		}
 		reserve, _ := new(big.Int).SetString(st["gr"], 10)
 		if reserve == nil {
 			reserve = new(big.Int)
