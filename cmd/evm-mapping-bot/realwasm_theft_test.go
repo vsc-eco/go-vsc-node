@@ -79,3 +79,43 @@ func TestRealWasm_P1_UnauthorizedSpendSetsTheTheftHalt(t *testing.T) {
 		t.Fatalf("th=%q after clearTheftHalt; the node reads any value as a halt, so it must be deleted", th)
 	}
 }
+
+// C2 on the bridge wasm with the bot's account-proof payload: the custody
+// proof of the bridge's one vault at a header after its deposits; holding the
+// booked custody passes, 0.06 ETH short sets "si" (which the nodes read as a
+// keysign halt), a full custody again lifts it.
+func TestRealWasm_C2_CustodyProof(t *testing.T) {
+	c, _ := rwUSDCBridge(t)
+	fields := strings.Split(c.ct.StateGet(rwBridge, "s-eth"), "|")
+	book, ok := new(big.Int).SetString(fields[0], 10)
+	if !ok || book.Sign() <= 0 {
+		t.Fatalf("booked eth custody %q", fields[0])
+	}
+	prove := func(height uint64, balance *big.Int) (string, bool, int64) {
+		t.Helper()
+		proofRPC, root := rwStateProof(t, c.vault, 0, balance)
+		rwHeaderState(c.ct, height, root, &fakeChain{}, rwBlockTime)
+		proof, _, _, err := fetchAccountProof(context.Background(), proofRPC, c.vault.Hex(), height)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _ := json.Marshal(map[string]any{"gen": 0, "proof": proof})
+		r := rwCallLimit(c.ct, "hive:anyone", "proveCustody", p, 50_000)
+		return r.Ret + r.ErrMsg, r.Success, r.RcUsed
+	}
+	if out, ok, rc := prove(110, book); !ok || !strings.Contains(out, "custody held") || c.ct.StateGet(rwBridge, "si") != "" {
+		t.Fatalf("full custody: %q ok=%v", out, ok)
+	} else {
+		t.Logf("proveCustody (one generation, completes): %d RC", rc)
+	}
+	short := new(big.Int).Sub(book, big.NewInt(6e16))
+	if out, ok, _ := prove(111, short); !ok || !strings.Contains(out, "short") || c.ct.StateGet(rwBridge, "si") == "" {
+		t.Fatalf("0.06 ETH short: %q ok=%v si=%q", out, ok, c.ct.StateGet(rwBridge, "si"))
+	}
+	if out, ok, _ := prove(112, book); !ok || c.ct.StateGet(rwBridge, "si") != "" {
+		t.Fatalf("custody back: %q ok=%v si=%q", out, ok, c.ct.StateGet(rwBridge, "si"))
+	}
+	if out, ok, _ := prove(50, book); ok || !strings.Contains(out, "credited deposit") {
+		t.Fatalf("a header older than the bridge's deposits: %q ok=%v", out, ok)
+	}
+}

@@ -131,6 +131,7 @@ func TestN2_EvmKeysignHalted(t *testing.T) {
 	da := startTestDatalayer(t)
 	clean := committedState(t, da, map[string]string{"chainid": "1"})
 	theft := committedState(t, da, map[string]string{"chainid": "1", "th": "1"})
+	short := committedState(t, da, map[string]string{"chainid": "1", "si": "100"})
 	sched := &fakeSolvencyScheduler{minVer: consensusversion.V0_13_0}
 	mgr := &TssManager{da: da, scheduler: sched}
 
@@ -150,6 +151,11 @@ func TestN2_EvmKeysignHalted(t *testing.T) {
 	if h, err := mgr.evmKeysignHalted("c", 111); h || err != nil {
 		t.Fatalf("after clearTheftHalt (th deleted in 110): halted=%v err=%v", h, err)
 	}
+	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 120: short}}
+	if h, err := mgr.evmKeysignHalted("c", 121); !h || err != nil {
+		t.Fatalf("custody short (si, account-mapping C2): halted=%v err=%v, want true", h, err)
+	}
+	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 100: theft, 110: clean}}
 
 	sched.evmHalted = true
 	if h, err := mgr.evmKeysignHalted("c", 111); !h || err != nil {

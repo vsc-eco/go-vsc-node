@@ -16,7 +16,11 @@ import (
 //   - the bridge proved a theft: its "th" flag, set by the permissionless
 //     reportUnauthorizedSpend when an account proof shows a vault address used
 //     a nonce the bridge never authorized (account-mapping P1), deleted by the
-//     owner's clearTheftHalt.
+//     owner's clearTheftHalt; or
+//   - the bridge's custody proved short: its "si" flag, set by the
+//     permissionless proveCustody when the ETH proven at every fund-holding
+//     generation's address is below the booked custody (account-mapping C2),
+//     deleted by a later full proof or the owner's setCustodyCheck off.
 //
 // "th" is read from the bridge's committed output at bh-1, not bh. The TSS
 // tick for block bh runs while the state engine processes bh (consumer.go
@@ -33,10 +37,13 @@ import (
 // follows them, can be, and a re-sign or roll there re-signs only a
 // transaction the bridge authorized before the cut-over.
 
-// evmTheftHaltKey is the bridge contract's theft flag
-// (account-mapping constants.TheftHaltKey). Any value halts; the contract
-// clears by deleting it.
-const evmTheftHaltKey = "th"
+// evmTheftHaltKey and evmSolvencyHaltKey are the bridge contract's theft and
+// custody flags (account-mapping constants.TheftHaltKey, SolvencyHaltKey).
+// Any value halts; the contract clears by deleting them.
+const (
+	evmTheftHaltKey    = "th"
+	evmSolvencyHaltKey = "si"
+)
 
 // evmKeysignHalted reports whether contract's vault keysigns are halted at bh.
 // A non-nil error is a halt flag this node could not read; halted is then true.
@@ -58,11 +65,17 @@ func (tssMgr *TssManager) evmKeysignHalted(contract string, bh uint64) (bool, er
 	if err != nil {
 		return true, fmt.Errorf("get last output for %s@%d: %w", contract, at, err)
 	}
-	raw, ok, err := tssMgr.stateKeyReader(output.StateMerkle)(evmTheftHaltKey)
-	if err != nil {
-		return true, err
+	read := tssMgr.stateKeyReader(output.StateMerkle)
+	for _, key := range []string{evmTheftHaltKey, evmSolvencyHaltKey} {
+		raw, ok, err := read(key)
+		if err != nil {
+			return true, err
+		}
+		if ok && len(raw) > 0 {
+			return true, nil
+		}
 	}
-	return ok && len(raw) > 0, nil
+	return false, nil
 }
 
 // evmSignGateDecision combines the scope verdict with the halt (true = skip
