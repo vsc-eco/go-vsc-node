@@ -805,7 +805,7 @@ func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res jso
 }
 
 func (e *ethRPC) getFinalizedBlock() (uint64, error) {
-	data, err := e.call("eth_getBlockByNumber", `"finalized", false`)
+	data, err := callRetry(context.Background(), e, "eth_getBlockByNumber", `"finalized", false`) // P5
 	if err != nil {
 		return 0, err
 	}
@@ -817,11 +817,11 @@ func (e *ethRPC) getFinalizedBlock() (uint64, error) {
 }
 
 func (e *ethRPC) getBlockWithTxs(height uint64) (json.RawMessage, error) {
-	return e.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height))
+	return callRetry(context.Background(), e, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height)) // P5
 }
 
 func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
-	return e.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash))
+	return callRetry(context.Background(), e, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 // getTransactionByHash fetches the canonical transaction object for a hash.
@@ -829,7 +829,7 @@ func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
 // recovery actually corresponds to a transaction the RPC knows about, so a
 // hostile RPC cannot fabricate a receipt for a hash we never broadcast.
 func (e *ethRPC) getTransactionByHash(txHash string) (json.RawMessage, error) {
-	return e.call("eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash))
+	return callRetry(context.Background(), e, "eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
@@ -1752,7 +1752,9 @@ func scanBlockSafe(rpc *ethRPC, height uint64, vaults []string, tokens map[strin
 // generation are credited and swept).
 func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (*blockScanResult, error) {
 	blockHex := fmt.Sprintf("0x%x", height)
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
+	// P5: one refused or dropped call must not stop the scan at this block
+	// for the whole tick (the BTC bot retries every chain call: callWithRetry).
+	blockData, err := callRetry(context.Background(), rpc, "eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d: %w", height, err)
 	}
@@ -1829,7 +1831,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 		// B-R2: any error below fails the block, which is retried next tick
 		// (runOnce stops at the first failed block); skipping it lost the
 		// deposit while the block was marked scanned.
-		logsData, err := rpc.logsAt(context.Background(), logsParams, height)
+		logsData, err := logsAtRetry(rpc, logsParams, height)
 		if err != nil {
 			return fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
@@ -2505,6 +2507,24 @@ func callRetry(ctx context.Context, rpc *ethRPC, method, params string) (json.Ra
 		var res json.RawMessage
 		if res, err = rpc.callCtx(ctx, method, params); err == nil || ctx.Err() != nil {
 			return res, err
+		}
+	}
+	return nil, err
+}
+
+// logsAtRetry is logsAt retried after callRetryPauses. Every attempt keeps
+// logsAt's A19 rule (an empty answer counts only from an endpoint that has
+// reached the block), so a retry can only replace a failure with an answer
+// that rule accepts, never with a lagging endpoint's empty list.
+func logsAtRetry(rpc *ethRPC, params string, toBlock uint64) (json.RawMessage, error) {
+	var err error
+	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
+		if attempt > 0 {
+			time.Sleep(callRetryPauses[attempt-1])
+		}
+		var res json.RawMessage
+		if res, err = rpc.logsAt(context.Background(), params, toBlock); err == nil {
+			return res, nil
 		}
 	}
 	return nil, err
@@ -4215,7 +4235,7 @@ func buildMapPayloadFrom(bp *blockProofs, dep detectedDeposit) json.RawMessage {
 
 // txSucceeded reports whether an L1 tx's receipt has status 1.
 func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
-	data, err := rpc.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
+	data, err := callRetry(context.Background(), rpc, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
 	if err != nil {
 		return false, err
 	}

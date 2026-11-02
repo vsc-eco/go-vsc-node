@@ -102,7 +102,7 @@ func pairedTransferIdx(logs []receiptLog, i int, sender, token, vault string, am
 // are not plain ERC-20 deposits (the bridge refuses them on that path).
 func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detectedDeposit, map[string]bool, error) {
 	paid := map[string]bool{}
-	logsData, err := rpc.logsAt(context.Background(), fmt.Sprintf(`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s"]}`, height, height, dc, depositEventSig), height)
+	logsData, err := logsAtRetry(rpc, fmt.Sprintf(`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s"]}`, height, height, dc, depositEventSig), height)
 	if err != nil {
 		return nil, nil, fmt.Errorf("eth_getLogs MagiDeposit block %d: %w", height, err)
 	}

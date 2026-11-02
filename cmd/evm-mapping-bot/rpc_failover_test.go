@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -152,12 +153,14 @@ func TestA19_EmptyLogsOnlyFromAnEndpointAtTheBlock(t *testing.T) {
 	}
 }
 
-// A19 end to end: the block comes from the primary, which then drops the
-// eth_getLogs call; the secondary is below the block and answers []. The
-// scan must fail (the block is retried), not report no deposits, for a token's
-// logs and for MagiDeposit's.
+// A19 end to end: the block comes from the primary, which then drops its
+// eth_getLogs calls; the secondary is below the block and answers []. While the
+// primary keeps dropping them the scan must fail (the block is retried), never
+// report no deposits from the lagging secondary, for a token's logs and for
+// MagiDeposit's. P5: a primary that drops only its first call is retried, and
+// the scan then succeeds on the primary's own answer.
 func TestA19_ScanFailsRatherThanMissDeposits(t *testing.T) {
-	var logsCalls atomic.Int32 // the primary drops its first eth_getLogs only
+	var logsCalls, dropFirst atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct{ Method string }
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -167,7 +170,7 @@ func TestA19_ScanFailsRatherThanMissDeposits(t *testing.T) {
 		case "eth_blockNumber":
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":"0xc8"}`))
 		case "eth_getLogs":
-			if logsCalls.Add(1) == 1 {
+			if logsCalls.Add(1) <= dropFirst.Load() {
 				w.WriteHeader(502)
 				return
 			}
@@ -195,10 +198,66 @@ func TestA19_ScanFailsRatherThanMissDeposits(t *testing.T) {
 		"token logs":       {"0x1c7d4b196cb0c7b01d743fbc6116a902379c7238": "USDC"},
 		"MagiDeposit logs": {},
 	} {
+		// persistent: every eth_getLogs to the primary is dropped
 		logsCalls.Store(0)
+		dropFirst.Store(1 << 20)
 		res, err := scanBlock(newEthRPC(primary.URL+","+lagging.URL), 101, []string{vault}, tokens)
 		if err == nil {
 			t.Errorf("%s: scan returned %d deposits and no error from a lagging endpoint's empty logs", name, len(res.Deposits))
 		}
+		// transient: only the first is dropped; the retry is answered by the primary
+		logsCalls.Store(0)
+		dropFirst.Store(1)
+		if _, err := scanBlock(newEthRPC(primary.URL+","+lagging.URL), 101, []string{vault}, tokens); err != nil {
+			t.Errorf("%s: one dropped eth_getLogs failed the scan (P5 retry): %v", name, err)
+		}
+		if n := logsCalls.Load(); n < 2 {
+			t.Errorf("%s: the primary answered %d eth_getLogs calls; the accepted answer must be its retry, not the lagging endpoint's", name, n)
+		}
+	}
+}
+
+// P5 (BTC bot parity: callWithRetry on every chain call): a single endpoint
+// that refuses the first call of each method (HTTP 429) must not fail the
+// scan, the finalized-head read, or the receipt check.
+func TestP5_OneRefusedCallIsRetried(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Method string }
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		seen[req.Method]++
+		first := seen[req.Method] == 1
+		mu.Unlock()
+		if first {
+			w.WriteHeader(429)
+			return
+		}
+		switch req.Method {
+		case "eth_getBlockByNumber":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x65","transactions":[{"hash":"0xaa","from":"0x00000000000000000000000000000000000000b0","to":"0x00000000000000000000000000000000000000fa","value":"0x5","transactionIndex":"0x0"}]}}`))
+		case "eth_getTransactionReceipt":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"0x1"}}`))
+		case "eth_getLogs":
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":[]}`))
+		default:
+			w.WriteHeader(502)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	rpc := newEthRPC(srv.URL)
+	res, err := scanBlock(rpc, 101, []string{"0x00000000000000000000000000000000000000fa"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("scan failed on one refused call per method: %v", err)
+	}
+	if len(res.Deposits) != 1 {
+		t.Fatalf("%d deposits, want the 1 ETH transfer to the vault", len(res.Deposits))
+	}
+	if _, err := rpc.getFinalizedBlock(); err != nil {
+		t.Fatalf("finalized head read failed on one refused call: %v", err)
+	}
+	if _, err := rpc.getReceipt("0xbb"); err != nil {
+		t.Fatalf("receipt read failed on one refused call: %v", err)
 	}
 }
