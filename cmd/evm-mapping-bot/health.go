@@ -29,8 +29,19 @@ import (
 //	HEALTH_CHECK_EVERY     how often the alarms are checked (Go duration, default 5m)
 //	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH: twice the
 //	                       contract's MinGasReserve, below which every unmap is refused)
+//	SCAN_STALE_AFTER       warn when the deposit scan has not advanced for this long
+//	                       (Go duration, default 20m)
 
 const defaultHealthCheckEvery = 5 * time.Minute
+
+// defaultScanStaleAfter (B9, the BTC bot's "block processing stale"): a tick
+// runs even when the deposit scan cannot advance (a block the RPC will not
+// serve stops it there and the next tick retries), so a stuck scan never shows
+// as a missed tick. Finalized blocks advance every epoch (~6.4 min), so 20
+// minutes is about three epochs with no deposit scanned: an RPC that cannot
+// serve the bot's next block (a pruned endpoint after downtime: testnet 11-02),
+// or a finality stall. Either way deposits are not being credited.
+const defaultScanStaleAfter = 20 * time.Minute
 
 // keyExpiryWarnEpochs is how early the bot warns that the vault key expires:
 // 28 epochs, 7 days at 6 hours an epoch.
@@ -46,6 +57,8 @@ type botHealth struct {
 	lastTickAt  time.Time
 	lastTickErr string
 	scanned     uint64
+	scannedAt   time.Time     // when scanned last advanced (or was first recorded)
+	scanStale   time.Duration // no advance for longer is an alarm (B9)
 	withdrawals int
 	pendingMaps int
 	deadLetters int
@@ -54,9 +67,12 @@ type botHealth struct {
 }
 
 func newBotHealth(poll time.Duration) *botHealth {
-	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll, every: defaultHealthCheckEvery}
+	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll, every: defaultHealthCheckEvery, scanStale: defaultScanStaleAfter}
 	if v, err := time.ParseDuration(os.Getenv("HEALTH_CHECK_EVERY")); err == nil && v > 0 {
 		h.every = v
+	}
+	if v, err := time.ParseDuration(os.Getenv("SCAN_STALE_AFTER")); err == nil && v > 0 {
+		h.scanStale = v
 	}
 	if v, err := strconv.ParseInt(os.Getenv("RC_ALARM"), 10, 64); err == nil {
 		h.rcAlarm = v
@@ -78,6 +94,9 @@ func (h *botHealth) recordTick(now time.Time, err error, cp *Checkpoint) {
 	h.lastTickErr = ""
 	if err != nil {
 		h.lastTickErr = err.Error()
+	}
+	if h.scannedAt.IsZero() || cp.LastScannedBlock != h.scanned {
+		h.scannedAt = now
 	}
 	h.scanned = cp.LastScannedBlock
 	h.withdrawals = len(cp.SentWithdrawals)
@@ -272,6 +291,9 @@ func (h *botHealth) report(now time.Time) healthReport {
 	}
 	if h.lastTickErr != "" {
 		r.Issues = append(r.Issues, "last tick failed: "+h.lastTickErr)
+	}
+	if age := now.Sub(h.scannedAt); age > h.scanStale {
+		r.Issues = append(r.Issues, fmt.Sprintf("deposit scan stale for %ds at block %d", int64(age.Seconds()), h.scanned))
 	}
 	if h.deadLetters > 0 {
 		r.Issues = append(r.Issues, fmt.Sprintf("%d deposit(s) dead-lettered: map them by hand", h.deadLetters))

@@ -342,3 +342,32 @@ func TestA01Health_RotationAwareAlarms(t *testing.T) {
 		t.Fatalf("a proof wanted for 1h alarmed: %v", r.Issues)
 	}
 }
+
+// B9 (BTC bot "block processing stale"): ticks that do not advance the deposit
+// scan raise an alarm after SCAN_STALE_AFTER; an advance clears it.
+func TestB9_StaleDepositScanAlarm(t *testing.T) {
+	h := newBotHealth(12 * time.Second)
+	t0 := time.Now()
+	cp := emptyCP()
+	cp.LastScannedBlock = 12_036_766
+	for m := 0; m <= 20; m += 5 { // a tick every 5 minutes, the scan stuck
+		h.recordTick(t0.Add(time.Duration(m)*time.Minute), nil, cp)
+	}
+	if r := h.report(t0.Add(20 * time.Minute)); hasIssue(r, "deposit scan stale") {
+		t.Fatalf("alarm at exactly 20m: %+v", r)
+	}
+	h.recordTick(t0.Add(21*time.Minute), nil, cp)
+	r := h.report(t0.Add(21 * time.Minute))
+	if !hasIssue(r, "deposit scan stale for 1260s at block 12036766") || r.Status != "unhealthy" {
+		t.Fatalf("21m without an advance: %+v", r)
+	}
+	cp.LastScannedBlock++
+	h.recordTick(t0.Add(22*time.Minute), nil, cp)
+	if r := h.report(t0.Add(22 * time.Minute)); hasIssue(r, "deposit scan stale") {
+		t.Fatalf("after the scan advanced: %+v", r)
+	}
+	t.Setenv("SCAN_STALE_AFTER", "3m")
+	if h2 := newBotHealth(12 * time.Second); h2.scanStale != 3*time.Minute {
+		t.Fatalf("SCAN_STALE_AFTER=3m gave %v", h2.scanStale)
+	}
+}
