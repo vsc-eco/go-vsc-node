@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
@@ -364,6 +365,24 @@ func (ct *ContractTest) SetPendulumGeometry(out pendulumoracle.GeometryOutputs, 
 		func(uint64) []string { return whitelist },
 		nil, // no consensus-version reader → LP floor inert in contract tests
 		pendulumwasm.DefaultConfig(),
+	)
+}
+
+// SetPendulumStablePools is SetPendulumGeometry with StableSwap listings and
+// the chain at consensus 0.13.0 (StableSwapActive), so a stable pool contract
+// can be tested end to end. The 0.13.0 floor also turns on the LP
+// minimum-floor (0.2.0), as on a real 0.13.0 chain.
+func (ct *ContractTest) SetPendulumStablePools(out pendulumoracle.GeometryOutputs, whitelist []string, stable map[string]pendulumwasm.StableListing) {
+	cfg := pendulumwasm.DefaultConfig()
+	cfg.StablePoolAt = func(id string, _ uint64) (pendulumwasm.StableListing, bool) {
+		l, ok := stable[id]
+		return l, ok
+	}
+	ct.PendulumApplier = pendulumwasm.New(
+		stubGeometryReader{out: out},
+		func(uint64) []string { return whitelist },
+		func(uint64) consensusversion.Version { return consensusversion.V0_13_0 },
+		cfg,
 	)
 }
 

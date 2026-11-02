@@ -3668,6 +3668,17 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	if sconf.OnMainnet() {
 		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
 	}
+	// The StableSwap listings (0.13.0): only these pools price on the stable
+	// curve, and only for their listed pair, amplification and decimals.
+	pendulumCfg.StablePoolAt = func(contractID string, h uint64) (pendulumwasm.StableListing, bool) {
+		p, ok := sconf.StablePoolAt(contractID, h)
+		if !ok {
+			return pendulumwasm.StableListing{}, false
+		}
+		return pendulumwasm.StableListing{
+			Amp: p.Amp, Asset0: p.Asset0, Decimals0: p.Decimals0, Asset1: p.Asset1, Decimals1: p.Decimals1,
+		}, true
+	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
 			computer: se.pendulumGeometry,

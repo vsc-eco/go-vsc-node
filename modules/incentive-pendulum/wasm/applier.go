@@ -78,6 +78,9 @@ type Config struct {
 	// after it the bounded fee is active. 0 = always active (no gate) — the
 	// testnet/devnet default. Mainnet sets params.PENDULUM_FEE_FIX_HEIGHT.
 	ActivationHeight uint64
+	// StablePoolAt lists the pools that price on the StableSwap curve from
+	// consensus 0.13.0 (system-config StablePools). nil = none.
+	StablePoolAt StablePoolLookup
 }
 
 // DefaultConfig returns the production defaults: PDF stabilizer, 25% network
@@ -175,6 +178,11 @@ func (a *Applier) ApplySwapFees(
 		// Testnet rollout is HBD-paired only.
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
 	}
+	// Constant product (nil) or the StableSwap curve of a listed pool (0.13.0).
+	stable, err := a.resolveStable(contractID, blockHeight, args, assetIn, assetOut)
+	if err != nil {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+	}
 
 	// 2. Read live geometry. Recomputed at the swap's block height from
 	// on-chain inputs (committee bond + whitelisted pool reserves) — no
@@ -197,21 +205,32 @@ func (a *Applier) ApplySwapFees(
 	yReserveBig := big.NewInt(args.YReserve)
 
 	// 3. Output-side gross + base fees.
-	xPlusReserve := new(big.Int).Add(xReserveBig, xBig)
-	if xPlusReserve.Sign() == 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+	var grossOut, baseCLP *big.Int
+	if stable != nil {
+		// StableSwap: gross output on the curve, and the slip fee measured on
+		// the same curve (THORChain's CLP rule, grossOut·slip, which on a
+		// constant product is exactly x²·Y/(x+X)²).
+		grossOut, baseCLP, err = stableGross(stable, xBig, xReserveBig, yReserveBig)
+		if err != nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+		}
+	} else {
+		xPlusReserve := new(big.Int).Add(xReserveBig, xBig)
+		if xPlusReserve.Sign() == 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+		}
+		grossOut = intmath.MulDivFloor(xBig, yReserveBig, xPlusReserve)
+		if grossOut.Sign() <= 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		if grossOut.Cmp(yReserveBig) > 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		// CLP = x²·Y / (x+X)²  (output units)
+		xSquaredY := new(big.Int).Mul(xBig, xBig)
+		denomSquared := new(big.Int).Mul(xPlusReserve, xPlusReserve)
+		baseCLP = intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	}
-	grossOut := intmath.MulDivFloor(xBig, yReserveBig, xPlusReserve)
-	if grossOut.Sign() <= 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-	if grossOut.Cmp(yReserveBig) > 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-	// CLP = x²·Y / (x+X)²  (output units)
-	xSquaredY := new(big.Int).Mul(xBig, xBig)
-	denomSquared := new(big.Int).Mul(xPlusReserve, xPlusReserve)
-	baseCLP := intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	// Protocol fee = grossOut · 8 bps  (output units; matches the contract's
 	// existing `baseFee = grossOut * feeBps / 10000`).
 	baseProtocol := intmath.MulDivFloor(
@@ -365,6 +384,21 @@ func (a *Applier) ApplySwapFees(
 		}
 		nodeBucketHBD.Set(nodeShareOutput)
 		newY.Sub(newY, nodeShareOutput)
+	} else if stable != nil {
+		// Output is non-HBD on the stable pool: the node share is sold back
+		// to the pool on the curve, from the LP reserve (the network credit
+		// is not the LPs': the contract moves it to its fee bucket).
+		yLP := new(big.Int).Sub(newY, nodeShareOutput)
+		yLP.Sub(yLP, networkCreditOutput)
+		hbdOut, err := stableSellBack(stable, nodeShareOutput, newX, yLP)
+		if err != nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+		}
+		if hbdOut.Cmp(newX) >= 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		newX.Sub(newX, hbdOut)
+		nodeBucketHBD.Set(hbdOut)
 	} else {
 		// Output is non-HBD (X is HBD): convert via secondary CPMM hop.
 		// Closed-form: hbdOut = nodeShare · newX / (newY + nodeShare).
@@ -409,6 +443,9 @@ func (a *Applier) ApplySwapFees(
 		SAfterBps:             sBps,
 		LpShareOutput:         lpFeeOutput.Int64(),
 		NodeShareOutput:       nodeShareOutput.Int64(),
+	}
+	if stable != nil {
+		out.Curve = "stable"
 	}
 	return result.Ok(out)
 }

@@ -33,6 +33,16 @@ type PendulumSwapFeeArgs struct {
 	X        int64 // user input, base units
 	XReserve int64 // pre-swap input-side reserves
 	YReserve int64 // pre-swap output-side reserves
+	// Curve, Amp, DecIn, DecOut: a StableSwap pool's own parameters, as the
+	// contract sent them (raw JSON values, e.g. `"stable"`, `"100"` or `100`).
+	// Read only from consensus 0.13.0
+	// (StableSwapActive); below it they are ignored exactly as a binary that
+	// predates them ignores the JSON keys, so a contract cannot split the
+	// fleet by sending them early.
+	Curve  string
+	Amp    string
+	DecIn  string
+	DecOut string
 }
 
 // PendulumSwapFeeResult is the SDK method's return shape. The contract
@@ -57,6 +67,9 @@ type PendulumSwapFeeResult struct {
 	// LpShareOutput + NodeShareOutput + NetworkCreditOutput == grossOut - UserOutput.
 	LpShareOutput   int64
 	NodeShareOutput int64
+	// Curve is "stable" when the swap was priced on the StableSwap curve,
+	// empty otherwise (and then absent from the JSON, as before 0.13.0).
+	Curve string
 	// MultiplierBps is the stabilizer multiplier m the SDK applied to the base
 	// protocol fee, in basis points (10000 = 1.0). SAfterBps is the geometry
 	// ratio s = V/E sampled at the snapshot the swap consumed, also in bps.

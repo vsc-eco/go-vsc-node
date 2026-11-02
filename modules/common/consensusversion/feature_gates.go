@@ -849,6 +849,16 @@ func BtcSolvencyWatchActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// StableSwapActive (0.13.0): a pool system-config lists in StablePools prices
+// its swaps on the StableSwap invariant (two assets, Curve's integer form)
+// instead of the constant product, with the slip fee measured on that curve.
+// Every other pool is unchanged. Below the line a listed pool's swap is
+// refused: its contract only accepts the stable curve. Resolve `active` at the
+// swap's block.
+func StableSwapActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.

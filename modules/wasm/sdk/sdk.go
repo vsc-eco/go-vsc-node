@@ -332,6 +332,10 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 				X:        x,
 				XReserve: xRes,
 				YReserve: yRes,
+				Curve:    string(in.Curve),
+				Amp:      string(in.Amp),
+				DecIn:    string(in.DecIn),
+				DecOut:   string(in.DecOut),
 			})
 			return result.Map(res, func(r wasm_context.PendulumSwapFeeResult) SdkResultStruct {
 				out := pendulumSwapFeeOutput{
@@ -344,6 +348,7 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					NetworkCreditOutput:   strconv.FormatInt(r.NetworkCreditOutput, 10),
 					LpShareOutput:         strconv.FormatInt(r.LpShareOutput, 10),
 					NodeShareOutput:       strconv.FormatInt(r.NodeShareOutput, 10),
+					Curve:                 r.Curve,
 				}
 				js, _ := json.Marshal(out)
 				return SdkResultStruct{Result: string(js), Gas: session.End()}
@@ -852,6 +857,15 @@ type pendulumSwapFeeInput struct {
 	X        string `json:"x"`
 	XReserve string `json:"x_reserve"`
 	YReserve string `json:"y_reserve"`
+	// A StableSwap pool's parameters (pendulum StableSwapActive, 0.13.0),
+	// kept RAW: any JSON value parses, as it does for a binary without these
+	// keys, so a contract that sends them early (or as numbers) cannot make
+	// this binary refuse a swap an older one accepts. The applier reads them
+	// only once the line is active.
+	Curve  json.RawMessage `json:"curve,omitempty"`
+	Amp    json.RawMessage `json:"amp,omitempty"`
+	DecIn  json.RawMessage `json:"dec_in,omitempty"`
+	DecOut json.RawMessage `json:"dec_out,omitempty"`
 }
 
 // pendulumSwapFeeOutput is the JSON shape returned to contracts.
@@ -868,6 +882,9 @@ type pendulumSwapFeeOutput struct {
 	NetworkCreditOutput   string `json:"network_credit_output"`
 	LpShareOutput         string `json:"lp_share_output"`
 	NodeShareOutput       string `json:"node_share_output"`
+	// "stable" when the StableSwap curve priced the swap; omitted otherwise,
+	// so a constant-product pool gets the same bytes as before 0.13.0.
+	Curve string `json:"curve,omitempty"`
 }
 
 func parseInt64(s string) (int64, bool) {
