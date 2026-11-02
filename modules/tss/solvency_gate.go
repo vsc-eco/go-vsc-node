@@ -307,12 +307,25 @@ func (tssMgr *TssManager) contractStateReaderAtStrict(contractID string, bh uint
 	if err != nil {
 		return fail(fmt.Errorf("get last output for %s@%d: %w", contractID, bh, err))
 	}
-	if output.StateMerkle == "" {
+	return tssMgr.stateKeyReader(output.StateMerkle)
+}
+
+// stateKeyReader reads keys of the committed contract state stateMerkle with
+// contractStateReaderAtStrict's rules: no state, or a key not in it, is absent
+// (nil, false, nil); a state or value that cannot be read is an error.
+func (tssMgr *TssManager) stateKeyReader(stateMerkle string) func(key string) ([]byte, bool, error) {
+	fail := func(err error) func(string) ([]byte, bool, error) {
+		return func(string) ([]byte, bool, error) { return nil, false, err }
+	}
+	if stateMerkle == "" {
 		return func(string) ([]byte, bool, error) { return nil, false, nil } // no state yet: genuine absent
 	}
-	stateCid, err := cid.Parse(output.StateMerkle)
+	stateCid, err := cid.Parse(stateMerkle)
 	if err != nil {
-		return fail(fmt.Errorf("parse state cid %q: %w", output.StateMerkle, err))
+		return fail(fmt.Errorf("parse state cid %q: %w", stateMerkle, err))
+	}
+	if tssMgr.da == nil {
+		return fail(fmt.Errorf("contract state reader unavailable"))
 	}
 	local := tssMgr.da.LocalOnly()
 	if local == nil {

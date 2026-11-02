@@ -87,6 +87,14 @@ func (m *MockConsensusState) SetBtcKeysignHalt(_ context.Context, halted bool, h
 	return nil
 }
 
+func (m *MockConsensusState) SetEvmKeysignHalt(_ context.Context, halted bool, height uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.EvmKeysignHalted = halted
+	m.S.EvmKeysignHaltHeight = height
+	return nil
+}
+
 func (m *MockConsensusState) SetBtcTheftHalt(_ context.Context, halted bool, height uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

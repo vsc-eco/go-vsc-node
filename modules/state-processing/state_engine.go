@@ -839,12 +839,28 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					se.btcKeysignHaltActive(blockInfo.BlockHeight) {
 					var h struct {
 						Active bool   `json:"active"`
-						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+						KeyId  string `json:"keyId"` // "evm" from 0.13.0 (N2); otherwise BTC-global
 					}
 					if err := json.Unmarshal(cj.Json, &h); err != nil {
 						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
 					} else if se.consensusState == nil {
 						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else if h.KeyId == "evm" && consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+						// N2: the EVM bridges' vault keysign halt (modules/tss/evm_halt.go).
+						// Only from 0.13.0, the line whose sign gate reads it; before it
+						// the op keeps its old meaning (the BTC halt below), exactly as
+						// the 0.12 build applies it, so every node agrees on both flags.
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetEvmKeysignHalt(context.Background(), h.Active, height); err != nil {
+							log.Error("vsc.tss_halt: SetEvmKeysignHalt FAILED — EVM halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied to the EVM bridges", "active", h.Active,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
 					} else {
 						height := uint64(0)
 						if h.Active {

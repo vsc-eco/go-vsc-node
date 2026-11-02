@@ -38,6 +38,15 @@ type ChainConsensusState struct {
 	// provenance/observability only.
 	BtcTheftHaltHeight uint64 `bson:"btc_theft_halt_height"`
 
+	// EvmKeysignHalted freezes the EVM bridges' vault keysigns (N2): set by the
+	// governance multisig with vsc.tss_halt {"keyId":"evm"} once 0.13.0 is active
+	// (before it that op halts BTC, as on the 0.12 build). The EVM sign gate
+	// (modules/tss/evm_halt.go) reads it with each bridge's own theft flag.
+	EvmKeysignHalted bool `bson:"evm_keysign_halted"`
+	// EvmKeysignHaltHeight records the block height the halt was last set (0 when
+	// cleared) — provenance/observability only.
+	EvmKeysignHaltHeight uint64 `bson:"evm_keysign_halt_height"`
+
 	// ForcedActivation is the recovery-multisig override (vsc.recovery_require_version):
 	// at most one, it bypasses the stake-readiness guard and takes precedence over every
 	// normal proposal. The bson key stays "scheduled_activation" for back-compat with any

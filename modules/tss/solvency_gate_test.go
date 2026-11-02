@@ -20,6 +20,7 @@ import (
 type fakeSolvencyScheduler struct {
 	halted      bool
 	theftHalted bool
+	evmHalted   bool
 	minVer      consensusversion.Version
 }
 
@@ -29,6 +30,7 @@ func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusvers
 }
 func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool { return f.halted }
 func (f *fakeSolvencyScheduler) BtcTheftHalted() bool   { return f.theftHalted }
+func (f *fakeSolvencyScheduler) EvmKeysignHalted() bool { return f.evmHalted }
 
 // TestBtcKeysignFrozen_FlagAndScope covers the deterministic FLAG layer and the
 // BTC-only scoping. The SIGNAL layer stays inert here (MainnetConfig ships an

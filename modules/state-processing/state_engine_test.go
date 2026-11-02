@@ -1360,3 +1360,42 @@ func TestBtcKeysignHaltOpFollowsTheVersion(t *testing.T) {
 		assert.Equal(t, tc.want, cs.Snapshot().BtcKeysignHalted, "version 0.%d", tc.protocolVersion)
 	}
 }
+
+// N2: vsc.tss_halt {"keyId":"evm"} halts the EVM bridges from 0.13.0; before
+// it the op keeps its old meaning (the BTC halt), as the 0.12 build applies it.
+// Any other keyId stays the BTC halt, and active:false clears.
+func TestEvmKeysignHaltOpFollowsTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion uint64
+		ops             []string
+		wantBtc         bool
+		wantEvm         bool
+	}{
+		{12, []string{`{"active":true,"keyId":"evm"}`}, true, false},
+		{13, []string{`{"active":true,"keyId":"evm"}`}, false, true},
+		{13, []string{`{"active":true}`}, true, false},
+		{13, []string{`{"active":true,"keyId":"evm"}`, `{"active":false,"keyId":"evm"}`}, false, false},
+	} {
+		cs := test_utils.NewMockConsensusState()
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "witness1", Key: "bls-key-1"}},
+				ProtocolVersion: tc.protocolVersion,
+			},
+		}
+		for _, op := range tc.ops {
+			te.Creator.CustomJson(stateEngine.MockJson{
+				RequiredAuths: []string{te.SE.SystemConfig().GatewayWallet()},
+				Id:            "vsc.tss_halt",
+				Json:          op,
+			})
+			te.processAndWait()
+		}
+		snap := cs.Snapshot()
+		assert.Equal(t, tc.wantBtc, snap.BtcKeysignHalted, "BTC flag, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+		assert.Equal(t, tc.wantEvm, snap.EvmKeysignHalted, "EVM flag, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+		assert.Equal(t, tc.wantEvm, te.SE.EvmKeysignHalted(), "EVM cache, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+	}
+}
