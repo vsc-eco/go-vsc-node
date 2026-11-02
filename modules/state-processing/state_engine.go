@@ -845,6 +845,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
 					} else if se.consensusState == nil {
 						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else if h.KeyId == "btc_solvency" && se.btcSolvencyWatchActive(blockInfo.BlockHeight) {
+						// N4 escape hatch (THORChain StopSolvencyCheck): active:false turns
+						// the BTC solvency watch off and lifts its halt; active:true turns it
+						// back on. Before 0.13.0 the op is the BTC halt below, as on 0.12.
+						se.setBtcSolvencyWatch(h.Active, tx.TransactionID)
 					} else if h.KeyId == "evm" && consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
 						// N2: the EVM bridges' vault keysign halt (modules/tss/evm_halt.go).
 						// Only from 0.13.0, the line whose sign gate reads it; before it
@@ -878,6 +883,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
 						}
 					}
+				}
+
+				// vsc.btc_solvency: a witness's BTC solvency vote (N4, from 0.13.0;
+				// btc_solvency.go). The voter is the account whose active authority
+				// signed the op; the tally checks it is a member of the election at
+				// the vote's checkpoint.
+				if Id == "vsc.btc_solvency" {
+					se.processBtcSolvencyVote(RequiredAuths[0], cj.Json, blockInfo.BlockHeight, tx.TransactionID)
 				}
 
 				// The witness-vote governance batch (vsc.slash_restore /

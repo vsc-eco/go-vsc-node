@@ -225,6 +225,12 @@ const MAX_TSS_COMMITMENTS_PER_TX = 256
 var RC_HIVE_FREE_AMOUNT int64 = 10_000
 var MINIMUM_RC_LIMIT uint64 = 50
 
+// BTC_SOLVENCY_CHECK_EVERY is the BTC solvency watch's checkpoint interval in
+// Hive blocks (N4, ~10 minutes, about one Bitcoin block): witnesses check at
+// each multiple of it and a vote counts only within the interval after its
+// checkpoint. Consensus-relevant (the state engine's tally), so a constant.
+const BTC_SOLVENCY_CHECK_EVERY uint64 = 200
+
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
 var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
@@ -967,16 +973,12 @@ type TssParams struct {
 	// Set higher (e.g. 10m) in test/CI environments where multiple nodes
 	// compete for CPU and prime generation takes longer.
 	PreParamsTimeout time.Duration `json:"preParamsTimeout,omitempty"`
-	// SolvencyGapSats is the tolerance (in satoshis) for the BTC keysign solvency
-	// observation (observeBtcSolvencyInsolvent, modules/tss/solvency_gate.go).
-	// STAGED FOR M1.1b — the observation is not yet wired to anything. When M1.1b
-	// wires it (to trip the FLAG, not to gate locally), it flags insolvency only
-	// when the vault's real L1 balance is BELOW the contract-claimed supply by
-	// MORE than this gap:
-	//   insolvent  iff  L1assets < Supply - SolvencyGapSats
-	// It absorbs benign transient discrepancies — in-flight deposits not yet
-	// credited, mempool/confirmation lag, dust rounding. The LIVE M1.1a freeze is
-	// the deterministic governance FLAG (vsc.tss_halt), NOT this tolerance.
+	// SolvencyGapSats is the BTC solvency watch's tolerance (N4, from 0.13.0;
+	// modules/oracle/chain/solvency_watch.go): a witness votes insolvent only
+	// when the confirmed, unreserved UTXOs of the BTC contract's book that its
+	// own bitcoind no longer has add up to MORE than this many satoshis. A
+	// witness's own threshold for its vote, not a consensus input: the halt is
+	// decided by 2/3 of the weight voting the same way.
 	// Handled by the reflection Marshal/Unmarshal above as a uint64 field.
 	SolvencyGapSats uint64 `json:"solvencyGapSats,omitempty"`
 }
@@ -1134,21 +1136,15 @@ type OracleParams struct {
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
 
-	// BtcL1BaseURL is the esplora/mempool.space REST base URL the BTC keysign
-	// solvency SIGNAL (modules/tss/solvency_gate.go) queries for the vault's
-	// REAL on-chain balance. Injected here (per-network config) rather than
-	// hardcoded in the client. Empty disables the L1 probe (SIGNAL fails open),
-	// leaving only the deterministic FLAG. e.g. "https://mempool.space/api".
+	// BtcL1BaseURL: UNUSED. It fed the staged M1.1b balance probe, which never
+	// shipped (it parsed the binary supply "s" as a decimal and summed a static
+	// address list). The N4 solvency watch reads each witness's own bitcoind
+	// (the oracle's chain RPC) instead. Kept so existing sysconfig files load.
 	BtcL1BaseURL string `json:"btcL1BaseURL,omitempty"`
 
-	// BtcVaultAddresses is the authoritative set of BTC vault addresses the
-	// solvency SIGNAL sums L1 balances over. Left empty by default: while empty
-	// the SIGNAL fails OPEN (never freezes) because it cannot make a trustworthy
-	// solvency determination from an empty/undercounted address set. The
-	// intended long-term source is the on-chain UTXO registry (contract state
-	// keys "r"/"u-"); decoding it in Go requires the mapping contract's msgp
-	// registry schema, which is not present in this tree — see the marked hook
-	// in solvency_gate.go. Populating this list makes the SIGNAL fully live.
+	// BtcVaultAddresses: UNUSED (see BtcL1BaseURL). The N4 watch reads the
+	// contract's UTXO registry ("r"/"u-", lib/btcvault/utxo.go) instead of an
+	// address list. Kept so existing sysconfig files load.
 	BtcVaultAddresses []string `json:"btcVaultAddresses,omitempty"`
 }
 

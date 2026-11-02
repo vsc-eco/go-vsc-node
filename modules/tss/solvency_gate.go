@@ -1,15 +1,11 @@
 package tss
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 
-	"vsc-node/lib/btcclient"
 	"vsc-node/lib/datalayer"
 	"vsc-node/modules/common/consensusversion"
 
@@ -37,7 +33,10 @@ import (
 // fail-open SIGNAL is suppressible by a capable thief. The solvency observation
 // therefore belongs in the M1.1b AUTO-TRIP, where it TRIPS THE DETERMINISTIC
 // FLAG (consensus-wide) rather than causing a local drop.
-// observeBtcSolvencyInsolvent below is that observation, staged for M1.1b.
+// That observation is the N4 BTC solvency watch (0.13.0): witnesses check the
+// contract's UTXO book against their own bitcoind and vote; 2/3 of the weight
+// sets the deterministic BtcSolvencyHalted flag read below
+// (modules/oracle/chain/solvency_watch.go, state-processing btc_solvency.go).
 func (tssMgr *TssManager) btcKeysignFrozen(keyId string) bool {
 	// Scope: only ever gate the BTC vault key.
 	if !tssMgr.isBtcVaultKey(keyId) {
@@ -58,10 +57,12 @@ func (tssMgr *TssManager) btcKeysignFrozen(keyId string) bool {
 	//    one freezes; the V-8 evacuation + BRK-2 check-sig exemptions in output_scoping.go
 	//    apply to both (the honest successor-sweep must still complete during a theft halt
 	//    to rescue remaining funds from the thief).
+	//  - BtcSolvencyHalted: the N4 witness vote (0.13.0): 2/3 of the weight saw a
+	//    registered vault UTXO spent on Bitcoin without the contract's authorization.
 	if tssMgr.scheduler == nil {
 		return false
 	}
-	return tssMgr.scheduler.BtcKeysignHalted() || tssMgr.scheduler.BtcTheftHalted()
+	return tssMgr.scheduler.BtcKeysignHalted() || tssMgr.scheduler.BtcTheftHalted() || tssMgr.scheduler.BtcSolvencyHalted()
 }
 
 // isBtcVaultKey reports whether keyId is the BTC vault's TSS key for the
@@ -171,100 +172,6 @@ func skipReshareForSupersededGen(reshareSkipKeyIds map[string]bool, keyId string
 	return reshareSkipKeyIds[keyId]
 }
 
-// observeBtcSolvencyInsolvent compares the vault's real L1 balance against the
-// contract-claimed Supply and reports (insolvent, ok). STAGED FOR M1.1b — it is
-// NOT wired to the gate. When M1.1b wires it, per the council it MUST:
-//  1. feed the AUTO-TRIP that sets the deterministic FLAG (consensus-wide) —
-//     NEVER cause a unilateral local drop (Constraint 1 griefing);
-//  2. run OFF the TSS lock (background poller + cached verdict) — never
-//     synchronous HTTP inside RunActions, which holds tssMgr.lock and would
-//     cause other TSS action batches to be dropped;
-//  3. read L1 from a per-node TRUSTED full node, not a shared public endpoint a
-//     thief can rate-limit into a fail-open.
-//
-// It fails OPEN (ok=false) on any uncertainty — empty config, unreadable
-// supply, unknown encoding, or an L1 read error — so a wrong assumption can
-// never wrongly conclude "insolvent". Inert until BtcVaultAddresses is set.
-func (tssMgr *TssManager) observeBtcSolvencyInsolvent(bh uint64) (insolvent bool, ok bool) {
-	op := tssMgr.sconf.OracleParams()
-	addrs := op.BtcVaultAddresses
-	if len(addrs) == 0 || op.BtcL1BaseURL == "" || tssMgr.contractState == nil || tssMgr.da == nil {
-		return false, false
-	}
-	btcContract := op.ContractId("BTC")
-	if btcContract == "" {
-		return false, false
-	}
-	rawSupply, found := tssMgr.readContractStateKey(btcContract, bh, "s")
-	if !found {
-		return false, false
-	}
-	supplySats, parsed := parseSupplySats(rawSupply)
-	if !parsed {
-		return false, false
-	}
-	client := btcclient.New(op.BtcL1BaseURL, 8*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	var l1 int64
-	for _, a := range addrs {
-		bal, err := client.AddressBalanceSats(ctx, a)
-		if err != nil {
-			log.Warn("solvency observation: L1 read failed, failing open", "addr", a, "err", err)
-			return false, false
-		}
-		l1 += bal
-	}
-	gap := tssMgr.sconf.TssParams().SolvencyGapSats
-	// Reject an implausibly large / hostile contract Supply before it can drive a
-	// freeze decision (max BTC = 21e6·1e8 sats « 2^63); a corrupt/attacker-inflated
-	// "s" key must fail open, never trip (pruned-methodology money-math F1: the old
-	// int64(supplySats)-int64(gap) overflowed/inverted for uint64 inputs ≥ 2^63).
-	if supplySats > 21_000_000*100_000_000 {
-		return false, false
-	}
-	if supplySats < gap {
-		// Solvency tolerance exceeds Supply → threshold non-positive → cannot
-		// conclude insolvent. (uint64 subtraction below would otherwise underflow.)
-		return false, true
-	}
-	if l1 < 0 {
-		l1 = 0
-	}
-	return uint64(l1) < supplySats-gap, true
-}
-
-// readContractStateKey resolves a single contract state key at blockHeight,
-// pinned to the contract's most-recent ContractOutput at/before bh — the same
-// deterministic path as pendulum_geometry.liveContractStateKeyReader and the
-// GraphQL getStateByKeys resolver. Returns (raw, false) on any miss/error.
-func (tssMgr *TssManager) readContractStateKey(contractID string, bh uint64, key string) ([]byte, bool) {
-	if tssMgr.contractState == nil || tssMgr.da == nil {
-		return nil, false
-	}
-	output, err := tssMgr.contractState.GetLastOutput(contractID, bh)
-	if err != nil || output.StateMerkle == "" {
-		return nil, false
-	}
-	stateCid, err := cid.Parse(output.StateMerkle)
-	if err != nil {
-		return nil, false
-	}
-	local := tssMgr.da.LocalOnly()
-	if local == nil {
-		return nil, false
-	}
-	keyCid, err := datalayer.GetPathCid(local, stateCid, key) // 18u: one key, not the whole state
-	if err != nil || keyCid == nil {
-		return nil, false
-	}
-	raw, err := local.GetRaw(*keyCid)
-	if err != nil {
-		return nil, false
-	}
-	return raw, true
-}
-
 // contractStateReaderAt resolves the contract's committed output at bh ONCE
 // (a single GetLastOutput + one state databin) and returns a reader closure over
 // its keys. A multi-key consumer — the S3 output-scoping gate reads "v"/"va"/"p"
@@ -361,24 +268,4 @@ func (tssMgr *TssManager) stateKeyReader(stateMerkle string) func(key string) ([
 		}
 		return raw, true, nil
 	}
-}
-
-// parseSupplySats interprets the contract's Supply value ("s") as an integer
-// number of satoshis. The exact on-chain encoding lives in the BTC mapping
-// contract (not in this repo), so this is intentionally conservative: it
-// accepts a decimal integer (optionally JSON-quoted) and returns false on
-// ANYTHING it cannot parse with confidence, so the observation fails OPEN rather
-// than acting on a wrong assumption. Confirm the encoding against the contract
-// before wiring the M1.1b auto-trip.
-func parseSupplySats(raw []byte) (uint64, bool) {
-	s := strings.TrimSpace(string(raw))
-	s = strings.Trim(s, `"`)
-	if s == "" {
-		return 0, false
-	}
-	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return n, true
 }

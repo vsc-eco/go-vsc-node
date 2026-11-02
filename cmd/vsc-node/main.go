@@ -367,6 +367,8 @@ func main() {
 		panic(err)
 	}
 
+	oracle.SetHiveCreator(&hiveCreator) // N4: the BTC solvency votes
+
 	tssMgr := tss.New(
 		p2p,
 		tssKeys,

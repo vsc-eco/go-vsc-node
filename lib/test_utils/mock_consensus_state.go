@@ -95,6 +95,15 @@ func (m *MockConsensusState) SetEvmKeysignHalt(_ context.Context, halted bool, h
 	return nil
 }
 
+func (m *MockConsensusState) SetBtcSolvency(_ context.Context, s consensus_state.BtcSolvencyState) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s.Votes.Insolvent = append([]string(nil), s.Votes.Insolvent...)
+	s.Votes.Solvent = append([]string(nil), s.Votes.Solvent...)
+	m.S.BtcSolvency = s
+	return nil
+}
+
 func (m *MockConsensusState) SetBtcTheftHalt(_ context.Context, halted bool, height uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

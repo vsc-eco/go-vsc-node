@@ -837,6 +837,18 @@ func EvmVaultRotationActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// BtcSolvencyWatchActive (0.13.0, N4): witnesses check that every confirmed,
+// unreserved UTXO the BTC mapping contract has registered is still unspent on
+// their own bitcoind and vote "vsc.btc_solvency" when they see otherwise; 2/3
+// of the election's weight voting insolvent at a checkpoint halts BTC vault
+// keysigns (BtcSolvencyHalted) until 2/3 vote solvent, as THORChain's
+// solvency checker halts a chain. Below the line the vote op is ignored and the
+// flag is never set. Resolve `active` from the version active at the block
+// being processed.
+func BtcSolvencyWatchActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.

@@ -59,6 +59,8 @@ type ConsensusState interface {
 	// SetEvmKeysignHalt sets/clears the EVM bridges' keysign halt (vsc.tss_halt
 	// {"keyId":"evm"}, N2). height is the block the halt was set (0 when clearing).
 	SetEvmKeysignHalt(ctx context.Context, halted bool, height uint64) error
+	// SetBtcSolvency replaces the BTC solvency watch record (N4).
+	SetBtcSolvency(ctx context.Context, s BtcSolvencyState) error
 	// SetForcedActivationAndClearSuspension is the recovery path: install a Forced
 	// switch and lift the processing halt in one update.
 	SetForcedActivationAndClearSuspension(ctx context.Context, s *VersionProposal) error
@@ -145,6 +147,15 @@ func (c *consensusState) SetEvmKeysignHalt(ctx context.Context, halted bool, hei
 	_, err := c.Collection.UpdateOne(ctx,
 		bson.M{"_id": singletonID},
 		bson.M{"$set": bson.M{"evm_keysign_halted": halted, "evm_keysign_halt_height": height}},
+		options.Update().SetUpsert(true),
+	)
+	return err
+}
+
+func (c *consensusState) SetBtcSolvency(ctx context.Context, s BtcSolvencyState) error {
+	_, err := c.Collection.UpdateOne(ctx,
+		bson.M{"_id": singletonID},
+		bson.M{"$set": bson.M{"btc_solvency": s}},
 		options.Update().SetUpsert(true),
 	)
 	return err

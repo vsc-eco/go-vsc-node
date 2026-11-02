@@ -447,12 +447,8 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
-			// BTC keysign solvency observation endpoint — STAGED FOR M1.1b
-			// (observeBtcSolvencyInsolvent), not yet wired, so INERT today.
-			// BtcVaultAddresses is intentionally left empty. NOTE (council): when
-			// M1.1b activates the observation, use a per-node TRUSTED full node
-			// here, not this shared public API a thief could rate-limit into a
-			// fail-open. The live M1.1a freeze is the deterministic governance FLAG.
+			// Unused (params.OracleParams.BtcL1BaseURL): the N4 solvency watch
+			// reads each witness's own bitcoind, as the council asked.
 			BtcL1BaseURL: "https://mempool.space/api",
 		},
 		tssParams: params.DefaultTssParams,

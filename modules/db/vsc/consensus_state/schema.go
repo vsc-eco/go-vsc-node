@@ -47,6 +47,10 @@ type ChainConsensusState struct {
 	// cleared) — provenance/observability only.
 	EvmKeysignHaltHeight uint64 `bson:"evm_keysign_halt_height"`
 
+	// BtcSolvency is the BTC solvency watch (N4, from 0.13.0): the witnesses'
+	// votes at the current checkpoint and the halt they decide.
+	BtcSolvency BtcSolvencyState `bson:"btc_solvency"`
+
 	// ForcedActivation is the recovery-multisig override (vsc.recovery_require_version):
 	// at most one, it bypasses the stake-readiness guard and takes precedence over every
 	// normal proposal. The bson key stays "scheduled_activation" for back-compat with any
@@ -82,4 +86,25 @@ type VersionProposal struct {
 	Proposer    string `bson:"proposer"`
 	TxId        string `bson:"tx_id"`
 	BlockHeight uint64 `bson:"block_height"`
+}
+
+// BtcSolvencyState is the BTC solvency watch's consensus record (N4). Halted
+// freezes BTC vault keysigns, like BtcKeysignHalted; it is set when witnesses
+// holding 2/3 of the election's weight vote "vsc.btc_solvency" insolvent at a
+// checkpoint, and cleared when 2/3 vote solvent. WatchOff is the governance
+// escape hatch (vsc.tss_halt {"keyId":"btc_solvency","active":false}): votes are
+// ignored and the halt is lifted until it is turned back on.
+type BtcSolvencyState struct {
+	Halted     bool             `bson:"halted"`
+	HaltHeight uint64           `bson:"halt_height"`
+	WatchOff   bool             `bson:"watch_off"`
+	Votes      BtcSolvencyVotes `bson:"votes"`
+}
+
+// BtcSolvencyVotes are the votes counted at one checkpoint; a vote for a later
+// checkpoint replaces them.
+type BtcSolvencyVotes struct {
+	Checkpoint uint64   `bson:"checkpoint"`
+	Insolvent  []string `bson:"insolvent"`
+	Solvent    []string `bson:"solvent"`
 }
