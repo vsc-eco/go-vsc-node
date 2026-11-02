@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -110,6 +111,15 @@ func main() {
 	if err != nil {
 		slog.Error("unsupported chain", "err", err)
 		os.Exit(1)
+	}
+	if args.chainAPI != "" {
+		mc, ok := chainCfg.Client.(*chain.MempoolSpaceClient)
+		if !ok {
+			slog.Error("-chain-api is set but this chain's client is not an Esplora client", "chain", args.chainName)
+			os.Exit(1)
+		}
+		mc.SetBaseURLs(strings.Split(args.chainAPI, ","))
+		slog.Info("chain API endpoints (B7 failover)", "count", len(mc.BaseURLs()))
 	}
 
 	// Use chain-specific default DB name if not overridden
