@@ -1342,6 +1342,10 @@ func (s *l2Submitter) callContractL2(
 	// retrying with a higher limit instead of being permanently dead-lettered.
 	if rcOverride > 0 {
 		rcLimit = rcOverride
+	} else {
+		// P6 (BTC bot parity, mapper/call_contract_l2.go sizeCallByDryRun): a
+		// call with no explicit limit is sized from its dry run.
+		rcLimit = s.sizeCallByDryRun(ctx, contractID, action, string(payload), rcLimit)
 	}
 	call := &transactionpool.VscContractCall{
 		ContractId: contractID,
@@ -1576,6 +1580,37 @@ func localTxID(tx []byte) string {
 		return ""
 	}
 	return c.String()
+}
+
+// sizeCallByDryRun raises the rc_limit of a call that carries no explicit
+// one (map, drainWithdrawalQueue, ...) to what its dry run shows it needs, as
+// the BTC mapping bot does for every non-vault call (BOT-CONF-RC: on testnet a
+// confirmSpend that needed 16,752 RC failed on chain under the flat 10,000 and
+// drained the bot's RC; a map that fails on chain is final). Twice the dry run's
+// rc_used; a dry run that hit its own cap is sized from the RC the bot holds,
+// at most vaultOpRcLimit. Never lowers the configured limit; an unavailable or
+// refused dry run leaves it unchanged, and the node stays the judge of the call.
+func (s *l2Submitter) sizeCallByDryRun(ctx context.Context, contractID, action, payload string, configured uint64) uint64 {
+	sim, err := s.gql.simulateContractCall(ctx, s.did.String(), contractID, action, payload)
+	if err != nil {
+		return configured
+	}
+	if !sim.Success {
+		if sim.Err == "gas_limit_hit" {
+			available, known, rerr := s.gql.fetchAccountRC(ctx, s.did.String())
+			switch {
+			case rerr != nil || !known:
+				return max(configured, vaultOpRcLimit)
+			case available > int64(simulateRcCap):
+				return max(configured, min(uint64(available), vaultOpRcLimit))
+			}
+		}
+		return configured
+	}
+	if need := uint64(sim.RcUsed) * 2; need > configured {
+		return need
+	}
+	return configured
 }
 
 // isNonceTooFastErr: the pool refused a nonce more than 100 above the

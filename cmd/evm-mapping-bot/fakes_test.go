@@ -177,6 +177,9 @@ type fakeL2 struct {
 	epoch     uint64               // localNodeInfo.epoch
 	pool      *fakePool            // nil: getAccountNonce counts submissions
 	failState map[string]bool      // contract id -> its state reads return a GraphQL error
+	// sim answers simulateContractCalls for an action (nil: the dry run is
+	// unavailable, a GraphQL error, and the bot keeps its configured rc_limit).
+	sim func(action string) map[string]any
 	// onDemand: a verifier stores only the headers set with set() (RP-9). Off,
 	// a contract with "h" also serves a stored header "b-N" for every N <= h,
 	// as the verifier did when it stored every header (old tests).
@@ -339,6 +342,19 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				out["localNodeInfo"] = map[string]any{"epoch": f.epoch}
 			}
 			data = out
+		case strings.Contains(req.Query, "simulateContractCalls"):
+			in, _ := req.Variables["i"].(map[string]any)
+			calls, _ := in["calls"].([]any)
+			action := ""
+			if len(calls) > 0 {
+				c, _ := calls[0].(map[string]any)
+				action, _ = c["action"].(string)
+			}
+			if f.sim == nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "dry run unavailable"}}})
+				return
+			}
+			data = map[string]any{"simulateContractCalls": []map[string]any{f.sim(action)}}
 		case strings.Contains(req.Query, "getAccountRC"):
 			var rec any
 			if v, ok := f.rc[fmt.Sprint(req.Variables["a"])]; ok {
