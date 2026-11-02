@@ -122,3 +122,43 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 	}
 	t.Logf("unmapERC20 with the proving fee: %d RC", r.RcUsed)
 }
+
+// A free-tier user can withdraw: a hive: account holding no HBD (its only RC
+// is the network's 10,000 free RC) makes the bridge's first ETH withdrawal,
+// with the proving fee on, the costliest unmapETH there is (every counter and
+// the fee recipient's ETH balance are created by it). The suite's other
+// withdrawals are by did:pkh accounts, which have no free tier and longer keys.
+func TestRealWasm_P2_FreeTierUserMakesTheFirstWithdrawal(t *testing.T) {
+	c, _ := rwUSDCBridge(t)
+	if msg, ok := rwSetProofFee(t, c, "eth", "100000000000000"); !ok {
+		t.Fatalf("setProofFee eth: %s", msg)
+	}
+	ctx := context.Background()
+	userKey, _ := ethCrypto.GenerateKey()
+	chain := &fakeChain{}
+	six := new(big.Int).Mul(big.NewInt(6), big.NewInt(1e18))
+	tx := chain.addTx(t, userKey, &types.DynamicFeeTx{GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &c.vault, Value: six})
+	rwHeaderAt(c.ct, 103, chain, rwBlockTime)
+	dep := detectedDeposit{BlockHeight: 103, TxIndex: 0, LogIndex: -1, TxHash: tx.Hash().Hex(), DepositType: "eth"}
+	if r := rwCall(c.ct, "hive:anyone", "map", buildMapPayloadFromRPC(ctx, chain.rpc(t), dep, 103)); !r.Success {
+		t.Fatalf("ETH map: %s: %s", r.Err, r.ErrMsg)
+	}
+	ethUser := rwDID(ethCrypto.PubkeyToAddress(userKey.PublicKey))
+	c.ct.Deposit(ethUser, 1_000_000, ledgerDb.AssetHbd)
+	const free = "hive:freetier"
+	if r := rwCall(c.ct, ethUser, "transfer", []byte(`{"to":"`+free+`","amount":"2000000000000000000","asset":"eth"}`)); !r.Success {
+		t.Fatalf("transfer to %s: %s: %s", free, r.Err, r.ErrMsg)
+	}
+	if hbd := c.ct.LedgerSession.GetBalance(free, c.ct.BlockHeight, "hbd"); hbd != 0 {
+		t.Fatalf("%s holds %d HBD; the test needs a free-tier-only account", free, hbd)
+	}
+	rwHeaderAt(c.ct, 106, &fakeChain{}, rwBlockTime)
+	r := rwCallLimit(c.ct, free, "unmapETH", []byte(`{"to":"0x00000000000000000000000000000000000000e2","amount":"1000000000000000000","asset":"eth"}`), 50_000)
+	if !r.Success {
+		t.Fatalf("a free-tier user's first withdrawal: %s: %s (%d RC)", r.Err, r.ErrMsg, r.RcUsed)
+	}
+	t.Logf("free-tier user's first unmapETH with the proving fee: %d RC of the 10,000 free", r.RcUsed)
+	if r.RcUsed > 10_000 {
+		t.Fatalf("used %d RC, more than the free tier", r.RcUsed)
+	}
+}

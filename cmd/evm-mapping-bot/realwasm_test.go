@@ -61,6 +61,9 @@ func rwContract(t *testing.T) *test_utils.ContractTest {
 	ct.RegisterContract(rwBridge, "hive:owner", wasm)
 	ct.StateSet(rwBridge, "chainid", "11155111")
 	ct.StateSet(rwBridge, "zkverifier", rwVerifier)
+	// initContract also creates the ETH withdrawal accumulator (account-mapping
+	// P2: 8-byte block + 32-byte amount); a wasm that predates it ignores the key.
+	ct.StateSet(rwBridge, "wba-eth", string(make([]byte, 40)))
 	return &ct
 }
 
