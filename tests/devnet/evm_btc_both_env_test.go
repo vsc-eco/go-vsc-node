@@ -206,6 +206,10 @@ type bothEnv struct {
 	// onSigning runs once, when the BTC sweep's signatures are requested
 	// (cycleHooks.btcSigning).
 	onSigning func()
+
+	// btcPrimary1 is the BTC generation 1 primary key (runCycle), for a test
+	// that drives the rest of the BTC migration itself (FS8).
+	btcPrimary1 string
 }
 
 func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool, opts ...func(*Config)) *bothEnv {
@@ -883,6 +887,7 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 		b.mark("BTC gen-0 withdrawal settled (EVM keygen running)", start)
 	}
 	p1, ok := vfRotate(t, b.d, b.ctx, b.v.cid, 1)
+	b.btcPrimary1 = p1
 	if !ok {
 		t.Fatalf("BTC rotation gen 0 -> 1 did not complete next to the EVM rotation (%s in)\n%s", devnetSince(start).Round(time.Second), strings.Join(b.notes, "\n"))
 	}

@@ -263,7 +263,26 @@ func TestBothBridges_FS8_BondLockUnion(t *testing.T) {
 			}
 			check(4, "BTC gen-0 swept, EVM gen-0 still draining", true)
 		},
-		settled: func() { check(3, "both gen-0 drained", false) },
+		settled: func() {
+			// The BTC bot's part, which this env does not run: sweep what is left
+			// of BTC gen 0 and retire it, so it is Inactive and out of the lock
+			// (ExcludeInactive), as vault_bondlock_test's BOND-02 does. EVM gen 0
+			// is retired and purged by the EVM bot before this hook. 11-03 run 1
+			// checked with BTC gen 0 swept once but still Draining: the lock held,
+			// correctly.
+			for i := 0; i < 6 && genUtxoCount(t, b.d, b.ctx, b.v.cid, 0) > 0; i++ {
+				b.btcMigrate(0, b.btcPrimary1)
+			}
+			left := genUtxoCount(t, b.d, b.ctx, b.v.cid, 0)
+			vstatus(t, b.d, b.ctx, 1, b.v.cid, "retireVault", "")
+			st := 0
+			_ = pollUntil(b.ctx, 3*time.Minute, func() bool { st = vaultStatusOf(t, b.d, b.ctx, b.v.cid, 0); return st == 4 })
+			b.note("FS8: BTC gen 0 has %d coin(s) left and is %s after retireVault", left, statusStr(st))
+			if left != 0 || st != 4 {
+				t.Errorf("FS8: BTC gen 0 not drained and Inactive before the release check (%d coins, %s)", left, statusStr(st))
+			}
+			check(3, "both gen-0 drained, BTC gen 0 retired", false)
+		},
 	})
 }
 
