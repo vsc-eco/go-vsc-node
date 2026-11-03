@@ -405,6 +405,29 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 	if err := pollUntil(ctx, 5*time.Minute, func() bool { return e.stateStr("tcc-usdc") == "0|256|0" }); err != nil {
 		t.Fatalf("tcc-usdc=%q after setTokenCustody", e.stateStr("tcc-usdc"))
 	}
+	// A custody proof is only as new as the newest header the bridge holds,
+	// and the cheats in (7) mined no block: on a live network the shortfall
+	// comes with the tx that caused it and the prover plants that block. Here
+	// mine one and plant it (11-03 run 1: the bot proved at the last planted
+	// header, from before the cheat, 20 min of "custody held").
+	plantNow := func(why string) {
+		if err := anvil.Mine(ctx, 1); err != nil {
+			t.Fatalf("mine (%s): %v", why, err)
+		}
+		var hexN string
+		if err := anvil.rpc.CallContext(ctx, &hexN, "eth_blockNumber"); err != nil {
+			t.Fatalf("block number (%s): %v", why, err)
+		}
+		n, err := strconv.ParseUint(strings.TrimPrefix(hexN, "0x"), 16, 64)
+		if err != nil {
+			t.Fatalf("block number %q (%s): %v", hexN, why, err)
+		}
+		if err := e.plantFinalized(anvil, n); err != nil {
+			t.Fatalf("plant block %d (%s): %v", n, why, err)
+		}
+		t.Logf("(8) header %d planted (%s)", n, why)
+	}
+	plantNow("the vault short")
 	shortAt := devnetNow()
 	if err := pollUntil(ctx, 20*time.Minute, func() bool { return e.stateStr("sis-usdc") != "" && e.stateStr("si") != "" }); err != nil {
 		t.Fatalf("(8) the USDC shortfall never set sis-usdc/si (si=%q sis-usdc=%q)\nbot:\n%s", e.stateStr("si"), e.stateStr("sis-usdc"), botLogs())
@@ -419,6 +442,7 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 	if err := anvil.SetMockUSDCBalance(ctx, usdc, vault, usd(13)); err != nil {
 		t.Fatal(err)
 	}
+	plantNow("the balance back")
 	backAt := devnetNow()
 	if err := pollUntil(ctx, 20*time.Minute, func() bool { return e.stateStr("sis-usdc") == "" && e.stateStr("si") == "" }); err != nil {
 		t.Fatalf("(8) USDC custody back but sis-usdc/si not lifted (si=%q sis-usdc=%q)\nbot:\n%s", e.stateStr("si"), e.stateStr("sis-usdc"), botLogs())
