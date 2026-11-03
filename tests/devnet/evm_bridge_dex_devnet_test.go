@@ -256,13 +256,17 @@ func runDexPhases(t *testing.T, ctx context.Context, e *evmBridgeEnv, poolID, ro
 		[]map[string]interface{}{{"type": "transfer.allow", "args": map[string]string{"token": "hbd", "limit": "20.000"}}}, 20000); err != nil {
 		t.Fatalf("add_liquidity: %v", err)
 	}
-	if err := pollUntil(ctx, evmL2Wait, func() bool { return poolState("r1") == "20000000" }); err != nil {
-		t.Fatalf("D2: the pool never drew 20 USDC from the bridge (SP-0): r0=%q r1=%q", poolState("r0"), poolState("r1"))
+	// The pool stores its reserves as big-endian bytes (dex setBigInt); the
+	// bridge books the pool's USDC as a decimal. 11-03 run 1 compared r1 with
+	// "20000000" and failed with r1 = 01 31 2D 00, which is 20,000,000.
+	poolReserve := func(key string) string { return new(big.Int).SetBytes([]byte(poolState(key))).String() }
+	if err := pollUntil(ctx, evmL2Wait, func() bool { return e.stateStr("a-contract:"+poolID+"-usdc") == "20000000" }); err != nil {
+		t.Fatalf("D2: the pool never drew 20 USDC from the bridge (SP-0): the bridge holds %q usdc for the pool, r1=%s", e.stateStr("a-contract:"+poolID+"-usdc"), poolReserve("r1"))
 	}
-	if got := e.stateStr("a-contract:" + poolID + "-usdc"); got != "20000000" {
-		t.Fatalf("D2: the pool's USDC on the bridge %q, want 20000000", got)
+	if got := poolReserve("r1"); got != "20000000" {
+		t.Fatalf("D2: the pool's usdc reserve %s, want 20000000", got)
 	}
-	t.Logf("D2 PASS (SP-0): the pool drew 20 USDC from the bridge; reserves %s HBD / %s USDC", poolState("r0"), poolState("r1"))
+	t.Logf("D2 PASS (SP-0): the pool drew 20 USDC from the bridge; reserves %s HBD / %s USDC", poolReserve("r0"), poolReserve("r1"))
 
 	// D3 (SP-0c): 5 HBD -> USDC settled to an Ethereum address, paid by the bot.
 	swap := func(to string, milliHBD int64) {
