@@ -149,6 +149,7 @@ func devnetGatewayKeys(t *testing.T, d *Devnet) []*hivego.KeyPair {
 	hc := hivego.NewHiveRpc([]string{d.DroneEndpoint()})
 	accs, err := hc.GetAccount([]string{"vsc.gateway"})
 	if err != nil || len(accs) != 1 {
+		t.Logf("devnetGatewayKeys: read vsc.gateway: %v (%d accounts)", err, len(accs))
 		return nil
 	}
 	in := map[string]bool{}
@@ -163,6 +164,11 @@ func devnetGatewayKeys(t *testing.T, d *Devnet) []*hivego.KeyPair {
 		if in[*kp.GetPublicKeyString()] {
 			ks = append(ks, kp)
 		}
+	}
+	if len(ks) < int(accs[0].Active.WeightThreshold) {
+		// An unsigned or under-signed broadcast fails on every retry; N4 run 2
+		// spent its 15-min hatch window on "transaction is not signed".
+		t.Fatalf("devnetGatewayKeys: only %d of the %d gateway keys vsc.gateway needs are derivable (set MagiEnv DEVNET_DETERMINISTIC_BLS=1)", len(ks), accs[0].Active.WeightThreshold)
 	}
 	return ks
 }

@@ -213,6 +213,12 @@ func TestVaultN4_PhantomDepositHaltsBtcSigning(t *testing.T) {
 	// 0.13 from epoch 1: the watch is on.
 	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorEpoch = 1
 	cfg.SysConfigOverrides.ConsensusParams.ConsensusVersionFloorConsensus = 13
+	// The hatch (step 5) is a vsc.gateway multisig: devnetGatewayKeys re-derives
+	// the witnesses' gateway keys from deterministic BLS seeds.
+	if cfg.MagiEnv == nil {
+		cfg.MagiEnv = map[string]string{}
+	}
+	cfg.MagiEnv["DEVNET_DETERMINISTIC_BLS"] = "1"
 	d, _ := startDevnetNoKey(t, cfg, 110*time.Minute)
 	nodes := vfAllNodes(d.cfg.Nodes)
 
