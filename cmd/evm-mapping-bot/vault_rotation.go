@@ -230,6 +230,57 @@ func fetchAccountProof(ctx context.Context, rpc *ethRPC, address string, height 
 	return accountProof{BlockHeight: height, Proof: base64.StdEncoding.EncodeToString(nodes)}, hexToUint64(p.Nonce), bal, nil
 }
 
+// fetchStorageProofs returns a contract's account proof and one storage proof
+// per key (base64 concatenated nodes, in key order) at height. An empty
+// storage trie has no nodes: each proof is "".
+func fetchStorageProofs(ctx context.Context, rpc *ethRPC, address string, keys []string, height uint64) (accountProof, []string, error) {
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = `"` + k + `"`
+	}
+	res, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, address, strings.Join(quoted, ","), height))
+	if err != nil {
+		return accountProof{}, nil, fmt.Errorf("eth_getProof %s at %d: %w", address, height, err)
+	}
+	var p struct {
+		AccountProof []string `json:"accountProof"`
+		StorageProof []struct {
+			Key   string   `json:"key"`
+			Proof []string `json:"proof"`
+		} `json:"storageProof"`
+	}
+	if err := json.Unmarshal(res, &p); err != nil {
+		return accountProof{}, nil, fmt.Errorf("parse eth_getProof: %w", err)
+	}
+	if len(p.StorageProof) != len(keys) {
+		return accountProof{}, nil, fmt.Errorf("eth_getProof %s: %d storage proofs for %d keys", address, len(p.StorageProof), len(keys))
+	}
+	join := func(nodes []string) string {
+		var b []byte
+		for _, n := range nodes {
+			b = append(b, hexToBytes(n)...)
+		}
+		return base64.StdEncoding.EncodeToString(b)
+	}
+	sps := make([]string, len(keys))
+	for i, sp := range p.StorageProof {
+		if new(big.Int).SetBytes(hexToBytes(padHex(sp.Key))).Cmp(new(big.Int).SetBytes(hexToBytes(padHex(keys[i])))) != 0 {
+			return accountProof{}, nil, fmt.Errorf("eth_getProof %s: storage proof %d is for key %s, asked %s", address, i, sp.Key, keys[i])
+		}
+		sps[i] = join(sp.Proof)
+	}
+	return accountProof{BlockHeight: height, Proof: join(p.AccountProof)}, sps, nil
+}
+
+// padHex makes a hex quantity even-length for hexToBytes ("0x1" -> "01").
+func padHex(s string) string {
+	s = strings.TrimPrefix(s, "0x")
+	if len(s)%2 == 1 {
+		s = "0" + s
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // Dry run and RC sizing, as the BTC bot (call_contract_l2.go).
 
@@ -315,6 +366,8 @@ func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, a
 		slog.Warn("vault op dry run unavailable; declaring the ceiling", "action", action, "err", err)
 	case !sim.Success:
 		return "", fmt.Errorf("%w: %s %s: %s", errDryRunRefused, action, sim.Err, sim.ErrMsg)
+	case vaultOpNoop(action, sim.Ret):
+		return sim.Ret, errVaultOpNoop
 	default:
 		rc = rcFromDryRun(sim.RcUsed, vaultOpRcLimit)
 	}
@@ -322,6 +375,29 @@ func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, a
 		return "", err
 	}
 	return sim.Ret, nil
+}
+
+// errVaultOpNoop: the dry run succeeds but the op would change nothing, so
+// nothing is submitted (BTC bot BOT-RETIRE-1 and F8). A superseded generation
+// waits out the purge grace (216,000 L1 blocks on mainnet, about 30 days)
+// while retireVault and migrateVault succeed as no-ops; submitted every
+// vaultOpMinInterval they cost about 865 + 1,000 RC every 2 minutes (devnet
+// FS6 11-03: two no-op retireVault and a no-op migrateVault confirmed in one
+// rotation), far past what a bot regenerates, so its real calls would starve.
+var errVaultOpNoop = errors.New("the vault op would change nothing yet")
+
+// vaultOpNoop reports a dry-run result that changes nothing (the bridge's own
+// return strings: vault_retire.go, migration.go).
+func vaultOpNoop(action, ret string) bool {
+	switch action {
+	case "retireVault":
+		return ret == "retire: no generation transitions"
+	case "migrateVault":
+		return ret == "nothing to migrate"
+	case "writeOffDust":
+		return ret == "no dust to write off"
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -339,33 +415,51 @@ const sweepRedriveL1Blocks = 33
 var (
 	vaultOpMu     sync.Mutex
 	lastVaultOpAt = map[string]time.Time{}
-	notOperator   bool
+	// notOperatorAt: when the bridge last refused an operator op because this
+	// bot is not its vault operator (zero: not latched).
+	notOperatorAt time.Time
+	vaultOpNow    = time.Now // tests set it
 )
+
+// notOperatorRecheck is how long the not-operator latch holds before the
+// driver tries again (BTC bot BOT-LATCH-1, mapper/vault_rotation.go
+// notOwnerRecheck: a latch for the life of the process left a bot appointed
+// operator after it started idle until someone restarted it). The ops are dry
+// run first, so a re-check refused again costs no RC.
+const notOperatorRecheck = 10 * time.Minute
+
+// notOperatorLatched reports whether the latch is holding. Caller holds
+// vaultOpMu.
+func notOperatorLatched() bool {
+	return !notOperatorAt.IsZero() && vaultOpNow().Sub(notOperatorAt) < notOperatorRecheck
+}
 
 func vaultOpDue(kind string) bool {
 	vaultOpMu.Lock()
 	defer vaultOpMu.Unlock()
-	if notOperator {
+	if notOperatorLatched() {
 		return false
 	}
-	return time.Since(lastVaultOpAt[kind]) >= vaultOpMinInterval
+	return vaultOpNow().Sub(lastVaultOpAt[kind]) >= vaultOpMinInterval
 }
 
 func noteVaultOp(kind string) {
 	vaultOpMu.Lock()
-	lastVaultOpAt[kind] = time.Now()
+	lastVaultOpAt[kind] = vaultOpNow()
 	vaultOpMu.Unlock()
 }
 
-// noteRefusal latches "this bot is not the vault operator": no retry of an
-// operator op can succeed, so stop issuing them (BTC bot notOwner).
+// noteRefusal latches "this bot is not the vault operator" for
+// notOperatorRecheck: until the owner appoints it no operator op can succeed,
+// so the driver stops issuing them and tries again after the latch (BTC bot
+// notOwner + BOT-LATCH-1). Reported once per latch, not once per block.
 func noteRefusal(err error) {
 	if err != nil && strings.Contains(err.Error(), "owner or the vault operator") {
 		vaultOpMu.Lock()
-		if !notOperator {
-			slog.Error("this bot is not the bridge's vault operator: rotation ops stop (setVaultOperator to this DID)")
+		if !notOperatorLatched() {
+			slog.Error("this bot is not the bridge's vault operator: rotation ops stop, re-checked every 10 min (setVaultOperator to this DID)")
 		}
-		notOperator = true
+		notOperatorAt = vaultOpNow()
 		vaultOpMu.Unlock()
 	}
 }
@@ -412,7 +506,7 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 		ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "retireVault", json.RawMessage(`{}`))
 		noteRefusal(err)
 		if err == nil && ret != "retire: no generation transitions" {
-			slog.Info("vault retire", "result", ret)
+			slog.Info("vault retire submitted", "dry_run", ret)
 		}
 	}
 }
@@ -427,6 +521,9 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 		if strings.Contains(ret, "dust") {
 			writeOffDust(ctx, gql, sub, cfg)
 		}
+		return
+	}
+	if errors.Is(err, errVaultOpNoop) {
 		return
 	}
 	if !strings.Contains(err.Error(), "eth_proof") {
@@ -452,6 +549,9 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	payload, _ := json.Marshal(map[string]any{"eth_proof": proof})
 	ret, err = vaultOp(ctx, gql, sub, cfg.ContractID, "migrateVault", payload)
 	noteRefusal(err)
+	if errors.Is(err, errVaultOpNoop) {
+		return
+	}
 	if err != nil {
 		slog.Warn("migrateVault (ETH)", "err", err)
 		return
@@ -462,19 +562,21 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	}
 }
 
+// logMigrate logs a submitted migrateVault by its dry run's answer: the call
+// itself runs a block or more later, on the state of that moment.
 func logMigrate(ret string) {
 	if strings.HasPrefix(ret, "sweep ") {
-		slog.Info("migration sweep built", "result", ret)
+		slog.Info("migration sweep submitted", "dry_run", ret)
 		return
 	}
-	slog.Info("migrateVault: nothing built", "result", ret)
+	slog.Info("migrateVault: nothing built", "dry_run", ret)
 }
 
 func writeOffDust(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, cfg EVMBotConfig) {
 	ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "writeOffDust", json.RawMessage(`{}`))
 	noteRefusal(err)
 	if err == nil {
-		slog.Info("dust write-off", "result", ret)
+		slog.Info("dust write-off submitted", "dry_run", ret)
 	}
 }
 
@@ -725,7 +827,7 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "redriveSweep", payload)
 			noteRefusal(err)
 			if err == nil {
-				slog.Info("sweep re-driven", "sweep", key, "result", ret)
+				slog.Info("sweep re-drive submitted", "sweep", key, "dry_run", ret)
 			}
 		}
 	}

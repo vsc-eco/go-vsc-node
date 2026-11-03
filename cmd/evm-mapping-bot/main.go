@@ -127,6 +127,41 @@ type l2Submitter struct {
 	haveNext  bool
 	seeded    bool      // the bot's own pending transactions were read once at start
 	holeSince time.Time // first "missing previous nonce" refusal since the last accepted submission
+
+	// B-R1b (TX-GOSSIP-STALL, devnet FS2/FS6): the account nonce last read and
+	// when it last moved. The bot's own node can hold its transaction while the
+	// nodes that would include it never received it; then the account nonce
+	// stops moving and every later call stacks behind the lost one. Guarded by mu.
+	lastConfirmed  uint64
+	confirmedSince time.Time
+	now            func() time.Time // nil: time.Now (tests set it)
+}
+
+// nonceStallGrace: how long the account nonce may stay put while the bot has
+// transactions above it before the bot starts again from the account nonce,
+// as the BTC mapping bot does on every call (mapper/call_contract_l2.go: a
+// fresh account nonce per submission). Longer than a short L2 halt, so a
+// healthy pipeline is not reset by an ordinary pause.
+var nonceStallGrace = 5 * time.Minute
+
+// maxPendingL2: the most of its own transactions the bot keeps above the
+// account nonce. Past it the bot waits for the chain instead of stacking more
+// (FS2 stacked 100, the node's cap, and the bridge froze).
+var maxPendingL2 uint64 = 32
+
+// deadLetterRetryQueue: operator retry requests for dead-lettered deposits
+// (POST /retry, retry.go); nil until main sets it.
+var deadLetterRetryQueue *deadLetterRetries
+
+// errL2PipelineFull: the bot already has maxPendingL2 transactions above the
+// account nonce; the call is left for a later tick.
+var errL2PipelineFull = errors.New("bot has maxPendingL2 transactions pending above the account nonce")
+
+func (s *l2Submitter) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // nonceHoleGrace: how long the node may keep refusing the bot's next nonce
@@ -774,7 +809,7 @@ func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res jso
 }
 
 func (e *ethRPC) getFinalizedBlock() (uint64, error) {
-	data, err := e.call("eth_getBlockByNumber", `"finalized", false`)
+	data, err := callRetry(context.Background(), e, "eth_getBlockByNumber", `"finalized", false`) // P5
 	if err != nil {
 		return 0, err
 	}
@@ -786,11 +821,11 @@ func (e *ethRPC) getFinalizedBlock() (uint64, error) {
 }
 
 func (e *ethRPC) getBlockWithTxs(height uint64) (json.RawMessage, error) {
-	return e.call("eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height))
+	return callRetry(context.Background(), e, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height)) // P5
 }
 
 func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
-	return e.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash))
+	return callRetry(context.Background(), e, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 // getTransactionByHash fetches the canonical transaction object for a hash.
@@ -798,7 +833,7 @@ func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
 // recovery actually corresponds to a transaction the RPC knows about, so a
 // hostile RPC cannot fabricate a receipt for a hash we never broadcast.
 func (e *ethRPC) getTransactionByHash(txHash string) (json.RawMessage, error) {
-	return e.call("eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash))
+	return callRetry(context.Background(), e, "eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
@@ -1311,6 +1346,10 @@ func (s *l2Submitter) callContractL2(
 	// retrying with a higher limit instead of being permanently dead-lettered.
 	if rcOverride > 0 {
 		rcLimit = rcOverride
+	} else {
+		// P6 (BTC bot parity, mapper/call_contract_l2.go sizeCallByDryRun): a
+		// call with no explicit limit is sized from its dry run.
+		rcLimit = s.sizeCallByDryRun(ctx, contractID, action, string(payload), rcLimit)
 	}
 	call := &transactionpool.VscContractCall{
 		ContractId: contractID,
@@ -1356,6 +1395,15 @@ func (s *l2Submitter) callContractL2(
 		base64.URLEncoding.EncodeToString(sTx.Tx),
 		base64.URLEncoding.EncodeToString(sTx.Sig),
 	)
+	if err != nil && isNonceTooFastErr(err) {
+		// B-R1b: the node caps an account at 100 pending nonces above its
+		// account nonce; reaching it means the earlier ones are not landing.
+		// Continue from the account nonce at once.
+		slog.Warn("B-R1b: the node refuses nonces this far ahead; continuing from the account nonce",
+			"action", action, "nonce", nonce, "err", err)
+		s.haveNext, s.holeSince = false, time.Time{}
+		return "", fmt.Errorf("broadcast L2 tx: %w", err)
+	}
 	if err != nil && isMissingPrevNonceErr(err) {
 		// B-R1: the node does not hold the bot's previous transaction. Give
 		// gossip nonceHoleGrace to bring it; past that, refill from the
@@ -1425,6 +1473,11 @@ func (s *l2Submitter) callWithRetry(
 			slog.Info("L2 submission nonce already consumed — prior attempt landed; not retrying",
 				"action", action, "id", txID)
 			return txID, nil
+		}
+		// B-R1b: the bot is waiting for the chain to take its pending calls;
+		// retrying inside this tick cannot change that.
+		if errors.Is(err, errL2PipelineFull) {
+			return "", err
 		}
 		lastErr = err
 		slog.Warn("L2 submission failed",
@@ -1498,7 +1551,25 @@ func (s *l2Submitter) nextNonce(ctx context.Context, account string) (uint64, er
 			s.next, s.haveNext = top+1, true
 		}
 	}
+	now := s.clock()
+	if s.confirmedSince.IsZero() || confirmed != s.lastConfirmed {
+		s.lastConfirmed, s.confirmedSince = confirmed, now
+	}
 	if s.haveNext && s.next > confirmed {
+		if now.Sub(s.confirmedSince) > nonceStallGrace {
+			// B-R1b: the chain has not taken the bot's next transaction for
+			// nonceStallGrace. Continue from the account nonce (the BTC bot's
+			// rule): the call goes out again at the stuck nonce and reaches the
+			// nodes that lack the earlier one; the pool keeps one per nonce.
+			slog.Warn("B-R1b: the account nonce has not moved; continuing from it",
+				"confirmed", confirmed, "next", s.next, "since", s.confirmedSince)
+			s.haveNext = false
+			s.confirmedSince = now
+			return confirmed, nil
+		}
+		if s.next-confirmed >= maxPendingL2 {
+			return 0, fmt.Errorf("%w (%d above account nonce %d)", errL2PipelineFull, s.next-confirmed, confirmed)
+		}
 		return s.next, nil
 	}
 	return confirmed, nil
@@ -1513,6 +1584,43 @@ func localTxID(tx []byte) string {
 		return ""
 	}
 	return c.String()
+}
+
+// sizeCallByDryRun raises the rc_limit of a call that carries no explicit
+// one (map, drainWithdrawalQueue, ...) to what its dry run shows it needs, as
+// the BTC mapping bot does for every non-vault call (BOT-CONF-RC: on testnet a
+// confirmSpend that needed 16,752 RC failed on chain under the flat 10,000 and
+// drained the bot's RC; a map that fails on chain is final). Twice the dry run's
+// rc_used; a dry run that hit its own cap is sized from the RC the bot holds,
+// at most vaultOpRcLimit. Never lowers the configured limit; an unavailable or
+// refused dry run leaves it unchanged, and the node stays the judge of the call.
+func (s *l2Submitter) sizeCallByDryRun(ctx context.Context, contractID, action, payload string, configured uint64) uint64 {
+	sim, err := s.gql.simulateContractCall(ctx, s.did.String(), contractID, action, payload)
+	if err != nil {
+		return configured
+	}
+	if !sim.Success {
+		if sim.Err == "gas_limit_hit" {
+			available, known, rerr := s.gql.fetchAccountRC(ctx, s.did.String())
+			switch {
+			case rerr != nil || !known:
+				return max(configured, vaultOpRcLimit)
+			case available > int64(simulateRcCap):
+				return max(configured, min(uint64(available), vaultOpRcLimit))
+			}
+		}
+		return configured
+	}
+	if need := uint64(sim.RcUsed) * 2; need > configured {
+		return need
+	}
+	return configured
+}
+
+// isNonceTooFastErr: the pool refused a nonce more than 100 above the
+// account nonce (transaction-pool.go "nonce incrementing too fast").
+func isNonceTooFastErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "nonce incrementing too fast")
 }
 
 // isMissingPrevNonceErr: the pool refused a nonce above the account nonce
@@ -1683,7 +1791,9 @@ func scanBlockSafe(rpc *ethRPC, height uint64, vaults []string, tokens map[strin
 // generation are credited and swept).
 func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (*blockScanResult, error) {
 	blockHex := fmt.Sprintf("0x%x", height)
-	blockData, err := rpc.call("eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
+	// P5: one refused or dropped call must not stop the scan at this block
+	// for the whole tick (the BTC bot retries every chain call: callWithRetry).
+	blockData, err := callRetry(context.Background(), rpc, "eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d: %w", height, err)
 	}
@@ -1760,7 +1870,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 		// B-R2: any error below fails the block, which is retried next tick
 		// (runOnce stops at the first failed block); skipping it lost the
 		// deposit while the block was marked scanned.
-		logsData, err := rpc.logsAt(context.Background(), logsParams, height)
+		logsData, err := logsAtRetry(rpc, logsParams, height)
 		if err != nil {
 			return fmt.Errorf("eth_getLogs token %s block %d: %w", tokenAddr, height, err)
 		}
@@ -2441,6 +2551,24 @@ func callRetry(ctx context.Context, rpc *ethRPC, method, params string) (json.Ra
 	return nil, err
 }
 
+// logsAtRetry is logsAt retried after callRetryPauses. Every attempt keeps
+// logsAt's A19 rule (an empty answer counts only from an endpoint that has
+// reached the block), so a retry can only replace a failure with an answer
+// that rule accepts, never with a lagging endpoint's empty list.
+func logsAtRetry(rpc *ethRPC, params string, toBlock uint64) (json.RawMessage, error) {
+	var err error
+	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
+		if attempt > 0 {
+			time.Sleep(callRetryPauses[attempt-1])
+		}
+		var res json.RawMessage
+		if res, err = rpc.logsAt(context.Background(), params, toBlock); err == nil {
+			return res, nil
+		}
+	}
+	return nil, err
+}
+
 // callRetryPauses: the pauses before callRetry's retries.
 var callRetryPauses = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
@@ -2901,8 +3029,9 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 	slog.Info("MagiDeposit address (RP-7)", "address", depositContractAddress(vault))
 
 	health := newBotHealth(cfg.PollInterval)
+	deadLetterRetryQueue = newDeadLetterRetries(os.Getenv("OPS_API_KEY"))
 	if addr := os.Getenv("HEALTH_ADDR"); addr != "" {
-		go serveHealth(addr, health)
+		go serveHealth(addr, health, deadLetterRetryQueue)
 	}
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
@@ -2968,6 +3097,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 			slog.Error("loop tick failed", "err", err)
 		}
 		driveVaultRotationSafe(loopCtx, rpc, gql, submitter, cp, cfg, view)
+		driveReporterSafe(loopCtx, rpc, gql, submitter, cfg, view) // B6
 
 		loopCancel()
 
@@ -3309,6 +3439,7 @@ func runOnce(
 	// re-submission of a processed deposit is harmless — the contract
 	// deduplicates via the observed block list.
 	// ---------------------------------------------------------------
+	requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
 	mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -4146,7 +4277,7 @@ func buildMapPayloadFrom(bp *blockProofs, dep detectedDeposit) json.RawMessage {
 
 // txSucceeded reports whether an L1 tx's receipt has status 1.
 func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
-	data, err := rpc.call("eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
+	data, err := callRetry(context.Background(), rpc, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
 	if err != nil {
 		return false, err
 	}

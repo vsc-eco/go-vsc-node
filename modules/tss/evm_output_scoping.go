@@ -341,10 +341,20 @@ func (tssMgr *TssManager) evmSignRefused(keyId string, sighash []byte, bh uint64
 		readKeyStrict: tssMgr.contractStateReaderAtStrict(contract, bh),
 		findKey:       tssMgr.tssKeys.FindKey,
 	}
-	switch verdict := deps.evaluate(keyId, sighash); verdict {
-	case scopeRefuse:
-		log.Warn("EVM vault keysign refused by output scoping (A01)", "keyId", keyId, "bh", bh)
+	verdict := deps.evaluate(keyId, sighash)
+	halted, herr := tssMgr.evmKeysignHalted(contract, bh)
+	if herr != nil {
+		log.Warn("EVM vault keysign halt flag unreadable; treating as halted (fail closed)", "contract", contract, "bh", bh, "err", herr)
+	}
+	if evmSignGateDecision(verdict, halted) {
+		if verdict == scopeRefuse {
+			log.Warn("EVM vault keysign refused by output scoping (A01)", "keyId", keyId, "bh", bh)
+		} else {
+			log.Warn("EVM vault keysign halted (governance vsc.tss_halt evm or the bridge's theft flag); skipping issuance", "keyId", keyId, "bh", bh)
+		}
 		return true
+	}
+	switch verdict {
 	case scopeCheckSig:
 		log.Info("EVM vault keysign is a pending generation's check signature; issuing", "keyId", keyId, "bh", bh)
 	case scopeSuccessorSweep:

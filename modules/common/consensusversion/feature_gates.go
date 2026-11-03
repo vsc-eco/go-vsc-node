@@ -837,6 +837,38 @@ func EvmVaultRotationActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// BtcSolvencyWatchActive (0.13.0, N4): witnesses check that every confirmed,
+// unreserved UTXO the BTC mapping contract has registered is still unspent on
+// their own bitcoind and vote "vsc.btc_solvency" when they see otherwise; 2/3
+// of the election's weight voting insolvent at a checkpoint halts BTC vault
+// keysigns (BtcSolvencyHalted) until 2/3 vote solvent, as THORChain's
+// solvency checker halts a chain. Below the line the vote op is ignored and the
+// flag is never set. Resolve `active` from the version active at the block
+// being processed.
+func BtcSolvencyWatchActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// StableSwapActive (0.13.0): a pool system-config lists in StablePools prices
+// its swaps on the StableSwap invariant (two assets, Curve's integer form)
+// instead of the constant product, with the slip fee measured on that curve.
+// Every other pool is unchanged. Below the line a listed pool's swap is
+// refused: its contract only accepts the stable curve. Resolve `active` at the
+// swap's block.
+func StableSwapActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// BigSwapAmountsActive (0.13.0): system.pendulum_apply_swap_fees reads the
+// swap amounts and reserves as big integers and answers in them (SP-0d).
+// Before it they had to fit int64, so a pool of an 18-decimal asset (ETH in
+// wei) refused every swap once a reserve passed ~9.22 of it. The node-share
+// HBD credit is still an int64 ledger amount. Resolve `active` at the swap's
+// block.
+func BigSwapAmountsActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
 // keygen already activated is neither stored nor applied (TSS-KG-1), and a
 // node signs and reshares with the share of the keygen the chain activated.

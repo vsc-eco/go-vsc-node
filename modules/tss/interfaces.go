@@ -59,4 +59,12 @@ type GetScheduler interface {
 	// flag ("th", M1.1b SPV-proven auto-trip) is set — mirrored into the consensus cache
 	// each block. Read by the solvency gate alongside BtcKeysignHalted (either freezes).
 	BtcTheftHalted() bool
+	// EvmKeysignHalted reports whether governance has frozen the EVM bridges'
+	// vault keysigns via vsc.tss_halt {"keyId":"evm"} (N2, from 0.13.0). Read by
+	// the EVM sign gate (evm_halt.go).
+	EvmKeysignHalted() bool
+	// BtcSolvencyHalted reports whether witnesses holding 2/3 of the weight voted
+	// the BTC vault insolvent (N4, from 0.13.0; state-processing btc_solvency.go).
+	// Read by the BTC sign gate with the other two BTC halts.
+	BtcSolvencyHalted() bool
 }

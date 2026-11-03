@@ -839,12 +839,33 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					se.btcKeysignHaltActive(blockInfo.BlockHeight) {
 					var h struct {
 						Active bool   `json:"active"`
-						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+						KeyId  string `json:"keyId"` // "evm" from 0.13.0 (N2); otherwise BTC-global
 					}
 					if err := json.Unmarshal(cj.Json, &h); err != nil {
 						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
 					} else if se.consensusState == nil {
 						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else if h.KeyId == "btc_solvency" && se.btcSolvencyWatchActive(blockInfo.BlockHeight) {
+						// N4 escape hatch (THORChain StopSolvencyCheck): active:false turns
+						// the BTC solvency watch off and lifts its halt; active:true turns it
+						// back on. Before 0.13.0 the op is the BTC halt below, as on 0.12.
+						se.setBtcSolvencyWatch(h.Active, tx.TransactionID)
+					} else if h.KeyId == "evm" && consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+						// N2: the EVM bridges' vault keysign halt (modules/tss/evm_halt.go).
+						// Only from 0.13.0, the line whose sign gate reads it; before it
+						// the op keeps its old meaning (the BTC halt below), exactly as
+						// the 0.12 build applies it, so every node agrees on both flags.
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetEvmKeysignHalt(context.Background(), h.Active, height); err != nil {
+							log.Error("vsc.tss_halt: SetEvmKeysignHalt FAILED — EVM halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied to the EVM bridges", "active", h.Active,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
 					} else {
 						height := uint64(0)
 						if h.Active {
@@ -862,6 +883,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
 						}
 					}
+				}
+
+				// vsc.btc_solvency: a witness's BTC solvency vote (N4, from 0.13.0;
+				// btc_solvency.go). The voter is the account whose active authority
+				// signed the op; the tally checks it is a member of the election at
+				// the vote's checkpoint.
+				if Id == "vsc.btc_solvency" {
+					se.processBtcSolvencyVote(RequiredAuths[0], cj.Json, blockInfo.BlockHeight, tx.TransactionID)
 				}
 
 				// The witness-vote governance batch (vsc.slash_restore /
@@ -3638,6 +3667,17 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	pendulumCfg := pendulumwasm.DefaultConfig()
 	if sconf.OnMainnet() {
 		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
+	}
+	// The StableSwap listings (0.13.0): only these pools price on the stable
+	// curve, and only for their listed pair, amplification and decimals.
+	pendulumCfg.StablePoolAt = func(contractID string, h uint64) (pendulumwasm.StableListing, bool) {
+		p, ok := sconf.StablePoolAt(contractID, h)
+		if !ok {
+			return pendulumwasm.StableListing{}, false
+		}
+		return pendulumwasm.StableListing{
+			Amp: p.Amp, Asset0: p.Asset0, Decimals0: p.Decimals0, Asset1: p.Asset1, Decimals1: p.Decimals1,
+		}, true
 	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{

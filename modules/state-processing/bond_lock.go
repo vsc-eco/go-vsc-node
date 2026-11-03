@@ -75,9 +75,11 @@ func (se *StateEngine) btcContractStateReaderAtStrict(contractID string, height 
 	if perr != nil {
 		return miss // committed StateMerkle is identical on all nodes → deterministic, fail-open
 	}
-	databin := datalayer.NewDataBinFromCid(se.da, stateCid)
+	// 18u: read each key on its own path (datalayer.GetPathCid, identical
+	// answers to DataBin.Get) instead of loading the whole contract state; the
+	// theft-halt mirror calls this every block.
 	return func(key string) ([]byte, bool) {
-		keyCid, gerr := databin.Get(key)
+		keyCid, gerr := datalayer.GetPathCid(se.da, stateCid, key)
 		if gerr != nil || keyCid == nil {
 			return nil, false // datalayer blocks for non-local; an error here is deterministic corruption
 		}

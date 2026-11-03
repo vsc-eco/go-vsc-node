@@ -91,6 +91,14 @@ func TestB11_HealthAlarms(t *testing.T) {
 		t.Fatalf("gas reserve at the threshold raised an alarm: %+v", r)
 	}
 
+	// B6: the bridge's own halts are alarms.
+	_, l2, gql, rpc = healthWorld(t, 10)
+	l2.set("vsc1bridge", "th", "1")
+	l2.set("vsc1bridge", "si", "777")
+	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "P1: the bridge's theft halt is set") || !hasIssue(r, "C2: the bridge's custody halt is set at block 777") {
+		t.Fatalf("halts set: %+v", r)
+	}
+
 	_, _, gql, rpc = healthWorld(t, 9.5)
 	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "C4: vault") || !hasIssue(r, "500000000000000000 short") {
 		t.Fatalf("vault short of custody: %+v", r)
@@ -340,5 +348,85 @@ func TestA01Health_RotationAwareAlarms(t *testing.T) {
 	}
 	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-time.Hour).Unix()); hasIssue(r, "A10") {
 		t.Fatalf("a proof wanted for 1h alarmed: %v", r.Issues)
+	}
+}
+
+// B9 (BTC bot "block processing stale"): ticks that do not advance the deposit
+// scan raise an alarm after SCAN_STALE_AFTER; an advance clears it.
+func TestB9_StaleDepositScanAlarm(t *testing.T) {
+	h := newBotHealth(12 * time.Second)
+	t0 := time.Now()
+	cp := emptyCP()
+	cp.LastScannedBlock = 12_036_766
+	for m := 0; m <= 20; m += 5 { // a tick every 5 minutes, the scan stuck
+		h.recordTick(t0.Add(time.Duration(m)*time.Minute), nil, cp)
+	}
+	if r := h.report(t0.Add(20 * time.Minute)); hasIssue(r, "deposit scan stale") {
+		t.Fatalf("alarm at exactly 20m: %+v", r)
+	}
+	h.recordTick(t0.Add(21*time.Minute), nil, cp)
+	r := h.report(t0.Add(21 * time.Minute))
+	if !hasIssue(r, "deposit scan stale for 1260s at block 12036766") || r.Status != "unhealthy" {
+		t.Fatalf("21m without an advance: %+v", r)
+	}
+	cp.LastScannedBlock++
+	h.recordTick(t0.Add(22*time.Minute), nil, cp)
+	if r := h.report(t0.Add(22 * time.Minute)); hasIssue(r, "deposit scan stale") {
+		t.Fatalf("after the scan advanced: %+v", r)
+	}
+	t.Setenv("SCAN_STALE_AFTER", "3m")
+	if h2 := newBotHealth(12 * time.Second); h2.scanStale != 3*time.Minute {
+		t.Fatalf("SCAN_STALE_AFTER=3m gave %v", h2.scanStale)
+	}
+}
+
+// C4 frozen vault (owner 11-03: alarm only): a token that reports a vault
+// frozen (Circle's isBlacklisted, Tether's isBlackListed) is an alarm naming
+// the vault; not frozen, or a token without a freeze view, is none.
+func TestC4_FrozenVaultAlarm(t *testing.T) {
+	const oldVault = "0x00000000000000000000000000000000000000b0"
+	var raw string // a token that answers the freeze views with this word (not a boolean)
+	run := func(freeze map[string][]string, vaults []string) healthReport {
+		l1, l2, gql, rpc := healthWorld(t, 10)
+		l1.tokens = map[string]map[string]*big.Int{healthUSDC: {healthVault: big.NewInt(30_000_000)}}
+		l1.freeze = map[string]map[string][]string{}
+		if raw != "" {
+			l1.freezeRaw = map[string]string{healthUSDC: raw}
+		}
+		if freeze != nil {
+			l1.freeze[healthUSDC] = freeze
+		}
+		l2.set("vsc1bridge", "chainid", "11155111")
+		l2.set("vsc1bridge", "t-11155111-"+healthUSDC[2:], "usdc|6|10000000")
+		l2.set("vsc1bridge", "s-usdc", "30000000|30000000|0|0")
+		h := newBotHealth(12 * time.Second)
+		now := time.Now()
+		h.recordTick(now, nil, emptyCP())
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", vaults, map[string]string{healthUSDC: healthUSDC}, 0)
+		return h.report(now)
+	}
+	one := []string{healthVault}
+	if r := run(map[string][]string{"0xfe575a87": nil}, one); r.Status != "ok" {
+		t.Fatalf("not frozen: %+v", r)
+	}
+	if r := run(nil, one); r.Status != "ok" {
+		t.Fatalf("a token without a freeze view: %+v", r)
+	}
+	r := run(map[string][]string{"0xfe575a87": {healthVault}}, one)
+	if !hasIssue(r, "C4: vault "+healthVault+" is frozen by the usdc token (isBlacklisted)") {
+		t.Fatalf("USDC-frozen vault: %+v", r)
+	}
+	if r := run(map[string][]string{"0xe47d6060": {healthVault}}, one); !hasIssue(r, "is frozen by the usdc token (isBlackListed)") {
+		t.Fatalf("Tether-style frozen vault: %+v", r)
+	}
+	raw = strings.Repeat("0", 63) + "2" // a fallback's answer, not a boolean: no answer, no alarm
+	if r := run(nil, one); r.Status != "ok" {
+		t.Fatalf("a non-boolean freeze answer: %+v", r)
+	}
+	raw = ""
+	// every fund-holding generation is asked; only the frozen one is named
+	r = run(map[string][]string{"0xfe575a87": {oldVault}}, []string{healthVault, oldVault})
+	if !hasIssue(r, "C4: vault "+oldVault+" is frozen") || hasIssue(r, "C4: vault "+healthVault+" is frozen") {
+		t.Fatalf("two generations, the old one frozen: %+v", r)
 	}
 }

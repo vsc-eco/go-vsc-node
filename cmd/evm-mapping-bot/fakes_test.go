@@ -30,6 +30,8 @@ type fakeL1 struct {
 	sent      []string                       // raw signed txs passed to eth_sendRawTransaction
 	balances  map[string]*big.Int            // eth_getBalance by lowercase address (nil: 0)
 	tokens    map[string]map[string]*big.Int // eth_call balanceOf: token -> holder -> balance (lowercase; unknown token: "0x")
+	freeze    map[string]map[string][]string // eth_call freeze view: token -> selector -> frozen holders (absent selector: "0x")
+	freezeRaw map[string]string              // eth_call freeze views: token -> the raw 32-byte word it answers (a fallback, not a boolean)
 	logs      string                         // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
 }
 
@@ -128,6 +130,22 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 		case "eth_call":
 			var call struct{ To, Data string }
 			_ = json.Unmarshal(req.Params[0], &call)
+			if raw, ok := f.freezeRaw[strings.ToLower(call.To)]; ok && len(call.Data) == 74 && (call.Data[:10] == "0xfe575a87" || call.Data[:10] == "0xe47d6060") {
+				result = "0x" + raw
+				break
+			}
+			if views, ok := f.freeze[strings.ToLower(call.To)]; ok && len(call.Data) == 74 {
+				if frozen, has := views[call.Data[:10]]; has {
+					v := 0
+					for _, h := range frozen {
+						if h == "0x"+call.Data[34:] {
+							v = 1
+						}
+					}
+					result = fmt.Sprintf("0x%064x", v)
+					break
+				}
+			}
 			holders, ok := f.tokens[strings.ToLower(call.To)]
 			if !ok || !strings.HasPrefix(call.Data, "0x70a08231") || len(call.Data) != 74 {
 				result = "0x"
@@ -177,6 +195,9 @@ type fakeL2 struct {
 	epoch     uint64               // localNodeInfo.epoch
 	pool      *fakePool            // nil: getAccountNonce counts submissions
 	failState map[string]bool      // contract id -> its state reads return a GraphQL error
+	// sim answers simulateContractCalls for an action (nil: the dry run is
+	// unavailable, a GraphQL error, and the bot keeps its configured rc_limit).
+	sim func(action string) map[string]any
 	// onDemand: a verifier stores only the headers set with set() (RP-9). Off,
 	// a contract with "h" also serves a stored header "b-N" for every N <= h,
 	// as the verifier did when it stored every header (old tests).
@@ -195,6 +216,9 @@ type fakePool struct {
 	confirmed uint64
 	txs       []*fakePoolTx // in submission order
 	staleRead *uint64       // set: the next getAccountNonce answers this, once
+	// stuck: transactions this node holds that no block can include (the nodes
+	// a block needs never received them: TX-GOSSIP-STALL, devnet FS2/FS6).
+	stuck map[string]bool
 }
 
 type fakePoolTx struct {
@@ -236,7 +260,7 @@ func (p *fakePool) pending(n uint64) *fakePoolTx {
 // produce includes the pending transactions from the account nonce on, one
 // per nonce, and deletes the ones that lost their nonce.
 func (p *fakePool) produce() {
-	for tx := p.pending(p.confirmed); tx != nil; tx = p.pending(p.confirmed) {
+	for tx := p.includable(p.confirmed); tx != nil; tx = p.includable(p.confirmed) {
 		tx.status = "CONFIRMED"
 		p.confirmed++
 	}
@@ -247,6 +271,16 @@ func (p *fakePool) produce() {
 		}
 	}
 	p.txs = kept
+}
+
+// includable is the first pending transaction at nonce n a block can include.
+func (p *fakePool) includable(n uint64) *fakePoolTx {
+	for _, tx := range p.txs {
+		if tx.status == "UNCONFIRMED" && tx.nonce == n && !p.stuck[tx.id] {
+			return tx
+		}
+	}
+	return nil
 }
 
 func (p *fakePool) byID(id string) *fakePoolTx {
@@ -326,6 +360,19 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				out["localNodeInfo"] = map[string]any{"epoch": f.epoch}
 			}
 			data = out
+		case strings.Contains(req.Query, "simulateContractCalls"):
+			in, _ := req.Variables["i"].(map[string]any)
+			calls, _ := in["calls"].([]any)
+			action := ""
+			if len(calls) > 0 {
+				c, _ := calls[0].(map[string]any)
+				action, _ = c["action"].(string)
+			}
+			if f.sim == nil {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "dry run unavailable"}}})
+				return
+			}
+			data = map[string]any{"simulateContractCalls": []map[string]any{f.sim(action)}}
 		case strings.Contains(req.Query, "getAccountRC"):
 			var rec any
 			if v, ok := f.rc[fmt.Sprint(req.Variables["a"])]; ok {

@@ -308,6 +308,10 @@ func (noStateOutputs) GetLastOutput(string, uint64) (contracts.ContractOutput, e
 	return contracts.ContractOutput{}, nil
 }
 
+func (noStateOutputs) GetLastOutputStrict(string, uint64) (contracts.ContractOutput, error) {
+	return contracts.ContractOutput{}, nil
+}
+
 // spendAt is the bridge's d-{nonce} record of an ETH withdrawal of 1 ETH to
 // 0x..e2 at nonce n on chain, issued from vault.
 func spendAt(chain, n uint64, vault string) ([]byte, []byte) {

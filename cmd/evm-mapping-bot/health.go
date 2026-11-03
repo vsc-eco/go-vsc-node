@@ -29,8 +29,19 @@ import (
 //	HEALTH_CHECK_EVERY     how often the alarms are checked (Go duration, default 5m)
 //	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH: twice the
 //	                       contract's MinGasReserve, below which every unmap is refused)
+//	SCAN_STALE_AFTER       warn when the deposit scan has not advanced for this long
+//	                       (Go duration, default 20m)
 
 const defaultHealthCheckEvery = 5 * time.Minute
+
+// defaultScanStaleAfter (B9, the BTC bot's "block processing stale"): a tick
+// runs even when the deposit scan cannot advance (a block the RPC will not
+// serve stops it there and the next tick retries), so a stuck scan never shows
+// as a missed tick. Finalized blocks advance every epoch (~6.4 min), so 20
+// minutes is about three epochs with no deposit scanned: an RPC that cannot
+// serve the bot's next block (a pruned endpoint after downtime: testnet 11-02),
+// or a finality stall. Either way deposits are not being credited.
+const defaultScanStaleAfter = 20 * time.Minute
 
 // keyExpiryWarnEpochs is how early the bot warns that the vault key expires:
 // 28 epochs, 7 days at 6 hours an epoch.
@@ -46,6 +57,8 @@ type botHealth struct {
 	lastTickAt  time.Time
 	lastTickErr string
 	scanned     uint64
+	scannedAt   time.Time     // when scanned last advanced (or was first recorded)
+	scanStale   time.Duration // no advance for longer is an alarm (B9)
 	withdrawals int
 	pendingMaps int
 	deadLetters int
@@ -54,9 +67,12 @@ type botHealth struct {
 }
 
 func newBotHealth(poll time.Duration) *botHealth {
-	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll, every: defaultHealthCheckEvery}
+	h := &botHealth{rcAlarm: 20_000, reserveWarn: big.NewInt(1e17), staleAfter: 5 * poll, every: defaultHealthCheckEvery, scanStale: defaultScanStaleAfter}
 	if v, err := time.ParseDuration(os.Getenv("HEALTH_CHECK_EVERY")); err == nil && v > 0 {
 		h.every = v
+	}
+	if v, err := time.ParseDuration(os.Getenv("SCAN_STALE_AFTER")); err == nil && v > 0 {
+		h.scanStale = v
 	}
 	if v, err := strconv.ParseInt(os.Getenv("RC_ALARM"), 10, 64); err == nil {
 		h.rcAlarm = v
@@ -78,6 +94,9 @@ func (h *botHealth) recordTick(now time.Time, err error, cp *Checkpoint) {
 	h.lastTickErr = ""
 	if err != nil {
 		h.lastTickErr = err.Error()
+	}
+	if h.scannedAt.IsZero() || cp.LastScannedBlock != h.scanned {
+		h.scannedAt = now
 	}
 	h.scanned = cp.LastScannedBlock
 	h.withdrawals = len(cp.SentWithdrawals)
@@ -129,10 +148,17 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(fmt.Sprintf("A10: a header proof has been wanted for %s: check the operator and its PROVE balance", now.Sub(time.Unix(wantSince, 0)).Round(time.Minute)))
 	}
 
-	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid"})
+	st, err := gql.fetchContractState(ctx, contractID, []string{"gr", "s-eth", "chainid", "th", "si"})
 	if err != nil {
 		warn("B12: cannot read the bridge's gas reserve and custody", "err", err)
 	} else {
+		// B6: the bridge's own halts, which stop its vault keysigns on the nodes.
+		if st["th"] != "" {
+			warn("P1: the bridge's theft halt is set (a vault address sent a transaction the bridge never authorized): vault keysigns are stopped until the owner's clearTheftHalt")
+		}
+		if st["si"] != "" {
+			warn("C2: the bridge's custody halt is set at block " + st["si"] + " (the vault holds less ETH than the bridge booked): vault keysigns are stopped until a full custody proof or the owner's setCustodyCheck")
+		}
 		reserve, _ := new(big.Int).SetString(st["gr"], 10)
 		if reserve == nil {
 			reserve = new(big.Int)
@@ -213,7 +239,50 @@ func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscG
 		if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
 			warn(fmt.Sprintf("C4: vault %s holds %s %s, %s short of the %s %s the bridge has credited", vault, bal, sym, short, custody, sym))
 		}
+		for _, v := range vaults {
+			if frozen, view := rpc.erc20Frozen(a, v); frozen {
+				warn(fmt.Sprintf("C4: vault %s is frozen by the %s token (%s): its %s cannot move, so %s withdrawals revert on L1 and are refunded; the custody proof still counts it as held", v, sym, view, sym, sym), "token", a)
+			}
+		}
 	}
+}
+
+// freezeViews are the token views that report a holder frozen: Circle's
+// FiatToken isBlacklisted(address) (USDC) and Tether's isBlackListed(address).
+// A frozen vault still holds its balance (the custody proof counts it, USDC
+// keeps the flag in bit 255 of the same word), so the bridge does not halt on
+// it (owner 11-03: alarm only); the bot says so.
+var freezeViews = []struct{ name, selector string }{
+	{"isBlacklisted", "0xfe575a87"},
+	{"isBlackListed", "0xe47d6060"},
+}
+
+// erc20Frozen asks the token whether it froze holder, through the first freeze
+// view that answers with a boolean. A token with none answers nothing: not
+// frozen (no answer is not an alarm).
+func (e *ethRPC) erc20Frozen(token, holder string) (frozen bool, view string) {
+	for _, v := range freezeViews {
+		data := v.selector + strings.Repeat("0", 24) + strings.TrimPrefix(strings.ToLower(holder), "0x")
+		raw, err := e.call("eth_call", fmt.Sprintf(`{"to":"%s","data":"%s"}, "latest"`, token, data))
+		if err != nil {
+			continue
+		}
+		var word string
+		if json.Unmarshal(raw, &word) != nil {
+			continue
+		}
+		word = strings.TrimPrefix(word, "0x")
+		if len(word) != 64 {
+			continue
+		}
+		switch strings.TrimLeft(word, "0") {
+		case "":
+			return false, v.name
+		case "1":
+			return true, v.name
+		}
+	}
+	return false, ""
 }
 
 // wantProofAlarmAfter is how long a header proof may be wanted before /health
@@ -273,6 +342,9 @@ func (h *botHealth) report(now time.Time) healthReport {
 	if h.lastTickErr != "" {
 		r.Issues = append(r.Issues, "last tick failed: "+h.lastTickErr)
 	}
+	if age := now.Sub(h.scannedAt); age > h.scanStale {
+		r.Issues = append(r.Issues, fmt.Sprintf("deposit scan stale for %ds at block %d", int64(age.Seconds()), h.scanned))
+	}
 	if h.deadLetters > 0 {
 		r.Issues = append(r.Issues, fmt.Sprintf("%d deposit(s) dead-lettered: map them by hand", h.deadLetters))
 	}
@@ -296,9 +368,12 @@ func (h *botHealth) handler() http.HandlerFunc {
 }
 
 // serveHealth serves GET /health on addr until the process exits.
-func serveHealth(addr string, h *botHealth) {
+func serveHealth(addr string, h *botHealth, retries *deadLetterRetries) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /health", h.handler())
+	if retries != nil {
+		mux.Handle("POST /retry", retries.handler()) // P7
+	}
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second}
 	slog.Info("health endpoint listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != nil {

@@ -78,6 +78,9 @@ type Config struct {
 	// after it the bounded fee is active. 0 = always active (no gate) — the
 	// testnet/devnet default. Mainnet sets params.PENDULUM_FEE_FIX_HEIGHT.
 	ActivationHeight uint64
+	// StablePoolAt lists the pools that price on the StableSwap curve from
+	// consensus 0.13.0 (system-config StablePools). nil = none.
+	StablePoolAt StablePoolLookup
 }
 
 // DefaultConfig returns the production defaults: PDF stabilizer, 25% network
@@ -162,8 +165,20 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errNotWhitelisted)
 	}
 
-	// Validate inputs.
-	if args.X <= 0 || args.XReserve <= 0 || args.YReserve <= 0 {
+	// Validate inputs. bigAmounts (0.13.0, SP-0d): the SDK handed big amounts.
+	bigAmounts := args.XBig != nil
+	var xBig, xReserveBig, yReserveBig *big.Int
+	if bigAmounts {
+		if args.XReserveBig == nil || args.YReserveBig == nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+		}
+		xBig = new(big.Int).Set(args.XBig)
+		xReserveBig = new(big.Int).Set(args.XReserveBig)
+		yReserveBig = new(big.Int).Set(args.YReserveBig)
+	} else {
+		xBig, xReserveBig, yReserveBig = big.NewInt(args.X), big.NewInt(args.XReserve), big.NewInt(args.YReserve)
+	}
+	if xBig.Sign() <= 0 || xReserveBig.Sign() <= 0 || yReserveBig.Sign() <= 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
 	}
 	assetIn := normalizeAsset(args.AssetIn)
@@ -174,6 +189,11 @@ func (a *Applier) ApplySwapFees(
 	if assetIn != "hbd" && assetOut != "hbd" {
 		// Testnet rollout is HBD-paired only.
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+	}
+	// Constant product (nil) or the StableSwap curve of a listed pool (0.13.0).
+	stable, err := a.resolveStable(contractID, blockHeight, args, assetIn, assetOut)
+	if err != nil {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
 
 	// 2. Read live geometry. Recomputed at the swap's block height from
@@ -192,26 +212,33 @@ func (a *Applier) ApplySwapFees(
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errSnapshotUnavailable)
 	}
 
-	xBig := big.NewInt(args.X)
-	xReserveBig := big.NewInt(args.XReserve)
-	yReserveBig := big.NewInt(args.YReserve)
-
 	// 3. Output-side gross + base fees.
-	xPlusReserve := new(big.Int).Add(xReserveBig, xBig)
-	if xPlusReserve.Sign() == 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+	var grossOut, baseCLP *big.Int
+	if stable != nil {
+		// StableSwap: gross output on the curve, and the slip fee measured on
+		// the same curve (THORChain's CLP rule, grossOut·slip, which on a
+		// constant product is exactly x²·Y/(x+X)²).
+		grossOut, baseCLP, err = stableGross(stable, xBig, xReserveBig, yReserveBig)
+		if err != nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+		}
+	} else {
+		xPlusReserve := new(big.Int).Add(xReserveBig, xBig)
+		if xPlusReserve.Sign() == 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInvalidArgument)
+		}
+		grossOut = intmath.MulDivFloor(xBig, yReserveBig, xPlusReserve)
+		if grossOut.Sign() <= 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		if grossOut.Cmp(yReserveBig) > 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		// CLP = x²·Y / (x+X)²  (output units)
+		xSquaredY := new(big.Int).Mul(xBig, xBig)
+		denomSquared := new(big.Int).Mul(xPlusReserve, xPlusReserve)
+		baseCLP = intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	}
-	grossOut := intmath.MulDivFloor(xBig, yReserveBig, xPlusReserve)
-	if grossOut.Sign() <= 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-	if grossOut.Cmp(yReserveBig) > 0 {
-		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
-	}
-	// CLP = x²·Y / (x+X)²  (output units)
-	xSquaredY := new(big.Int).Mul(xBig, xBig)
-	denomSquared := new(big.Int).Mul(xPlusReserve, xPlusReserve)
-	baseCLP := intmath.MulDivFloor(xSquaredY, yReserveBig, denomSquared)
 	// Protocol fee = grossOut · 8 bps  (output units; matches the contract's
 	// existing `baseFee = grossOut * feeBps / 10000`).
 	baseProtocol := intmath.MulDivFloor(
@@ -238,7 +265,7 @@ func (a *Applier) ApplySwapFees(
 	// P (and therefore s = V/E = 2P/E); HBD-out lowers it. A swap is
 	// corrective when its direction matches the move toward the target s_eq;
 	// any move away (including any move at exactly s = s_eq) is exacerbating.
-	rTradeBps, err := tradeRatioBps(args.X, args.XReserve)
+	rTradeBps, err := tradeRatioBpsBig(xBig, xReserveBig)
 	if err != nil {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](err)
 	}
@@ -365,6 +392,21 @@ func (a *Applier) ApplySwapFees(
 		}
 		nodeBucketHBD.Set(nodeShareOutput)
 		newY.Sub(newY, nodeShareOutput)
+	} else if stable != nil {
+		// Output is non-HBD on the stable pool: the node share is sold back
+		// to the pool on the curve, from the LP reserve (the network credit
+		// is not the LPs': the contract moves it to its fee bucket).
+		yLP := new(big.Int).Sub(newY, nodeShareOutput)
+		yLP.Sub(yLP, networkCreditOutput)
+		hbdOut, err := stableSellBack(stable, nodeShareOutput, newX, yLP)
+		if err != nil {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](err)
+		}
+		if hbdOut.Cmp(newX) >= 0 {
+			return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+		}
+		newX.Sub(newX, hbdOut)
+		nodeBucketHBD.Set(hbdOut)
 	} else {
 		// Output is non-HBD (X is HBD): convert via secondary CPMM hop.
 		// Closed-form: hbdOut = nodeShare · newX / (newY + nodeShare).
@@ -383,8 +425,13 @@ func (a *Applier) ApplySwapFees(
 	if newX.Sign() < 0 || newY.Sign() < 0 {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
-	if !newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() || !nodeBucketHBD.IsInt64() ||
-		!networkCreditOutput.IsInt64() || !lpFeeOutput.IsInt64() || !nodeShareOutput.IsInt64() {
+	// The node share is HBD credited on the int64 ledger in either mode; the
+	// output-side amounts need fit int64 only when answered as int64.
+	if !nodeBucketHBD.IsInt64() {
+		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
+	}
+	if !bigAmounts && (!newX.IsInt64() || !newY.IsInt64() || !userOutput.IsInt64() ||
+		!networkCreditOutput.IsInt64() || !lpFeeOutput.IsInt64() || !nodeShareOutput.IsInt64()) {
 		return sdkErr[wasm_context.PendulumSwapFeeResult](errInsufficientReserves)
 	}
 
@@ -399,6 +446,25 @@ func (a *Applier) ApplySwapFees(
 		}
 	}
 
+	if bigAmounts {
+		out := wasm_context.PendulumSwapFeeResult{
+			NodeBucketCreditedHBD: nodeBucketHBD.Int64(),
+			MultiplierBps:         multiplierBps,
+			SAfterBps:             sBps,
+			Big: &wasm_context.PendulumSwapFeeBig{
+				UserOutput:          userOutput,
+				NewXReserve:         newX,
+				NewYReserve:         newY,
+				NetworkCreditOutput: networkCreditOutput,
+				LpShareOutput:       lpFeeOutput,
+				NodeShareOutput:     nodeShareOutput,
+			},
+		}
+		if stable != nil {
+			out.Curve = "stable"
+		}
+		return result.Ok(out)
+	}
 	out := wasm_context.PendulumSwapFeeResult{
 		UserOutput:            userOutput.Int64(),
 		NewXReserve:           newX.Int64(),
@@ -409,6 +475,9 @@ func (a *Applier) ApplySwapFees(
 		SAfterBps:             sBps,
 		LpShareOutput:         lpFeeOutput.Int64(),
 		NodeShareOutput:       nodeShareOutput.Int64(),
+	}
+	if stable != nil {
+		out.Curve = "stable"
 	}
 	return result.Ok(out)
 }
@@ -440,20 +509,18 @@ func normalizeAsset(a string) string {
 	return string(out)
 }
 
-// tradeRatioBps returns r = x/X expressed in basis points. (0, nil) if X
-// is non-positive (the stabilizer treats that as r=0 — same as a zero-size
-// trade, no destabilization). On int64 overflow returns
-// errArithmeticOverflow so the swap fails fast rather than feeding a
-// bogus ratio into StabilizerMultiplierBps.
-func tradeRatioBps(x, X int64) (int64, error) {
-	if X <= 0 {
+// tradeRatioBpsBig returns r = x/X in basis points; it must fit int64, else
+// errArithmeticOverflow so the swap fails fast rather than feeding a bogus
+// ratio into StabilizerMultiplierBps. (0, nil) if X is non-positive (r=0).
+func tradeRatioBpsBig(x, X *big.Int) (int64, error) {
+	if X.Sign() <= 0 {
 		return 0, nil
 	}
-	v, ok := intmath.MulDivFloorI64(x, pendulum.BpsScale, X)
-	if !ok {
+	v := intmath.MulDivFloor(x, big.NewInt(pendulum.BpsScale), X)
+	if !v.IsInt64() {
 		return 0, errArithmeticOverflow
 	}
-	return v, nil
+	return v.Int64(), nil
 }
 
 // exacerbatesFromSnapshot derives the stabilizer "exacerbates" hint from the
