@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"vsc-node/lib/btcvault"
 	"vsc-node/modules/common/params"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -760,8 +761,77 @@ func (b *bothEnv) l1Balance(addr ethcommon.Address) *big.Int {
 // is purged. A purge only follows inactivation, and the bot does not always log
 // the inactivation result (FS6 with 68335e76: "retire: purged=0" alone), so the
 // purge is the signal.
+// evmMigrated: the bridge's migration record is clear and its registry has
+// generation 0 Purged. The contract state is the evidence, not the bot's log:
+// the bot logs its dry run's answer, which can be "no generation transitions"
+// a block before the same call purges (FS6 11-03 run 3: gen 0 purged at block
+// 1000, the bot never logged "purged=0", the cycle waited out its hour).
 func (b *bothEnv) evmMigrated() bool {
-	return b.e.stateStr("msr") == "" && strings.Contains(b.botLogs(), "purged=0")
+	if b.e.stateStr("msr") != "" {
+		return false
+	}
+	for _, v := range vfVaultRegistryOn(b.d, b.ctx, b.e.gqlNode, b.e.amID) {
+		if v.Generation == 0 {
+			return v.Status == btcvault.VaultStatusPurged
+		}
+	}
+	return false
+}
+
+// noopVaultOps counts the bridge's vault ops that went on chain and changed
+// nothing (retireVault "retire: no generation transitions", migrateVault
+// "nothing to migrate", writeOffDust "no dust to write off"): RC a bot
+// without EB-1 (BTC BOT-RETIRE-1 / F8 parity) spends every 2 minutes while a
+// generation is superseded. A measurement, logged; develop's bot sends them.
+func (b *bothEnv) noopVaultOps() (noop, total int, err error) {
+	const qt = `query($c:String!,$o:Int!){findTransaction(filterOptions:{byContract:$c,limit:100,offset:$o}){id ops{data}}}`
+	const qo = `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){inputs results{ret}}}`
+	noopRet := map[string]string{"retireVault": "retire: no generation transitions", "migrateVault": "nothing to migrate", "writeOffDust": "no dust to write off"}
+	for off := 0; ; off += 100 {
+		var page struct {
+			FindTransaction []struct {
+				ID  string `json:"id"`
+				Ops []struct {
+					Data map[string]any `json:"data"`
+				} `json:"ops"`
+			} `json:"findTransaction"`
+		}
+		if err := b.d.gqlQuery(b.ctx, b.e.gqlNode, qt, map[string]any{"c": b.e.amID, "o": off}, &page); err != nil {
+			return noop, total, err
+		}
+		for _, tx := range page.FindTransaction {
+			if len(tx.Ops) == 0 {
+				continue
+			}
+			action, _ := tx.Ops[0].Data["action"].(string)
+			want, ok := noopRet[action]
+			if !ok {
+				continue
+			}
+			total++
+			var out struct {
+				FindContractOutput []struct {
+					Inputs  []string `json:"inputs"`
+					Results []struct {
+						Ret string `json:"ret"`
+					} `json:"results"`
+				} `json:"findContractOutput"`
+			}
+			if err := b.d.gqlQuery(b.ctx, b.e.gqlNode, qo, map[string]any{"id": tx.ID}, &out); err != nil {
+				return noop, total, err
+			}
+			for _, o := range out.FindContractOutput { // one output can carry several calls
+				for i, in := range o.Inputs {
+					if in == tx.ID && i < len(o.Results) && o.Results[i].Ret == want {
+						noop++
+					}
+				}
+			}
+		}
+		if len(page.FindTransaction) < 100 {
+			return noop, total, nil
+		}
+	}
 }
 
 // ---- the cycle ----
@@ -866,6 +936,11 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 		t.Fatalf("EVM generation 0 never drained, retired and purged: msr=%q\nbot:\n%s", e.stateStr("msr"), b.botLogs())
 	}
 	b.mark("EVM batch confirmed, gen 0 retired + purged", mig)
+	if noop, total, err := b.noopVaultOps(); err != nil {
+		t.Logf("MEASURE no-op vault ops: unreadable (%v)", err)
+	} else {
+		t.Logf("MEASURE no-op vault ops confirmed on chain: %d of %d retireVault/migrateVault/writeOffDust", noop, total)
+	}
 	if h.settled != nil {
 		h.settled()
 	}
