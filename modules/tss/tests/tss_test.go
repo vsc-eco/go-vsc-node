@@ -47,7 +47,14 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const nodeCount = 6
+// nodeCount is the cluster size: 6, or TSS_TEST_NODES to run the same tests at
+// the mainnet committee size (16-19; BOTH plan S-1).
+var nodeCount = func() int {
+	if n, err := strconv.Atoi(os.Getenv("TSS_TEST_NODES")); err == nil && n >= 4 {
+		return n
+	}
+	return 6
+}()
 
 var log = vsclog.Module("tss-test")
 

@@ -74,12 +74,18 @@ func (d *Devnet) SubmitL2Tx(ctx context.Context, node int, txB64, sigB64 string)
 // CallContractEvm broadcasts an L2 contract call signed by an evm key, so the
 // contract sees Caller == the key's evm DID (mirrors bot callContractL2).
 func (d *Devnet) CallContractEvm(ctx context.Context, node int, key *EthKey, contractID, action, payload string, rcLimit uint64) (string, error) {
-	if rcLimit == 0 {
-		rcLimit = 5_000_000
-	}
 	nonce, err := d.FetchL2Nonce(ctx, node, key.DID.String())
 	if err != nil {
 		return "", fmt.Errorf("fetch L2 nonce for %s: %w", key.DID.String(), err)
+	}
+	return d.CallContractEvmAt(ctx, node, key, contractID, action, payload, rcLimit, nonce)
+}
+
+// CallContractEvmAt is CallContractEvm at a given nonce, for a burst of calls
+// from one account (each nonce's predecessor must already be in the pool).
+func (d *Devnet) CallContractEvmAt(ctx context.Context, node int, key *EthKey, contractID, action, payload string, rcLimit, nonce uint64) (string, error) {
+	if rcLimit == 0 {
+		rcLimit = 5_000_000
 	}
 	call := &transactionpool.VscContractCall{
 		ContractId: contractID,

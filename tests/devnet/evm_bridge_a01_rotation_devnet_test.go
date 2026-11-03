@@ -353,7 +353,9 @@ func TestEVMBridge_A01_VaultRotation(t *testing.T) {
 	if err := e.plantFinalized(anvil, head); err != nil {
 		t.Fatal(err)
 	}
-	if err := pollUntil(ctx, 10*time.Minute, func() bool { return strings.Contains(botLogs(), "purged=0") }); err != nil {
+	// The bridge's registry, not the bot's log: the bot logs its dry run's
+	// answer, which can be "inactivated=0" for the very call that purges.
+	if err := pollUntil(ctx, 10*time.Minute, func() bool { return evmGenPurged(ctx, e, 0) }); err != nil {
 		t.Fatalf("generation 0 not purged\nbot:\n%s", botLogs())
 	}
 	left, _ := anvil.cli.BalanceAt(ctx, vault0, nil)
