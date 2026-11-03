@@ -145,6 +145,16 @@ func TestPendulumStablePoolDevnet(t *testing.T) {
 		t.Fatal("stable swap never recorded: refused (gate/listing/feed?) or nodes diverged")
 	}
 
+	// Every node must record the swap itself; each may be a block or two behind
+	// magi-3 (11-03 first run: magi-1 read the same second as magi-3 confirmed and
+	// had not applied the block yet). A node that never records it in 3 min is a
+	// real failure (refused it, or stalled).
+	for n := 1; n <= cfg.Nodes; n++ {
+		if !waitStateKey(t, d, ctx, n, poolID, "curve", "stable", 3*time.Minute) {
+			dumpDiagnostics(t, d, ctx)
+			t.Fatalf("magi-%d never recorded the stable swap within 3 min of magi-3: refused it (listing/gate) or stalled", n)
+		}
+	}
 	results := make([]string, cfg.Nodes)
 	for n := 1; n <= cfg.Nodes; n++ {
 		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"result", "user_output", "curve"})
@@ -190,6 +200,14 @@ func TestPendulumStablePoolDevnet(t *testing.T) {
 		t.Fatal("the swap with reserves past int64 never landed (SP-0d)")
 	}
 	for n := 1; n <= cfg.Nodes; n++ {
+		ok := false
+		for deadline := devnetNow().Add(3 * time.Minute); devnetNow().Before(deadline) && !ok; devnetSleep(5 * time.Second) {
+			ok = bigLanded(n)
+		}
+		if !ok {
+			dumpDiagnostics(t, d, ctx)
+			t.Fatalf("magi-%d never recorded the swap past int64 within 3 min of magi-3 (SP-0d)", n)
+		}
 		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"result"})
 		if err != nil {
 			t.Fatalf("magi-%d read big result: %v", n, err)
