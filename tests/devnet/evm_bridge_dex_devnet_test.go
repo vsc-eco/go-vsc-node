@@ -327,7 +327,7 @@ func runDexPhases(t *testing.T, ctx context.Context, e *evmBridgeEnv, poolID, ro
 	}
 	t.Logf("D4 PASS (refund_to): the reverted routed withdrawal refunded the trader (%s -> %s usdc); the router holds none", before, e.stateStr("a-"+trader+"-usdc"))
 
-	// D5 (C3): a 2 USDC per-block cap; 3 USDC refused, 1 USDC accepted.
+	// D5 (C3): a 2 USDC per-block cap; 2.5 USDC refused, 1 USDC accepted.
 	if err := e.proposeExecute("setMaxWithdrawPerBlock", `{"asset":"usdc","amount":"2000000"}`); err != nil {
 		t.Fatalf("setMaxWithdrawPerBlock: %v", err)
 	}
@@ -347,12 +347,15 @@ func runDexPhases(t *testing.T, ctx context.Context, e *evmBridgeEnv, poolID, ro
 		}
 		return ret, ok
 	}
-	if ret, ok := unmap("3000000"); ok || !strings.Contains(ret, "rate limit") {
-		t.Fatalf("D5: 3 USDC over a 2 USDC cap: ok=%v %q", ok, ret)
+	// The user holds 3 USDC (25 deposited, 22 sent to the trader) and unmapERC20
+	// checks amount + the 0.15 USDC proof fee against the balance before the
+	// cap: 2.5 USDC is over the 2 USDC cap and within the balance with its fee.
+	if ret, ok := unmap("2500000"); ok || !strings.Contains(ret, "rate limit") {
+		t.Fatalf("D5: 2.5 USDC over a 2 USDC cap: ok=%v %q", ok, ret)
 	} else if got := e.stateStr("a-" + user + "-usdc"); got != userBal {
 		t.Fatalf("D5: the refused withdrawal debited the user (%s -> %s)", userBal, got)
 	} else {
-		t.Logf("D5: 3 USDC refused: %s", ret)
+		t.Logf("D5: 2.5 USDC refused: %s", ret)
 	}
 	if ret, ok := unmap("1000000"); !ok {
 		t.Fatalf("D5: 1 USDC within the cap refused: %q", ret)
