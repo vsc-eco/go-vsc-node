@@ -38,6 +38,12 @@ type Devnet struct {
 
 	// Block pacemaker (Config.FastBlocks); see pacemaker.go.
 	pm *pacemaker
+
+	// includedPatience (0 = off): how long vstatusTx keeps waiting past its
+	// 90 s for a call still INCLUDED (on Hive, no L2 block has run it yet:
+	// L2 cannot produce while a third of the weight is out). The BOTH suite
+	// sets it; its faults halt L2 for minutes by design.
+	includedPatience time.Duration
 	// pmBlockLog is the pacemaker's per-block log (DEVNET_LOG_DIR), closed after it halts.
 	pmBlockLog *os.File
 	// netFaults holds the pacemaker at real cadence while a network fault is in

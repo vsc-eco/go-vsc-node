@@ -215,6 +215,10 @@ type bothEnv struct {
 func newBothEnv(t *testing.T, budget time.Duration, w bbWeather, floor13 bool, opts ...func(*Config)) *bothEnv {
 	t.Helper()
 	ctx, e, v := bothDevnet(t, budget, floor13, opts...)
+	// The cycle's faults halt L2 for minutes: a BTC call sent then stays
+	// INCLUDED past vstatus's 90 s (11-03: FS6 3b's withdrawal, BB2's
+	// createKey) and runs at the next block. Wait for it and log the delay.
+	e.d.includedPatience = 15 * time.Minute
 	b := &bothEnv{t: t, ctx: ctx, d: e.d, e: e, v: v, w: w, timings: map[string]time.Duration{}}
 	bctx, cancel := context.WithCancel(ctx)
 	b.stop = cancel
