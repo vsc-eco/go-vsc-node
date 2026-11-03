@@ -230,6 +230,57 @@ func fetchAccountProof(ctx context.Context, rpc *ethRPC, address string, height 
 	return accountProof{BlockHeight: height, Proof: base64.StdEncoding.EncodeToString(nodes)}, hexToUint64(p.Nonce), bal, nil
 }
 
+// fetchStorageProofs returns a contract's account proof and one storage proof
+// per key (base64 concatenated nodes, in key order) at height. An empty
+// storage trie has no nodes: each proof is "".
+func fetchStorageProofs(ctx context.Context, rpc *ethRPC, address string, keys []string, height uint64) (accountProof, []string, error) {
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = `"` + k + `"`
+	}
+	res, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, address, strings.Join(quoted, ","), height))
+	if err != nil {
+		return accountProof{}, nil, fmt.Errorf("eth_getProof %s at %d: %w", address, height, err)
+	}
+	var p struct {
+		AccountProof []string `json:"accountProof"`
+		StorageProof []struct {
+			Key   string   `json:"key"`
+			Proof []string `json:"proof"`
+		} `json:"storageProof"`
+	}
+	if err := json.Unmarshal(res, &p); err != nil {
+		return accountProof{}, nil, fmt.Errorf("parse eth_getProof: %w", err)
+	}
+	if len(p.StorageProof) != len(keys) {
+		return accountProof{}, nil, fmt.Errorf("eth_getProof %s: %d storage proofs for %d keys", address, len(p.StorageProof), len(keys))
+	}
+	join := func(nodes []string) string {
+		var b []byte
+		for _, n := range nodes {
+			b = append(b, hexToBytes(n)...)
+		}
+		return base64.StdEncoding.EncodeToString(b)
+	}
+	sps := make([]string, len(keys))
+	for i, sp := range p.StorageProof {
+		if new(big.Int).SetBytes(hexToBytes(padHex(sp.Key))).Cmp(new(big.Int).SetBytes(hexToBytes(padHex(keys[i])))) != 0 {
+			return accountProof{}, nil, fmt.Errorf("eth_getProof %s: storage proof %d is for key %s, asked %s", address, i, sp.Key, keys[i])
+		}
+		sps[i] = join(sp.Proof)
+	}
+	return accountProof{BlockHeight: height, Proof: join(p.AccountProof)}, sps, nil
+}
+
+// padHex makes a hex quantity even-length for hexToBytes ("0x1" -> "01").
+func padHex(s string) string {
+	s = strings.TrimPrefix(s, "0x")
+	if len(s)%2 == 1 {
+		s = "0" + s
+	}
+	return s
+}
+
 // ---------------------------------------------------------------------------
 // Dry run and RC sizing, as the BTC bot (call_contract_l2.go).
 
