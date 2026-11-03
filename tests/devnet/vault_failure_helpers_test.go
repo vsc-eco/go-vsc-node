@@ -327,8 +327,12 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	if s := vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdr1, seedH)); !isOK(s) {
 		t.Fatalf("seedBlocks: %s", s)
 	}
-	d.WriteOracleConfigs(ctx)
-	d.SetOracleContractIDs(map[string]string{"BTC": cid})
+	if err := d.WriteOracleConfigs(ctx); err != nil {
+		t.Fatalf("oracle config (the nodes' bitcoind): %v", err)
+	}
+	if err := d.SetOracleContractIDs(map[string]string{"BTC": cid}); err != nil {
+		t.Fatalf("oracle contract id: %v", err)
+	}
 	d.RestartAllMagiNodes(ctx)
 	devnetSleep(10 * time.Second)
 
