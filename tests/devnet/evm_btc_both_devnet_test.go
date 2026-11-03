@@ -416,6 +416,16 @@ func TestBothBridges_FS11_CommitteeChangeMidBoth(t *testing.T) {
 // old images have no quiescence probe. Then every node must still agree.
 func TestBothBridges_FS12_MixedFleet012(t *testing.T) {
 	bbSkipShort(t)
+	// 11-03 run 1: the mixed fleet converged (208 cross-node block comparisons
+	// identical) and the BTC rotation activated, then the EVM gen 1 never
+	// activated: an EVM generation's check signature is only produced from
+	// consensus 0.13 (A01, state_engine.go evmVaultGenOfKey), and this test
+	// keeps the network at 0.12 with nodes 4-5 on the 0.12 binary. The BOTH
+	// cycle needs an EVM rotation, so it cannot pass at 0.12. Rescope (BTC cycle
+	// + EVM deposits and withdrawals, no EVM rotation) before running it again.
+	if os.Getenv("BB_FS12_RESCOPED") == "" {
+		t.Skip("FS12's cycle needs an EVM rotation, which needs consensus 0.13; at 0.12 it cannot pass (see the comment)")
+	}
 	old := os.Getenv("BB_OLD_CODE_DIR")
 	if old == "" {
 		t.Skip("set BB_OLD_CODE_DIR to a go-vsc-node checkout of the 0.12 release (c29e935e)")
