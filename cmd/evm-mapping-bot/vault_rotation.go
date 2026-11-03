@@ -366,6 +366,8 @@ func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, a
 		slog.Warn("vault op dry run unavailable; declaring the ceiling", "action", action, "err", err)
 	case !sim.Success:
 		return "", fmt.Errorf("%w: %s %s: %s", errDryRunRefused, action, sim.Err, sim.ErrMsg)
+	case vaultOpNoop(action, sim.Ret):
+		return sim.Ret, errVaultOpNoop
 	default:
 		rc = rcFromDryRun(sim.RcUsed, vaultOpRcLimit)
 	}
@@ -373,6 +375,29 @@ func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, a
 		return "", err
 	}
 	return sim.Ret, nil
+}
+
+// errVaultOpNoop: the dry run succeeds but the op would change nothing, so
+// nothing is submitted (BTC bot BOT-RETIRE-1 and F8). A superseded generation
+// waits out the purge grace (216,000 L1 blocks on mainnet, about 30 days)
+// while retireVault and migrateVault succeed as no-ops; submitted every
+// vaultOpMinInterval they cost about 865 + 1,000 RC every 2 minutes (devnet
+// FS6 11-03: two no-op retireVault and a no-op migrateVault confirmed in one
+// rotation), far past what a bot regenerates, so its real calls would starve.
+var errVaultOpNoop = errors.New("the vault op would change nothing yet")
+
+// vaultOpNoop reports a dry-run result that changes nothing (the bridge's own
+// return strings: vault_retire.go, migration.go).
+func vaultOpNoop(action, ret string) bool {
+	switch action {
+	case "retireVault":
+		return ret == "retire: no generation transitions"
+	case "migrateVault":
+		return ret == "nothing to migrate"
+	case "writeOffDust":
+		return ret == "no dust to write off"
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +523,9 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 		}
 		return
 	}
+	if errors.Is(err, errVaultOpNoop) {
+		return
+	}
 	if !strings.Contains(err.Error(), "eth_proof") {
 		slog.Warn("migrateVault", "err", err)
 		return
@@ -521,6 +549,9 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	payload, _ := json.Marshal(map[string]any{"eth_proof": proof})
 	ret, err = vaultOp(ctx, gql, sub, cfg.ContractID, "migrateVault", payload)
 	noteRefusal(err)
+	if errors.Is(err, errVaultOpNoop) {
+		return
+	}
 	if err != nil {
 		slog.Warn("migrateVault (ETH)", "err", err)
 		return

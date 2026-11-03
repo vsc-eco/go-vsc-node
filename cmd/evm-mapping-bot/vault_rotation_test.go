@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 	gethrlp "github.com/ethereum/go-ethereum/rlp"
+
+	"vsc-node/lib/dids"
 )
 
 // rotKey is secp256k1 private key n.
@@ -324,5 +327,46 @@ func TestA01Bot_ScanSkipsTheVaultsOwnTransfers(t *testing.T) {
 	}
 	if len(got.Deposits) != 2 || kinds[0] != "eth:0xuser" || kinds[1] != "erc20:0xt0x1" {
 		t.Fatalf("deposits %v: want the user's ETH and token deposits only, not the sweeps", kinds)
+	}
+}
+
+// EB-1 (BTC BOT-RETIRE-1 / F8 parity): a vault op whose dry run succeeds but
+// changes nothing is not submitted; one that changes something is, and so is
+// one whose dry run is unavailable (the bot cannot tell, as before).
+func TestEB1_NoopVaultOpsAreNotSubmitted(t *testing.T) {
+	l2 := newFakeL2()
+	botKey, _ := ethCrypto.GenerateKey()
+	sub := &l2Submitter{ethKey: botKey, did: dids.NewEthDID(ethCrypto.PubkeyToAddress(botKey.PublicKey).Hex()), gql: l2.gql(t),
+		cfg: EVMBotConfig{ContractID: "vsc1bridge", NetID: "vsc-devnet", RcLimit: 10000}}
+	ret := map[string]string{}
+	l2.sim = func(action string) map[string]any {
+		return map[string]any{"success": true, "ret": ret[action], "rc_used": 865}
+	}
+	submitted := func() int { l2.mu.Lock(); defer l2.mu.Unlock(); return len(l2.submitted) }
+	for _, c := range []struct{ action, noop, real string }{
+		{"retireVault", "retire: no generation transitions", "retire: purged=0"},
+		{"migrateVault", "nothing to migrate", "sweep 1-0 eth 5"},
+		{"writeOffDust", "no dust to write off", "wrote off 5 wei of generation 1"},
+	} {
+		before := submitted()
+		ret[c.action] = c.noop
+		if got, err := vaultOp(context.Background(), sub.gql, sub, "vsc1bridge", c.action, json.RawMessage(`{}`)); !errors.Is(err, errVaultOpNoop) || got != c.noop || submitted() != before {
+			t.Fatalf("%s no-op: %q %v, %d submitted", c.action, got, err, submitted()-before)
+		}
+		ret[c.action] = c.real
+		if got, err := vaultOp(context.Background(), sub.gql, sub, "vsc1bridge", c.action, json.RawMessage(`{}`)); err != nil || got != c.real || submitted() != before+1 {
+			t.Fatalf("%s change: %q %v, %d submitted", c.action, got, err, submitted()-before)
+		}
+	}
+	// "nothing to migrate" from another action is not a no-op of that action
+	ret["redriveSweep"] = "nothing to migrate"
+	before := submitted()
+	if _, err := vaultOp(context.Background(), sub.gql, sub, "vsc1bridge", "redriveSweep", json.RawMessage(`{}`)); err != nil || submitted() != before+1 {
+		t.Fatalf("redriveSweep: %v, %d submitted", err, submitted()-before)
+	}
+	l2.sim = nil // dry run unavailable: submitted at the ceiling, as before
+	before = submitted()
+	if _, err := vaultOp(context.Background(), sub.gql, sub, "vsc1bridge", "retireVault", json.RawMessage(`{}`)); err != nil || submitted() != before+1 {
+		t.Fatalf("dry run unavailable: %v, %d submitted", err, submitted()-before)
 	}
 }
