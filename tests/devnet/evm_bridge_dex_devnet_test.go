@@ -36,37 +36,6 @@ import (
 	ethCrypto "github.com/ethereum/go-ethereum/crypto"
 )
 
-// callOutcome is a call's own result in the contract output that carries it
-// (one output can carry several calls: matched by its index in inputs).
-func (d *Devnet) callOutcome(ctx context.Context, node int, txID string, timeout time.Duration) (string, bool, error) {
-	const q = `query($id:String!){findContractOutput(filterOptions:{byInput:$id}){inputs results{ret ok}}}`
-	var ret string
-	var ok, found bool
-	err := pollUntil(ctx, timeout, func() bool {
-		var out struct {
-			FindContractOutput []struct {
-				Inputs  []string `json:"inputs"`
-				Results []struct {
-					Ret string `json:"ret"`
-					Ok  bool   `json:"ok"`
-				} `json:"results"`
-			} `json:"findContractOutput"`
-		}
-		if d.gqlQuery(ctx, node, q, map[string]any{"id": txID}, &out) != nil {
-			return false
-		}
-		for _, o := range out.FindContractOutput {
-			for i, in := range o.Inputs {
-				if in == txID && i < len(o.Results) {
-					ret, ok, found = o.Results[i].Ret, o.Results[i].Ok, true
-				}
-			}
-		}
-		return found
-	})
-	return ret, ok, err
-}
-
 func TestEVMBridge_DexUsdcThroughTheRouter(t *testing.T) {
 	if testing.Short() {
 		t.Skip("devnet")
@@ -341,11 +310,11 @@ func runDexPhases(t *testing.T, ctx context.Context, e *evmBridgeEnv, poolID, ro
 		if err != nil {
 			t.Fatalf("unmapERC20 submit: %v", err)
 		}
-		ret, ok, err := d.callOutcome(ctx, e.gqlNode, id, 5*time.Minute)
-		if err != nil {
-			t.Fatalf("unmapERC20 %s: no output: %v", amount, err)
-		}
-		return ret, ok
+		// outResult reads the block's raw output (ok and the refusal message)
+		// and waits for a reject's reason; the indexed output's ret is empty for
+		// a reject (11-03 run 2: ok=false "").
+		ok, msg := e.outResult(ctx, id)
+		return msg, ok
 	}
 	// The user holds 3 USDC (25 deposited, 22 sent to the trader) and unmapERC20
 	// checks amount + the 0.15 USDC proof fee against the balance before the
