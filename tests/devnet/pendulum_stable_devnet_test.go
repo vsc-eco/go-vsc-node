@@ -14,6 +14,7 @@ package devnet
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,12 +180,19 @@ func TestPendulumStablePoolDevnet(t *testing.T) {
 	t.Logf("stable swap priced identically on all %d nodes: %s", cfg.Nodes, results[0])
 
 	// SP-0d: reserves past int64 (1e21 base units each, an 18-decimal pool's
-	// scale), legal from 0.13.0. Same check: identical on every node, priced.
-	bigJSON := `{"asset_in":"hive","asset_out":"hbd","x":"100000000000000000000","x_reserve":"1000000000000000000000",` +
+	// scale: the bug refused every swap once a reserve passed ~9.22 ETH),
+	// legal from 0.13.0. Same check: identical on every node, priced. The
+	// swap itself stays small: the host pays the node share in real HBD out
+	// of the pool's ledger balance (10 HBD funded above), and a 1e20 swap's
+	// share is ~3e16 HBD units, so that payment fails and the swap aborts
+	// (11-03 run 2: "never landed"). 1e6 in on 1e21 reserves needs a few
+	// hundred units. Landed = the result carries the exact new reserve.
+	bigJSON := `{"asset_in":"hive","asset_out":"hbd","x":"1000000","x_reserve":"1000000000000000000000",` +
 		`"y_reserve":"1000000000000000000000","curve":"stable","amp":"100","dec_in":"3","dec_out":"3"}`
+	const bigNewX = `"new_x_reserve":"1000000000000001000000"`
 	bigLanded := func(n int) bool {
-		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"user_output"})
-		return err == nil && len(fmt.Sprintf("%v", st["user_output"])) > 19
+		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"result"})
+		return err == nil && strings.Contains(fmt.Sprintf("%v", st["result"]), bigNewX)
 	}
 	landed = false
 	for attempt := 0; attempt < 6 && !landed; attempt++ {
