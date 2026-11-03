@@ -9,9 +9,10 @@
 // settled by its confirmSpend. A withdrawal to a blacklisted address reverts
 // on L1 and is refunded while the gas reserve pays (USDC-1). The bot's /health
 // is read throughout: no custody alarm on the bridge's real state, an alarm
-// once the vault is short.
+// once the vault is short. (8) the same shortfall proven on L2: the bot's
+// token custody proof sets the bridge's halt, a full one lifts it.
 //
-// Run: go test -tags evm_devnet -run TestEVMBridge_WUSDC ./tests/devnet/ -timeout 110m -v
+// Run: REPORTER_EVERY=1m go test -tags evm_devnet -run TestEVMBridge_WUSDC ./tests/devnet/ -timeout 130m -v
 package devnet
 
 import (
@@ -38,7 +39,7 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 		t.Skip("devnet")
 	}
 	t.Parallel()
-	ctx, cancel := devnetWithTimeout(context.Background(), 100*time.Minute)
+	ctx, cancel := devnetWithTimeout(context.Background(), 120*time.Minute)
 	t.Cleanup(cancel)
 
 	e := setupEvmBridgeDevnet(t, ctx)
@@ -389,4 +390,38 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 		t.Fatalf("/health with the vault 1 wei short of ETH custody: %v %+v, want %q", err, h, want)
 	}
 	t.Logf("(7) PASS: /health reports the vault 1 USDC unit short, and 1 wei short of ETH custody")
+
+	// (8) Token custody on L2 (C2 for tokens): with USDC's custody setting
+	// (MockUSDC: balanceOf at slot 0, the whole word), the bot's reporter
+	// proves the token's storage root and the vault's balance word with
+	// anvil's eth_getProof, and the bridge sets "sis-usdc" and the keysign
+	// halt "si". ETH, 1 wei short, is inside its 0.05 ETH gap: no ETH flag.
+	// The balance back, a full proof lifts both. Needs REPORTER_EVERY=1m and
+	// a bridge and bot with token custody.
+	if err := e.proposeExecute("setTokenCustody", `{"asset":"usdc","slot":0,"bits":256,"gap":"0"}`); err != nil {
+		t.Fatalf("setTokenCustody: %v", err)
+	}
+	if got := e.stateStr("tcc-usdc"); got != "0|256|0" {
+		t.Fatalf("tcc-usdc=%q", got)
+	}
+	shortAt := devnetNow()
+	if err := pollUntil(ctx, 20*time.Minute, func() bool { return e.stateStr("sis-usdc") != "" && e.stateStr("si") != "" }); err != nil {
+		t.Fatalf("(8) the USDC shortfall never set sis-usdc/si (si=%q sis-usdc=%q)\nbot:\n%s", e.stateStr("si"), e.stateStr("sis-usdc"), botLogs())
+	}
+	if got := e.stateStr("sis-eth"); got != "" {
+		t.Fatalf("(8) ETH flagged short at %q though 1 wei is inside its gap", got)
+	}
+	if !strings.Contains(botLogs(), "usdc custody short reported") {
+		t.Fatalf("(8) halt set but the bot logged no USDC report\nbot:\n%s", botLogs())
+	}
+	t.Logf("(8) USDC custody halt set by the bot's proof in %s", devnetNow().Sub(shortAt).Round(time.Second))
+	if err := anvil.SetMockUSDCBalance(ctx, usdc, vault, usd(13)); err != nil {
+		t.Fatal(err)
+	}
+	backAt := devnetNow()
+	if err := pollUntil(ctx, 20*time.Minute, func() bool { return e.stateStr("sis-usdc") == "" && e.stateStr("si") == "" }); err != nil {
+		t.Fatalf("(8) USDC custody back but sis-usdc/si not lifted (si=%q sis-usdc=%q)\nbot:\n%s", e.stateStr("si"), e.stateStr("sis-usdc"), botLogs())
+	}
+	t.Logf("(8) PASS: USDC custody halt set by the bot's storage proof, lifted %s after the balance came back; ETH (1 wei short, inside the gap) never flagged",
+		devnetNow().Sub(backAt).Round(time.Second))
 }
