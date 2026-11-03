@@ -30,6 +30,8 @@ type fakeL1 struct {
 	sent      []string                       // raw signed txs passed to eth_sendRawTransaction
 	balances  map[string]*big.Int            // eth_getBalance by lowercase address (nil: 0)
 	tokens    map[string]map[string]*big.Int // eth_call balanceOf: token -> holder -> balance (lowercase; unknown token: "0x")
+	freeze    map[string]map[string][]string // eth_call freeze view: token -> selector -> frozen holders (absent selector: "0x")
+	freezeRaw map[string]string              // eth_call freeze views: token -> the raw 32-byte word it answers (a fallback, not a boolean)
 	logs      string                         // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
 }
 
@@ -128,6 +130,22 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 		case "eth_call":
 			var call struct{ To, Data string }
 			_ = json.Unmarshal(req.Params[0], &call)
+			if raw, ok := f.freezeRaw[strings.ToLower(call.To)]; ok && len(call.Data) == 74 && (call.Data[:10] == "0xfe575a87" || call.Data[:10] == "0xe47d6060") {
+				result = "0x" + raw
+				break
+			}
+			if views, ok := f.freeze[strings.ToLower(call.To)]; ok && len(call.Data) == 74 {
+				if frozen, has := views[call.Data[:10]]; has {
+					v := 0
+					for _, h := range frozen {
+						if h == "0x"+call.Data[34:] {
+							v = 1
+						}
+					}
+					result = fmt.Sprintf("0x%064x", v)
+					break
+				}
+			}
 			holders, ok := f.tokens[strings.ToLower(call.To)]
 			if !ok || !strings.HasPrefix(call.Data, "0x70a08231") || len(call.Data) != 74 {
 				result = "0x"

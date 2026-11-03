@@ -239,7 +239,50 @@ func checkTokenCustody(ctx context.Context, warn func(string, ...any), gql *vscG
 		if short := new(big.Int).Sub(custody, bal); short.Sign() > 0 {
 			warn(fmt.Sprintf("C4: vault %s holds %s %s, %s short of the %s %s the bridge has credited", vault, bal, sym, short, custody, sym))
 		}
+		for _, v := range vaults {
+			if frozen, view := rpc.erc20Frozen(a, v); frozen {
+				warn(fmt.Sprintf("C4: vault %s is frozen by the %s token (%s): its %s cannot move, so %s withdrawals revert on L1 and are refunded; the custody proof still counts it as held", v, sym, view, sym, sym), "token", a)
+			}
+		}
 	}
+}
+
+// freezeViews are the token views that report a holder frozen: Circle's
+// FiatToken isBlacklisted(address) (USDC) and Tether's isBlackListed(address).
+// A frozen vault still holds its balance (the custody proof counts it, USDC
+// keeps the flag in bit 255 of the same word), so the bridge does not halt on
+// it (owner 11-03: alarm only); the bot says so.
+var freezeViews = []struct{ name, selector string }{
+	{"isBlacklisted", "0xfe575a87"},
+	{"isBlackListed", "0xe47d6060"},
+}
+
+// erc20Frozen asks the token whether it froze holder, through the first freeze
+// view that answers with a boolean. A token with none answers nothing: not
+// frozen (no answer is not an alarm).
+func (e *ethRPC) erc20Frozen(token, holder string) (frozen bool, view string) {
+	for _, v := range freezeViews {
+		data := v.selector + strings.Repeat("0", 24) + strings.TrimPrefix(strings.ToLower(holder), "0x")
+		raw, err := e.call("eth_call", fmt.Sprintf(`{"to":"%s","data":"%s"}, "latest"`, token, data))
+		if err != nil {
+			continue
+		}
+		var word string
+		if json.Unmarshal(raw, &word) != nil {
+			continue
+		}
+		word = strings.TrimPrefix(word, "0x")
+		if len(word) != 64 {
+			continue
+		}
+		switch strings.TrimLeft(word, "0") {
+		case "":
+			return false, v.name
+		case "1":
+			return true, v.name
+		}
+	}
+	return false, ""
 }
 
 // wantProofAlarmAfter is how long a header proof may be wanted before /health
