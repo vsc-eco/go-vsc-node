@@ -767,11 +767,14 @@ func (b *bothEnv) l1Balance(addr ethcommon.Address) *big.Int {
 // a block before the same call purges (FS6 11-03 run 3: gen 0 purged at block
 // 1000, the bot never logged "purged=0", the cycle waited out its hour).
 func (b *bothEnv) evmMigrated() bool {
-	if b.e.stateStr("msr") != "" {
-		return false
-	}
-	for _, v := range vfVaultRegistryOn(b.d, b.ctx, b.e.gqlNode, b.e.amID) {
-		if v.Generation == 0 {
+	return b.e.stateStr("msr") == "" && evmGenPurged(b.ctx, b.e, 0)
+}
+
+// evmGenPurged reports whether the EVM bridge's vault registry has generation
+// gen Purged: the contract's state, never the bot's log line.
+func evmGenPurged(ctx context.Context, e *evmBridgeEnv, gen uint32) bool {
+	for _, v := range vfVaultRegistryOn(e.d, ctx, e.gqlNode, e.amID) {
+		if v.Generation == gen {
 			return v.Status == btcvault.VaultStatusPurged
 		}
 	}
