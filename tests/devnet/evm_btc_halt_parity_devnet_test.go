@@ -157,8 +157,15 @@ func TestBothBridges_FS14_EvmHaltsBtcKeepsSigning(t *testing.T) {
 	if err := b.e.proposeExecute("clearTheftHalt", "{}"); err != nil {
 		t.Fatalf("B: clearTheftHalt: %v", err)
 	}
-	if b.e.stateStr("th") != "" {
-		t.Fatal("B: clearTheftHalt left \"th\" set")
+	// proposeExecute returns once the execute is broadcast, not applied (run 1,
+	// 11-03: read in the same second and failed): wait for it, then hold real
+	// cadence for three reporter rounds to show the bot does not raise it again
+	// (the newest stored header shows the nonce back within the authorized count).
+	if err := b.botPoll(5*time.Minute, func() bool { return b.e.stateStr("th") == "" }); err != nil {
+		t.Fatalf("B: clearTheftHalt never cleared \"th\" (%q)\nbot:\n%s", b.e.stateStr("th"), b.botLogs())
+	}
+	if err := b.botPoll(3*time.Minute, func() bool { return b.e.stateStr("th") != "" }); err == nil {
+		t.Fatalf("B: \"th\" set again after the owner cleared it (%q)\nbot:\n%s", b.e.stateStr("th"), b.botLogs())
 	}
 	b.mark("B: theft halt cleared by the owner", start)
 }

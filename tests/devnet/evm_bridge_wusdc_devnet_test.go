@@ -401,8 +401,9 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 	if err := e.proposeExecute("setTokenCustody", `{"asset":"usdc","slot":0,"bits":256,"gap":"0"}`); err != nil {
 		t.Fatalf("setTokenCustody: %v", err)
 	}
-	if got := e.stateStr("tcc-usdc"); got != "0|256|0" {
-		t.Fatalf("tcc-usdc=%q", got)
+	// proposeExecute returns once the execute is broadcast, not applied.
+	if err := pollUntil(ctx, 5*time.Minute, func() bool { return e.stateStr("tcc-usdc") == "0|256|0" }); err != nil {
+		t.Fatalf("tcc-usdc=%q after setTokenCustody", e.stateStr("tcc-usdc"))
 	}
 	shortAt := devnetNow()
 	if err := pollUntil(ctx, 20*time.Minute, func() bool { return e.stateStr("sis-usdc") != "" && e.stateStr("si") != "" }); err != nil {
