@@ -341,3 +341,94 @@ func TestStable_RawValueParsers(t *testing.T) {
 		t.Fatal("number as curve")
 	}
 }
+
+// The gross output is the curve's, rounded down one unit in the pool's favour
+// (Curve: dy = xp[j] - y - 1), in both directions, every pool shape and size:
+// gross = (yp - getY(xp + dx)) / rate - 1, read back from the result through
+// its reconciliation (user + LP share + node share + network credit).
+func TestStable_GrossIsTheCurveRoundedDown(t *testing.T) {
+	a, _ := stableApplier(t, consensusversion.V0_13_0, true)
+	rHBD, _ := pendulum.StableRate(3)
+	rUSDC, _ := pendulum.StableRate(6)
+	n := 0
+	for _, in := range []string{"hbd", "usdc"} {
+		for _, shape := range [][2]int64{{100_000_000, 100_000_000_000}, {150_000_000, 50_000_000_000}, {20_000_000, 400_000_000_000}} {
+			for _, pct := range []int64{1, 100, 1_000, 10_000, 40_000} { // per 100,000 of the input reserve
+				args := stableArgs(in, 1)
+				rIn, rOut := rHBD, rUSDC
+				args.XReserve, args.YReserve = shape[0], shape[1]
+				if in == "usdc" {
+					rIn, rOut = rUSDC, rHBD
+					args.XReserve, args.YReserve = shape[1], shape[0]
+				}
+				args.X = args.XReserve * pct / 100_000
+				if args.X == 0 {
+					args.X = 1
+				}
+				res := a.ApplySwapFees(stablePoolID, "tx", 100, args, (&recordingAccrual{}).fn)
+				if res.IsErr() {
+					continue // a dust swap the applier refuses is not this test's case
+				}
+				out := res.Unwrap()
+				xp := new(big.Int).Mul(big.NewInt(args.XReserve), rIn)
+				yp := new(big.Int).Mul(big.NewInt(args.YReserve), rOut)
+				d, _ := pendulum.StableGetD(xp, yp, 100)
+				yNew, _ := pendulum.StableGetY(new(big.Int).Add(xp, new(big.Int).Mul(big.NewInt(args.X), rIn)), d, 100)
+				want := new(big.Int).Sub(yp, yNew)
+				want.Quo(want, rOut)
+				want.Sub(want, big.NewInt(1))
+				got := out.UserOutput + out.LpShareOutput + out.NodeShareOutput + out.NetworkCreditOutput
+				if want.Int64() != got {
+					t.Fatalf("%s in, reserves %d/%d, x %d: gross %d, want %s", in, args.XReserve, args.YReserve, args.X, got, want)
+				}
+				n++
+			}
+		}
+	}
+	if n < 25 {
+		t.Fatalf("only %d of 30 cases priced", n)
+	}
+}
+
+// The node share's sell-back is priced on the LP reserve (the network credit
+// is the contract's, not the LPs'), exactly, over pool shapes from balanced to
+// 500:1 and swap sizes up to 40% of the input reserve.
+func TestStable_SellBackExactOverShapes(t *testing.T) {
+	a, _ := stableApplier(t, consensusversion.V0_13_0, true)
+	rHBD, _ := pendulum.StableRate(3)
+	rUSDC, _ := pendulum.StableRate(6)
+	cases := 0
+	for _, shape := range [][2]int64{{100_000_000, 100_000_000_000}, {150_000_000, 50_000_000_000}, {1_000_000_000, 10_000_000_000}, {1_000_000_000, 2_000_000_000}, {10_000_000, 1_000_000_000_000}} {
+		for _, pct := range []int64{100, 1_000, 5_000, 20_000, 40_000} {
+			args := stableArgs("hbd", 1)
+			args.XReserve, args.YReserve = shape[0], shape[1]
+			args.X = shape[0] * pct / 100_000
+			res := a.ApplySwapFees(stablePoolID, "tx", 100, args, (&recordingAccrual{}).fn)
+			if res.IsErr() {
+				continue
+			}
+			out := res.Unwrap()
+			if out.NodeShareOutput <= 0 {
+				continue
+			}
+			xAfter := big.NewInt(args.XReserve + args.X)
+			yLP := big.NewInt(args.YReserve - out.UserOutput - out.NodeShareOutput - out.NetworkCreditOutput)
+			xp, yp := new(big.Int).Mul(xAfter, rHBD), new(big.Int).Mul(yLP, rUSDC)
+			d, _ := pendulum.StableGetD(xp, yp, 100)
+			xNew, _ := pendulum.StableGetY(new(big.Int).Add(yp, new(big.Int).Mul(big.NewInt(out.NodeShareOutput), rUSDC)), d, 100)
+			exact := new(big.Int).Sub(xp, xNew)
+			exact.Quo(exact, rHBD)
+			exact.Sub(exact, big.NewInt(1))
+			if exact.Sign() < 0 {
+				exact.SetInt64(0)
+			}
+			if exact.Int64() != out.NodeBucketCreditedHBD {
+				t.Fatalf("reserves %d/%d, x %d: node bucket %d, want %s (sold on the LP reserve)", args.XReserve, args.YReserve, args.X, out.NodeBucketCreditedHBD, exact)
+			}
+			cases++
+		}
+	}
+	if cases < 15 {
+		t.Fatalf("only %d sell-back cases", cases)
+	}
+}
