@@ -506,7 +506,7 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 		ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "retireVault", json.RawMessage(`{}`))
 		noteRefusal(err)
 		if err == nil && ret != "retire: no generation transitions" {
-			slog.Info("vault retire", "result", ret)
+			slog.Info("vault retire submitted", "dry_run", ret)
 		}
 	}
 }
@@ -562,19 +562,21 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	}
 }
 
+// logMigrate logs a submitted migrateVault by its dry run's answer: the call
+// itself runs a block or more later, on the state of that moment.
 func logMigrate(ret string) {
 	if strings.HasPrefix(ret, "sweep ") {
-		slog.Info("migration sweep built", "result", ret)
+		slog.Info("migration sweep submitted", "dry_run", ret)
 		return
 	}
-	slog.Info("migrateVault: nothing built", "result", ret)
+	slog.Info("migrateVault: nothing built", "dry_run", ret)
 }
 
 func writeOffDust(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, cfg EVMBotConfig) {
 	ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "writeOffDust", json.RawMessage(`{}`))
 	noteRefusal(err)
 	if err == nil {
-		slog.Info("dust write-off", "result", ret)
+		slog.Info("dust write-off submitted", "dry_run", ret)
 	}
 }
 
@@ -825,7 +827,7 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "redriveSweep", payload)
 			noteRefusal(err)
 			if err == nil {
-				slog.Info("sweep re-driven", "sweep", key, "result", ret)
+				slog.Info("sweep re-drive submitted", "sweep", key, "dry_run", ret)
 			}
 		}
 	}
