@@ -83,7 +83,7 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 				for i, tx := range c.txs {
 					hashes[i] = tx.Hash().Hex()
 				}
-				result = map[string]any{"number": hexutil.EncodeUint64(n), "transactions": hashes}
+				result = map[string]any{"number": hexutil.EncodeUint64(n), "transactions": hashes, "transactionsRoot": c.txRoot().Hex(), "receiptsRoot": c.receiptRoot().Hex()}
 				break
 			}
 			txs := make([]map[string]string, len(c.txs))
@@ -91,7 +91,13 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 				from, _ := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
 				txs[i] = map[string]string{"hash": tx.Hash().Hex(), "from": from.Hex(), "to": tx.To().Hex(), "value": hexutil.EncodeBig(tx.Value())}
 			}
-			result = map[string]any{"number": hexutil.EncodeUint64(n), "transactions": txs}
+			result = map[string]any{"number": hexutil.EncodeUint64(n), "transactions": txs, "transactionsRoot": c.txRoot().Hex(), "receiptsRoot": c.receiptRoot().Hex()}
+		case "eth_getBlockReceipts":
+			// Like an endpoint without the method: the per-tx path serves the
+			// receipts (the fake's failure injection sits on that path). BP-1's
+			// own tests cover an endpoint that serves it.
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32601, "message": "the method eth_getBlockReceipts does not exist"}})
+			return
 		case "eth_getLogs":
 			switch f.logs {
 			case "error":
