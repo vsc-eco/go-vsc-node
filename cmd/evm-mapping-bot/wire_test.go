@@ -102,7 +102,7 @@ func (c *fakeChain) rpc(t *testing.T) *ethRPC {
 				for i, tx := range c.txs {
 					hashes[i] = tx.Hash().Hex()
 				}
-				result = map[string]any{"transactions": hashes}
+				result = map[string]any{"transactions": hashes, "transactionsRoot": c.txRoot().Hex(), "receiptsRoot": c.receiptRoot().Hex()}
 				break
 			}
 			txs := make([]map[string]string, len(c.txs))
@@ -110,7 +110,11 @@ func (c *fakeChain) rpc(t *testing.T) *ethRPC {
 				from, _ := types.Sender(types.LatestSignerForChainID(tx.ChainId()), tx)
 				txs[i] = map[string]string{"hash": tx.Hash().Hex(), "from": from.Hex(), "to": tx.To().Hex(), "value": hexutil.EncodeBig(tx.Value())}
 			}
-			result = map[string]any{"number": "0x65", "transactions": txs}
+			result = map[string]any{"number": "0x65", "transactions": txs, "transactionsRoot": c.txRoot().Hex(), "receiptsRoot": c.receiptRoot().Hex()}
+		case "eth_getBlockReceipts":
+			// Like an endpoint without the method (BP-1's own tests cover one that has it).
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32601, "message": "the method eth_getBlockReceipts does not exist"}})
+			return
 		case "eth_getLogs":
 			// block-level log indexes across the block, filtered by address
 			var f struct {
