@@ -1523,7 +1523,22 @@ func (e *electionProposer) GenerateFullElection(
 	if previousElection != nil {
 		signFloor := bondCommitteeFloor(e.sconf.ConsensusParams().MinMembers, len(previousElection.Members))
 		if len(members) < signFloor {
-			log.Error("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
+			// 18s: pick the level by whether this is a REGRESSION or a standing
+			// condition. A network that was already below the floor last epoch
+			// (testnet has 6 members against a floor of 8, and devnets are
+			// smaller still) logged ERROR on every single election, which reads
+			// as an active outage and trains operators to ignore the line. ERROR
+			// is reserved for the case that actually warrants waking someone:
+			// the previous committee cleared the floor and this one does not.
+			//
+			// Level only. The condition, its fields, and the deliberate
+			// decision not to ENFORCE the floor here (see the comment above)
+			// are all unchanged.
+			logAtLevel := log.Warn
+			if len(previousElection.Members) >= signFloor {
+				logAtLevel = log.Error
+			}
+			logAtLevel("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
 				"block_height", blockHeight,
 				"members", len(members),
 				"signability_floor", signFloor,
