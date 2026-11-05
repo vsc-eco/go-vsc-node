@@ -196,6 +196,34 @@ func TestTx18rSubmitterLeavesDevnet(t *testing.T) {
 	}
 	t.Logf("18r: node-1 accepted tx CID=%s — gossiped to nodes 2..%d", txCID, cfg.Nodes)
 
+	// ── Phase 3b: PRECONDITION — node 2 holds the tx from GOSSIP, unanchored ──
+	//
+	// Without this the test can pass while proving nothing. If node 2 never
+	// received the gossip, there is nothing for it to stall on; if the tx was
+	// already anchored and applied while node 1 was still up, node 1 could
+	// serve the bytes and the vulnerable moment never happened. Either way
+	// "the survivors kept advancing" would say nothing about the fix.
+	// The state that exposes the bug is exactly: node 2 has the tx INDEXED
+	// (UNCONFIRMED) and node 1 leaves before it is anchored.
+	gossiped := false
+	for i := 0; i < 40 && !gossiped; i++ {
+		s, _ := d.FindTransactionStatus(ctx, 2, txCID)
+		switch {
+		case s == "UNCONFIRMED":
+			gossiped = true
+		case s != "":
+			t.Fatalf("18r INCONCLUSIVE: tx was already %s on node-2 before node-1 left — "+
+				"it was anchored too early, so this run never staged the vulnerable moment", s)
+		default:
+			devnetSleep(250 * time.Millisecond)
+		}
+	}
+	if !gossiped {
+		t.Fatalf("18r INCONCLUSIVE: node-2 never indexed tx %s from gossip within 10s — "+
+			"without that there is nothing for the bug to act on", txCID)
+	}
+	t.Log("18r: precondition met — node-2 holds the tx from gossip, still UNCONFIRMED")
+
 	// ── Phase 4: the submitter LEAVES, before the tx can be anchored ───────
 	//
 	// Node 1 is the only node that called PutRaw. Pre-fix, the bytes leave the
@@ -204,6 +232,10 @@ func TestTx18rSubmitterLeavesDevnet(t *testing.T) {
 		t.Fatalf("18r BLOCKED: stopping node 1: %v", err)
 	}
 	t.Log("18r: node-1 STOPPED — the only holder of the raw bytes (pre-fix) is gone")
+	if s, _ := d.FindTransactionStatus(ctx, 2, txCID); s != "UNCONFIRMED" {
+		t.Fatalf("18r INCONCLUSIVE: tx was %q on node-2 by the time node-1 stopped — "+
+			"anchored while node-1 could still serve the bytes", s)
+	}
 
 	// ── Phase 5: the remaining nodes must keep advancing ───────────────────
 	//
@@ -235,6 +267,15 @@ func TestTx18rSubmitterLeavesDevnet(t *testing.T) {
 
 	// And the tx itself must reach a terminal state on a node that never
 	// submitted it, which can only happen if that node had the bytes.
+	//
+	// THIS is the decisive assertion, not the height check above. A control
+	// run with the gossip-path PutRaw removed (2026-11-05) passed the height
+	// check -- the survivors still crept 82 -> 91 in the window, against
+	// 82 -> 112 with the fix, because the stall only begins when the block
+	// carrying this tx comes up -- and then failed HERE: the tx never left
+	// UNCONFIRMED. With the fix it reached a terminal state (FAILED on that
+	// run: the op itself is refused at execution, which still requires the
+	// bytes to decode it).
 	deadline := devnetNow().Add(4 * time.Minute)
 	status := ""
 	for devnetNow().Before(deadline) {
