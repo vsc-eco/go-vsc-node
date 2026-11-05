@@ -746,6 +746,18 @@ func TssAccuseStackActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// TssKeyAllowlistActive reports whether tss.create_key is restricted to the
+// contracts on the network's TSS key allowlist (KEY-SPAM-1 / 18j).
+//
+// Gated because it changes which transactions succeed: an un-gated rollout
+// would have upgraded nodes rejecting a create_key that un-upgraded nodes
+// accept, which forks. Pinned to the 0.13.0 EVM line, which is where this
+// starts to matter -- every extra key is another keygen holding tssMgr.lock --
+// and which is not active on mainnet, so the gate is inert there today.
+func TssKeyAllowlistActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS

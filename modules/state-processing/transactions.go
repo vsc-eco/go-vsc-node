@@ -17,6 +17,7 @@ import (
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -200,6 +201,12 @@ func (t TxVscCallContract) ExecuteTx(
 		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
 		// 0.13.0 big swap amounts (SP-0d), same gating.
 		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
+		// KEY-SPAM-1 (18j): restrict tss.create_key to the contracts the network
+		// allows keys for, from 0.13.0. nil before activation, so create_key
+		// behaves byte-identically to today until the coordinated height.
+		contract_execution_context.WithTssKeyAllowlist(
+			tssKeyAllowlistFor(se.SystemConfig(), t.Self.BlockHeight, activeVersion),
+		),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -1610,4 +1617,17 @@ type VscTxContainer interface {
 	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
 	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
 	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
+}
+
+// tssKeyAllowlistFor resolves the TSS key-creation allowlist for a transaction
+// (KEY-SPAM-1 / 18j), or nil when the restriction is not yet in force.
+//
+// Returning nil before activation is what keeps the change fork-safe: an empty
+// allowlist means unrestricted in TssCreateKey, so a node running this binary
+// before 0.13.0 accepts exactly the same create_key calls as one that is not.
+func tssKeyAllowlistFor(sconf systemconfig.SystemConfig, blockHeight uint64, activeVersion consensusversion.Version) []string {
+	if sconf == nil || !consensusversion.TssKeyAllowlistActive(activeVersion) {
+		return nil
+	}
+	return sconf.TssKeyContractAllowlistAt(blockHeight)
 }
