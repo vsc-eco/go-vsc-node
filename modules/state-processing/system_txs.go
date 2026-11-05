@@ -337,6 +337,34 @@ func (tx *TxUpdateContract) ToData() map[string]interface{} {
 	}
 }
 
+// validateCodeUpdateFields rejects a contract-code update that omits a field the
+// code-update path then dereferences unconditionally (SC-08).
+//
+// `runtime` and `storage_proof` are `omitempty` pointers, so an update that
+// leaves either key out -- or sends an explicit `null` -- unmarshals to a nil
+// pointer and still reaches the code-update branch. Both are then dereferenced:
+// `tx.Runtime.String()` auto-derefs because Runtime.String has a value
+// receiver, and StorageProof.Verify reads sp.Hash. Either deref panics.
+//
+// That panic is not survivable. It happens inside ProcessBlock, which -- unlike
+// the L2 batch path's executeTxSafely -- had no recover() on it, so the node
+// dies on that block; and because the streamer only advances its saved
+// checkpoint after a block completes, it re-ingests the same block and dies
+// again on every restart. Any account able to pay the deployment fee could
+// therefore halt the whole network permanently with one malformed op.
+//
+// Kept as a separate method, rather than inline in ExecuteTx, so the rejection
+// is unit-testable without standing up a StateEngine.
+func (tx *TxUpdateContract) validateCodeUpdateFields() error {
+	if tx.Runtime == nil {
+		return errors.New("runtime is required to update contract code")
+	}
+	if tx.StorageProof == nil {
+		return errors.New("storage proof is required to update contract code")
+	}
+	return nil
+}
+
 func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContractResult {
 	if len(tx.Self.RequiredAuths) == 0 {
 		return UpdateContractResult{
@@ -384,6 +412,15 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 	}
 	if hasFee && tx.Code != "" && tx.Code != existing.Code {
 		// update contract code
+		//
+		// SC-08: reject an update whose optional pointer fields are absent
+		// before anything dereferences them. See validateCodeUpdateFields.
+		if err := tx.validateCodeUpdateFields(); err != nil {
+			return UpdateContractResult{
+				Success: false,
+				Err:     err.Error(),
+			}
+		}
 		if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 			return UpdateContractResult{
 				Success: false,
