@@ -3015,8 +3015,29 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}()
 }
 
-func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) string {
-	electionData := tssMgr.electionDb.GetElection(epoch)
+// setToCommitment encodes `participants` as a bitset over the epoch's election
+// members.
+//
+// 18h: this used to call GetElection, which swallows ANY read error -- including
+// a transient Mongo blip -- to a nil *ElectionResult, and then dereference it
+// as electionData.Members. A nil deref here is unusually expensive: two of the
+// callers run on bare goroutines, so the panic is unrecovered and takes the
+// whole process down rather than failing one session.
+//
+// It now uses GetElectionStrict and surfaces the error, for two reasons. The
+// panic is the lesser one: a commitment computed against a MISSING election is
+// silently wrong (an empty or under-populated bitset) and is consensus-visible
+// data, so callers must be able to decline to publish it rather than vouch for
+// garbage. The nil check is kept alongside the error check deliberately -- the
+// interface permits (nil, nil) and this is a consensus input.
+func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) (string, error) {
+	electionData, err := tssMgr.electionDb.GetElectionStrict(epoch)
+	if err != nil {
+		return "", fmt.Errorf("commitment for epoch %d: election unavailable: %w", epoch, err)
+	}
+	if electionData == nil {
+		return "", fmt.Errorf("commitment for epoch %d: election unavailable: nil result", epoch)
+	}
 
 	bitset := &big.Int{}
 	for _, p := range participants {
@@ -3028,7 +3049,7 @@ func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint
 		}
 	}
 
-	return base64.RawURLEncoding.EncodeToString(bitset.Bytes())
+	return base64.RawURLEncoding.EncodeToString(bitset.Bytes()), nil
 }
 
 func (tssMgr *TssManager) waitForSigs(

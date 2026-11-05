@@ -283,7 +283,7 @@ func TestPoa8_AccusationsLapseAtTheNextRotation(t *testing.T) {
 	net := newPoa8Net(t, []string{"a", "b", "c", "d", "e"}, 4, 3)
 	a := net.nodes["a"]
 	bit := func(acct string) string {
-		return a.setToCommitment([]Participant{{Account: acct}}, 4)
+		return mustSetToCommitment(t, a, []Participant{{Account: acct}}, 4)
 	}
 	a.tssCommitments = &test_utils.MockTssCommitmentsDb{Commitments: map[string]tss_db.TssCommitment{
 		"1": {Type: accuseTypeReshare, KeyId: "k", BlockHeight: 220, Epoch: 4, Commitment: bit("c")},

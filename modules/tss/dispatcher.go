@@ -433,6 +433,17 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			// 18h: this goroutine reaches storeReshareResult -> setToCommitment,
+			// and had no recover() while four of its siblings in this file do.
+			// An unrecovered panic on a bare goroutine terminates the PROCESS,
+			// so one bad read here killed a witness outright.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic recovered in reshare result handler", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "panic", r)
+					dispatcher.err = fmt.Errorf("panic in reshare result handler: %v", r)
+					dispatcher.signalDone()
+				}
+			}()
 			for {
 				var reshareResult *keyGenSecp256k1.LocalPartySaveData
 				select {
@@ -566,6 +577,14 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			// 18h: see the ECDSA counterpart above -- same missing recover().
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic recovered in reshare result handler", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "panic", r)
+					dispatcher.err = fmt.Errorf("panic in reshare result handler: %v", r)
+					dispatcher.signalDone()
+				}
+			}()
 			for {
 				var reshareResult *keyGenEddsa.LocalPartySaveData
 				select {
@@ -626,8 +645,20 @@ func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []b
 		return
 	}
 
+	// 18h: fail CLOSED, exactly like the keystore-write failure above. The share
+	// is already persisted, but without a trustworthy election we cannot compute
+	// a correct commitment, and publishing a wrong one is worse than publishing
+	// none -- the session is retried, whereas a bad commitment is vouched for.
+	commitment, err := dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch)
+	if err != nil {
+		log.Error("reshare commitment NOT computed, not reporting success", "algo", algo, "keyId", dispatcher.keyId, "err", err, "sessionId", dispatcher.sessionId)
+		dispatcher.shareErr = fmt.Errorf("reshare commitment not computed: %w", err)
+		dispatcher.signalDone()
+		return
+	}
+
 	dispatcher.result = &ReshareResult{
-		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+		Commitment:  commitment,
 		KeyId:       dispatcher.keyId,
 		SessionId:   dispatcher.sessionId,
 		NewEpoch:    dispatcher.newEpoch,
@@ -2173,9 +2204,18 @@ func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	}
 	log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 
+	// 18h: fail CLOSED on an unavailable election, as in storeReshareResult.
+	commitment, cErr := dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch)
+	if cErr != nil {
+		log.Error("keygen commitment NOT computed, not reporting success", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", cErr)
+		dispatcher.shareErr = fmt.Errorf("keygen commitment not computed: %w", cErr)
+		dispatcher.signalDone()
+		return
+	}
+
 	dispatcher.result = &KeyGenResult{
 		PublicKey:   pubBytes,
-		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
+		Commitment:  commitment,
 		SavedSecret: saved,
 		SessionId:   dispatcher.sessionId,
 		KeyId:       dispatcher.keyId,
@@ -2432,11 +2472,23 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			err = eres.tssErr.Error()
 		}
 
-		commitment := eres.tssMgr.setToCommitment(utils.Map(blameNodes, func(arg string) Participant {
+		commitment, cErr := eres.tssMgr.setToCommitment(utils.Map(blameNodes, func(arg string) Participant {
 			return Participant{
 				Account: arg,
 			}
 		}), eres.Epoch)
+		if cErr != nil {
+			// 18h residual: Serialize() has no error channel on the
+			// DispatcherResult interface, so this path cannot decline to
+			// publish without widening that interface. It no longer PANICS
+			// (which killed the process); it degrades to an empty blame
+			// bitset, which accuses nobody -- fail-open for blame, but blame
+			// is not fund-moving and an under-accusation is the safe
+			// direction. Logged at ERROR so it is visible. Giving Serialize()
+			// an error return is the proper fix and is deliberately left out
+			// of this hotfix.
+			log.Error("blame commitment computed without a usable election; publishing empty bitset", "sessionId", eres.SessionId, "keyId", eres.KeyId, "epoch", eres.Epoch, "err", cErr)
+		}
 
 		return tss_helpers.BaseCommitment{
 			Type:       "blame",
@@ -2485,11 +2537,15 @@ func (TimeoutResult) Type() DispatcherType {
 }
 
 func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
-	commitment := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
+	commitment, cErr := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
 		return Participant{
 			Account: arg,
 		}
 	}), result.Epoch)
+	if cErr != nil {
+		// 18h residual -- see the identical note in ErrorResult.Serialize.
+		log.Error("timeout commitment computed without a usable election; publishing empty bitset", "sessionId", result.SessionId, "keyId", result.KeyId, "epoch", result.Epoch, "err", cErr)
+	}
 
 	// Mark timeout in metadata so we can distinguish from errors
 	timeoutErr := "timeout"

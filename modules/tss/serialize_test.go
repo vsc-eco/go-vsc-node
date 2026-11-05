@@ -46,14 +46,14 @@ func TestSerialize_ReshareResult_IdenticalOnTwoNodes(t *testing.T) {
 	}
 
 	result1 := ReshareResult{
-		Commitment:  mgr1.setToCommitment(participants, epoch),
+		Commitment:  mustSetToCommitment(t, mgr1, participants, epoch),
 		KeyId:       "key-1",
 		SessionId:   "reshare-1000-0-key-1",
 		NewEpoch:    epoch,
 		BlockHeight: 1000,
 	}
 	result2 := ReshareResult{
-		Commitment:  mgr2.setToCommitment(participants, epoch),
+		Commitment:  mustSetToCommitment(t, mgr2, participants, epoch),
 		KeyId:       "key-1",
 		SessionId:   "reshare-1000-0-key-1",
 		NewEpoch:    epoch,
@@ -168,9 +168,9 @@ func TestSerialize_SetToCommitment_OrderIndependent(t *testing.T) {
 	order2 := []Participant{{Account: "eve"}, {Account: "alice"}, {Account: "carol"}}
 	order3 := []Participant{{Account: "carol"}, {Account: "eve"}, {Account: "alice"}}
 
-	c1 := mgr.setToCommitment(order1, epoch)
-	c2 := mgr.setToCommitment(order2, epoch)
-	c3 := mgr.setToCommitment(order3, epoch)
+	c1 := mustSetToCommitment(t, mgr, order1, epoch)
+	c2 := mustSetToCommitment(t, mgr, order2, epoch)
+	c3 := mustSetToCommitment(t, mgr, order3, epoch)
 
 	assert.Equal(t, c1, c2, "Participant order must not affect commitment")
 	assert.Equal(t, c2, c3, "Participant order must not affect commitment")
@@ -191,7 +191,7 @@ func TestSerialize_SetToCommitment_MissingParticipant(t *testing.T) {
 		{Account: "carol"},
 	}
 
-	commitment := mgr.setToCommitment(participants, epoch)
+	commitment := mustSetToCommitment(t, mgr, participants, epoch)
 
 	// Decode and verify only alice and carol are set
 	decoded := decodeBlameBitset(commitment, members2electionMembers(members))
@@ -272,7 +272,7 @@ func TestSerialize_BlameEpochMismatch_CIDDiverges(t *testing.T) {
 	participants := []Participant{{Account: "carol"}}
 
 	// Node A encodes with wrong epoch (bug path)
-	commitmentWrong := mgr.setToCommitment(participants, keygenEpoch)
+	commitmentWrong := mustSetToCommitment(t, mgr, participants, keygenEpoch)
 	resultWrong := TimeoutResult{
 		tssMgr: mgr, Culprits: culprits,
 		SessionId: "reshare-100-0-k1", KeyId: "k1",
@@ -280,7 +280,7 @@ func TestSerialize_BlameEpochMismatch_CIDDiverges(t *testing.T) {
 	}
 
 	// Node B encodes with correct epoch (fix path)
-	commitmentCorrect := mgr.setToCommitment(participants, currentEpoch)
+	commitmentCorrect := mustSetToCommitment(t, mgr, participants, currentEpoch)
 	resultCorrect := TimeoutResult{
 		tssMgr: mgr, Culprits: culprits,
 		SessionId: "reshare-100-0-k1", KeyId: "k1",
@@ -315,12 +315,12 @@ func TestSerialize_ReshareResult_DifferentEpoch_DifferentCID(t *testing.T) {
 	participants := []Participant{{Account: "alice"}, {Account: "bob"}, {Account: "carol"}}
 
 	r1 := ReshareResult{
-		Commitment: mgr.setToCommitment(participants, epoch1),
+		Commitment: mustSetToCommitment(t, mgr, participants, epoch1),
 		KeyId: "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch1, BlockHeight: 100,
 	}
 	r2 := ReshareResult{
-		Commitment: mgr.setToCommitment(participants, epoch2),
+		Commitment: mustSetToCommitment(t, mgr, participants, epoch2),
 		KeyId: "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch2, BlockHeight: 100,
 	}
