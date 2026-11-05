@@ -1055,11 +1055,21 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
 		// Check if there are keys that need reshare at the next rotate interval.
 		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+			// A23: these two reads used to drop their error, so a Mongo blip
+			// read as "no keys" and this node silently skipped readiness
+			// gossip for a rotation its peers were preparing. Readiness gates
+			// participation, so that is not a harmless miss. Say so and leave
+			// the targets alone; the next tick re-evaluates.
+			reshareKeys, reshareErr := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+			newKeys, newErr := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
+			if reshareErr != nil || newErr != nil {
+				log.Error("readiness gossip: key read failed, not scheduling gossip this tick",
+					"blockHeight", bh, "reshareErr", reshareErr, "newErr", newErr)
+				reshareKeys, newKeys = nil, nil
+			}
 			if tssMgr.sessionShapeActive(bh + blocksUntilReshare) {
 				reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
 			}
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
 				target := bh + blocksUntilReshare
 				gossipTargets[target] = true
@@ -1240,7 +1250,18 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 
 			epoch := electionData.Epoch
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
+			// A23: fail CLOSED, like the election read just above. This is the
+			// rotate SCHEDULER: a dropped error read as "no keys", so a node
+			// with a momentary Mongo fault generated no reshare/keygen actions
+			// at a rotate block where every healthy peer generated them --
+			// diverging on scheduling rather than on one lookup. Skipping the
+			// whole tick is correct and cheap: the next rotate interval
+			// re-selects the same keys.
+			reshareKeys, reshareErr := tssMgr.tssKeys.FindEpochKeys(epoch)
+			if reshareErr != nil {
+				log.Error("reshare key read failed, skipping rotate", "blockHeight", bh, "epoch", epoch, "err", reshareErr)
+				return
+			}
 			if shapeActive {
 				reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
 			}
@@ -1276,7 +1297,13 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				})
 				keyLocks[key.Id] = true
 			}
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh)
+			// A23: fail closed, as above -- an unread "created" key means this
+			// node skips a keygen its peers run.
+			newKeys, newErr := tssMgr.tssKeys.FindNewKeys(bh)
+			if newErr != nil {
+				log.Error("new key read failed, skipping rotate", "blockHeight", bh, "err", newErr)
+				return
+			}
 
 			for _, key := range newKeys {
 				generatedActions = append(generatedActions, QueuedAction{
@@ -2363,7 +2390,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// threshold+1 of the old committee that would run.
 			var accusedOut map[string]bool
 			if consensusversion.TssPerAccusedBlameActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
-				if counts := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock); len(counts) > 0 {
+				// H13: fail CLOSED. An incomplete accusation read would
+				// under-accuse whoever sits in the rows that did not arrive, so
+				// on a transient read error this key gets NO exclusion this
+				// tick rather than a partial one. The session may simply fail
+				// and retry; a wrong exclusion blocks the key for the whole
+				// blame window, since only a SUCCESSFUL reshare clears it.
+				counts, countsErr := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock)
+				if countsErr != nil {
+					log.Error("POA-8: accusation counts unavailable, making NO exclusions for this key this tick",
+						"sessionId", sessionId, "keyId", action.KeyId, "err", countsErr)
+				}
+				if countsErr == nil && len(counts) > 0 {
 					alreadyOut := 0
 					for _, member := range currentElection.Members {
 						if blamedAccounts[member.Account] || blameMap.BannedNodes[member.Account] {

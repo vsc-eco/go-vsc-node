@@ -292,11 +292,11 @@ func TestPoa8_AccusationsLapseAtTheNextRotation(t *testing.T) {
 		"4": {Type: "blame", KeyId: "k", BlockHeight: 280, Epoch: 4, Commitment: bit("e")},
 	}}
 	// last rotation of k at 240: only the 280 accusation counts; other keys and blames never do
-	assert.Equal(t, map[string]int{"c": 1}, a.reshareAccusedCounts("k", 300, 240, 0))
+	assert.Equal(t, map[string]int{"c": 1}, mustAccusedCounts(t, a, "k", 300, 240, 0))
 	// rotation at 290 clears it
-	assert.Empty(t, a.reshareAccusedCounts("k", 300, 290, 0))
+	assert.Empty(t, mustAccusedCounts(t, a, "k", 300, 290, 0))
 	// the blame window bounds it too
-	assert.Empty(t, a.reshareAccusedCounts("k", 300, 0, 290))
+	assert.Empty(t, mustAccusedCounts(t, a, "k", 300, 0, 290))
 }
 
 // leaderFed: withholder "w" sends its round-1 messages only to the leader. The

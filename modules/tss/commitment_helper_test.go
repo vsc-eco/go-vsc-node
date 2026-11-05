@@ -18,3 +18,16 @@ func mustSetToCommitment(t *testing.T, mgr *TssManager, participants []Participa
 	}
 	return commitment
 }
+
+// mustAccusedCounts adapts reshareAccusedCounts' (map, error) signature for
+// tests whose fixtures always read cleanly. It started returning an error as
+// part of the H13 fail-closed fix: an incomplete accusation read used to fall
+// through and count over a partial row set, which silently under-accuses.
+func mustAccusedCounts(t *testing.T, mgr *TssManager, keyId string, bh, lastCommitHeight, expireBlock uint64) map[string]int {
+	t.Helper()
+	counts, err := mgr.reshareAccusedCounts(keyId, bh, lastCommitHeight, expireBlock)
+	if err != nil {
+		t.Fatalf("reshareAccusedCounts(%s) failed: %v", keyId, err)
+	}
+	return counts
+}
