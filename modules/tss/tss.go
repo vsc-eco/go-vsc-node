@@ -79,11 +79,19 @@ const (
 	// rotate blocks.
 	MAX_RESHARES_PER_ROTATE = 4
 
-	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
-	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
-	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
-	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
-	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
+	TSS_MESSAGE_RETRY_COUNT     = 3  // Number of retries for failed messages
+	TSS_BAN_THRESHOLD_PERCENT   = 60 // Failure rate threshold for long-term bans
+	TSS_BLAME_THRESHOLD_PERCENT = 33 // Failure rate threshold for short-term per-key blame exclusion
+	TSS_BAN_GRACE_PERIOD_EPOCHS = 3  // Epochs before new nodes can be banned (as int for comparison)
+	// TSS_BAN_MIN_FAMILY_BLAMES is the floor on blames against a node, within
+	// one key family, before the percentage threshold may ban it (18an).
+	//
+	// Needed only on the per-family path: splitting the score by family shrinks
+	// each sample, and a percentage over a tiny denominator bans on noise. With
+	// a single blame against a single session the rate is 100%. Three is the
+	// smallest count that cannot be reached by one bad session plus one retry.
+	TSS_BAN_MIN_FAMILY_BLAMES = 3
+	BLAME_EXPIRE              = uint64(28800) // 24 hour blame
 	// BLAME_WINDOW_MAX_ROWS bounds how many blame commitments a blame-window query
 	// returns. It is a memory bound, NOT a policy knob: it must sit far above
 	// anything the window can legitimately hold, because the query sorts by height
@@ -229,6 +237,17 @@ func (tssMgr *TssManager) sessionShapeActive(bh uint64) bool {
 		return false
 	}
 	return consensusversion.TssSessionShapeActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
+}
+
+// perKeyFamilyBanActive reports whether the TSS ban score is scored per key
+// family at this height (18an). Nil-guarded like sessionShapeActive: a manager
+// with no scheduler (unit tests, and any path that has not wired one) falls back
+// to the single network-wide ban set, which is the pre-18an behaviour.
+func (tssMgr *TssManager) perKeyFamilyBanActive(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.TssPerKeyFamilyBanActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
 }
 
 // blameWindowRows is the row limit of the per-key blame-window reads: the 0.3.0
@@ -1452,6 +1471,62 @@ type ScoreMap struct {
 	// BanOrder lists the banned accounts lowest blame score first (ties by
 	// account), the order in which readmitBanned lets them back in.
 	BanOrder []string
+
+	// ByFamily holds the same decision computed per KEY FAMILY -- the contract
+	// that owns the key, as tssKeyOwner resolves it (18an). Always populated;
+	// only consulted when PerFamilyActive.
+	ByFamily map[string]FamilyBans
+	// PerFamilyActive is set by the caller from
+	// consensusversion.TssPerKeyFamilyBanActive. False => BannedFor/BanOrderFor
+	// return the global set, so behaviour is byte-identical to before 18an.
+	PerFamilyActive bool
+}
+
+// FamilyBans is one key family's ban decision (18an).
+type FamilyBans struct {
+	BannedNodes map[string]bool
+	BanOrder    []string
+}
+
+// BannedFor returns the ban set that applies to keyId.
+//
+// 18an: before this, there was one global set and an EVM-only fault could ban a
+// witness from the BTC vault's committee. The family is the key's owning
+// contract, so each bridge's faults are scored against that bridge only.
+//
+// Two deliberate fallbacks to the global set: when the gate is off (so
+// pre-activation behaviour is unchanged), and when the key id has no resolvable
+// owner (it was not created through the contract path, so it has no family and
+// the conservative answer is the network-wide set). A family that exists but has
+// no blames bans nobody.
+func (s ScoreMap) BannedFor(keyId string) map[string]bool {
+	if !s.PerFamilyActive {
+		return s.BannedNodes
+	}
+	family, ok := tssKeyOwner(keyId)
+	if !ok {
+		return s.BannedNodes
+	}
+	if f, present := s.ByFamily[family]; present {
+		return f.BannedNodes
+	}
+	return map[string]bool{}
+}
+
+// BanOrderFor is BannedFor's companion for the ban-yield path, which readmits
+// banned members lowest-score-first when too few remain to land a session.
+func (s ScoreMap) BanOrderFor(keyId string) []string {
+	if !s.PerFamilyActive {
+		return s.BanOrder
+	}
+	family, ok := tssKeyOwner(keyId)
+	if !ok {
+		return s.BanOrder
+	}
+	if f, present := s.ByFamily[family]; present {
+		return f.BanOrder
+	}
+	return nil
 }
 
 // BlameScore computes the banned-node set from on-chain blame data, anchored on the
@@ -1501,6 +1576,22 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 	timeoutBlameMap := make(map[string]int) // Separate tracking for timeouts vs errors
 	errorBlameMap := make(map[string]int)
 
+	// 18an: the same tallies, split by key family (the contract owning the key).
+	// Accumulated unconditionally and only CONSULTED behind the version gate, so
+	// nothing about the pre-activation decision changes.
+	famBlame := make(map[string]map[string]int)
+	famWeight := make(map[string]map[string]int)
+	famTimeout := make(map[string]map[string]int)
+	famError := make(map[string]map[string]int)
+	bump := func(m map[string]map[string]int, family, account string) {
+		inner, ok := m[family]
+		if !ok {
+			inner = make(map[string]int)
+			m[family] = inner
+		}
+		inner[account]++
+	}
+
 	for _, election := range electionMap {
 		blames, _ := tss.tssCommitments.GetBlames(&election.Epoch)
 
@@ -1537,9 +1628,17 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 			// Weight is counted per non-systemic blame commit so the
 			// denominator stays consistent with the filtered numerator.
+			//
+			// 18an: the per-family denominator is counted the same way, but only
+			// over the commits of THAT family, so each bridge's failure rate is
+			// measured against its own session count.
+			family, hasFamily := tssKeyOwner(blame.KeyId)
 			for _, member := range election.Members {
 				if currentMembers[member.Account] {
 					weightMap[member.Account]++
+					if hasFamily {
+						bump(famWeight, family, member.Account)
+					}
 				}
 			}
 
@@ -1560,11 +1659,62 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 					} else {
 						errorBlameMap[member.Account] += 1
 					}
+					if hasFamily {
+						bump(famBlame, family, member.Account)
+						if isTimeout {
+							bump(famTimeout, family, member.Account)
+						} else {
+							bump(famError, family, member.Account)
+						}
+					}
 				}
 			}
 		}
 	}
 
+	bannedNodes, banOrder := decideBans(
+		blameMap, weightMap, timeoutBlameMap, errorBlameMap,
+		nodeFirstEpoch, currentEpoch, len(initialElection.Members), 0, "network",
+	)
+
+	// 18an: and once per key family, each against its own denominator and with
+	// a minimum blame count, because a per-family sample is small enough that a
+	// bare percentage would ban on noise.
+	byFamily := make(map[string]FamilyBans, len(famWeight))
+	for family, weights := range famWeight {
+		fb, fo := decideBans(
+			famBlame[family], weights, famTimeout[family], famError[family],
+			nodeFirstEpoch, currentEpoch, len(initialElection.Members),
+			TSS_BAN_MIN_FAMILY_BLAMES, "family:"+family,
+		)
+		byFamily[family] = FamilyBans{BannedNodes: fb, BanOrder: fo}
+	}
+
+	return ScoreMap{
+		BannedNodes: bannedNodes,
+		BanOrder:    banOrder,
+		ByFamily:    byFamily,
+	}
+}
+
+// decideBans turns blame tallies into a ban set. Extracted from BlameScore so
+// the identical rules -- grace period, the percentage threshold, the ban cap
+// that keeps threshold+1 members seated, and the deterministic total order --
+// apply to the network-wide score and to each per-key-family score (18an).
+//
+// minBlames is the floor below which the percentage cannot ban; 0 for the
+// network-wide score, which keeps its pre-18an behaviour exactly.
+func decideBans(
+	blameMap map[string]int,
+	weightMap map[string]int,
+	timeoutBlameMap map[string]int,
+	errorBlameMap map[string]int,
+	nodeFirstEpoch map[string]uint64,
+	currentEpoch uint64,
+	electionSize int,
+	minBlames int,
+	what string,
+) (map[string]bool, []string) {
 	sortedArray := make([]score, 0)
 	for account, weight := range weightMap {
 		firstEpoch, exists := nodeFirstEpoch[account]
@@ -1600,7 +1750,6 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 	// Ban cap: never ban so many nodes that fewer than threshold+1 remain.
 	// This prevents cascading blame from making the network inoperable.
-	electionSize := len(initialElection.Members)
 	networkThreshold, _ := tss_helpers.GetThreshold(electionSize)
 	maxBans := electionSize - (networkThreshold + 1)
 	if maxBans < 0 {
@@ -1632,6 +1781,14 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 		thresholdPercent := TSS_BAN_THRESHOLD_PERCENT
 		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
 
+		// 18an: a per-family sample is small, so the percentage alone bans on
+		// noise -- one blame against one session is a 100% rate. minBlames is 0
+		// for the network-wide score, which therefore behaves exactly as before.
+		if entry.Score < minBlames {
+			log.Verbose("below the minimum blame count, not banning",
+				"scope", what, "account", entry.Account, "score", entry.Score, "minBlames", minBlames)
+			continue
+		}
 		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
 			if len(bannedList) >= maxBans {
 				log.Verbose("ban cap reached, not banning further nodes",
@@ -1692,10 +1849,7 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 	banOrder := slices.Clone(bannedList)
 	slices.Reverse(banOrder)
-	return ScoreMap{
-		BannedNodes: bannedNodes,
-		BanOrder:    banOrder,
-	}
+	return bannedNodes, banOrder
 }
 
 //Call process
@@ -1842,6 +1996,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore(currentElection)
+	// 18an: from 0.13.0 the ban that excludes a node is the one scored against
+	// THAT key's family, so an EVM-only fault cannot evict a witness from the
+	// BTC vault's committee. Off => BannedFor returns the global set and every
+	// decision below is byte-identical to before.
+	blameMap.PerFamilyActive = tssMgr.perKeyFamilyBanActive(bh)
 	shapeActive := tssMgr.sessionShapeActive(bh)
 
 	log.Info(
@@ -1927,8 +2086,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
 					continue
 				}
-				//if node is banned
-				if blameMap.BannedNodes[member.Account] {
+				//if node is banned (18an: for THIS key's family)
+				if blameMap.BannedFor(action.KeyId)[member.Account] {
 					excludedAccounts = append(excludedAccounts, member.Account+" (banned)")
 					continue
 				}
@@ -2189,7 +2348,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding blamed node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
-				if blameMap.BannedNodes[p.Account] {
+				if blameMap.BannedFor(action.KeyId)[p.Account] {
 					log.Verbose("excluding banned node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
@@ -2214,9 +2373,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Ban stall (0.9.0): let ready banned holders back in when bans plus
 			// non-ready holders leave fewer than threshold+1 (see the reshare
 			// path and TssBanYieldsToQuorumActive).
-			if consensusversion.TssBanYieldsToQuorumActive(minSignVer) && len(blameMap.BanOrder) > 0 {
+			if consensusversion.TssBanYieldsToQuorumActive(minSignVer) && len(blameMap.BanOrderFor(action.KeyId)) > 0 {
 				var back []string
-				participants, back = readmitBanned(participants, origThreshold+1, blameMap.BanOrder, signHolders, signReadyAccounts, signBlamedAccounts, nil)
+				participants, back = readmitBanned(participants, origThreshold+1, blameMap.BanOrderFor(action.KeyId), signHolders, signReadyAccounts, signBlamedAccounts, nil)
 				if len(back) > 0 {
 					log.Warn("readmitting banned holders: too few left to sign", "sessionId", sessionId,
 						"readmitted", back, "needed", origThreshold+1)
@@ -2385,7 +2544,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
-					if blameMap.BannedNodes[member.Account] {
+					if blameMap.BannedFor(action.KeyId)[member.Account] {
 						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
@@ -2410,7 +2569,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding blamed node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
-				if blameMap.BannedNodes[member.Account] {
+				if blameMap.BannedFor(action.KeyId)[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
@@ -2449,7 +2608,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				if countsErr == nil && len(counts) > 0 {
 					alreadyOut := 0
 					for _, member := range currentElection.Members {
-						if blamedAccounts[member.Account] || blameMap.BannedNodes[member.Account] {
+						if blamedAccounts[member.Account] || blameMap.BannedFor(action.KeyId)[member.Account] {
 							alreadyOut++
 						}
 					}
@@ -2473,7 +2632,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// threshold+1 old holders, and on the new side the commit quorum
 			// (non-parties do not sign the commitment) or the threshold floor,
 			// whichever is higher.
-			if consensusversion.TssBanYieldsToQuorumActive(minReshareVer) && len(blameMap.BanOrder) > 0 {
+			if consensusversion.TssBanYieldsToQuorumActive(minReshareVer) && len(blameMap.BanOrderFor(action.KeyId)) > 0 {
 				oldThr, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
 				electionSize := len(currentElection.Members)
 				elecThr, _ := tss_helpers.GetThreshold(electionSize)
@@ -2486,8 +2645,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					members[m.Account] = true
 				}
 				var backOld, backNew []string
-				commitedMembers, backOld = readmitBanned(commitedMembers, oldThr+1, blameMap.BanOrder, oldHolders, readyAccounts, blamedAccounts, accusedOut)
-				newParticipants, backNew = readmitBanned(newParticipants, needNew, blameMap.BanOrder, members, readyAccounts, blamedAccounts, accusedOut)
+				commitedMembers, backOld = readmitBanned(commitedMembers, oldThr+1, blameMap.BanOrderFor(action.KeyId), oldHolders, readyAccounts, blamedAccounts, accusedOut)
+				newParticipants, backNew = readmitBanned(newParticipants, needNew, blameMap.BanOrderFor(action.KeyId), members, readyAccounts, blamedAccounts, accusedOut)
 				if len(backOld)+len(backNew) > 0 {
 					log.Warn("readmitting banned members: too few parties left to complete the reshare", "sessionId", sessionId,
 						"old", backOld, "new", backNew, "needOld", oldThr+1, "needNew", needNew)
@@ -3173,7 +3332,8 @@ func (tssMgr *TssManager) filterScheduledKeys(keys []tss_db.TssKey, bh uint64, w
 	if tssMgr.sconf == nil {
 		return keys
 	}
-	if !consensusversion.TssKeyAllowlistActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
+	if tssMgr.scheduler == nil ||
+		!consensusversion.TssKeyAllowlistActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
 		return keys
 	}
 	allowed := tssMgr.sconf.TssKeyContractAllowlistAt(bh)

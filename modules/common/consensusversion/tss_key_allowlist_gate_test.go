@@ -21,5 +21,10 @@ func TestTssKeyAllowlistActivatesAtThirteen(t *testing.T) {
 		if got := TssKeyAllowlistActive(tc.active); got != tc.want {
 			t.Errorf("TssKeyAllowlistActive(%s) = %v, want %v", tc.active.Format(), got, tc.want)
 		}
+		// 18an rides the same line: both are pre-EVM TSS hardening and must
+		// activate together, so a mixed fleet cannot disagree about either.
+		if got := TssPerKeyFamilyBanActive(tc.active); got != tc.want {
+			t.Errorf("TssPerKeyFamilyBanActive(%s) = %v, want %v", tc.active.Format(), got, tc.want)
+		}
 	}
 }

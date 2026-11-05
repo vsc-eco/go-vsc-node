@@ -758,6 +758,24 @@ func TssKeyAllowlistActive(active Version) bool {
 	return Version0_13_0Active(active)
 }
 
+// TssPerKeyFamilyBanActive reports whether the TSS ban score is computed PER KEY
+// FAMILY rather than across every key at once (18an).
+//
+// Without it, BlameScore sums the blames of every key in an epoch and the
+// resulting ban excludes a witness from keygen, signing AND reshare of EVERY
+// key. Once the EVM bridge holds keys, a witness with an EVM-only fault is
+// blamed in every EVM session, can cross the ban threshold, and is then removed
+// from the BTC vault's committee too -- though its BTC shares are perfectly
+// good. The reverse holds as well.
+//
+// Gated because it changes a TSS party-list input: two nodes disagreeing about
+// who is banned build different party lists and the session fails on an SSID
+// mismatch. Pinned to 0.13.0, the EVM line, which is both when the coupling
+// starts to matter and not active on mainnet today.
+func TssPerKeyFamilyBanActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS
