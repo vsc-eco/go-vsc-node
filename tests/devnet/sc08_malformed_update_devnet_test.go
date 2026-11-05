@@ -1,6 +1,8 @@
 package devnet
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -159,5 +161,41 @@ func TestSC08MalformedUpdateDevnet(t *testing.T) {
 	// was restarted by docker would re-ingest the same block and die again, so a
 	// brief advance is not enough on its own.
 	assertAllNodesHealthy(t, d, ctx, healthDelta)
-	t.Logf("SC-08 PASS: all %d nodes advanced and stayed healthy through the malformed update", cfg.Nodes)
+
+	// ── Phase 4: prove the op actually REACHED the guard ──────────────────
+	//
+	// Without this the test is worthless. "All nodes still advancing" is also
+	// what you see if the malformed op was filtered long before the dereference
+	// -- a missing fee op (hasFee false), an unknown contract id, a not-owner
+	// check -- in which case the vulnerable branch was never entered and the
+	// test proves nothing about the fix.
+	//
+	// The handler's rejection reason is the evidence. It is only produced inside
+	// the code-update branch, i.e. after hasFee, the contract lookup and the
+	// owner check have all passed.
+	const want = "runtime is required to update contract code"
+	reached := false
+	var sampled string
+	for n := 1; n <= cfg.Nodes; n++ {
+		logs, lerr := d.Logs(ctx, fmt.Sprintf("magi-%d", n))
+		if lerr != nil {
+			continue
+		}
+		if strings.Contains(logs, want) {
+			reached = true
+			break
+		}
+		if strings.Contains(logs, "vsc.update_contract rejected") {
+			sampled = "rejected, but for another reason"
+		}
+	}
+	if !reached {
+		t.Fatalf("SC-08 INCONCLUSIVE: no node logged %q (%s). The nodes stayed up, but "+
+			"nothing shows the malformed op reached the code-update branch, so this run "+
+			"does not demonstrate the fix. Check hasFee (the transfer must be ops[1]), "+
+			"the contract id, and that the signer owns it.", want, sampled)
+	}
+
+	t.Logf("SC-08 PASS: the malformed op reached the guard and was rejected with %q, "+
+		"and all %d nodes advanced and stayed healthy", want, cfg.Nodes)
 }

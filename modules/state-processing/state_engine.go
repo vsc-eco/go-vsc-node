@@ -1286,6 +1286,19 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						runSystemOpSafely(cj.Id, txSelf, func() {
 							txResult = parsedTx.ExecuteTx(se, hasFee)
 						})
+						if !txResult.Success {
+							// A rejected contract update was silent, which made
+							// a refused update indistinguishable from one that
+							// was never seen -- both for an operator and for a
+							// test. Says WHY, which for the SC-08 guards is the
+							// only evidence that the malformed op reached the
+							// handler at all rather than being filtered earlier.
+							log.Warn("vsc.update_contract rejected",
+								"txId", tx.TransactionID,
+								"contractId", parsedTx.Id,
+								"hasFee", hasFee,
+								"reason", txResult.Err)
+						}
 
 						if hasFee {
 							if txResult.Success && txResult.CodeUpdated {
