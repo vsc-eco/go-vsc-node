@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -45,6 +46,7 @@ import (
 	blsu "github.com/protolambda/bls12-381-util"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 var log = vsclog.Module("tss")
@@ -1082,7 +1084,15 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	blocksUntilSign := signInterval - (bh % signInterval)
 	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
 		// Check if there are unsigned signing requests pending.
-		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		signingRequests, reqErr := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		if reqErr != nil {
+			// Readiness gossip, same reasoning as the key reads above: a failed
+			// read is not "no work", and not gossiping readiness keeps this node
+			// out of a session its peers are preparing.
+			log.Error("readiness gossip: sign-request read failed, not scheduling gossip this tick",
+				"blockHeight", bh, "err", reqErr)
+			signingRequests = nil
+		}
 		if len(signingRequests) > 0 {
 			gossipTargets[bh+blocksUntilSign] = true
 		}
@@ -1315,10 +1325,34 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 		if bh%signInterval == 0 {
-			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			signingRequests, reqErr := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			if reqErr != nil {
+				// Same fail-closed reasoning as the rotate scheduler above: an
+				// unread request list is not an empty one, and silently
+				// scheduling nothing diverges from peers whose read worked.
+				log.Error("unsigned sign-request read failed, skipping sign scheduling this tick",
+					"blockHeight", bh, "err", reqErr)
+				signingRequests = nil
+			}
 
 			for _, signReq := range signingRequests {
-				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				// This read used to drop its error, and the consequence was the
+				// worst of the set: a zero-value TssKey has Status "", which is
+				// not TssKeyActive, so a transient Mongo blip did not skip the
+				// request -- it marked a perfectly good pending signature
+				// FAILED, and SignFailed is not retried. One bad read destroyed
+				// a signing request.
+				// Classified, not blanket-skipped: FindKey returns
+				// mongo.ErrNoDocuments for a key that genuinely does not exist,
+				// and a request naming a nonexistent key SHOULD be failed --
+				// that was the one correct outcome of the old code. Only a
+				// TRANSIENT error leaves the request pending for a later tick.
+				keyInfo, keyErr := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				if keyErr != nil && !errors.Is(keyErr, mongo.ErrNoDocuments) {
+					log.Error("sign request key read failed, leaving the request pending",
+						"keyId", signReq.KeyId, "blockHeight", bh, "err", keyErr)
+					continue
+				}
 				if keyInfo.Status != tss_db.TssKeyActive {
 					log.Warn(
 						"marking sign request as failed for non-active key",
@@ -2009,7 +2043,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				bv = bv.SetBytes(commitmentBytes)
 			}
 
-			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
+			// keyInfo.Epoch below is the dispatcher's epoch, which selects the
+			// election the commitment bitset is decoded against. A dropped error
+			// left it 0, so a blip here started a sign session against the wrong
+			// epoch instead of not starting one.
+			keyInfo, keyErr := tssMgr.tssKeys.FindKey(action.KeyId)
+			if keyErr != nil {
+				log.Error("sign action key read failed, skipping this action",
+					"keyId", action.KeyId, "blockHeight", bh, "err", keyErr)
+				continue
+			}
 
 			participants := make([]Participant, 0)
 
