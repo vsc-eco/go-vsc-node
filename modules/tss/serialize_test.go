@@ -17,7 +17,7 @@ import (
 // used in BLS signature collection: Serialize() -> EncodeDagCbor -> HashBytes -> CID.
 func serializeToCID(t *testing.T, result DispatcherResult) string {
 	t.Helper()
-	commitment := result.Serialize()
+	commitment := mustSerialize(t, result)
 	cborBytes, err := common.EncodeDagCbor(commitment)
 	require.NoError(t, err, "EncodeDagCbor should not fail")
 	cidVal, err := common.HashBytes(cborBytes, multicodec.DagCbor)
@@ -316,12 +316,12 @@ func TestSerialize_ReshareResult_DifferentEpoch_DifferentCID(t *testing.T) {
 
 	r1 := ReshareResult{
 		Commitment: mustSetToCommitment(t, mgr, participants, epoch1),
-		KeyId: "k1", SessionId: "reshare-100-0-k1",
+		KeyId:      "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch1, BlockHeight: 100,
 	}
 	r2 := ReshareResult{
 		Commitment: mustSetToCommitment(t, mgr, participants, epoch2),
-		KeyId: "k1", SessionId: "reshare-100-0-k1",
+		KeyId:      "k1", SessionId: "reshare-100-0-k1",
 		NewEpoch: epoch2, BlockHeight: 100,
 	}
 

@@ -155,3 +155,41 @@ func TestTSS18h_StoreReshareResultStillSucceedsWhenElectionPresent(t *testing.T)
 	require.NotEmpty(t, d.result.Commitment)
 	require.Equal(t, shareStoreEpoch, int(d.result.NewEpoch))
 }
+
+// 18h, second half: with Serialize able to report, the two blame shapes now
+// DECLINE to publish instead of degrading to an empty bitset.
+//
+// The empty-bitset fallback was safe in direction — it accuses nobody — but it
+// was still a BLS-signed commitment asserting something the node could not
+// compute. The caller now skips the result and the session is retried.
+func TestTSS18h_BlameSerializeDeclinesWithoutAUsableElection(t *testing.T) {
+	mgr := &TssManager{electionDb: electionErrDb{&test_utils.MockElectionDb{}}}
+
+	t.Run("TimeoutResult", func(t *testing.T) {
+		r := TimeoutResult{
+			tssMgr:   mgr,
+			Culprits: []string{"magi.test2"},
+			KeyId:    "vsc1Vault-mainv2",
+			Epoch:    4,
+		}
+		_, err := r.Serialize()
+		require.Error(t, err, "a timeout blame must not be published when its election is unreadable")
+		require.Contains(t, err.Error(), "timeout commitment")
+	})
+
+	// And the control: a readable election still serializes a blame normally,
+	// so this is not refusing everything.
+	t.Run("a usable election still serializes", func(t *testing.T) {
+		epoch := uint64(4)
+		ok := &TssManager{electionDb: &test_utils.MockElectionDb{
+			Elections: map[uint64]*elections.ElectionResult{
+				epoch: makeElection(epoch, []string{"magi.test1", "magi.test2", "magi.test3"}),
+			},
+		}}
+		r := TimeoutResult{tssMgr: ok, Culprits: []string{"magi.test2"}, KeyId: "k", Epoch: epoch}
+		c, err := r.Serialize()
+		require.NoError(t, err)
+		require.Equal(t, "blame", c.Type)
+		require.NotEmpty(t, c.Commitment, "the bitset must actually name the culprit")
+	})
+}

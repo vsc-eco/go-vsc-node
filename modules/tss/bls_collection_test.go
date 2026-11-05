@@ -66,7 +66,7 @@ func TestSessionResults_StoreAndRetrieve(t *testing.T) {
 	mgr.bufferLock.RUnlock()
 
 	require.True(t, hasResult)
-	commitment := entry.result.Serialize()
+	commitment := mustSerialize(t, entry.result)
 	assert.Equal(t, "reshare", commitment.Type)
 	assert.Equal(t, epoch, commitment.Epoch)
 }

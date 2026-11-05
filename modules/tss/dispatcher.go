@@ -2320,7 +2320,18 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 type DispatcherResult interface {
 	Type() DispatcherType
-	Serialize() tss_helpers.BaseCommitment
+	// Serialize packs the result into the commitment the node will BLS-sign and
+	// publish.
+	//
+	// 18h: it returns an error because the two blame shapes compute their bitset
+	// with setToCommitment, which can fail when the epoch's election cannot be
+	// read -- and a commitment built from a missing election is silently wrong
+	// (an empty or under-populated bitset) rather than merely absent. Without an
+	// error channel those paths had to choose between killing the process and
+	// publishing garbage; now the caller can simply decline to publish.
+	// The three success shapes carry an already-computed commitment and never
+	// fail, so they return a nil error.
+	Serialize() (tss_helpers.BaseCommitment, error)
 }
 
 type DispatcherType string
@@ -2349,7 +2360,7 @@ func (KeyGenResult) Type() DispatcherType {
 	return KeyGenResultType
 }
 
-func (result KeyGenResult) Serialize() tss_helpers.BaseCommitment {
+func (result KeyGenResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	pubKey := hex.EncodeToString(result.PublicKey)
 
 	return tss_helpers.BaseCommitment{
@@ -2361,7 +2372,7 @@ func (result KeyGenResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 type KeySignResult struct {
@@ -2378,7 +2389,7 @@ func (KeySignResult) Type() DispatcherType {
 	return KeySignResultType
 }
 
-func (result KeySignResult) Serialize() tss_helpers.BaseCommitment {
+func (result KeySignResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	// result.tssMgr.electionDb.GetElectionByHeight()
 	return tss_helpers.BaseCommitment{
 		Type:        "sign_result",
@@ -2389,7 +2400,7 @@ func (result KeySignResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 type ReshareResult struct {
@@ -2406,7 +2417,7 @@ func (ReshareResult) Type() DispatcherType {
 	return ReshareResultType
 }
 
-func (result ReshareResult) Serialize() tss_helpers.BaseCommitment {
+func (result ReshareResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	return tss_helpers.BaseCommitment{
 		Type:        "reshare",
 		SessionId:   result.SessionId,
@@ -2416,7 +2427,7 @@ func (result ReshareResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.NewEpoch,
-	}
+	}, nil
 }
 
 type ErrorResult struct {
@@ -2450,7 +2461,7 @@ func (ErrorResult) Type() DispatcherType {
 	return ErrorType
 }
 
-func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
+func (eres ErrorResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	if eres.tssErr != nil {
 		blameNodes := eres.Culprits
 		if len(blameNodes) == 0 {
@@ -2478,16 +2489,12 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			}
 		}), eres.Epoch)
 		if cErr != nil {
-			// 18h residual: Serialize() has no error channel on the
-			// DispatcherResult interface, so this path cannot decline to
-			// publish without widening that interface. It no longer PANICS
-			// (which killed the process); it degrades to an empty blame
-			// bitset, which accuses nobody -- fail-open for blame, but blame
-			// is not fund-moving and an under-accusation is the safe
-			// direction. Logged at ERROR so it is visible. Giving Serialize()
-			// an error return is the proper fix and is deliberately left out
-			// of this hotfix.
-			log.Error("blame commitment computed without a usable election; publishing empty bitset", "sessionId", eres.SessionId, "keyId", eres.KeyId, "epoch", eres.Epoch, "err", cErr)
+			// 18h: decline to publish. Previously this degraded to an empty
+			// blame bitset because Serialize had no error channel -- safe in
+			// direction (it accuses nobody) but still a signed commitment
+			// asserting something the node could not actually compute. The
+			// caller skips the result instead; the session is retried.
+			return tss_helpers.BaseCommitment{}, fmt.Errorf("blame commitment for session %s: %w", eres.SessionId, cErr)
 		}
 
 		return tss_helpers.BaseCommitment{
@@ -2500,7 +2507,7 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			},
 			BlockHeight: eres.BlockHeight,
 			Epoch:       eres.Epoch,
-		}
+		}, nil
 	} else {
 		err := eres.err.Error()
 		return tss_helpers.BaseCommitment{
@@ -2513,7 +2520,7 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			},
 			BlockHeight: eres.BlockHeight,
 			Epoch:       eres.Epoch,
-		}
+		}, nil
 	}
 }
 
@@ -2536,15 +2543,15 @@ func (TimeoutResult) Type() DispatcherType {
 	return TimeoutType
 }
 
-func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
+func (result TimeoutResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	commitment, cErr := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
 		return Participant{
 			Account: arg,
 		}
 	}), result.Epoch)
 	if cErr != nil {
-		// 18h residual -- see the identical note in ErrorResult.Serialize.
-		log.Error("timeout commitment computed without a usable election; publishing empty bitset", "sessionId", result.SessionId, "keyId", result.KeyId, "epoch", result.Epoch, "err", cErr)
+		// 18h: decline to publish -- see ErrorResult.Serialize.
+		return tss_helpers.BaseCommitment{}, fmt.Errorf("timeout commitment for session %s: %w", result.SessionId, cErr)
 	}
 
 	// Mark timeout in metadata so we can distinguish from errors
@@ -2563,7 +2570,7 @@ func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
 		},
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 // applySessionNonce binds GG20 keygen/resharing rounds to a unique session ID so

@@ -126,7 +126,7 @@ func TestBlameEpochDispatcherField(t *testing.T) {
 		Epoch:       currentEpoch, // dispatcher.newEpoch
 	}
 
-	serialized := result.Serialize()
+	serialized := mustSerialize(t, result)
 
 	// Verify the commitment epoch matches
 	if serialized.Epoch != currentEpoch {

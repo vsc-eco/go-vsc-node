@@ -1272,6 +1272,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				log.Error("reshare key read failed, skipping rotate", "blockHeight", bh, "epoch", epoch, "err", reshareErr)
 				return
 			}
+			reshareKeys = tssMgr.filterScheduledKeys(reshareKeys, bh, "reshare")
 			if shapeActive {
 				reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
 			}
@@ -1314,6 +1315,7 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				log.Error("new key read failed, skipping rotate", "blockHeight", bh, "err", newErr)
 				return
 			}
+			newKeys = tssMgr.filterScheduledKeys(newKeys, bh, "keygen")
 
 			for _, key := range newKeys {
 				generatedActions = append(generatedActions, QueuedAction{
@@ -2725,10 +2727,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						res.Commitment,
 					)
 
-					commitment := result.Serialize()
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+					commitment, sErr := result.Serialize()
+					if sErr != nil {
+						// 18h: do not publish a commitment the node could not
+						// compute. Never fires for a keygen (its commitment is
+						// already computed and stored), handled for the
+						// interface's sake.
+						log.Error("not publishing keygen commitment", "sessionId", dsc.SessionId(), "err", sErr)
+					} else {
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 				} else if result.Type() == KeySignResultType {
 					res := result.(KeySignResult)
 
@@ -2762,11 +2772,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					log.Info("reshare success", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.NewEpoch, "commitment", res.Commitment)
 
-					commitment := result.Serialize()
-					commitment.BlockHeight = bh
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+					commitment, sErr := result.Serialize()
+					if sErr != nil {
+						log.Error("not publishing reshare commitment", "sessionId", res.SessionId, "keyId", res.KeyId, "err", sErr)
+					} else {
+						commitment.BlockHeight = bh
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 
 				} else if result.Type() == ErrorType {
 					res := result.(ErrorResult)
@@ -2812,8 +2826,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							"sessionId", res.SessionId,
 							"culprits", errorCulpritCount,
 							"maxBlamed", maxBlamed)
+					} else if commitment, sErr := result.Serialize(); sErr != nil {
+						// 18h: the blame bitset is computed from the epoch's
+						// election, and if that election cannot be read the
+						// commitment would accuse the WRONG nodes (or nobody)
+						// while still being BLS-signed as this node's word.
+						// Publish nothing; the session is retried.
+						log.Error("not publishing blame commitment", "err", sErr)
 					} else {
-						commitment := result.Serialize()
 						commitment.BlockHeight = bh
 						resultsMu.Lock()
 						commitableResults = append(commitableResults, commitment)
@@ -2844,8 +2864,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							"sessionId", res.SessionId,
 							"culprits", len(res.Culprits),
 							"maxBlamed", maxBlamed)
+					} else if commitment, sErr := result.Serialize(); sErr != nil {
+						// 18h: the blame bitset is computed from the epoch's
+						// election, and if that election cannot be read the
+						// commitment would accuse the WRONG nodes (or nobody)
+						// while still being BLS-signed as this node's word.
+						// Publish nothing; the session is retried.
+						log.Error("not publishing blame commitment", "err", sErr)
 					} else {
-						commitment := result.Serialize()
 						commitment.BlockHeight = bh
 						resultsMu.Lock()
 						commitableResults = append(commitableResults, commitment)
@@ -3111,6 +3137,69 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 // data, so callers must be able to decline to publish it rather than vouch for
 // garbage. The nil check is kept alongside the error check deliberately -- the
 // interface permits (nil, nil) and this is a consensus input.
+// tssKeyOwner returns the contract that owns a TSS key id, and false when the
+// id is not contract-owned.
+//
+// TssCreateKey builds every contract key as "<contractId>-<keyName>", and both
+// halves are constrained: contract ids carry no dash and key names are
+// validated against ^[a-zA-Z0-9]+$, so the FIRST dash is an unambiguous
+// separator. An id with no dash was not created through the contract path at
+// all and has no owner to check.
+func tssKeyOwner(keyId string) (string, bool) {
+	i := strings.IndexByte(keyId, '-')
+	if i <= 0 || i == len(keyId)-1 {
+		return "", false
+	}
+	return keyId[:i], true
+}
+
+// filterScheduledKeys drops keys whose owning contract is not permitted to hold
+// them (KEY-SPAM-1 / 18j, second half).
+//
+// The create_key allowlist stops NEW junk keys. This stops ones that already
+// exist from being scheduled, which matters because a "created" key is picked
+// up at every rotate block forever -- no cap, no expiry -- and each keygen
+// holds tssMgr.lock while it waits for pre-parameters. Without this, keys minted
+// before the allowlist existed would keep costing a lock-hold per rotation.
+//
+// Unattributable ids are KEPT. An id with no owner cannot have come from the
+// contract spam path (which always prefixes the contract id), so dropping it
+// would risk stranding a legitimately-provisioned key for no benefit.
+//
+// Gated with the same version as the creation check: this changes which actions
+// the scheduler generates, which is consensus-visible, so every node must start
+// filtering at the same height. An empty allowlist filters nothing.
+func (tssMgr *TssManager) filterScheduledKeys(keys []tss_db.TssKey, bh uint64, what string) []tss_db.TssKey {
+	if tssMgr.sconf == nil {
+		return keys
+	}
+	if !consensusversion.TssKeyAllowlistActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
+		return keys
+	}
+	allowed := tssMgr.sconf.TssKeyContractAllowlistAt(bh)
+	if len(allowed) == 0 {
+		return keys
+	}
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, id := range allowed {
+		permitted[id] = struct{}{}
+	}
+
+	out := make([]tss_db.TssKey, 0, len(keys))
+	for _, k := range keys {
+		owner, ok := tssKeyOwner(k.Id)
+		if ok {
+			if _, allow := permitted[owner]; !allow {
+				log.Warn("skipping key whose contract is not permitted to hold TSS keys",
+					"keyId", k.Id, "owner", owner, "stage", what, "blockHeight", bh)
+				continue
+			}
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
 func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) (string, error) {
 	electionData, err := tssMgr.electionDb.GetElectionStrict(epoch)
 	if err != nil {
