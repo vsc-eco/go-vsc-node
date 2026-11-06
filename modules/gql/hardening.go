@@ -2,6 +2,7 @@ package gql
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -88,6 +89,17 @@ func fragmentDefLimiter(next http.Handler) http.Handler {
 			return
 		}
 		_ = r.Body.Close()
+
+		// gqlgen's POST transport answers a body that is not JSON with
+		// "json request body could not be decoded: ... body:<the whole body>",
+		// echoing the request back to the client. Reject it here with a fixed
+		// message instead; GraphQL-over-HTTP POST bodies are always JSON.
+		if !json.Valid(body) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"request body is not valid JSON"}],"data":null}`))
+			return
+		}
 
 		matches := fragmentDefRegex.FindAllIndex(body, DefaultMaxFragmentDefinitions+1)
 		if len(matches) > DefaultMaxFragmentDefinitions {
