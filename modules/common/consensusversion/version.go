@@ -153,9 +153,20 @@ import (
 //     an earlier keygen activated is dropped (KeygenOnceActive, TSS-KG-1). A
 //     new line because 0.12.0 ships first without the EVM bridge. Inert until
 //     0.13.0 is chain-active.
+//   - 0.14.0 (consensusversion.V0_14_0): the settlement-attestation fix
+//     (REWARD-ATTEST-1). Pendulum reward scoring stops docking a committee
+//     member for a block whose signers already met the bar the block leader
+//     waits for (dids.LeaderSigsComplete, 90% of the folded committee weight):
+//     the leader never waits for every member — at 16 seats it stops at 14 —
+//     so two seats were absent from every healthy block and were charged
+//     25 bps each for it. Live on mainnet: in epoch 2221 all 16 seats were
+//     docked, 3% to 66%, none at zero. A new line rather than an addition to
+//     0.13.0, which carries the EVM bridge batch and may activate on the
+//     testnet first; see V0_14_0 in feature_gates.go. Inert until 0.14.0 is
+//     chain-active, so settled history re-derives byte-identically.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 13
+	currentConsensus    uint64 = 14
 	currentNonConsensus uint64 = 0
 )
 

@@ -926,3 +926,42 @@ func KeygenOnceActive(active Version) bool {
 // never demonstrated to cost a slot; if a devnet A/B ever demonstrates it, re-add a
 // 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
 // different Hive tx Id, so own-block restart-reprocess still runs.)
+
+// V0_14_0 is the version line of the settlement-attestation fix
+// (REWARD-ATTEST-1). A new line rather than an addition to 0.13.0 because that
+// line carries the EVM bridge batch and may be adopted on the testnet before
+// this fix ships: amending a line a chain has already activated makes a node
+// replaying that history diverge from the chain it joins. A new line also keeps
+// the activation honest — mainnet, active on 0.12 today, raises its floor once
+// and takes 0.13 and 0.14 together, while the testnet can take them in either
+// order. Binaries announce it from this batch on (version.go currentConsensus);
+// every rule on it is inert until the chain floor reaches it.
+var V0_14_0 = Version{Major: 0, Consensus: 14, NonConsensus: 0}
+
+// Version0_14_0Active reports whether the 0.14.0 line is in force given the
+// chain-active consensus version.
+func Version0_14_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_14_0)
+}
+
+// SettlementAttestationQuorumActive (0.14.0, REWARD-ATTEST-1) reports whether
+// pendulum reward-attestation scoring skips a block whose recorded signers
+// already met the bar the leader waits for (dids.LeaderSigsComplete: 90% of the
+// folded committee weight, and more than 2/3 of the election weight).
+//
+// Below the line every committee member is expected to sign every block. The
+// leader never waits for every member: on the 16-seat mainnet committee it
+// stops at 14, so two seats are absent from every healthy block and which two
+// is a matter of network latency. The result was live on mainnet — in epoch
+// 2221 all 16 seats were docked, 3% to 66%, none of them at zero — so honest
+// witnesses were paying for signatures nobody waited for. Above the line only a
+// block broadcast BELOW the bar (the leader's collection window timed out)
+// scores its absentees.
+//
+// Resolve `active` at the TICK height, the same height buildTickInputs resolves
+// the committee at: the election proposer, every signer and every node
+// re-deriving the settlement later read the same election and the same gate
+// there, so the re-derived record byte-matches.
+func SettlementAttestationQuorumActive(active Version) bool {
+	return Version0_14_0Active(active)
+}

@@ -2332,6 +2332,81 @@ func tickSlotRange(fromBlock, tickHeight, slotLen uint64, closedOnly bool) (firs
 	return first, last
 }
 
+// attestationQuorumFor projects an election's weight onto ACCOUNT names, folded
+// the way dids.FoldSignedWeight folds it (a key seated twice counts once, the
+// first seat keeping the weight), because that is the shape a block header
+// records its signers in: TxProposeBlock.ValidateDetailed maps each included
+// BLS DID back to the member account that holds it. rewards then sums the map
+// over a header's Signers and asks dids.LeaderSigsComplete whether the block
+// had already closed.
+//
+// Pure function of the stored election, so every node building this tick reaches
+// the identical map — which it must, since the result decides settlement money.
+//
+// Returns nil when the weight cannot be folded, which leaves attestation
+// scoring on the pre-0.14.0 strict rule rather than silently treating every
+// block as closed: wrongly docking is recoverable, wrongly paying is not.
+func attestationQuorumFor(election elections.ElectionResult) *rewards.AttestationQuorum {
+	if len(election.Members) == 0 {
+		return nil
+	}
+	weights := election.Weights
+	if len(weights) != len(election.Members) {
+		if weights != nil {
+			// A weight vector that exists but does not line up with the members
+			// is corrupt, not legacy. Do not guess at it.
+			return nil
+		}
+		// Legacy elections carry no weights and every member counts one —
+		// the same reading elections.CalculateSigningScore and
+		// StoreElection's TotalWeight give them.
+		weights = make([]uint64, len(election.Members))
+		for i := range weights {
+			weights[i] = 1
+		}
+	}
+	memberKeys := make([]string, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+	}
+	_, foldedTotal, ok := dids.FoldSignedWeight(memberKeys, weights, nil)
+	if !ok || foldedTotal == 0 {
+		return nil
+	}
+	byAccount := make(map[string]uint64, len(election.Members))
+	seenKey := make(map[string]struct{}, len(election.Members))
+	for i, m := range election.Members {
+		w := weights[i]
+		if _, dupKey := seenKey[m.Key]; dupKey {
+			// A seat whose BLS key another seat already holds cannot sign
+			// independently of it, so it carries no weight — the collapse
+			// FoldSignedWeight applies, for the same reason: left in, a
+			// duplicated key would make a block look closed when the distinct
+			// signers behind it never reached the bar.
+			w = 0
+		} else {
+			seenKey[m.Key] = struct{}{}
+		}
+		if _, exists := byAccount[m.Account]; exists {
+			// One account at two seats appears ONCE in a header's Signers list
+			// however many of its seats signed, so keep the first seat's weight
+			// and drop the rest. Undercounting signed weight can only make this
+			// scorer dock more, never less — the safe direction for a rule whose
+			// job is to decide when to STOP docking.
+			continue
+		}
+		byAccount[m.Account] = w
+	}
+	// ElectionTotal is the raw stored total, deliberately not defaulted: it is
+	// the same value the leader compares against (blockProducer.waitForSigs),
+	// and StoreElection always writes it as >= len(Members).
+	return &rewards.AttestationQuorum{
+		WeightByAccount: byAccount,
+		FoldedTotal:     foldedTotal,
+		ElectionTotal:   election.TotalWeight,
+	}
+}
+
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
 // aggregator scores. Pure read on on-chain caches; deterministic across
 // nodes given identical chain state. Returns a zero-Committee TickInputs
@@ -2364,6 +2439,19 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	}
 
 	in := rewards.TickInputs{Committee: committee}
+
+	// REWARD-ATTEST-1 (0.14.0): carry the signature bar the block leader
+	// actually waits for, so attestation scoring can skip the blocks that
+	// closed AT it — the leader never waits for every member (at 16 seats it
+	// stops at 14), so two seats are absent from every healthy block and were
+	// being docked 25 bps each for it. Nil below the line, which keeps the
+	// epochs already settled under the strict rule re-deriving to the same
+	// bytes. Resolved at the TICK height, exactly like the committee above, so
+	// the proposer, every signer and every later re-derivation read the same
+	// election and the same gate.
+	if consensusversion.SettlementAttestationQuorumActive(se.ActiveConsensusVersion(tickHeight)) {
+		in.AttestationQuorum = attestationQuorumFor(election)
+	}
 
 	// Block production + attestation: iterate slots in the tick window.
 	if se.vscBlocks != nil {

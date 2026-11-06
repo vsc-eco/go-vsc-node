@@ -137,3 +137,56 @@ func TestTwoThirdsMet(t *testing.T) {
 		}
 	}
 }
+
+// TestLeaderSigsComplete_StopsOnlyWhenTheBlockCanPass: wherever the leader
+// stops, the weight it has must already clear the strict 2/3 bar the block is
+// then validated against (TxProposeBlock.ValidateDetailed). The 90% term alone
+// stops at 2 of 3, which that check rejects — the L2-STALL-1 regression that
+// left every 3-seat committee unable to broadcast with all three online.
+func TestLeaderSigsComplete_StopsOnlyWhenTheBlockCanPass(t *testing.T) {
+	for total := uint64(1); total <= 64; total++ {
+		stop := uint64(0)
+		for !LeaderSigsComplete(stop, total, total) && stop <= total {
+			stop++
+		}
+		if stop > total {
+			t.Fatalf("total %d: the leader never stops even with every member signed", total)
+		}
+		if !(stop > total*2/3) {
+			t.Fatalf("total %d: the leader stops at %d, which fails the block's 2/3 check (needs > %d)",
+				total, stop, total*2/3)
+		}
+	}
+}
+
+// TestLeaderSigsComplete_SixteenSeatsStopAtFourteen pins the number
+// REWARD-ATTEST-1 turns on. The live mainnet committee is 16 POA seats of
+// weight 1, so the leader broadcasts the moment 14 signatures are in and never
+// waits for the other two. Pendulum settlement replays this bar to decide
+// whether a block's absentees are evidence of anything, so the figure is now
+// consensus-relevant: changing it belongs behind a new version line, and this
+// assertion is here to make a silent change loud.
+func TestLeaderSigsComplete_SixteenSeatsStopAtFourteen(t *testing.T) {
+	const total = uint64(16)
+	for signed := uint64(0); signed < 14; signed++ {
+		if LeaderSigsComplete(signed, total, total) {
+			t.Fatalf("16 seats: leader stopped at %d signatures, want it to keep waiting until 14", signed)
+		}
+	}
+	for signed := uint64(14); signed <= total; signed++ {
+		if !LeaderSigsComplete(signed, total, total) {
+			t.Fatalf("16 seats: leader still waiting at %d signatures, want it stopped from 14 on", signed)
+		}
+	}
+}
+
+// TestLeaderSigsComplete_ZeroTotalIsNeverComplete: an election whose folded
+// weight is zero (FoldSignedWeight's !ok case) must never read as complete.
+// For the leader that is unreachable anyway — no weight means no signature can
+// be credited — but the settlement scorer asks the same question about stored
+// elections, and "complete" there means "stop docking".
+func TestLeaderSigsComplete_ZeroTotalIsNeverComplete(t *testing.T) {
+	if LeaderSigsComplete(0, 0, 0) || LeaderSigsComplete(5, 0, 6) {
+		t.Fatal("a zero folded total must never report complete")
+	}
+}

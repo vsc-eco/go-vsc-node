@@ -941,15 +941,14 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 }
 
 // leaderSigsComplete reports whether the leader can stop collecting block
-// signatures: 90% of the (duplicate-key folded) weight has signed, AND the
-// signed weight clears the strict 2/3 bar the block must pass (the check after
-// waitForSigs, and TxProposeBlock's validation). For a total weight of 3 or
-// less, 90% rounds down to 2/3 or below, so stopping there alone left a
-// 3-member committee (MinMembers on testnet/devnet, and every POA flat-weight
-// committee of three) unable to broadcast any block even with every member
-// online (L2-STALL-1). A leader-local decision, not a replayed rule.
+// signatures. The rule itself now lives in dids.LeaderSigsComplete, because it
+// is no longer leader-local: pendulum settlement replays the same bar to decide
+// whether a block's absentees are evidence of anything (REWARD-ATTEST-1), so
+// the leader and the scorer have to read it from one place or they drift and
+// settlement stops matching the blocks it scores. Kept as a named wrapper so
+// the stop condition still reads by intent at its call site in waitForSigs.
 func leaderSigsComplete(signed, foldedTotal, electionTotal uint64) bool {
-	return signed >= foldedTotal*9/10 && signed > electionTotal*2/3
+	return dids.LeaderSigsComplete(signed, foldedTotal, electionTotal)
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {

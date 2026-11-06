@@ -426,6 +426,17 @@ const VSC_ELECTION_TX_ID = "vsc.election_result"
 // make the identical decision. A per-node env/config toggle could diverge the
 // committee across honest nodes and break the BLS aggregate; flip this (and
 // rebuild the whole network) only in lockstep.
+//
+// ⚠ Before re-enabling, read REWARD-ATTEST-1 (rewards.AttestationQuorum).
+// computeBanScores shares this filter's premise with the reward scorer it was
+// fixed in: that every committee member is expected to sign every block. The
+// leader is not waiting for every member — it stops at
+// dids.LeaderSigsComplete, 14 of the live 16 seats — so the seats whose
+// signatures arrive last are missing from the Signers list of healthy blocks
+// through no fault of their own. The reward path only overcharged them; this
+// path would EVICT them, and the ratchet described above is precisely what that
+// looks like. A recovery-aware replacement has to score against the bar the
+// leader actually waited for, the way scoreAttestation now does.
 const banSystemEnabled = false
 
 // resolveVersionFloor computes the consensus-version floor advance for an election.
