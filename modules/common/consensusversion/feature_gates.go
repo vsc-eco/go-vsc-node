@@ -751,11 +751,18 @@ func TssAccuseStackActive(active Version) bool {
 //
 // Gated because it changes which transactions succeed: an un-gated rollout
 // would have upgraded nodes rejecting a create_key that un-upgraded nodes
-// accept, which forks. Pinned to the 0.13.0 EVM line, which is where this
-// starts to matter -- every extra key is another keygen holding tssMgr.lock --
-// and which is not active on mainnet, so the gate is inert there today.
+// accept, which forks.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against. The
+// testnet has ACTIVATED 0.13 (epoch 1500, running develop head 3b4c95f6), so a
+// rule newly added to that line is in force the instant one node takes the
+// build while its peers have not. There is no coordination window left on 0.13,
+// and that window is the whole reason this is version-gated. It stays paired
+// with TssPerKeyFamilyBanActive on one line so a mixed fleet cannot disagree
+// about one and not the other. Inert on mainnet (0.12) and on the testnet until
+// the floor reaches 0.14.
 func TssKeyAllowlistActive(active Version) bool {
-	return Version0_13_0Active(active)
+	return Version0_14_0Active(active)
 }
 
 // TssPerKeyFamilyBanActive reports whether the TSS ban score is computed PER KEY
@@ -770,10 +777,17 @@ func TssKeyAllowlistActive(active Version) bool {
 //
 // Gated because it changes a TSS party-list input: two nodes disagreeing about
 // who is banned build different party lists and the session fails on an SSID
-// mismatch. Pinned to 0.13.0, the EVM line, which is both when the coupling
-// starts to matter and not active on mainnet today.
+// mismatch.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against, and
+// this is the sharper of the pair: unlike the key allowlist it has no config
+// escape, so nothing makes it inert on a network whose floor is at or above its
+// line. The testnet is AT 0.13 (epoch 1500, develop head 3b4c95f6), so on 0.13
+// the first node to take this build would score bans per family while its peers
+// still scored them globally -- exactly the SSID mismatch above. 0.14 restores
+// the coordination window on both chains.
 func TssPerKeyFamilyBanActive(active Version) bool {
-	return Version0_13_0Active(active)
+	return Version0_14_0Active(active)
 }
 
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
@@ -927,14 +941,31 @@ func KeygenOnceActive(active Version) bool {
 // 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
 // different Hive tx Id, so own-block restart-reprocess still runs.)
 
-// V0_14_0 is the version line of the settlement-attestation fix
-// (REWARD-ATTEST-1). A new line rather than an addition to 0.13.0 because that
-// line carries the EVM bridge batch and may be adopted on the testnet before
-// this fix ships: amending a line a chain has already activated makes a node
-// replaying that history diverge from the chain it joins. A new line also keeps
-// the activation honest — mainnet, active on 0.12 today, raises its floor once
-// and takes 0.13 and 0.14 together, while the testnet can take them in either
-// order. Binaries announce it from this batch on (version.go currentConsensus);
+// V0_14_0 is the version line of THIS batch: the settlement-attestation fix
+// (REWARD-ATTEST-1, SettlementAttestationQuorumActive), the TSS key allowlist
+// (18j, TssKeyAllowlistActive) and the per-key-family ban score (18an,
+// TssPerKeyFamilyBanActive).
+//
+// A new line rather than an addition to 0.13.0, and not because 0.13 *may* be
+// adopted somewhere: the testnet is ALREADY RUNNING IT — epoch 1500, develop
+// head 3b4c95f6, active_consensus_line 0.13. Amending a line a chain has
+// activated makes a node replaying that history diverge from the chain it
+// joins, and leaves a newly added rule with no rollout window at all: the first
+// node to take the build enforces it while its peers do not. 0.13 is therefore
+// frozen as the EVM bridge line exactly as the testnet has been running it, and
+// everything this batch adds lands here instead. 18j and 18an were written
+// against 0.13 before that activation and were moved here for the same reason.
+//
+// Mainnet, active on 0.12, raises its floor once and takes 0.13 and 0.14
+// together. That bundling is not avoidable — floors are monotone and no unused
+// line is left below 0.13 — but 0.13 is not unproven code: it has carried
+// testnet chain history since epoch 1500. The 0.13 rules a mainnet rise would
+// also switch on are BtcSolvencyWatchActive, StableSwapActive,
+// BigSwapAmountsActive and KeygenOnceActive; the EVM-vault ones need
+// OracleParams.EvmBridgeContracts and StableSwapActive needs a pool in
+// StablePools, so those stay inert there.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
 // every rule on it is inert until the chain floor reaches it.
 var V0_14_0 = Version{Major: 0, Consensus: 14, NonConsensus: 0}
 
