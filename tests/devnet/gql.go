@@ -221,3 +221,47 @@ func (d *Devnet) GetTssRequests(ctx context.Context, node int, keyId string) ([]
 	}
 	return out.GetTssRequests, nil
 }
+
+// SettlementReduction is one row of a settlement record's reward_reductions
+// list: the per-epoch bond reduction, in basis points, that the closing
+// committee attested to.
+type SettlementReduction struct {
+	Account string
+	Bps     int
+}
+
+// GetSettlementReductions reads the reward_reductions of the settlement record
+// inlined in the election for `epoch`. The second return is false when the
+// election exists but carries no settlement (the genesis transition, whose
+// proposer skips composition), and the call errors only on transport/query
+// failure — a missing election comes back (nil, false, nil).
+//
+// The marker in `pendulum_settlements` is summary-only, so this is the only
+// read path to the per-witness reductions. REWARD-ATTEST-1's devnet proof needs
+// exactly these rows.
+func (d *Devnet) GetSettlementReductions(ctx context.Context, node int, epoch uint64) ([]SettlementReduction, bool, error) {
+	const q = `query($e:Uint64!){getElection(epoch:$e){epoch settlement{epoch reward_reductions{account bps}}}}`
+	var out struct {
+		GetElection *struct {
+			Epoch      uint64 `json:"epoch"`
+			Settlement *struct {
+				Epoch            uint64 `json:"epoch"`
+				RewardReductions []struct {
+					Account string `json:"account"`
+					Bps     int    `json:"bps"`
+				} `json:"reward_reductions"`
+			} `json:"settlement"`
+		} `json:"getElection"`
+	}
+	if err := d.gqlQuery(ctx, node, q, map[string]any{"e": epoch}, &out); err != nil {
+		return nil, false, err
+	}
+	if out.GetElection == nil || out.GetElection.Settlement == nil {
+		return nil, false, nil
+	}
+	rows := make([]SettlementReduction, 0, len(out.GetElection.Settlement.RewardReductions))
+	for _, r := range out.GetElection.Settlement.RewardReductions {
+		rows = append(rows, SettlementReduction{Account: r.Account, Bps: r.Bps})
+	}
+	return rows, true, nil
+}
