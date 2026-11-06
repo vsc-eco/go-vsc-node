@@ -3,7 +3,11 @@ package mapper
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+
+	"vsc-node/modules/common/params"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -17,10 +21,115 @@ type MappingInputData struct {
 }
 
 type VerificationRequest struct {
-	BlockHeight    uint64 `json:"block_height"`
-	RawTxHex       string `json:"raw_tx_hex"`
+	BlockHeight uint64 `json:"block_height"`
+	RawTxHex    string `json:"raw_tx_hex,omitempty"`
+	// RawTxB64: the transaction in base64 (with its witness when that fits, else
+	// without), sent instead of raw_tx_hex when the hex payload would pass the
+	// node's contract-payload cap (MAP-SIZE-1, see fitTxData).
+	RawTxB64       string `json:"raw_tx_b64,omitempty"`
 	MerkleProofHex string `json:"merkle_proof_hex"` // array of byte arrays, each of which is guaranteed 32 bytes
 	TxIndex        uint64 `json:"tx_index"`         // position of the tx in the block
+}
+
+// payloadNodeSize is a contract-call payload's size as the node checks it against
+// MAX_CONTRACT_PAYLOAD_SIZE: the node keeps the payload as a JSON string decoded
+// from the call's CBOR (DecodeTxCbor), so it counts the string literal (two quotes,
+// one backslash per '"' or '\'), as the EVM bot's nodePayloadSize does.
+func payloadNodeSize(v any) int {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	lit, err := json.Marshal(string(payload))
+	if err != nil {
+		return len(payload)
+	}
+	return len(lit)
+}
+
+func mapPayloadNodeSize(in *MappingInputData) int { return payloadNodeSize(in) }
+
+// fitTxData (MAP-SIZE-1, mainnet 11-05: an Uphold deposit, 122 outputs, a 9,040-byte
+// map, refused 'payload exceeds maximum size of 8192 bytes' and never credited): when
+// the payload passes the node's contract-payload cap with raw_tx_hex, the transaction
+// goes in base64 instead. With its witness when that fits: the contract's map log names
+// the sender from the input witness. Otherwise without it: the proof (txid) and every
+// check (inputs, outputs) leave the witness out. A payload that fits keeps raw_tx_hex,
+// byte-identical to before. The same cap binds confirmSpend: a vault spend's witnesses
+// are ~230 bytes per input in hex, so a sweep of more than ~15 deposit coins (the
+// contract allows 100 per tranche) could never be confirmed in hex.
+func fitTxData(td *VerificationRequest, tx *wire.MsgTx, size func() int) {
+	if size() <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+		return
+	}
+	hexForm := td.RawTxHex
+	var full bytes.Buffer
+	if err := tx.Serialize(&full); err == nil {
+		td.RawTxB64 = base64.StdEncoding.EncodeToString(full.Bytes())
+		td.RawTxHex = ""
+		if size() <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+			return
+		}
+	}
+	var bare bytes.Buffer
+	if err := tx.SerializeNoWitness(&bare); err != nil {
+		td.RawTxB64, td.RawTxHex = "", hexForm
+		return
+	}
+	td.RawTxB64 = base64.StdEncoding.EncodeToString(bare.Bytes())
+	td.RawTxHex = ""
+}
+
+func fitMapPayload(in *MappingInputData, tx *wire.MsgTx) {
+	fitTxData(in.TxData, tx, func() int { return mapPayloadNodeSize(in) })
+}
+
+// refitStoredPayload (MAP-SIZE-1): a map or confirmSpend recorded as failed with
+// raw_tx_hex past the node's cap (by a bot without fitTxData: mainnet 11-05, the Uphold
+// deposit) fails the same way when /retry resends it as stored. Re-fit it; a payload
+// within the cap, or one this cannot parse, is returned unchanged.
+func refitStoredPayload(action string, payload json.RawMessage) json.RawMessage {
+	if action != "map" && action != "confirmSpend" {
+		return payload
+	}
+	if payloadNodeSize(payload) <= params.MAX_CONTRACT_PAYLOAD_SIZE {
+		return payload
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return payload
+	}
+	var td VerificationRequest
+	if err := json.Unmarshal(fields["tx_data"], &td); err != nil || td.RawTxHex == "" {
+		return payload
+	}
+	raw, err := hex.DecodeString(td.RawTxHex)
+	if err != nil {
+		return payload
+	}
+	var tx wire.MsgTx
+	if err := tx.Deserialize(bytes.NewReader(raw)); err != nil {
+		return payload
+	}
+	size := func() int {
+		b, err := json.Marshal(&td)
+		if err != nil {
+			return 0
+		}
+		fields["tx_data"] = b
+		return payloadNodeSize(fields)
+	}
+	fitTxData(&td, &tx, size)
+	b, err := json.Marshal(&td)
+	if err != nil {
+		return payload
+	}
+	fields["tx_data"] = b
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return payload
+	}
+	return out
 }
 
 func (b *Bot) ParseBlock(
@@ -100,7 +209,7 @@ func (b *Bot) ParseBlock(
 			return nil, err
 		}
 
-		mapInputs = append(mapInputs, &MappingInputData{
+		in := &MappingInputData{
 			TxData: &VerificationRequest{
 				BlockHeight:    blockHeight,
 				RawTxHex:       rawTxHex,
@@ -108,7 +217,9 @@ func (b *Bot) ParseBlock(
 				TxIndex:        uint64(txIdx),
 			},
 			Instructions: instructions,
-		})
+		}
+		fitMapPayload(in, tx)
+		mapInputs = append(mapInputs, in)
 	}
 
 	return mapInputs, nil
