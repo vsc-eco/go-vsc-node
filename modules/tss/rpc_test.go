@@ -369,9 +369,9 @@ type mockDispatcher struct {
 	mu             sync.Mutex
 }
 
-func (d *mockDispatcher) Start() error { return nil }
+func (d *mockDispatcher) Start() error      { return nil }
 func (d *mockDispatcher) SessionId() string { return d.sessionId }
-func (d *mockDispatcher) KeyId() string { return "mock-key" }
+func (d *mockDispatcher) KeyId() string     { return "mock-key" }
 func (d *mockDispatcher) HandleP2P(msg []byte, from string, isBrcst bool, cmt string, fromCmt string) {
 	d.mu.Lock()
 	d.handleP2PCalls++

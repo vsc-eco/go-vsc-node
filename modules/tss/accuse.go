@@ -3,6 +3,8 @@ package tss
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"math/big"
 	"slices"
 	"sort"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/multiformats/go-multicodec"
 	blsu "github.com/protolambda/bls12-381-util"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // POA-8 (consensus 0.9.0): per-accused reshare statements.
@@ -186,18 +189,50 @@ func (tssMgr *TssManager) buildAccuseStatement(rec accuseRecord, accused string)
 // last keygen/reshare commitment (so they lapse once a rotation succeeds) and
 // within the blame window, and counts them per account. Each row is decoded
 // against its own epoch's election.
-func (tssMgr *TssManager) reshareAccusedCounts(keyId string, bh, lastCommitHeight, expireBlock uint64) map[string]int {
+//
+// H13: this fails CLOSED. The counts decide who is left out of the next
+// reshare, so an incomplete read is not a smaller answer -- it is a different
+// answer, and it silently under-accuses whoever happens to sit in the rows that
+// did not arrive.
+//
+// Two fail-open paths used to produce exactly that. The row fetch logged a
+// warning and then fell THROUGH, counting over whatever partial set the cursor
+// had returned. And a row whose epoch election could not be read was skipped
+// via GetElection, which flattens every error -- transient included -- to nil.
+//
+// Errors are now classified the way the bond-lock path classifies them
+// (isTransientReadErr in state-processing/bond_lock.go): mongo.ErrNoDocuments
+// is a DETERMINISTIC absence, identical on every node, so skipping that row
+// cannot diverge and is kept as-is; any other error is a per-node infra blip
+// and returns, so the caller makes NO exclusion rather than a partial one.
+//
+// Deliberately NOT consensus-gated. A node whose reads succeed runs the
+// identical path before and after this change, so there is no height at which
+// healthy nodes could disagree; only a node that is already failing to read --
+// already a per-node, non-deterministic condition that already puts it at odds
+// with its peers -- behaves differently, and it now does so conservatively
+// (no exclusion is the pre-POA-8 default). Gating would delay closing a
+// fail-open window for no safety gain.
+func (tssMgr *TssManager) reshareAccusedCounts(keyId string, bh, lastCommitHeight, expireBlock uint64) (map[string]int, error) {
 	from := lastCommitHeight
 	if expireBlock > from {
 		from = expireBlock
 	}
 	rows, err := tssMgr.tssCommitments.FindCommitmentsSimple(&keyId, []string{accuseTypeReshare}, nil, &from, &bh, BLAME_WINDOW_MAX_ROWS)
 	if err != nil {
-		log.Warn("failed to fetch reshare accusations", "keyId", keyId, "err", err)
+		return nil, fmt.Errorf("fetch reshare accusations for %s: %w", keyId, err)
 	}
 	counts := make(map[string]int)
 	for _, row := range rows {
-		election := tssMgr.electionDb.GetElection(row.Epoch)
+		election, eErr := tssMgr.electionDb.GetElectionStrict(row.Epoch)
+		if eErr != nil {
+			if errors.Is(eErr, mongo.ErrNoDocuments) {
+				// Genuine absence: every node sees it, so this row is dropped
+				// identically everywhere. Same behaviour as before.
+				continue
+			}
+			return nil, fmt.Errorf("election for accusation epoch %d (key %s): %w", row.Epoch, keyId, eErr)
+		}
 		if election == nil || election.Members == nil {
 			continue
 		}
@@ -212,7 +247,7 @@ func (tssMgr *TssManager) reshareAccusedCounts(keyId string, bh, lastCommitHeigh
 			}
 		}
 	}
-	return counts
+	return counts, nil
 }
 
 // selectAccusedExclusions picks the accused party to leave out of the next

@@ -235,13 +235,17 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 
 	//VALIDATION COMPLETE
 
-	err = tp.indexTx(cidz.String(), txShell)
-	if err != nil {
-		return nil, err
-	}
+	// 18r: bytes first, then the index. If PutRaw fails after indexTx has
+	// succeeded, this node is left advertising a tx whose bytes it does not
+	// have -- the same state that made the gossip path stall the apply path.
+	// Bytes without an index are harmless by comparison.
 	_, err = tp.datalayer.PutRaw(sTx.Tx, common_types.PutRawOptions{
 		Codec: multicodec.DagCbor,
 	})
+	if err != nil {
+		return nil, err
+	}
+	err = tp.indexTx(cidz.String(), txShell)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +419,43 @@ func (tp *TransactionPool) ReceiveTx(p2pMsg p2pMessage) {
 			}
 		}
 
-		tp.indexTx(cidz.String(), txShell)
+		// 18r: store the raw tx bytes BEFORE indexing it.
+		//
+		// This path (gossip) used to call indexTx only, while the submit path
+		// calls indexTx AND PutRaw. So on every node except the original
+		// submitter, a tx existed in Mongo as UNCONFIRMED with no bytes behind
+		// its CID in the datalayer. That is invisible until the tx is anchored
+		// in a block: the apply path then resolves the CID through
+		// getDagOrBlock, which (correctly) blocks rather than skip an op, and
+		// if no remaining peer still holds the bytes it blocks forever. One
+		// submitter going away after broadcasting was enough to stall the
+		// chain, and the bytes it alone held could not be recovered.
+		//
+		// decodedTx here is byte-identical to the submitter's sTx.Tx -- cidz is
+		// prefix.Sum(decodedTx) and Broadcast ships base64(sTx.Tx) -- so this
+		// stores exactly the block the apply path will ask for, under exactly
+		// the CID it will ask for.
+		//
+		// Ordered PutRaw-then-indexTx deliberately: bytes without an index are
+		// harmless, an index without bytes is the bug above. Placed after
+		// signature/nonce verification, so an unverified peer cannot use this
+		// to write into our datastore.
+		if _, err := tp.datalayer.PutRaw(decodedTx, common_types.PutRawOptions{
+			Codec: multicodec.DagCbor,
+		}); err != nil {
+			log.Error("received tx: failed to store raw tx bytes, not indexing it",
+				"cid", cidz.String(), "err", err)
+			return
+		}
+
+		// The error was previously discarded here. A failed index means we hold
+		// the bytes but will not include the tx -- worth a log, and it keeps
+		// this path consistent with SubmitTx, which surfaces it.
+		if err := tp.indexTx(cidz.String(), txShell); err != nil {
+			log.Error("received tx: failed to index",
+				"cid", cidz.String(), "err", err)
+			return
+		}
 	}
 }
 

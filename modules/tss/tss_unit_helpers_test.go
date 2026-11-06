@@ -77,4 +77,3 @@ func newTestTssManager(t *testing.T, myAccount string) *TssManager {
 	mgr.lastBlockHeight.Store(1000) // reasonable current height
 	return mgr
 }
-

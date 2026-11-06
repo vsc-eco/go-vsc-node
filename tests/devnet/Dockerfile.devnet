@@ -38,7 +38,10 @@ RUN . /home/app/.wasmedge/env && \
 FROM rockylinux:9.3-minimal
 
 # Install iptables + tc for network partition and latency testing
-RUN microdnf install -y iptables iproute iproute-tc && microdnf clean all
+# Rocky 9.3 is EOL: its mirrorlist returns no mirrors and microdnf hangs
+# forever on "Downloading metadata" once the layer is not cached. Point the
+# repos at the vault.
+RUN sed -i -e 's|^mirrorlist=|#mirrorlist=|' -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir/$releasever/|baseurl=https://dl.rockylinux.org/vault/rocky/9.3/|' /etc/yum.repos.d/*.repo && microdnf install -y iptables iproute iproute-tc && microdnf clean all
 
 RUN useradd -m app
 

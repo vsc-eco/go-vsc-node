@@ -164,11 +164,11 @@ func TestPoa8_SessionBlameCommitmentUnchanged(t *testing.T) {
 	with := base
 	with.Accused = []string{"b", "c"}
 	with.OldEpoch = 3
-	assert.Equal(t, base.Serialize(), with.Serialize(), "accusations never enter the session's own commitment")
+	assert.Equal(t, mustSerialize(t, base), mustSerialize(t, with), "accusations never enter the session's own commitment")
 	eb := ErrorResult{tssMgr: net.nodes["a"], err: assert.AnError, SessionId: "reshare-10-0-k", KeyId: "k", BlockHeight: 10, Epoch: 4}
 	ew := eb
 	ew.Accused = []string{"b"}
-	assert.Equal(t, eb.Serialize(), ew.Serialize())
+	assert.Equal(t, mustSerialize(t, eb), mustSerialize(t, ew))
 }
 
 func TestPoa8_StatementOnlyForReshareAndOwnAccused(t *testing.T) {
@@ -283,7 +283,7 @@ func TestPoa8_AccusationsLapseAtTheNextRotation(t *testing.T) {
 	net := newPoa8Net(t, []string{"a", "b", "c", "d", "e"}, 4, 3)
 	a := net.nodes["a"]
 	bit := func(acct string) string {
-		return a.setToCommitment([]Participant{{Account: acct}}, 4)
+		return mustSetToCommitment(t, a, []Participant{{Account: acct}}, 4)
 	}
 	a.tssCommitments = &test_utils.MockTssCommitmentsDb{Commitments: map[string]tss_db.TssCommitment{
 		"1": {Type: accuseTypeReshare, KeyId: "k", BlockHeight: 220, Epoch: 4, Commitment: bit("c")},
@@ -292,11 +292,11 @@ func TestPoa8_AccusationsLapseAtTheNextRotation(t *testing.T) {
 		"4": {Type: "blame", KeyId: "k", BlockHeight: 280, Epoch: 4, Commitment: bit("e")},
 	}}
 	// last rotation of k at 240: only the 280 accusation counts; other keys and blames never do
-	assert.Equal(t, map[string]int{"c": 1}, a.reshareAccusedCounts("k", 300, 240, 0))
+	assert.Equal(t, map[string]int{"c": 1}, mustAccusedCounts(t, a, "k", 300, 240, 0))
 	// rotation at 290 clears it
-	assert.Empty(t, a.reshareAccusedCounts("k", 300, 290, 0))
+	assert.Empty(t, mustAccusedCounts(t, a, "k", 300, 290, 0))
 	// the blame window bounds it too
-	assert.Empty(t, a.reshareAccusedCounts("k", 300, 0, 290))
+	assert.Empty(t, mustAccusedCounts(t, a, "k", 300, 0, 290))
 }
 
 // leaderFed: withholder "w" sends its round-1 messages only to the leader. The

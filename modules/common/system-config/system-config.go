@@ -34,6 +34,9 @@ type SystemConfig interface {
 	TssParams() params.TssParams
 	PendulumPoolWhitelistAt(blockHeight uint64) []string
 	PendulumCollateralPoolsAt(blockHeight uint64) []string
+	// TssKeyContractAllowlistAt returns the contracts permitted to create TSS
+	// keys at a Hive L1 height. EMPTY MEANS UNRESTRICTED -- see the accessor.
+	TssKeyContractAllowlistAt(blockHeight uint64) []string
 	// StablePoolAt returns the StableSwap listing of a pool contract in force
 	// at a Hive L1 height, if it has one.
 	StablePoolAt(contractID string, blockHeight uint64) (StablePool, bool)
@@ -111,6 +114,11 @@ type config struct {
 	// pendulumPoolWhitelist is the base list: pools that both swap AND count
 	// as collateral. Today that means the DAO-owned pools only.
 	pendulumPoolWhitelist []string
+
+	// tssKeyContractAllowlist is the set of contracts allowed to create TSS
+	// keys (KEY-SPAM-1 / 18j). Empty = unrestricted; see
+	// TssKeyContractAllowlistAt for why that is the default on test networks.
+	tssKeyContractAllowlist []string
 	// pendulumPoolAdditions stages further pools in at a height, each choosing
 	// whether it also counts as collateral. Append-only.
 	pendulumPoolAdditions []PendulumPoolAddition
@@ -254,6 +262,37 @@ func (c *config) PendulumPoolWhitelistAt(blockHeight uint64) []string {
 	return c.poolsAt(blockHeight, false)
 }
 
+// TssKeyContractAllowlistAt returns the contracts permitted to call
+// tss.create_key at a given Hive L1 height (KEY-SPAM-1 / 18j).
+//
+// THE PROBLEM. create_key validated only that the key name was alphanumeric and
+// the type was eddsa/ecdsa, for 1,000,000 gas. Any contract could mint
+// unlimited keys, every "created" key becomes a keygen at each rotate block
+// with no cap and no expiry, and each keygen waits for pre-parameters while
+// holding tssMgr.lock -- so N junk keys hold that lock for about N minutes and
+// every reshare and sign tick in the meantime is dropped. Cheap, permissionless,
+// and it degrades the custody layer rather than one contract.
+//
+// EMPTY MEANS UNRESTRICTED, deliberately. Mainnet lists the one contract that
+// actually owns keys; testnet and devnet run many contracts that legitimately
+// create keys (testnet alone has 24), and an allowlist there would be a
+// maintenance burden with no funds behind it. The cost of this default is that
+// forgetting to populate a new funded network leaves it open, so the mainnet
+// entry is set in code rather than left to an operator override.
+//
+// Height-parameterised for the same reason as PendulumPoolWhitelistAt: this is
+// consensus input, so there is deliberately no height-less accessor to reach
+// for. The list is currently static per network; a staged addition would slot
+// in here the way pendulumPoolAdditions does.
+func (c *config) TssKeyContractAllowlistAt(blockHeight uint64) []string {
+	if len(c.tssKeyContractAllowlist) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.tssKeyContractAllowlist))
+	copy(out, c.tssKeyContractAllowlist)
+	return out
+}
+
 // PendulumCollateralPoolsAt returns the pools whose HBD reserve enters the
 // pendulum GEOMETRY at a given height — P, and thus V = 2P and s = V/E, which
 // set the LP/node fee split across every pool.
@@ -289,16 +328,17 @@ func (c *config) StablePoolAt(contractID string, blockHeight uint64) (StablePool
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
 type SysConfigOverrides struct {
-	BootstrapPeers        []string                `json:"bootstrapPeers,omitempty"`
-	NetId                 string                  `json:"netId,omitempty"`
-	HiveChainId           string                  `json:"hiveChainId,omitempty"`
-	GatewayWallet         string                  `json:"gatewayWallet,omitempty"`
-	StartHeight           *uint64                 `json:"startHeight,omitempty"`
-	ConsensusParams       *params.ConsensusParams `json:"consensusParams,omitempty"`
-	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
-	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
-	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
-	StablePools           *[]StablePool           `json:"stablePools,omitempty"`
+	BootstrapPeers          []string                `json:"bootstrapPeers,omitempty"`
+	NetId                   string                  `json:"netId,omitempty"`
+	HiveChainId             string                  `json:"hiveChainId,omitempty"`
+	GatewayWallet           string                  `json:"gatewayWallet,omitempty"`
+	StartHeight             *uint64                 `json:"startHeight,omitempty"`
+	ConsensusParams         *params.ConsensusParams `json:"consensusParams,omitempty"`
+	OracleParams            *params.OracleParams    `json:"oracleParams,omitempty"`
+	TssParams               *params.TssParams       `json:"tssParams,omitempty"`
+	PendulumPoolWhitelist   *[]string               `json:"pendulumPoolWhitelist,omitempty"`
+	TssKeyContractAllowlist *[]string               `json:"tssKeyContractAllowlist,omitempty"`
+	StablePools             *[]StablePool           `json:"stablePools,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -310,16 +350,17 @@ func (c *config) LoadOverrides(path string) error {
 	// directly onto the existing config, preserving defaults for
 	// fields not present in the JSON.
 	var raw struct {
-		BootstrapPeers        []string        `json:"bootstrapPeers,omitempty"`
-		NetId                 string          `json:"netId,omitempty"`
-		HiveChainId           string          `json:"hiveChainId,omitempty"`
-		GatewayWallet         string          `json:"gatewayWallet,omitempty"`
-		StartHeight           *uint64         `json:"startHeight,omitempty"`
-		ConsensusParams       json.RawMessage `json:"consensusParams,omitempty"`
-		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
-		TssParams             json.RawMessage `json:"tssParams,omitempty"`
-		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
-		StablePools           *[]StablePool   `json:"stablePools,omitempty"`
+		BootstrapPeers          []string        `json:"bootstrapPeers,omitempty"`
+		NetId                   string          `json:"netId,omitempty"`
+		HiveChainId             string          `json:"hiveChainId,omitempty"`
+		GatewayWallet           string          `json:"gatewayWallet,omitempty"`
+		StartHeight             *uint64         `json:"startHeight,omitempty"`
+		ConsensusParams         json.RawMessage `json:"consensusParams,omitempty"`
+		OracleParams            json.RawMessage `json:"oracleParams,omitempty"`
+		TssParams               json.RawMessage `json:"tssParams,omitempty"`
+		PendulumPoolWhitelist   *[]string       `json:"pendulumPoolWhitelist,omitempty"`
+		TssKeyContractAllowlist *[]string       `json:"tssKeyContractAllowlist,omitempty"`
+		StablePools             *[]StablePool   `json:"stablePools,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -366,6 +407,9 @@ func (c *config) LoadOverrides(path string) error {
 		// applies as written at every height, rather than being replaced by V2
 		// once the activation height passes.
 		c.pendulumWhitelistOverridden = true
+	}
+	if raw.TssKeyContractAllowlist != nil {
+		c.tssKeyContractAllowlist = append([]string(nil), (*raw.TssKeyContractAllowlist)...)
 	}
 	if raw.StablePools != nil {
 		if c.stablePoolsBaked {
@@ -537,6 +581,15 @@ func MainnetConfig() SystemConfig {
 		pendulumPoolWhitelist: []string{
 			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE   (vsc.dao)
 			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD    (vsc.dao)
+		},
+		// 18j: the ONLY contract that owns TSS keys on mainnet (the BTC mapping
+		// contract, updated in place for vault v2). Set in code, not left to an
+		// operator override, because an empty list means UNRESTRICTED and a
+		// funded network must not depend on remembering to populate it.
+		// Enforced only once consensus 0.13.0 is active
+		// (consensusversion.TssKeyAllowlistActive), so this is inert today.
+		tssKeyContractAllowlist: []string{
+			"vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d", // BTC mapping contract
 		},
 		// Append-only. Collateral stays false for community pools: they may
 		// trade, but their reserve must not enter P.

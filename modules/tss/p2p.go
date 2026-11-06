@@ -147,7 +147,14 @@ func (s p2pSpec) HandleMessage(
 		}
 
 		if hasResult {
-			baseCommitment := entry.result.Serialize()
+			baseCommitment, sErr := entry.result.Serialize()
+			if sErr != nil {
+				// 18h: a peer asked us to co-sign a commitment we cannot
+				// compute. Refusing is the whole point -- signing it would
+				// lend our BLS weight to a bitset we could not verify.
+				log.Error("refusing to sign a commitment we cannot serialize", "err", sErr)
+				return nil
+			}
 
 			// Refuse to sign systemic blames: if fewer than threshold+1
 			// nodes remain unblamed, the protocol could not have succeeded

@@ -746,6 +746,36 @@ func TssAccuseStackActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// TssKeyAllowlistActive reports whether tss.create_key is restricted to the
+// contracts on the network's TSS key allowlist (KEY-SPAM-1 / 18j).
+//
+// Gated because it changes which transactions succeed: an un-gated rollout
+// would have upgraded nodes rejecting a create_key that un-upgraded nodes
+// accept, which forks. Pinned to the 0.13.0 EVM line, which is where this
+// starts to matter -- every extra key is another keygen holding tssMgr.lock --
+// and which is not active on mainnet, so the gate is inert there today.
+func TssKeyAllowlistActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// TssPerKeyFamilyBanActive reports whether the TSS ban score is computed PER KEY
+// FAMILY rather than across every key at once (18an).
+//
+// Without it, BlameScore sums the blames of every key in an epoch and the
+// resulting ban excludes a witness from keygen, signing AND reshare of EVERY
+// key. Once the EVM bridge holds keys, a witness with an EVM-only fault is
+// blamed in every EVM session, can cross the ban threshold, and is then removed
+// from the BTC vault's committee too -- though its BTC shares are perfectly
+// good. The reverse holds as well.
+//
+// Gated because it changes a TSS party-list input: two nodes disagreeing about
+// who is banned build different party lists and the session fails on an SSID
+// mismatch. Pinned to 0.13.0, the EVM line, which is both when the coupling
+// starts to matter and not active on mainnet today.
+func TssPerKeyFamilyBanActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS

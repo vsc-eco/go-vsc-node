@@ -1523,7 +1523,22 @@ func (e *electionProposer) GenerateFullElection(
 	if previousElection != nil {
 		signFloor := bondCommitteeFloor(e.sconf.ConsensusParams().MinMembers, len(previousElection.Members))
 		if len(members) < signFloor {
-			log.Error("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
+			// 18s: pick the level by whether this is a REGRESSION or a standing
+			// condition. A network that was already below the floor last epoch
+			// (testnet has 6 members against a floor of 8, and devnets are
+			// smaller still) logged ERROR on every single election, which reads
+			// as an active outage and trains operators to ignore the line. ERROR
+			// is reserved for the case that actually warrants waking someone:
+			// the previous committee cleared the floor and this one does not.
+			//
+			// Level only. The condition, its fields, and the deliberate
+			// decision not to ENFORCE the floor here (see the comment above)
+			// are all unchanged.
+			logAtLevel := log.Warn
+			if len(previousElection.Members) >= signFloor {
+				logAtLevel = log.Error
+			}
+			logAtLevel("committee is BELOW the signability floor — the election is valid but the committee it names may be unable to rotate the gateway multisig or complete a TSS reshare",
 				"block_height", blockHeight,
 				"members", len(members),
 				"signability_floor", signFloor,
@@ -1687,6 +1702,37 @@ func canonicalElectionAnchor(prevBlockHeight uint64, electionInterval uint64) ui
 	return ((target + cadence - 1) / cadence) * cadence
 }
 
+// electionAnchorAt is the anchor for the election following prevBlockHeight,
+// as seen from local height bh. Until the epoch is a full electionInterval past
+// its canonical anchor it IS the canonical anchor, so a healthy epoch is
+// unchanged. After that the anchor moves forward one electionInterval for each
+// full interval elapsed. Without this, a canonical anchor that cannot seat
+// MinMembers (e.g. witnesses that announced enabled=false around a fleet-wide
+// restart, which they keep for 24 h) pins the epoch for good: every retry
+// rebuilds the same failing election (mainnet epoch 2210, anchor 111230100).
+//
+// bh is rounded down to the trigger cadence first, so a proposer at trigger
+// block T and a signer anywhere in [T, T+cadence) derive the same anchor. The
+// anchor stays a function of on-chain data and local height only; nothing is
+// taken from the sign_request (CP-0b). A signer still one trigger behind at a
+// step boundary derives the previous step, and that one attempt misses quorum
+// like any other; the next trigger lines up.
+func electionAnchorAt(prevBlockHeight uint64, electionInterval uint64, bh uint64) uint64 {
+	anchor := canonicalElectionAnchor(prevBlockHeight, electionInterval)
+	if electionInterval == 0 {
+		return anchor
+	}
+	cadence := 5 * common.CONSENSUS_SPECS.SlotLength
+	if cadence == 0 {
+		cadence = 1
+	}
+	trigger := bh - bh%cadence
+	if trigger < anchor || trigger-anchor < electionInterval {
+		return anchor
+	}
+	return anchor + ((trigger-anchor)/electionInterval)*electionInterval
+}
+
 func (ep *electionProposer) HoldElection(blk uint64) error {
 	if ep.signingInfo != nil {
 		log.Warn("election already in progress; skipping new attempt", "block_height", blk)
@@ -1713,8 +1759,16 @@ func (ep *electionProposer) HoldElection(blk uint64) error {
 	// poisonable via an unauthenticated sign_request.
 	anchorBh := blk
 	if !firstElection {
-		anchorBh = canonicalElectionAnchor(electionResult.BlockHeight, ep.sconf.ConsensusParams().ElectionInterval)
-		if anchorBh != blk {
+		interval := ep.sconf.ConsensusParams().ElectionInterval
+		canonical := canonicalElectionAnchor(electionResult.BlockHeight, interval)
+		anchorBh = electionAnchorAt(electionResult.BlockHeight, interval, blk)
+		if anchorBh != canonical {
+			log.Warn("election overdue: anchor stepped past the canonical anchor",
+				"proposer_bh", blk,
+				"canonical_bh", canonical,
+				"anchor_bh", anchorBh,
+				"epoch", electionResult.Epoch+1)
+		} else if anchorBh != blk {
 			log.Info("using canonical election anchor",
 				"proposer_bh", blk,
 				"anchor_bh", anchorBh,
@@ -2160,7 +2214,9 @@ func (ep *electionProposer) scoreMap() (ScoreMap, error) {
 // thereby fork the election CID (audit F5 / CP-0b). The ElectionInterval gate
 // is subsumed by canonicalElectionAnchor (anchor is always >= prevBh +
 // interval); GenerateElectionAtBlock's barrier + far-ahead guard make a signer
-// that is behind the anchor abstain rather than sign a divergent CID.
+// that is behind the anchor abstain rather than sign a divergent CID. Once the
+// epoch is a full ElectionInterval overdue the anchor steps forward with the
+// signer's own processed height (electionAnchorAt), mirroring the proposer.
 func (ep *electionProposer) makeElection(epoch uint64) (elections.ElectionHeader, elections.ElectionData, error) {
 	if epoch == 0 {
 		return elections.ElectionHeader{}, elections.ElectionData{}, errors.New("cannot re-derive genesis election by epoch")
@@ -2169,7 +2225,7 @@ func (ep *electionProposer) makeElection(epoch uint64) (elections.ElectionHeader
 	if prevElection == nil {
 		return elections.ElectionHeader{}, elections.ElectionData{}, fmt.Errorf("no previous election for epoch %d", epoch-1)
 	}
-	anchorBh := canonicalElectionAnchor(prevElection.BlockHeight, ep.sconf.ConsensusParams().ElectionInterval)
+	anchorBh := electionAnchorAt(prevElection.BlockHeight, ep.sconf.ConsensusParams().ElectionInterval, ep.bh.Load())
 	return ep.GenerateElectionAtBlock(anchorBh)
 }
 

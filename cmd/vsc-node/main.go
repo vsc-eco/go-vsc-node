@@ -1,12 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 	"syscall"
 	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
 
 	cbortypes "vsc-node/lib/cbor-types"
 	"vsc-node/lib/datalayer"
@@ -550,9 +555,72 @@ func main() {
 		a.RequestShutdown()
 	}()
 
+	runStart := time.Now()
 	err = a.Run()
 	if err != nil {
-		log.Error("startup failure", "err", err)
+		// A23: this used to log "startup failure" unconditionally, which
+		// mislabels the case that actually happens. The observed incident was a
+		// Mongo disconnect roughly 40 minutes into normal operation: the state
+		// engine's fail-stop retried for ~28s, Run() then returned "incomplete
+		// read of message header", and the node exited claiming it had failed
+		// to start. Whoever reads that page goes looking for a bad config.
+		//
+		// Exiting is still right -- once the plugin aggregate has unwound, the
+		// process is in an indeterminate state and re-running Run() without a
+		// full re-init is not safe. What was missing is saying which KIND of
+		// failure it was, and therefore whether a restart will fix it.
+		if isTransientInfraErr(err) {
+			log.Error("TRANSIENT INFRASTRUCTURE FAILURE — exiting; this node is expected to recover on restart. Make sure it runs under a supervisor with restart=always (systemd Restart=always / docker restart: always), or it will stay down.",
+				"err", err, "uptime", time.Since(runStart).String())
+		} else {
+			log.Error("node exiting on a failure that a restart is unlikely to clear; operator action probably needed",
+				"err", err, "uptime", time.Since(runStart).String())
+		}
 		os.Exit(1)
 	}
+}
+
+// isTransientInfraErr reports whether err looks like an infrastructure fault a
+// restart should clear -- a dropped Mongo connection being the case observed in
+// A23 -- rather than a configuration or programming fault, where restarting
+// only crash-loops.
+//
+// The driver's own predicates are tried first. The string matching after them
+// is deliberate and not something to be proud of: a mid-stream disconnect
+// reaches us wrapped through the plugin aggregate as a plain error whose text
+// is the only thing left to go on ("incomplete read of message header" was
+// A23's). Misclassifying in this direction is cheap -- the node exits either
+// way, and the only difference is which of two log lines an operator reads --
+// so a loose match here is the right trade.
+func isTransientInfraErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if mongo.IsNetworkError(err) || mongo.IsTimeout(err) {
+		return true
+	}
+	var serverErr mongo.ServerError
+	if errors.As(err, &serverErr) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	msg := err.Error()
+	for _, fragment := range []string{
+		"incomplete read of message header",
+		"socket was unexpectedly closed",
+		"connection reset by peer",
+		"server selection error",
+		"no reachable servers",
+		"connection refused",
+		"context deadline exceeded",
+		"topology is closed",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
 }
