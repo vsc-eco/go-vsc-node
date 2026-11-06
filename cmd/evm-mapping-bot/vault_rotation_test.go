@@ -156,6 +156,11 @@ func TestA01Bot_ScansEveryVaultGeneration(t *testing.T) {
 	if err != nil || len(res.Deposits) != 2 {
 		t.Fatalf("deposits %+v %v: want both generations' deposits", res, err)
 	}
+	// I-26: each deposit names the generation it paid (retireVault waits for
+	// an unmapped one to an Inactive generation)
+	if res.Deposits[0].Vault != rotAddr(1) || res.Deposits[1].Vault != rotAddr(2) {
+		t.Fatalf("deposit vaults %q %q, want %s %s", res.Deposits[0].Vault, res.Deposits[1].Vault, rotAddr(1), rotAddr(2))
+	}
 	res, _ = scanBlock(c.rpc(t), 101, []string{rotAddr(2)}, nil)
 	if len(res.Deposits) != 1 || res.Deposits[0].Amount.Cmp(big.NewInt(2e18)) != 0 {
 		t.Fatalf("active only: %+v", res.Deposits)
@@ -327,6 +332,11 @@ func TestA01Bot_ScanSkipsTheVaultsOwnTransfers(t *testing.T) {
 	}
 	if len(got.Deposits) != 2 || kinds[0] != "eth:0xuser" || kinds[1] != "erc20:0xt0x1" {
 		t.Fatalf("deposits %v: want the user's ETH and token deposits only, not the sweeps", kinds)
+	}
+	for _, d := range got.Deposits { // I-26
+		if d.Vault != vault1 {
+			t.Fatalf("%s deposit names vault %q, want %s", d.DepositType, d.Vault, vault1)
+		}
 	}
 }
 

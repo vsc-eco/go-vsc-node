@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -589,6 +591,10 @@ func (b *Bot) HandleVaultRotation() {
 		return
 
 	case vaultRetire:
+		if why := b.retireWait(ctx, vaults); why != "" {
+			b.L.Info("vault rotation: retireVault waits", "reason", why)
+			return
+		}
 		// retireVault is a no-op-tolerant sweeper, so re-issuing is safe. While the
 		// 144-block purge grace elapses it would advance nothing: its dry run then
 		// returns errRetireNoTransition and nothing is submitted (BOT-RETIRE-1); the
@@ -681,4 +687,40 @@ func (b *Bot) HandleVaultRotation() {
 		b.L.Error("vault rotation: if this is a fee-reserve failure, the operator must fund the FeeSupply " +
 			"(a BTC deposit to the ACTIVE vault's untagged address, then topUpFeeReserve) — no sweep can be built without it")
 	}
+}
+
+// retireWait says why retireVault must not go out this cycle, or "" (I-26,
+// the BTC side of the EVM testnet loss of 11-04). retireVault purges an
+// Inactive generation once the contract height is past its grace, and a
+// purged generation's deposits are no longer matched. A deposit in a block
+// the contract can already map (contract height >= block + confirmations) but
+// that this bot has not mapped yet would be lost to that purge, so while a
+// generation is Inactive the bot does not retire until it has mapped every
+// mappable block. A deposit in the last confirmations' blocks before the purge
+// height is not covered here; that is the contract's purge margin. An
+// unreadable height waits.
+func (b *Bot) retireWait(ctx context.Context, vaults []btcvault.Vault) string {
+	inactive := false
+	for _, v := range vaults {
+		inactive = inactive || v.Status == btcvault.VaultStatusInactive
+	}
+	if !inactive {
+		return "" // nothing this call can purge
+	}
+	hs, err := b.gql().FetchLastHeight(ctx)
+	if err != nil {
+		return "contract height unreadable: " + err.Error()
+	}
+	h, err := strconv.ParseUint(hs, 10, 64)
+	if err != nil {
+		return fmt.Sprintf("contract height %q unreadable", hs)
+	}
+	next, err := b.stateDB().GetBlockHeight(ctx)
+	if err != nil {
+		return "map cursor unreadable: " + err.Error()
+	}
+	if h >= b.contractHeightNeededFor(next) {
+		return fmt.Sprintf("block %d is mappable at contract height %d but not mapped yet", next, h)
+	}
+	return ""
 }

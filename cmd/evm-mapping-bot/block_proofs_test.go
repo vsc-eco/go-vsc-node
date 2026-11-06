@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -355,5 +356,35 @@ func TestBP1_WrongRawTxNoProof(t *testing.T) {
 	blockProofCache.Unlock()
 	if kept {
 		t.Fatal("the wrong raw txs stayed cached")
+	}
+}
+
+// I-16, testnet 11-04 06:35: one dropped eth_getBlockReceipts sent a 1,198-tx
+// block to the per-tx path (~2,400 calls) and was logged at Debug. A 429 on
+// the block call is retried, and the receipts still come from one call.
+func TestI16_BlockReceiptsCallIsRetried(t *testing.T) {
+	bp1ResetCache(t)
+	old := callRetryPauses
+	callRetryPauses = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { callRetryPauses = old })
+	b := bp1MakeBlock(t, 12059270, 120)
+	s := &bp1RPC{b: b, blockReceipts: true, fail429: func(m string, k int) bool { return m == "eth_getBlockReceipts" && k == 1 }}
+	rpc := s.serve(t)
+	bp, err := fetchBlockProofs(context.Background(), rpc, b.height, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bp1Check(t, b, bp, false)
+	if s.count("eth_getBlockReceipts") != 2 || s.count("eth_getTransactionReceipt") != 0 {
+		t.Fatalf("calls %v, want the block call retried once and no per-tx receipts", s.calls)
+	}
+	// An endpoint that does not serve the method answers so: not retried.
+	bp1ResetCache(t)
+	s2 := &bp1RPC{b: b, blockReceipts: false}
+	if _, err := fetchBlockProofs(context.Background(), s2.serve(t), b.height, false); err != nil {
+		t.Fatal(err)
+	}
+	if s2.count("eth_getBlockReceipts") != 1 {
+		t.Fatalf("eth_getBlockReceipts called %d times on an endpoint without it, want 1", s2.count("eth_getBlockReceipts"))
 	}
 }

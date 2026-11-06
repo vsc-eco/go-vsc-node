@@ -60,6 +60,10 @@ func (o *Oracle) startBtcSolvencyCheck(bh uint64) {
 			o.logger.Warn("BTC solvency watch: abstaining at this checkpoint", "c", bh, "err", err)
 			return
 		}
+		// One line per observed checkpoint (I-40 follow-up, 11-05): a solvent
+		// check casts no vote and logged nothing, so neither an operator nor a
+		// test could tell a watch that looked from one that never ran.
+		o.logger.Info("BTC solvency watch: checkpoint observed", "c", bh, "checked", obs.Checked, "missing", obs.Missing, "tip", obs.Tip)
 		if obs.Missing > 0 {
 			o.logger.Warn("BTC solvency watch: registered vault UTXOs are spent on Bitcoin without a reservation",
 				"c", bh, "missing", obs.Missing, "missing_sats", obs.MissingSats, "digest", obs.Digest, "insolvent", obs.Insolvent)

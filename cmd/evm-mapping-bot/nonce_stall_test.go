@@ -145,3 +145,70 @@ func TestBR1b_AMovingAccountNonceKeepsThePipeline(t *testing.T) {
 		t.Fatalf("nonces %v, want [0 1 2]: the account nonce moved, so no reset", got)
 	}
 }
+
+// I-19, testnet 11-04 (07:18 attestHeaders@76, 12:10 attestHeaders@192): the
+// account nonce moved, the bot's next call was refused (RC), and nothing went
+// out for longer than the grace. The next two calls are one tick: the first
+// takes the account nonce, and the second must take the one after it, not see
+// "no move for nonceStallGrace" and go out again at the first one's nonce.
+func TestI19_AQuietPeriodIsNotAStall(t *testing.T) {
+	l2, sub, cur := stallWorld(t)
+	if _, err := mapCall(t, sub, 1); err != nil { // nonce 0
+		t.Fatal(err)
+	}
+	l2.pool.produce() // account nonce 1
+	l2.pool.refuse = 1
+	if _, err := mapCall(t, sub, 2); err == nil { // sees account nonce 1, refused
+		t.Fatal("the node's RC refusal did not reach the caller")
+	}
+	*cur = cur.Add(nonceStallGrace + time.Minute) // quiet: nothing of the bot's pending
+	for d := 3; d <= 4; d++ {
+		if _, err := mapCall(t, sub, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the fake records every attempt: 0, 1 (refused), then the two calls
+	if got := submittedNonces(t, l2); !reflect.DeepEqual(got, []uint64{0, 1, 1, 2}) {
+		t.Fatalf("nonces %v, want [0 1 1 2]: the two calls after the quiet period need two nonces", got)
+	}
+	l2.pool.produce()
+	if l2.pool.confirmed != 3 {
+		t.Fatalf("account nonce %d, want 3: both calls after the quiet period land", l2.pool.confirmed)
+	}
+}
+
+// The clock the I-19 fix restarts still catches a stuck call: it counts from
+// the call that went out with nothing pending, so a call stuck after a quiet
+// period is resent nonceStallGrace after it was sent.
+func TestI19_AStuckCallAfterAQuietPeriodIsStillResent(t *testing.T) {
+	l2, sub, cur := stallWorld(t)
+	if _, err := mapCall(t, sub, 1); err != nil { // nonce 0
+		t.Fatal(err)
+	}
+	l2.pool.produce()
+	l2.pool.refuse = 1
+	if _, err := mapCall(t, sub, 2); err == nil {
+		t.Fatal("the node's RC refusal did not reach the caller")
+	}
+	*cur = cur.Add(nonceStallGrace + time.Minute)
+	b, err := mapCall(t, sub, 3) // nonce 1, the nodes a block needs never get it
+	if err != nil {
+		t.Fatal(err)
+	}
+	l2.pool.stuck = map[string]bool{b: true}
+	if _, err := mapCall(t, sub, 4); err != nil { // nonce 2, inside the grace
+		t.Fatal(err)
+	}
+	l2.pool.produce()
+	*cur = cur.Add(nonceStallGrace + time.Second)
+	if _, err := mapCall(t, sub, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got := submittedNonces(t, l2); !reflect.DeepEqual(got, []uint64{0, 1, 1, 2, 1}) {
+		t.Fatalf("nonces %v, want [0 1 1 2 1]: past the grace from the stuck call, the bot resends at the account nonce", got)
+	}
+	l2.pool.produce()
+	if l2.pool.confirmed != 3 {
+		t.Fatalf("account nonce %d after the resend, want 3", l2.pool.confirmed)
+	}
+}

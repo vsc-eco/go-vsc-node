@@ -99,6 +99,9 @@ func TestRP7_ScanFindsTheDepositAndItsPayingTransfer(t *testing.T) {
 		if len(deps) != 1 || deps[0].DepositType != "contract" || deps[0].LogIndex != 1 || deps[0].TxIndex != 2 {
 			t.Fatalf("deposits %+v, want one contract deposit at per-receipt log 1", deps)
 		}
+		if deps[0].Vault != vault { // I-26: the generation whose MagiDeposit it is
+			t.Fatalf("contract deposit names vault %q, want %s", deps[0].Vault, vault)
+		}
 		if paid["0xabc#0"] != tc.wantPaid {
 			t.Fatalf("Transfer of %d marked paid=%v, want %v", tc.paidAmount, paid["0xabc#0"], tc.wantPaid)
 		}
@@ -257,17 +260,17 @@ func TestRP9_AttestationsAreNotResentEveryTick(t *testing.T) {
 	cp := &Checkpoint{AttestCache: map[uint64]*attestEntry{900: {AccountProof: []string{"0xc0"},
 		Headers: map[uint64]attestedBlock{850: {RLP: "c0", StorageProof: []string{"0xc0"}}}}}}
 	gql := l2.gql(t)
-	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850}, nil)
 	first := len(submittedCalls(t, l2))
 	if first != 2 { // attestHistoryRoot + attestHeaders
 		t.Fatalf("%d calls for one attestation, want 2", first)
 	}
-	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850}, nil)
 	if got := len(submittedCalls(t, l2)); got != first {
 		t.Fatalf("the attestation went out again right away (%d calls)", got)
 	}
 	cp.AttestSentAt[900] = time.Now().Add(-attestResendAfter - time.Second).Unix()
-	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850})
+	attestFromRoot(context.Background(), gql, sub, cp, cfg, "vsc1verifier", 900, []uint64{850}, nil)
 	if got := len(submittedCalls(t, l2)); got != first+2 {
 		t.Fatalf("not resent after %s (%d calls)", attestResendAfter, got)
 	}

@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +50,9 @@ type vaultGen struct {
 	Status  btcvault.VaultStatus
 	KeyID   string // node key id: "<contract>-primary" / "-primaryv<N>"
 	Address string // 0x lowercase; "" while the generation has no key
+	// InactiveHeight: the L1 height the generation went Inactive (its purge
+	// grace anchor); 0 while it is not Inactive.
+	InactiveHeight uint32
 }
 
 // vaultView is the bridge's vault at one read. Registry false: a pre-rotation
@@ -85,7 +90,7 @@ func decodeVaultView(contract, rawHex string) (vaultView, error) {
 	}
 	view := vaultView{Registry: true}
 	for _, v := range vs {
-		g := vaultGen{Gen: v.Generation, Status: v.Status,
+		g := vaultGen{Gen: v.Generation, Status: v.Status, InactiveHeight: v.InactiveHeight,
 			KeyID: contract + "-" + btcvault.VaultKeyNameFor(btcvault.EvmVaultKeyBase, v.Generation)}
 		if addr, ok := tssPubKeyToAddress(hex.EncodeToString(v.Primary)); ok {
 			g.Address = strings.ToLower(addr) // none while the generation has no key (zero bytes)
@@ -207,7 +212,11 @@ type accountProof struct {
 
 // fetchAccountProof returns address's proof, nonce and balance at height.
 func fetchAccountProof(ctx context.Context, rpc *ethRPC, address string, height uint64) (accountProof, uint64, *big.Int, error) {
-	res, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [], "0x%x"`, address, height))
+	// I-36: a call no endpoint answered is retried (callRetryNoAnswer); one
+	// cost a B6 custody check for 10 min (testnet 11-03..05: 23 of 156 rounds
+	// skipped whole, 13 more their USDC part). An answer (an endpoint that
+	// cannot serve it) stays final.
+	res, err := callRetryNoAnswer(ctx, rpc, "eth_getProof", fmt.Sprintf(`"%s", [], "0x%x"`, address, height))
 	if err != nil {
 		return accountProof{}, 0, nil, fmt.Errorf("eth_getProof %s at %d: %w", address, height, err)
 	}
@@ -238,7 +247,7 @@ func fetchStorageProofs(ctx context.Context, rpc *ethRPC, address string, keys [
 	for i, k := range keys {
 		quoted[i] = `"` + k + `"`
 	}
-	res, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, address, strings.Join(quoted, ","), height))
+	res, err := callRetryNoAnswer(ctx, rpc, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, address, strings.Join(quoted, ","), height)) // I-36
 	if err != nil {
 		return accountProof{}, nil, fmt.Errorf("eth_getProof %s at %d: %w", address, height, err)
 	}
@@ -372,9 +381,63 @@ func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, a
 		rc = rcFromDryRun(sim.RcUsed, vaultOpRcLimit)
 	}
 	if _, err := sub.callContractL2(ctx, contract, action, payload, rc); err != nil {
+		noteRotationRC(action, err)
 		return "", err
 	}
+	noteRotationRC(action, nil)
 	return sim.Ret, nil
+}
+
+// rotationRCShort is the last vault op the node refused because the bot had
+// less RC than the op declares (I-20), zero once a vault op goes through.
+var rotationRCShort struct {
+	sync.Mutex
+	action     string
+	have, need int64
+	at         time.Time
+}
+
+// notEnoughRC matches the node's refusal "not enough RCS available: A < B"
+// (transaction-pool.go).
+var notEnoughRC = regexp.MustCompile(`not enough RCS available: (\d+) < (\d+)`)
+
+// noteRotationRC records (or, after a vault op went through, clears) an RC
+// refusal of a rotation op. I-20, testnet 11-04 07:19-07:27: migrateVault was
+// refused "not enough RCS available: 13059 < 41914" for as long as the bot's RC
+// stayed under 41,914 (projected ~12 h at its net refill), and the only alarm
+// was B11's "below 20000". The health check now names the op and what it needs.
+func noteRotationRC(action string, err error) {
+	rotationRCShort.Lock()
+	defer rotationRCShort.Unlock()
+	if err == nil {
+		rotationRCShort.action, rotationRCShort.have, rotationRCShort.need, rotationRCShort.at = "", 0, 0, time.Time{}
+		return
+	}
+	m := notEnoughRC.FindStringSubmatch(err.Error())
+	if m == nil {
+		return
+	}
+	have, _ := strconv.ParseInt(m[1], 10, 64)
+	need, _ := strconv.ParseInt(m[2], 10, 64)
+	rotationRCShort.action, rotationRCShort.have, rotationRCShort.need, rotationRCShort.at = action, have, need, vaultOpNow()
+	slog.Error("I-20: a vault rotation op is refused for RC: the rotation waits until the bot holds what it needs (fund the bot's L2 identity)",
+		"action", action, "rc_available", have, "rc_needed", need)
+}
+
+// rotationRCAlarmFor: a refusal this recent is still reported (the driver
+// retries a refused op every vaultOpMinInterval, which refreshes it).
+const rotationRCAlarmFor = 15 * time.Minute
+
+// rotationRCAlarm is the health alarm for a recent RC refusal of a rotation
+// op, or "".
+func rotationRCAlarm(now time.Time) string {
+	rotationRCShort.Lock()
+	defer rotationRCShort.Unlock()
+	if rotationRCShort.action == "" || now.Sub(rotationRCShort.at) > rotationRCAlarmFor {
+		return ""
+	}
+	return fmt.Sprintf("I-20: %s is refused for RC (%d available, %d needed, at %s): the vault rotation waits; fund the bot's L2 identity",
+		rotationRCShort.action, rotationRCShort.have, rotationRCShort.need, rotationRCShort.at.Format(time.RFC3339))
 }
 
 // errVaultOpNoop: the dry run succeeds but the op would change nothing, so
@@ -396,6 +459,8 @@ func vaultOpNoop(action, ret string) bool {
 		return ret == "nothing to migrate"
 	case "writeOffDust":
 		return ret == "no dust to write off"
+	case "attestDepositContract":
+		return strings.HasSuffix(ret, "already attested")
 	}
 	return false
 }
@@ -480,14 +545,19 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 	if !view.Registry || view.Active == nil {
 		return
 	}
+	attestDepositContracts(ctx, rpc, gql, sub, cfg, view) // I-28: depositAddress() names a MagiDeposit only once attested
 	sweeps, err := fetchOpenSweeps(ctx, gql, cfg.ContractID)
 	if err != nil {
 		slog.Debug("open sweeps unreadable", "err", err)
 		return
 	}
+	open := make([]string, 0, len(sweeps))
 	for _, r := range sweeps {
+		open = append(open, sweepKey(r))
+		noteSweepVersions(sweepKey(r), len(r.Versions))
 		driveSweep(ctx, rpc, gql, sub, cp, cfg, view, r, r.Nonce == lowestOpenNonce(sweeps, r.Gen))
 	}
+	pruneStuckSweeps(open)
 	superseded := false
 	for _, g := range view.Gens {
 		switch g.Status {
@@ -495,6 +565,7 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 			superseded = true
 		}
 	}
+	notePurgeWait(ctx, gql, cp, cfg, view) // I-38: a purge that waits only for the stored height asks for a proof
 	if !superseded {
 		return
 	}
@@ -502,6 +573,10 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 		migrateNext(ctx, rpc, gql, sub, cp, cfg, view)
 	}
 	if vaultOpDue("retire") {
+		if why := retireWait(ctx, gql, cp, cfg, view); why != "" {
+			slog.Info("I-26: retireVault waits", "reason", why)
+			return
+		}
 		noteVaultOp("retire")
 		ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "retireVault", json.RawMessage(`{}`))
 		noteRefusal(err)
@@ -764,9 +839,18 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 	}
 
 	// Mined? Confirm once final and its header is stored.
+	unread := false // PS-2: a receipt that could not be read this cycle
 	for _, h := range ss.TxHashes {
 		rc, err := rpc.getReceipt(h)
-		if err != nil || rc == nil || string(rc) == "null" {
+		if err != nil {
+			// a null result is the RPC's "no receipt" (not mined); any other
+			// error leaves the version's state unknown
+			if !strings.Contains(err.Error(), "null result from") {
+				unread = true
+			}
+			continue
+		}
+		if rc == nil || string(rc) == "null" {
 			continue
 		}
 		var receipt struct {
@@ -819,18 +903,108 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 		return
 	}
 
-	// Not mined: re-drive once the contract allows it.
+	// Not mined: re-drive once the contract allows it. PS-2 (BTC bot parity,
+	// mapper/vault_rotation.go: an unreadable status skips the cycle): only
+	// when every version's receipt read answered "none"; a version that may
+	// have mined is never re-driven (the new version could never mine, and
+	// its TSS signature, RC and booked gas would be spent for nothing).
+	if unread {
+		slog.Debug("sweep receipt unreadable; not re-driving this cycle", "sweep", key)
+		return
+	}
 	if redrive && len(ss.TxHashes) > 0 && vaultOpDue("redrive-"+key) {
 		if h, err := fetchContractLastHeight(ctx, gql, cfg.ContractID); err == nil && h >= r.BuiltL1+sweepRedriveL1Blocks {
 			noteVaultOp("redrive-" + key)
 			payload, _ := json.Marshal(map[string]any{"gen": r.Gen, "nonce": r.Nonce})
 			ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "redriveSweep", payload)
 			noteRefusal(err)
+			noteSweepRedrive(key, err)
 			if err == nil {
 				slog.Info("sweep re-drive submitted", "sweep", key, "dry_run", ret)
 			}
 		}
 	}
+}
+
+// PS-1 (11-04): a sweep that stays unmined for a reason a higher fee cannot
+// fix (its signature, a gap in the vault's L1 nonces) is re-driven every
+// sweepRedriveL1Blocks, a version per re-drive, until the bridge refuses past
+// MaxSweepVersions; then the bot dry-runs the refused re-drive every
+// vaultOpMinInterval and nothing else happens. Neither showed anywhere but the
+// log. /health names a sweep with stuckSweepVersions versions or more (eight
+// versions is about 264 L1 blocks unmined) and a sweep whose re-drive the
+// bridge refused, until it is confirmed.
+const stuckSweepVersions = 8
+
+var stuckSweeps = struct {
+	sync.Mutex
+	versions map[string]int
+	refused  map[string]string
+}{versions: map[string]int{}, refused: map[string]string{}}
+
+func sweepKey(r sweepRecord) string {
+	return strconv.FormatUint(uint64(r.Gen), 10) + "-" + strconv.FormatUint(r.Nonce, 10)
+}
+
+func noteSweepVersions(key string, n int) {
+	stuckSweeps.Lock()
+	stuckSweeps.versions[key] = n
+	stuckSweeps.Unlock()
+}
+
+// noteSweepRedrive records the outcome of a re-drive: a dry-run refusal is kept
+// (with the bridge's reason), anything else clears it.
+func noteSweepRedrive(key string, err error) {
+	stuckSweeps.Lock()
+	defer stuckSweeps.Unlock()
+	if err != nil && errors.Is(err, errDryRunRefused) {
+		stuckSweeps.refused[key] = err.Error()
+		return
+	}
+	delete(stuckSweeps.refused, key)
+}
+
+// pruneStuckSweeps forgets sweeps that are no longer open (confirmed).
+func pruneStuckSweeps(open []string) {
+	stuckSweeps.Lock()
+	defer stuckSweeps.Unlock()
+	for k := range stuckSweeps.versions {
+		if !containsStr(open, k) {
+			delete(stuckSweeps.versions, k)
+			delete(stuckSweeps.refused, k)
+		}
+	}
+	for k := range stuckSweeps.refused {
+		if !containsStr(open, k) {
+			delete(stuckSweeps.refused, k)
+		}
+	}
+}
+
+// stuckSweepAlarms is the PS-1 /health text, sorted by sweep key.
+func stuckSweepAlarms() []string {
+	stuckSweeps.Lock()
+	defer stuckSweeps.Unlock()
+	keys := make([]string, 0, len(stuckSweeps.versions)+len(stuckSweeps.refused))
+	seen := map[string]bool{}
+	for k := range stuckSweeps.versions {
+		keys, seen[k] = append(keys, k), true
+	}
+	for k := range stuckSweeps.refused {
+		if !seen[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var out []string
+	for _, k := range keys {
+		if msg, ok := stuckSweeps.refused[k]; ok {
+			out = append(out, fmt.Sprintf("PS-1: sweep %s cannot be re-driven (%s): it is unmined and no higher fee will fix it; check its signature and the vault's L1 nonce", k, msg))
+		} else if n := stuckSweeps.versions[k]; n >= stuckSweepVersions {
+			out = append(out, fmt.Sprintf("PS-1: sweep %s is on its version %d (re-driven %d times without mining): check its signature and the vault's L1 nonce", k, n, n-1))
+		}
+	}
+	return out
 }
 
 // sweepMined reports whether any of hashes has a receipt.
@@ -881,6 +1055,45 @@ func sweepTxPaysOnly(unsignedHex string, successor common.Address) bool {
 		bytes.Equal(tx.Data[4:36], common.LeftPadBytes(successor.Bytes(), 32))
 }
 
+// depositVaults is every generation's address whose MagiDeposit the bridge
+// names or credits: the fund-holding ones, and a pending one only once the
+// registry holds its key (the bridge records it at activation). For a pending
+// generation before activation see depositVaultsWithPending.
+func (c EVMBotConfig) depositVaults() []string {
+	var out []string
+	for _, g := range c.VaultGens {
+		if g.Address != "" && (btcvault.IsFundHoldingStatus(g.Status) || g.Status == btcvault.VaultStatusPending) {
+			out = append(out, g.Address)
+		}
+	}
+	if len(out) == 0 && c.VaultAddress != "" {
+		return []string{c.VaultAddress}
+	}
+	return out
+}
+
+// depositVaultsWithPending is depositVaults plus each pending generation the
+// registry does not yet give an address, at its TSS key's address (as A18
+// derives a vault from its key). The bridge records a generation's key only at
+// activation (vault_lifecycle.go), so without this the I-28 alarm could name an
+// undeployed MagiDeposit only once depositAddress() already named it to
+// depositors; this names it while the generation waits to activate, in time to
+// deploy it first (live 11-04: gen 2 keyed and pending, registry address "",
+// the check saw only gen 1). A pending generation with no TSS key yet adds
+// nothing.
+func (c EVMBotConfig) depositVaultsWithPending(ctx context.Context, gql *vscGraphQL) []string {
+	out := c.depositVaults()
+	for _, g := range c.VaultGens {
+		if g.Status != btcvault.VaultStatusPending || g.Address != "" || g.KeyID == "" {
+			continue
+		}
+		if addr, _, _, ok, err := fetchTssVault(ctx, gql, g.KeyID); err == nil && ok && addr != "" {
+			out = append(out, strings.ToLower(addr))
+		}
+	}
+	return out
+}
+
 // healthKeys is the TSS key of every generation that holds or may receive
 // funds, or waits to activate (A01), else the one key.
 func (c EVMBotConfig) healthKeys(fallback string) []string {
@@ -894,4 +1107,130 @@ func (c EVMBotConfig) healthKeys(fallback string) []string {
 		return []string{fallback}
 	}
 	return keys
+}
+
+// retireWait says why retireVault must not go out this tick, or "" (I-26,
+// testnet 11-04). retireVault purges an Inactive generation once the bridge's
+// stored L1 height is past its grace, and a purged generation's deposits are
+// refused ("transaction is not a deposit to vault"). Live: a 0.02 ETH deposit
+// to the Inactive gen 0 sat parked for its header (RP-9); the proof that let
+// the header be attested also crossed the grace, retireVault went out at once
+// (09:10:12), the map 39 s later was refused and the ETH was stranded at an
+// address the bridge never signs from again. So while a generation is
+// Inactive the bot does not retire while a deposit it found to one is parked
+// or its map is unresolved, or while its scan is behind the stored L1 height
+// (blocks the contract counts that the bot has not looked at). A deposit the
+// bot cannot see yet (not finalized) is not covered here; the contract's
+// purge check is the fix for that. An unreadable stored height waits.
+func retireWait(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, view vaultView) string {
+	inactive := map[string]bool{}
+	for _, g := range view.Gens {
+		if g.Status == btcvault.VaultStatusInactive && g.Address != "" {
+			inactive[strings.ToLower(g.Address)] = true
+		}
+	}
+	if len(inactive) == 0 {
+		return "" // nothing this call can purge
+	}
+	// an entry from before the Vault field may be to an Inactive generation
+	toInactive := func(vault string) bool { return vault == "" || inactive[strings.ToLower(vault)] }
+	cp.mu.Lock()
+	scanned := cp.LastScannedBlock
+	var why string
+	for h, deps := range cp.WaitingDeposits {
+		for _, d := range deps {
+			if toInactive(d.Vault) {
+				why = fmt.Sprintf("deposit %s (block %d) to an Inactive generation is not mapped yet", d.TxHash, h)
+			}
+		}
+	}
+	for id, pm := range cp.PendingMaps {
+		if why == "" && toInactive(pm.Vault) {
+			why = fmt.Sprintf("map %s of deposit %s (block %d) to an Inactive generation has no result yet", id, pm.DepositTx, pm.Block)
+		}
+	}
+	cp.mu.Unlock()
+	if why != "" {
+		return why
+	}
+	_, vst, err := verifierState(ctx, gql, cfg.ContractID, []string{"h"})
+	if err != nil {
+		return "stored L1 height unreadable: " + err.Error()
+	}
+	stored, err := strconv.ParseUint(vst["h"], 10, 64)
+	if err != nil {
+		return fmt.Sprintf("stored L1 height %q unreadable", vst["h"])
+	}
+	if scanned < stored {
+		return fmt.Sprintf("deposit scan at block %d, behind the stored L1 height %d", scanned, stored)
+	}
+	return ""
+}
+
+// purgeWaitBlocks mirrors the bridge's purge wait past a generation's Inactive
+// height: VaultPurgeGraceL1Blocks + VaultPurgeMapWindowL1Blocks (I-26): about
+// 30 days + a day on mainnet, 64 + 64 L1 blocks elsewhere. A bridge without the
+// map window purges 64 blocks sooner; asking for its proof later is harmless.
+func purgeWaitBlocks(chainID uint64) uint64 {
+	if chainID == 1 {
+		return 216_000 + 7_200
+	}
+	return 64 + 64
+}
+
+// bridgeChainID is the bridge's L1 chain id (state "chainid", the contract's
+// default 1), read once.
+var bridgeChainID struct {
+	sync.Mutex
+	id uint64
+}
+
+func readBridgeChainID(ctx context.Context, gql *vscGraphQL, contract string) uint64 {
+	bridgeChainID.Lock()
+	defer bridgeChainID.Unlock()
+	if bridgeChainID.id != 0 {
+		return bridgeChainID.id
+	}
+	st, err := gql.fetchContractState(ctx, contract, []string{"chainid"})
+	if err != nil {
+		return 0
+	}
+	id, _ := strconv.ParseUint(st["chainid"], 10, 64)
+	if id == 0 {
+		id = 1
+	}
+	bridgeChainID.id = id
+	return id
+}
+
+// notePurgeWait is I-38 (testnet 11-04/05): on a quiet bridge the last purge of
+// a rotation waits for the stored L1 height to pass the grace, and nothing asks
+// for the proof that moves it (BTC never waits: its headers are relayed all the
+// time; EVM proofs are on demand). Once the bot has scanned past the purge
+// height of an Inactive generation, cp.PurgeWantTip asks the operator for a
+// proof (writeNeedsFile) until the stored height reaches it: about one paid
+// proof per rotation, and none while L1 itself is not that far yet.
+func notePurgeWait(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, view vaultView) {
+	var want uint64
+	chainID := uint64(0)
+	for _, g := range view.Gens {
+		if g.Status != btcvault.VaultStatusInactive || g.InactiveHeight == 0 {
+			continue
+		}
+		if chainID == 0 {
+			if chainID = readBridgeChainID(ctx, gql, cfg.ContractID); chainID == 0 {
+				return
+			}
+		}
+		at := uint64(g.InactiveHeight) + purgeWaitBlocks(chainID)
+		cp.mu.Lock()
+		scanned := cp.LastScannedBlock
+		cp.mu.Unlock()
+		if scanned >= at && at > want {
+			want = at
+		}
+	}
+	cp.mu.Lock()
+	cp.PurgeWantTip = want
+	cp.mu.Unlock()
 }

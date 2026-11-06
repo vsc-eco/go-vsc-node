@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"vsc-node/lib/btcvault"
 )
 
 // B8 (EVM bot parity, health.go D7): a TSS key expires after its epochs and,
@@ -111,8 +113,32 @@ func (b *Bot) fetchCurrentEpoch(ctx context.Context) (uint64, error) {
 	return result.Data.ElectionByBlockHeight.Epoch, nil
 }
 
+// expiryKeyIds is the keys whose expiry matters: each generation short of
+// PURGED, and the legacy "main" key (generation 0) only while there is no
+// registry or generation 0 is not purged. I-9 (testnet 11-04): signatureKeyIds
+// always adds "main" (a legacy spend may still need its signature), and the
+// alarm then warned about a key no coin needs once gen 0 was purged.
+func expiryKeyIds(contractId string, vaults []btcvault.Vault) []string {
+	if len(vaults) == 0 {
+		return []string{contractId + "-" + btcvault.VaultKeyName(0)}
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, v := range vaults {
+		if v.Status == btcvault.VaultStatusPurged {
+			continue
+		}
+		id := contractId + "-" + btcvault.VaultKeyName(v.Generation)
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // KeyExpiryIssues returns the D7 warnings for every key a live generation uses
-// (the legacy "main" key plus each generation short of PURGED).
+// (expiryKeyIds).
 func (b *Bot) KeyExpiryIssues(ctx context.Context) ([]string, error) {
 	vaults, err := b.FetchVaultRegistry(ctx)
 	if err != nil {
@@ -123,7 +149,7 @@ func (b *Bot) KeyExpiryIssues(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("read the current epoch: %w", err)
 	}
 	keys := map[string]tssKeyExpiry{}
-	for _, id := range signatureKeyIds(b.BotConfig.ContractId(), vaults) {
+	for _, id := range expiryKeyIds(b.BotConfig.ContractId(), vaults) {
 		k, found, err := b.fetchTssKeyExpiry(ctx, id)
 		if err != nil {
 			return nil, fmt.Errorf("read key %s: %w", id, err)

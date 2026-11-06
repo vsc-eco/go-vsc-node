@@ -184,3 +184,29 @@ func TestFetchSignatures_NoRegistryQueriesMainOnly(t *testing.T) {
 		t.Fatalf("got %v, asked %v", got, f.keysAsked)
 	}
 }
+
+// I-9, testnet 11-04: the key-expiry alarm always named the legacy "main" key;
+// on testnet gen 0 was folded and purged (every coin on gen 13), so it alarmed
+// on a key no coin needs. It names main only while there is no registry or gen 0
+// is not purged; signature lookups keep main (signatureKeyIds).
+func TestI9_ExpiryAlarmSkipsAPurgedLegacyKey(t *testing.T) {
+	const c = "vsc1btc"
+	reg := func(es ...btcvault.Vault) []btcvault.Vault { return es }
+	for _, tc := range []struct {
+		name   string
+		vaults []btcvault.Vault
+		want   []string
+	}{
+		{"no registry", nil, []string{c + "-main"}},
+		{"gen 0 purged", reg(btcvault.Vault{Generation: 0, Status: btcvault.VaultStatusPurged}, btcvault.Vault{Generation: 13, Status: btcvault.VaultStatusActive}), []string{c + "-mainv13"}},
+		{"gen 0 draining", reg(btcvault.Vault{Generation: 0, Status: btcvault.VaultStatusDraining}, btcvault.Vault{Generation: 1, Status: btcvault.VaultStatusActive}), []string{c + "-main", c + "-mainv1"}},
+	} {
+		if got := expiryKeyIds(c, tc.vaults); !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%s: %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// signature lookups still include main
+	if ids := signatureKeyIds(c, reg(btcvault.Vault{Generation: 0, Status: btcvault.VaultStatusPurged})); ids[0] != c+"-main" {
+		t.Fatalf("signature keys %v lost main", ids)
+	}
+}

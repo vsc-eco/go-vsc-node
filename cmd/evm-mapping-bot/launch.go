@@ -141,7 +141,7 @@ func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detec
 		}
 		l := rc.Logs[idx]
 		dep := detectedDeposit{BlockHeight: height, TxIndex: int(hexToUint64(lg.TransactionIndex)), LogIndex: idx,
-			TxHash: lg.TransactionHash, DepositType: "contract"}
+			TxHash: lg.TransactionHash, DepositType: "contract", Vault: strings.ToLower(vault)}
 		if data := hexToBytes(l.Data); len(data) >= 32 {
 			dep.Amount = new(big.Int).SetBytes(data[:32])
 		}
@@ -426,6 +426,17 @@ func prefetchHistoryProofs(ctx context.Context, rpc *ethRPC, f uint64, needs []u
 		return nil
 	}
 	raw, err := rpc.callCtx(ctx, "eth_getProof", fmt.Sprintf(`"%s", [%s], "0x%x"`, historyContract, strings.Join(slots, ","), f))
+	if err != nil && !isRPCAnswer(err) {
+		// I-18 (testnet 11-04, 07:00:03 and 3 more): one HTTP 429 or a
+		// dropped connection here was cached as "this RPC cannot serve state
+		// proofs" for the whole finalized block, and every need went to the
+		// submitHeaders link-down (270,000 RC for 9 runs, the bot had 85,146:
+		// the migration stalled on RC). No endpoint answered, so nothing is
+		// known about the RPC: nothing is cached and the next tick asks again.
+		slog.Warn("I-18: eth_getProof at a finalized block got no answer; asking again next tick (no link-down for it)",
+			"block", f, "err", err)
+		return nil
+	}
 	if err != nil {
 		e.Err = err.Error()
 		slog.Warn("RP-9: eth_getProof at a finalized block failed (the RPC must serve recent state); headers fall back to submitHeaders",
@@ -565,16 +576,42 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 	if len(roots) > 0 {
 		rs, err := headersStored(ctx, gql, cfg.ContractID, roots)
 		if err == nil {
+			// I-45 (testnet 11-05 16:52): each needed header goes from one
+			// root only, the newest that sends it, and the tick's calls stop
+			// at the bot's RC. Every root used to get the whole open list, so
+			// six cached roots attested 11 headers 37 times in 21 calls, each
+			// declaring the rc_limit of fresh headers (~14.7k for two; a stored
+			// header executes for little), and the calls RC could not cover
+			// stayed pending and held every later nonce, the deposit maps
+			// among them, for hours. A
+			// root that sends nothing for its headers (payload cap, a refused
+			// call, RC short for its own attestHistoryRoot) leaves them to the
+			// next older root, as every root used to try them.
+			var budget *int64 // nil: the bot's RC is unknown, no cap (as in linkDown)
+			if rc, known, err := submitter.gql.fetchAccountRC(ctx, submitter.did.String()); err == nil && known {
+				budget = &rc
+			}
+			claimed := map[uint64]bool{} // sent, or still pending, from a newer root
 			for _, f := range roots {
 				if !rs[f] {
 					continue
 				}
+				var todo []uint64
 				cp.mu.Lock()
+				for _, x := range open {
+					if _, ok := cp.AttestCache[f].Headers[x]; ok && !claimed[x] {
+						todo = append(todo, x)
+					}
+				}
 				for x := range cp.AttestCache[f].Headers {
 					covered[x] = true
 				}
 				cp.mu.Unlock()
-				attestFromRoot(ctx, gql, submitter, cp, cfg, vid, f, open)
+				if len(todo) > 0 && attestFromRoot(ctx, gql, submitter, cp, cfg, vid, f, todo, budget) {
+					for _, x := range todo {
+						claimed[x] = true
+					}
+				}
 			}
 		}
 	}
@@ -604,6 +641,15 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 				"block", x, "tip", tip)
 			continue
 		}
+		// I-18 (testnet 11-04, 09:09): a near link-down the bot's RC cannot
+		// pay went out one run per tick as RC refilled (~13 h for 90,000 RC)
+		// while a proof, whose EIP-2935 root covers the block, was never asked
+		// for. When a proof can cover it, ask for one instead.
+		if window != -1 && (finErr != nil || fin < x+historyServeWindow) && !linkDownAffordable(ctx, submitter, vid, x, tip) {
+			slog.Warn("I-18: linking the needed header down needs more RC than the bot has; asking for a proof instead", "block", x, "tip", tip)
+			wantRoot = true
+			break
+		}
 		cp.mu.Lock()
 		recent := time.Since(time.Unix(cp.LinkSentAt, 0)) < linkResendAfter
 		if !recent {
@@ -617,31 +663,66 @@ func handleHeaderNeeds(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submit
 	}
 }
 
-// attestFromRoot submits attestHistoryRoot (if needed) and attestHeaders for
-// the open needs cached at root f.
-func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, vid string, f uint64, open []uint64) {
+// attestRcCeiling is the attestations' rc_limit when no dry run sizes it (as
+// before I-20); attestRcFloor the least a sized one declares.
+const (
+	attestRcCeiling uint64 = 20_000
+	attestRcFloor   uint64 = 1_000
+)
+
+// attestRC is an attestation's rc_limit: twice its dry run's rc_used, between
+// attestRcFloor and attestRcCeiling (I-20, testnet 11-04 10:12-11:21). The
+// node refuses a call whose rc_limit is above the RC the bot has, so the flat
+// 20,000 held every attestation, and the deposit map waiting on it, while the
+// bot had 13-20k RC, for an attestHeaders that uses ~3,700 RC a header (real
+// wasm: 3,717 for one, 7,336 for two). An unavailable or
+// refused dry run declares the ceiling, as before.
+func attestRC(ctx context.Context, submitter *l2Submitter, vid, action string, payload []byte) uint64 {
+	sim, err := submitter.gql.simulateContractCall(ctx, submitter.did.String(), vid, action, string(payload))
+	if err != nil || !sim.Success || sim.RcUsed <= 0 {
+		return attestRcCeiling
+	}
+	return min(max(uint64(sim.RcUsed)*2, attestRcFloor), attestRcCeiling)
+}
+
+// attestHeadersRC sizes an attestHeaders call by its dry run. When the root's
+// history hash is not stored yet, attestHistoryRoot goes out in the same tick,
+// so attestHeaders' own dry run would run before it, fail on the missing root
+// and fall back to the ceiling: on testnet 11-05 every attestHeaders after a
+// new proof declared 20,000, the limit I-20 was meant to size down (a bot with
+// 13-20k RC is refused). Here it is dry-run together with attestHistoryRoot,
+// on the state that call leaves. rootPayload is nil when the root is stored.
+func attestHeadersRC(ctx context.Context, submitter *l2Submitter, vid string, rootPayload, payload []byte) uint64 {
+	if rootPayload == nil {
+		return attestRC(ctx, submitter, vid, "attestHeaders", payload)
+	}
+	sims, err := submitter.gql.simulateContractCalls(ctx, submitter.did.String(), vid, []l2Call{
+		{Action: "attestHistoryRoot", Payload: rootPayload}, {Action: "attestHeaders", Payload: payload},
+	})
+	if err != nil || len(sims) != 2 || !sims[1].Success || sims[1].RcUsed <= 0 {
+		return attestRcCeiling
+	}
+	return min(max(uint64(sims[1].RcUsed)*2, attestRcFloor), attestRcCeiling)
+}
+
+// takeRC takes rc from the tick's RC budget when the budget covers it (I-45).
+// A nil budget (the bot's RC unknown) covers every call, as in linkDown.
+func takeRC(budget *int64, rc uint64) bool {
+	if budget == nil {
+		return true
+	}
+	if *budget < int64(rc) {
+		return false
+	}
+	*budget -= int64(rc)
+	return true
+}
+
+// markAttestSent records an attestation attempt from root f (it is not sent
+// again for attestResendAfter) and drops the marks of roots no longer cached.
+func markAttestSent(cp *Checkpoint, f uint64) {
 	cp.mu.Lock()
-	e := cp.AttestCache[f]
-	sentAt := cp.AttestSentAt[f]
-	cp.mu.Unlock()
-	if time.Since(time.Unix(sentAt, 0)) < attestResendAfter {
-		return // the last submission may not have executed yet
-	}
-	var items []map[string]string
-	for _, x := range open {
-		if hb, ok := e.Headers[x]; ok {
-			items = append(items, map[string]string{"rlp_hex": hb.RLP, "storage_proof": joinHexNodes(hb.StorageProof)})
-		}
-	}
-	if len(items) == 0 {
-		return
-	}
-	fk := strconv.FormatUint(f, 10)
-	st, err := gql.fetchContractStateHex(ctx, vid, []string{"hr-" + fk})
-	if err != nil {
-		return
-	}
-	cp.mu.Lock()
+	defer cp.mu.Unlock()
 	if cp.AttestSentAt == nil {
 		cp.AttestSentAt = map[uint64]int64{}
 	}
@@ -651,31 +732,96 @@ func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter
 			delete(cp.AttestSentAt, k)
 		}
 	}
+}
+
+// attestFromRoot submits attestHistoryRoot (if needed) and attestHeaders for
+// the open needs cached at root f, as far as budget covers their rc_limits:
+// the node admits each call against the bot's RC alone, so calls past it are
+// accepted and then wait, holding every later nonce (I-45). The rest go on a
+// later tick, as in linkDown (RP9-LINKDOWN-RESTART). It reports whether f
+// holds these headers now: it sent some, or it tried within attestResendAfter
+// (calls from then may still be pending; an attempt that sent nothing left
+// them to the older roots in its own tick); false leaves them to an older root.
+func attestFromRoot(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, vid string, f uint64, open []uint64, budget *int64) bool {
+	cp.mu.Lock()
+	e := cp.AttestCache[f]
+	sentAt := cp.AttestSentAt[f]
 	cp.mu.Unlock()
-	if len(st["hr-"+fk]) != 32 {
-		p, _ := json.Marshal(map[string]any{"block_number": f, "account_proof": joinHexNodes(e.AccountProof)})
-		if _, err := submitter.callContractL2(ctx, vid, "attestHistoryRoot", p, 20_000); err != nil {
-			slog.Warn("RP-9: attestHistoryRoot", "root", f, "err", err)
-			return
+	if time.Since(time.Unix(sentAt, 0)) < attestResendAfter {
+		return true // tried within attestResendAfter: what it sent may not have executed yet
+	}
+	var items []map[string]string
+	for _, x := range open {
+		if hb, ok := e.Headers[x]; ok {
+			items = append(items, map[string]string{"rlp_hex": hb.RLP, "storage_proof": joinHexNodes(hb.StorageProof)})
 		}
+	}
+	if len(items) == 0 {
+		return false
+	}
+	fk := strconv.FormatUint(f, 10)
+	st, err := gql.fetchContractStateHex(ctx, vid, []string{"hr-" + fk})
+	if err != nil {
+		return false
+	}
+	var rootPayload []byte // set: attestHistoryRoot goes out this tick, ahead of the headers
+	var rootRC uint64
+	if len(st["hr-"+fk]) != 32 {
+		rootPayload, _ = json.Marshal(map[string]any{"block_number": f, "account_proof": joinHexNodes(e.AccountProof)})
+		rootRC = attestRC(ctx, submitter, vid, "attestHistoryRoot", rootPayload)
 	}
 	wrap := func(hs []map[string]string) []byte {
 		p, _ := json.Marshal(map[string]any{"root_block": f, "headers": hs})
 		return p
 	}
+	n := packHeaders(items, attestPerCall, wrap)
+	if n == 0 {
+		markAttestSent(cp, f) // logged once per attestResendAfter, as before
+		slog.Error("RP-9: one attested header is over the node's payload cap", "root", f, "bytes", len(wrap(items[:1])))
+		return false
+	}
+	firstRC := attestHeadersRC(ctx, submitter, vid, rootPayload, wrap(items[:n]))
+	if !takeRC(budget, rootRC+firstRC) {
+		// Marked as an attempt: a root short of RC tries again after
+		// attestResendAfter, as a refused call did before, not every tick (its
+		// dry runs and this line, per cached root, for the hours RC refills).
+		// It claims nothing, so an older root may still send them this tick.
+		markAttestSent(cp, f)
+		slog.Info("I-45: an attestation waits for the bot's RC; it goes when RC covers it", "root", f, "headers", len(items), "rc_needed", rootRC+firstRC, "rc_left", *budget)
+		return false
+	}
+	markAttestSent(cp, f)
+	if rootPayload != nil {
+		if _, err := submitter.callContractL2(ctx, vid, "attestHistoryRoot", rootPayload, rootRC); err != nil {
+			slog.Warn("RP-9: attestHistoryRoot", "root", f, "err", err)
+			return false
+		}
+	}
+	sent := 0
 	for i := 0; i < len(items); {
 		n := packHeaders(items[i:], attestPerCall, wrap)
 		if n == 0 {
 			slog.Error("RP-9: one attested header is over the node's payload cap", "root", f, "bytes", len(wrap(items[i:i+1])))
-			return
+			return sent > 0
 		}
-		if _, err := submitter.callContractL2(ctx, vid, "attestHeaders", wrap(items[i:i+n]), 20_000); err != nil {
+		p := wrap(items[i : i+n])
+		rc := firstRC
+		if i > 0 {
+			rc = attestHeadersRC(ctx, submitter, vid, rootPayload, p)
+			if !takeRC(budget, rc) {
+				slog.Info("I-45: the rest of this root's attestations wait for the bot's RC", "root", f, "attested", sent, "of", len(items))
+				break
+			}
+		}
+		if _, err := submitter.callContractL2(ctx, vid, "attestHeaders", p, rc); err != nil {
 			slog.Warn("RP-9: attestHeaders", "root", f, "err", err)
-			return
+			return sent > 0
 		}
+		sent += n
 		i += n
 	}
-	slog.Info("RP-9: headers attested", "root", f, "count", len(items))
+	slog.Info("RP-9: headers attested", "root", f, "count", sent)
+	return sent > 0
 }
 
 // linkDownRC is the rc_limit of one submitHeaders call: the node requires that
@@ -747,6 +893,22 @@ func linkDown(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, vid stri
 		}
 		end -= n
 	}
+}
+
+// linkDownAffordable reports whether the bot's RC pays for linking x down from
+// the stored run below tip in full (an unknown RC counts as affordable, as in
+// linkDown).
+func linkDownAffordable(ctx context.Context, submitter *l2Submitter, vid string, x, tip uint64) bool {
+	top := linkedFloor(ctx, submitter.gql, vid, x, tip)
+	if top <= x {
+		return true
+	}
+	rc, known, err := submitter.gql.fetchAccountRC(ctx, submitter.did.String())
+	if err != nil || !known {
+		return true
+	}
+	runs := (int(top-x) + linkPerCall - 1) / linkPerCall
+	return int64(runs)*int64(linkDownRC) <= rc
 }
 
 // linkedFloor is the lowest block of the stored run that reaches down from
@@ -824,6 +986,12 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 	if wantRoot {
 		reasons = append(reasons, "header needed below the tip with no attestation root (a new proof's root covers it)")
 	}
+	cp.mu.Lock()
+	purgeAt := cp.PurgeWantTip
+	cp.mu.Unlock()
+	if purgeAt > tip {
+		reasons = append(reasons, fmt.Sprintf("a purge waits for the stored L1 height to reach %d (I-38)", purgeAt))
+	}
 	if st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np"}); err == nil {
 		h, _ := strconv.ParseUint(st["wqh"], 10, 64)
 		t, _ := strconv.ParseUint(st["wqt"], 10, 64)
@@ -835,11 +1003,21 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 	}
 	cp.mu.Lock()
 	if len(reasons) == 0 {
-		cp.WantProofSince = 0
-	} else if cp.WantProofSince == 0 {
-		cp.WantProofSince = time.Now().Unix()
+		cp.WantProofSince, cp.WantBatchSince, cp.WantBatchTip = 0, 0, 0
+	} else {
+		now := time.Now().Unix()
+		if cp.WantProofSince == 0 {
+			cp.WantProofSince = now
+		}
+		// I-43 (testnet 11-05: 3 of 24 proofs proved at once): the operator batches
+		// for its window from "since"; a need still open when a proof lands (its
+		// block was above the proof's checkpoint) or one that arrived meanwhile
+		// starts a new batch, rather than inheriting a clock that already ran out.
+		if cp.WantBatchSince == 0 || tip > cp.WantBatchTip {
+			cp.WantBatchSince, cp.WantBatchTip = now, tip
+		}
 	}
-	since := cp.WantProofSince
+	since := cp.WantBatchSince
 	cp.mu.Unlock()
 	data, _ := json.Marshal(map[string]any{"want_proof": len(reasons) > 0, "since": since, "reasons": reasons,
 		"blocks": blocks, "tip": tip, "updated": time.Now().Unix()})
@@ -884,6 +1062,83 @@ var (
 	drainEvery  = time.Minute
 )
 
+// drainSkipping: the last drain tick's dry run issued nothing (I-17); logged
+// once per run of skipped drains.
+var drainSkipping bool
+
+// drainIsNoop dry-runs drainWithdrawalQueue and reports whether it would do
+// nothing at all: ret "0", no logs or TSS ops, no deletion, and no key whose
+// value would change. The node's state_diff lists every key the call touched,
+// reads included (Previous is the call session's cache, null for a key it only
+// read: a no-op drain on testnet listed chainid, v, va, vac-1, vn, wqh, wqt),
+// so each listed key's Current is compared with the stored value. Any error,
+// refusal or missing field is false: the drain is sent.
+func drainIsNoop(ctx context.Context, g *vscGraphQL, caller, contract string, payload []byte) bool {
+	data, err := g.query(ctx,
+		`query($i: SimulateContractCallsInput!){ simulateContractCalls(input: $i){ success ret logs state_diff } }`,
+		map[string]interface{}{"i": map[string]interface{}{
+			"tx_id":          fmt.Sprintf("evm-bot-drain-%d", time.Now().UnixNano()),
+			"required_auths": []string{caller},
+			"calls":          []map[string]interface{}{{"contract_id": contract, "action": "drainWithdrawalQueue", "payload": string(payload), "rc_limit": simulateRcCap}},
+		}})
+	if err != nil {
+		return false
+	}
+	var out struct {
+		Sim []struct {
+			Success bool    `json:"success"`
+			Ret     *string `json:"ret"`
+			Logs    map[string]struct {
+				Logs   []json.RawMessage `json:"Logs"`
+				TssOps []json.RawMessage `json:"TssOps"`
+			} `json:"logs"`
+			StateDiff map[string]struct {
+				Deletions map[string]bool `json:"Deletions"`
+				KeyDiff   map[string]struct {
+					Current []byte `json:"Current"` // base64 in the answer
+				} `json:"KeyDiff"`
+			} `json:"state_diff"`
+		} `json:"simulateContractCalls"`
+	}
+	if json.Unmarshal(data, &out) != nil || len(out.Sim) != 1 {
+		return false
+	}
+	r := out.Sim[0]
+	if !r.Success || r.Ret == nil || *r.Ret != "0" {
+		return false
+	}
+	if _, ran := r.StateDiff[contract]; !ran {
+		return false // no diff for the bridge: not a dry run this can read
+	}
+	for _, l := range r.Logs {
+		if len(l.Logs) > 0 || len(l.TssOps) > 0 {
+			return false
+		}
+	}
+	for cid, d := range r.StateDiff {
+		if len(d.Deletions) > 0 {
+			return false
+		}
+		if len(d.KeyDiff) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(d.KeyDiff))
+		for k := range d.KeyDiff {
+			keys = append(keys, k)
+		}
+		stored, err := g.fetchContractStateHex(ctx, cid, keys)
+		if err != nil {
+			return false
+		}
+		for k, v := range d.KeyDiff {
+			if string(v.Current) != stored[k] {
+				return false // a write
+			}
+		}
+	}
+	return true
+}
+
 // drainPricingMaxAge: the bridge prices an issue from the tip header only while
 // it is under an hour old (MaxPricingHeaderAge); older, a drain does nothing.
 var drainPricingMaxAge = 55 * time.Minute
@@ -894,7 +1149,7 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	if time.Since(lastDrainAt) < drainEvery {
 		return
 	}
-	st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np"})
+	st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np", "wnh"})
 	if err != nil {
 		return
 	}
@@ -903,6 +1158,15 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	n, _ := strconv.ParseUint(st["n"], 10, 64)
 	np, _ := strconv.ParseUint(st["np"], 10, 64)
 	if t <= h || np-n >= maxInFlightWithdrawals {
+		return
+	}
+	// I-17 (testnet 11-04 06:57-08:17): while a superseded generation's
+	// withdrawals still hold the nonces (wnh set and one pending), the
+	// bridge's drain issues nothing (issuableNow, queue.go), and the bot sent
+	// one a minute anyway: ret "0", 551 RC, a Hive custom_json and another
+	// chance at TX-GOSSIP-STALL each. With wnh set and none pending, the drain
+	// is the call that hands the nonces to the active generation, so it goes.
+	if _, err := strconv.ParseUint(st["wnh"], 10, 32); err == nil && np > n {
 		return
 	}
 	max := maxInFlightWithdrawals - (np - n)
@@ -919,6 +1183,22 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	}
 	lastDrainAt = time.Now()
 	p, _ := json.Marshal(map[string]any{"max": max})
+	// I-17 (devnet E1 arm B, 11-05): from a rotation's cut-over until
+	// confirmSweep moves the books, the active generation covers no queued
+	// withdrawal (activeGenCovers, queue.go: queueWait) and every drain issued
+	// nothing: 17 in 18 min, ~550 RC and a Hive custom_json each (testnet 11-04
+	// 06:57-08:17: one every ~70 s). The wnh check above does not see this
+	// hold. A drain whose dry run issues nothing, logs nothing and changes no
+	// state is not sent; an issue, a refund, a recount step, or no usable dry
+	// run goes as before. The next drain tick dry-runs again.
+	if drainIsNoop(ctx, gql, submitter.did.String(), cfg.ContractID, p) {
+		if !drainSkipping {
+			slog.Info("I-17: drainWithdrawalQueue would issue nothing now (dry run); not sent until it would", "queued", t-h, "inFlight", np-n)
+		}
+		drainSkipping = true
+		return
+	}
+	drainSkipping = false
 	// QFREEZE-1: a drain also refunds the queued withdrawals the current price
 	// cannot pay (at most the contract's MaxDrainScan per call), ~1,235 RC each
 	// on the real wasm. Without room for them, a drain with one free slot (10k

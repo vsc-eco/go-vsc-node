@@ -101,7 +101,12 @@ func (h *botHealth) recordTick(now time.Time, err error, cp *Checkpoint) {
 	h.scanned = cp.LastScannedBlock
 	h.withdrawals = len(cp.SentWithdrawals)
 	h.pendingMaps = len(cp.PendingMaps)
-	h.deadLetters = len(cp.DeadLetters)
+	h.deadLetters = 0 // for the operator: an AutoRetry one is mapped again by the bot (I-46)
+	for _, d := range cp.DeadLetters {
+		if !d.AutoRetry {
+			h.deadLetters++
+		}
+	}
 }
 
 // due reports whether the alarms are due a check.
@@ -119,11 +124,18 @@ func (h *botHealth) due(now time.Time) bool {
 // split across them, and a retiring generation's key must not expire before
 // it is swept. wantSince is when the bot started asking for a header proof (0:
 // it is not asking).
-func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID string, keyIDs []string, did string, vaults []string, tokens map[string]string, wantSince int64) {
+func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, rpc *ethRPC, contractID string, keyIDs []string, did string, vaults []string, tokens map[string]string, wantSince int64, depositVaults []string) {
 	var alarms []string
 	warn := func(msg string, args ...any) {
 		alarms = append(alarms, msg)
 		slog.Warn(msg, args...)
+	}
+
+	if a := rotationRCAlarm(vaultOpNow()); a != "" {
+		warn(a)
+	}
+	for _, a := range stuckSweepAlarms() {
+		warn(a)
 	}
 
 	if rc, known, err := gql.fetchAccountRC(ctx, did); err != nil {
@@ -157,7 +169,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 			warn("P1: the bridge's theft halt is set (a vault address sent a transaction the bridge never authorized): vault keysigns are stopped until the owner's clearTheftHalt")
 		}
 		if st["si"] != "" {
-			warn("C2: the bridge's custody halt is set at block " + st["si"] + " (the vault holds less ETH than the bridge booked): vault keysigns are stopped until a full custody proof or the owner's setCustodyCheck")
+			warn("C2: the bridge's custody halt is set at block " + st["si"] + " (" + shortAssets(ctx, gql, contractID, st["chainid"], tokens) + "): vault keysigns are stopped until a full custody proof or the owner's setCustodyCheck")
 		}
 		reserve, _ := new(big.Int).SetString(st["gr"], 10)
 		if reserve == nil {
@@ -181,11 +193,58 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		}
 		checkTokenCustody(ctx, warn, gql, rpc, contractID, st["chainid"], vaults, tokens)
 	}
+	checkDepositContracts(warn, rpc, depositVaults)
 
 	h.mu.Lock()
 	h.alarms = alarms
 	h.checkedAt = now
 	h.mu.Unlock()
+}
+
+// shortAssets names the assets whose custody proof found the vault short
+// ("sis-<asset>", set with the halt), for the C2 alarm (I-11, testnet 11-04
+// 04:37: a USDC shortfall was reported as "less ETH than the bridge booked").
+func shortAssets(ctx context.Context, gql *vscGraphQL, contractID, chainID string, tokens map[string]string) string {
+	assets := []string{"eth"}
+	if len(tokens) > 0 {
+		if chainID == "" {
+			chainID = "1"
+		}
+		addrs := make([]string, 0, len(tokens))
+		for a := range tokens {
+			addrs = append(addrs, a)
+		}
+		sort.Strings(addrs)
+		keys := make([]string, len(addrs))
+		for i, a := range addrs {
+			keys[i] = "t-" + chainID + "-" + strings.TrimPrefix(a, "0x")
+		}
+		if reg, err := gql.fetchContractState(ctx, contractID, keys); err == nil {
+			for _, k := range keys {
+				if sym := strings.Split(reg[k], "|")[0]; sym != "" {
+					assets = append(assets, sym)
+				}
+			}
+		}
+	}
+	keys := make([]string, len(assets))
+	for i, a := range assets {
+		keys[i] = "sis-" + a
+	}
+	st, err := gql.fetchContractState(ctx, contractID, keys)
+	if err != nil {
+		return "the short asset is unreadable: " + err.Error()
+	}
+	var short []string
+	for i, a := range assets {
+		if st[keys[i]] != "" {
+			short = append(short, strings.ToUpper(a)+" at block "+st[keys[i]])
+		}
+	}
+	if len(short) == 0 {
+		return "an asset the bot does not watch is short: check the bridge's sis-* keys"
+	}
+	return "the vault holds less than the bridge booked of: " + strings.Join(short, ", ")
 }
 
 // checkTokenCustody is C4 for each watched ERC-20: the vault's balanceOf must
@@ -286,8 +345,12 @@ func (e *ethRPC) erc20Frozen(token, holder string) (frozen bool, view string) {
 }
 
 // wantProofAlarmAfter is how long a header proof may be wanted before /health
-// alarms (A10): the operator batches proofs every 10 minutes.
-var wantProofAlarmAfter = 6 * time.Hour
+// alarms (A10). A need starts once its block is final; the operator batches
+// for 10 minutes and proves in 1-2, so on testnet 11-04 every need cleared 15-25
+// minutes after it appeared. I-30 (11-04): the operator's daily budget ran out
+// at 18:01 and this alarm, then at 6 h, would have stayed quiet through most of
+// a 9 h 20 m stall; at 45 minutes it fires about twice a normal cycle in.
+var wantProofAlarmAfter = 45 * time.Minute
 
 // sumBalances is the total of balance over vaults.
 func sumBalances(vaults []string, balance func(string) (*big.Int, error)) (*big.Int, error) {
@@ -400,6 +463,44 @@ func (g *vscGraphQL) fetchAccountRC(ctx context.Context, account string) (int64,
 		return 0, false, nil
 	}
 	return parsed.GetAccountRC.Amount, true, nil
+}
+
+// getCode returns the runtime code at addr at the latest block ("0x": none).
+func (e *ethRPC) getCode(addr string) (string, error) {
+	data, err := e.call("eth_getCode", fmt.Sprintf(`"%s", "latest"`, addr))
+	if err != nil {
+		return "", err
+	}
+	var code string
+	if err := json.Unmarshal(data, &code); err != nil {
+		return "", err
+	}
+	return code, nil
+}
+
+// checkDepositContracts is I-28 (testnet 11-04): depositAddress() names the
+// active vault's MagiDeposit (RP-7, CREATE2-derived) whether or not it is
+// deployed, and nothing in a rotation deploys the new generation's. A
+// deposit(recipient) call to an address with no code succeeds on L1, emits no
+// Deposit log and is never credited (0.001 ETH lost to gen 1's on 11-04). So
+// every generation with a key that the bridge can name, the pending one
+// included, is checked, and an undeployed one is an alarm until someone
+// deploys it (the deterministic CREATE2 proxy, salt 0; permissionless).
+func checkDepositContracts(warn func(string, ...any), rpc *ethRPC, vaults []string) {
+	for _, v := range vaults {
+		dc := depositContractAddress(v)
+		if dc == "" {
+			continue
+		}
+		code, err := rpc.getCode(dc)
+		if err != nil {
+			warn("I-28: cannot read the MagiDeposit's code", "magideposit", dc, "vault", v, "err", err)
+			continue
+		}
+		if code == "" || code == "0x" {
+			warn(fmt.Sprintf("I-28: MagiDeposit %s of vault %s is not deployed: deposit(recipient) calls to it succeed on L1 and are never credited; deploy it (CREATE2 proxy, salt 0) before depositAddress() names it", dc, v))
+		}
+	}
 }
 
 // getBalance returns addr's L1 balance in wei at the latest block.
