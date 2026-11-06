@@ -186,7 +186,7 @@ func (b *Bot) RetryFailedTx(ctx context.Context, txId string) error {
 	}
 
 	b.L.Info("retrying failed VSC tx", "txId", txId, "action", rec.Action)
-	newTxId, retryErr := b.callWithRetry(ctx, rec.Payload, rec.Action, broadcastRetryAttempts)
+	newTxId, retryErr := b.callWithRetry(ctx, refitStoredPayload(rec.Action, rec.Payload), rec.Action, broadcastRetryAttempts)
 	// Delete the old record ONLY when the new broadcast reached a terminal
 	// on-chain status (CONFIRMED/PROCESSED → nil, or FAILED → ErrTxFailed with
 	// a fresh record already written inside callWithRetry). If the status is
