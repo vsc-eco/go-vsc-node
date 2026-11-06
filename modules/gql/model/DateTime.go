@@ -1,7 +1,7 @@
 package model
 
 import (
-	"fmt"
+	"errors"
 	"io"
 	"time"
 
@@ -16,11 +16,18 @@ func MarshalDateTime(t time.Time) graphql.Marshaler {
 	})
 }
 
-// UnmarshalDateTime parses ISO 8601 string to time.Time.
+var errDateTime = errors.New("must be an RFC 3339 date-time, e.g. 2026-01-02T15:04:05Z")
+
+// UnmarshalDateTime parses ISO 8601 string to time.Time. time.Parse's own
+// error spells out Go's reference layout, so it is not returned to clients.
 func UnmarshalDateTime(v interface{}) (time.Time, error) {
 	str, ok := v.(string)
 	if !ok {
-		return time.Time{}, fmt.Errorf("expected string")
+		return time.Time{}, errDateTime
 	}
-	return time.Parse(time.RFC3339, str)
+	t, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		return time.Time{}, errDateTime
+	}
+	return t, nil
 }

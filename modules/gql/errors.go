@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/vektah/gqlparser/v2/gqlerror"
@@ -54,6 +55,11 @@ func sanitize(err error) (replacement string, internal bool) {
 		return msgInvalidValue, false
 	}
 
+	var timeErr *time.ParseError
+	if errors.As(err, &timeErr) {
+		return msgInvalidValue, false
+	}
+
 	// Anything the database said. ServerError covers CommandError,
 	// WriteException and BulkWriteException.
 	var srvErr mongo.ServerError
@@ -71,7 +77,8 @@ func sanitize(err error) (replacement string, internal bool) {
 	case strings.Contains(msg, "strconv."):
 		return msgInvalidNumber, false
 	case strings.Contains(msg, "Go value of type"),
-		strings.Contains(msg, "Go struct field"):
+		strings.Contains(msg, "Go struct field"),
+		strings.Contains(msg, "parsing time "):
 		return msgInvalidValue, false
 	case strings.Contains(msg, "(BadValue)"),
 		strings.Contains(msg, "(Location"),

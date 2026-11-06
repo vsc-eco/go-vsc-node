@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -16,6 +17,7 @@ import (
 func skipTestSanitize(t *testing.T) {
 	_, numErr := strconv.ParseUint("x", 10, 64)
 	var typeErr error = &json.UnmarshalTypeError{Value: "string", Type: nil}
+	_, timeErr := time.Parse(time.RFC3339, "nope")
 	cases := []struct {
 		name     string
 		err      error
@@ -29,6 +31,7 @@ func skipTestSanitize(t *testing.T) {
 		{"go type text", errors.New("cannot unmarshal string into Go value of type int64"), msgInvalidValue, false},
 		{"mongo command", mongo.CommandError{Code: 2, Message: "$in needs an array", Name: "BadValue"}, msgInternal, true},
 		{"mongo flattened", errors.New("(BadValue) $in needs an array"), msgInternal, true},
+		{"time parse", timeErr, msgInvalidValue, false},
 		{"client error", errors.New("contract not found"), "", false},
 	}
 	for _, c := range cases {

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The scalars used to return strconv's own error text to the client and to
@@ -73,6 +74,30 @@ func TestInt64UnmarshalGQL(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "strconv") {
 			t.Errorf("%s: error leaks strconv: %q", name, err)
+		}
+	}
+}
+
+func TestDateTimeAndMapErrorsAreFixed(t *testing.T) {
+	if ts, err := UnmarshalDateTime("2026-01-02T15:04:05Z"); err != nil || !ts.Equal(time.Date(2026, 1, 2, 15, 4, 5, 0, time.UTC)) {
+		t.Fatalf("valid date-time: %v %v", ts, err)
+	}
+	for _, in := range []any{"yesterday", "2026-13-01T00:00:00Z", 12, nil} {
+		_, err := UnmarshalDateTime(in)
+		if err == nil || strings.Contains(err.Error(), "2006") || strings.Contains(err.Error(), "parsing time") {
+			t.Errorf("DateTime(%v): %v", in, err)
+		}
+	}
+
+	var m Map
+	if err := m.UnmarshalGQL(map[string]any{"a": 1.0}); err != nil || m["a"] != 1.0 {
+		t.Fatalf("valid map: %v %v", m, err)
+	}
+	for _, in := range []any{"str", []any{1}, 3} {
+		var m Map
+		err := m.UnmarshalGQL(in)
+		if err == nil || strings.Contains(err.Error(), "Go value") || strings.Contains(err.Error(), "model.Map") {
+			t.Errorf("Map(%v): %v", in, err)
 		}
 	}
 }
