@@ -153,9 +153,6 @@ func healthHandler(bot *mapper.Bot) http.HandlerFunc {
 			issues = append(issues, fmt.Sprintf("%d VSC transaction(s) failed", len(failedTxs)))
 		}
 
-		// B8: the vault keys' expiry (D7), from the bot's last hourly check.
-		issues = append(issues, bot.CachedKeyExpiryIssues()...)
-
 		if len(issues) > 0 {
 			resp.Status = "unhealthy"
 			resp.Issues = issues

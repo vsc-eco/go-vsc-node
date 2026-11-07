@@ -162,10 +162,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	if err := sysConfig.OracleParams().ValidateEvmBridges(); err != nil {
-		log.Error("invalid EVM bridge config", "err", err)
-		os.Exit(1)
-	}
 
 	if err != nil {
 		log.Error("startup error", "err", err)
@@ -338,7 +334,7 @@ func main() {
 
 	bp := blockproducer.New(p2p, blockConsumer, se, identityConfig, sysConfig, &hiveCreator, da, electionDb, vscBlocks, txDb, rcSystem, nonceDb)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se, sysConfig.NetId())
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, blockSource, da, identityConfig, rcSystem, se)
 
 	oracle := oracle.New(p2p, identityConfig, sysConfig, electionDb, witnessDb, blockConsumer, se, contractState, da, txpool, oracleConf, nonceDb)
 
@@ -366,8 +362,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	oracle.SetHiveCreator(&hiveCreator) // N4: the BTC solvency votes
 
 	tssMgr := tss.New(
 		p2p,

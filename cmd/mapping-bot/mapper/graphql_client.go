@@ -8,17 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/lib/btcvault"
-	"vsc-node/lib/utils"
 
 	graphql "github.com/hasura/go-graphql-client"
 )
@@ -28,120 +24,11 @@ import (
 // still used http.DefaultClient (no timeout) here and in init.go's
 // graphql.NewClient — an unresponsive node could hang the bot
 // forever. Shared timeout client mirrors the 30s used in main.go.
-var gqlHTTPClient = utils.NewHTTPClient(30 * time.Second) // I-35: HTTP/2 health checks
+var gqlHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // ---------------------------------------------------------------------------
 // Fallback helpers
 // ---------------------------------------------------------------------------
-
-// I-39 (EVM bot devnet 11-05; the BTC bot walks its endpoints the same way): a
-// GraphQL endpoint cut off from its Magi peers keeps answering from a frozen
-// state, and a walk that fails over only on an error reads it as truth. A
-// cut-off node's last processed Hive block stops (devnet experiment: frozen 3
-// min while the others moved on, caught up 20 s after the heal), so the
-// endpoints are ranked by it every gqlRankEvery: one more than gqlStaleBlocks
-// behind the best is walked last (still a last resort); one whose head query
-// fails keeps its place (the walk's failover handles a down endpoint).
-const gqlStaleBlocks = 10 // Hive blocks, ~30 s
-
-var gqlRankEvery = 30 * time.Second
-
-// gqlOrder is the walk order over n endpoints: ranked, or as configured (and
-// always as configured for a single-endpoint override).
-func (b *Bot) gqlOrder(n int) []int {
-	if p := b.gqlRank.Load(); p != nil && len(*p) == n {
-		return *p
-	}
-	out := make([]int, n)
-	for i := range out {
-		out[i] = i
-	}
-	return out
-}
-
-// RankGqlByHead re-ranks the GraphQL endpoints by their last processed Hive
-// block, at most once per gqlRankEvery (I-39).
-func (b *Bot) RankGqlByHead(ctx context.Context) {
-	if b.GqlURL != "" || b.GqlClient != nil || len(b.gqlURLs) < 2 {
-		return
-	}
-	b.gqlRankMu.Lock()
-	if !b.gqlRankedAt.IsZero() && time.Since(b.gqlRankedAt) < gqlRankEvery {
-		b.gqlRankMu.Unlock()
-		return
-	}
-	b.gqlRankedAt = time.Now()
-	b.gqlRankMu.Unlock()
-	heads := make([]uint64, len(b.gqlURLs))
-	known := make([]bool, len(b.gqlURLs))
-	var wg sync.WaitGroup
-	for i, u := range b.gqlURLs {
-		wg.Add(1)
-		go func(i int, u string) {
-			defer wg.Done()
-			if h, err := gqlHeadOf(ctx, u); err == nil {
-				heads[i], known[i] = h, true
-			}
-		}(i, u)
-	}
-	wg.Wait()
-	var best uint64
-	for i := range heads {
-		if known[i] && heads[i] > best {
-			best = heads[i]
-		}
-	}
-	var fresh, stale []int
-	var staleURLs []string
-	for i := range b.gqlURLs {
-		if known[i] && heads[i]+gqlStaleBlocks < best {
-			stale = append(stale, i)
-			staleURLs = append(staleURLs, b.gqlURLs[i])
-			continue
-		}
-		fresh = append(fresh, i)
-	}
-	out := append(fresh, stale...)
-	prev := b.gqlOrder(len(b.gqlURLs))
-	b.gqlRank.Store(&out)
-	if fmt.Sprint(prev) != fmt.Sprint(out) && b.L != nil {
-		if len(stale) > 0 {
-			b.L.Warn("I-39: a GraphQL endpoint is behind the others; it is read last until it catches up", "behind", staleURLs, "best_block", best)
-		} else {
-			b.L.Info("I-39: every GraphQL endpoint is current again", "best_block", best)
-		}
-	}
-}
-
-// gqlHeadOf is an endpoint's last processed Hive block (localNodeInfo).
-func gqlHeadOf(ctx context.Context, url string) (uint64, error) {
-	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(cctx, http.MethodPost, url, strings.NewReader(`{"query":"{ localNodeInfo { last_processed_block } }"}`))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := gqlHTTPClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return 0, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
-	}
-	var out struct {
-		Data struct {
-			LocalNodeInfo *struct {
-				LastProcessedBlock uint64 `json:"last_processed_block"`
-			} `json:"localNodeInfo"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&out); err != nil || out.Data.LocalNodeInfo == nil {
-		return 0, fmt.Errorf("no localNodeInfo from %s", url)
-	}
-	return out.Data.LocalNodeInfo.LastProcessedBlock, nil
-}
 
 // gqlHTTPPost sends bodyBytes as a JSON POST to each configured URL in order,
 // stopping at the first URL that responds with a 2xx status. The decode func
@@ -154,8 +41,7 @@ func (b *Bot) gqlHTTPPost(ctx context.Context, bodyBytes []byte, decode func(*ht
 		urls = []string{b.GqlURL}
 	}
 	var lastErr error
-	for i, idx := range b.gqlOrder(len(urls)) { // I-39: freshest endpoints first
-		url := urls[idx]
+	for i, url := range urls {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
@@ -201,8 +87,7 @@ func (b *Bot) gqlClientDo(ctx context.Context, fn func(*graphql.Client) error) e
 		clients = []*graphql.Client{b.GqlClient}
 	}
 	var lastErr error
-	for i, idx := range b.gqlOrder(len(clients)) { // I-39: freshest endpoints first
-		client := clients[idx]
+	for i, client := range clients {
 		if i > 0 {
 			select {
 			case <-ctx.Done():

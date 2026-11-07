@@ -3,90 +3,22 @@ package chain
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
-	"sync/atomic"
 )
 
 // MempoolSpaceClient implements BlockchainClient using the mempool.space REST API.
 // Works for any chain that mempool.space supports (BTC mainnet/testnet, LTC via
 // a custom instance, etc.).
-//
-// B7 (EVM bot parity, B14 RPC failover; rollout B4: mempool.space rate-limited
-// and then banned the testnet bot's IP on 10-17, and the single source stalled
-// deposits and withdrawals alike): the client takes several Esplora-compatible
-// base URLs. A request goes to the endpoint that answered last; one that does
-// not answer (network error, HTTP 5xx or 429) fails over to the next. Any
-// other answer, 404 included, stands, as the EVM bot fails over only when an
-// endpoint does not answer.
 type MempoolSpaceClient struct {
-	baseURLs []string
-	start    atomic.Int64
-	client   *http.Client
+	baseURL string
+	client  *http.Client
 }
 
 func NewMempoolSpaceClient(httpClient *http.Client, baseURL string) *MempoolSpaceClient {
-	return &MempoolSpaceClient{baseURLs: []string{baseURL}, client: httpClient}
-}
-
-// SetBaseURLs replaces the endpoint list (the -chain-api flag). Empty entries
-// are dropped; an empty list keeps the current one.
-func (m *MempoolSpaceClient) SetBaseURLs(urls []string) {
-	var out []string
-	for _, u := range urls {
-		if u = strings.TrimRight(strings.TrimSpace(u), "/"); u != "" {
-			out = append(out, u)
-		}
-	}
-	if len(out) > 0 {
-		m.baseURLs = out
-		m.start.Store(0)
-	}
-}
-
-// BaseURLs returns the endpoints in use.
-func (m *MempoolSpaceClient) BaseURLs() []string { return append([]string(nil), m.baseURLs...) }
-
-// do sends the request built for each endpoint in turn, starting at the one
-// that answered last, until one answers.
-func (m *MempoolSpaceClient) do(build func(base string) (*http.Request, error)) (*http.Response, error) {
-	var lastErr error
-	first := int(m.start.Load())
-	n := len(m.baseURLs)
-	for k := 0; k < n; k++ {
-		i := (first + k) % n
-		req, err := build(m.baseURLs[i])
-		if err != nil {
-			return nil, err
-		}
-		resp, err := m.client.Do(req)
-		if err == nil && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
-			if i != first {
-				m.start.Store(int64(i))
-			}
-			return resp, nil
-		}
-		if err == nil {
-			err = fmt.Errorf("API returned status %d", resp.StatusCode)
-			resp.Body.Close()
-		}
-		lastErr = err
-		if k+1 < n {
-			slog.Warn("B7: chain API endpoint did not answer, trying the next", "endpoint", i, "err", err)
-		}
-	}
-	if lastErr == nil {
-		lastErr = errors.New("no chain API endpoint configured")
-	}
-	return nil, lastErr
-}
-
-func (m *MempoolSpaceClient) get(path string) (*http.Response, error) {
-	return m.do(func(base string) (*http.Request, error) { return http.NewRequest(http.MethodGet, base+path, nil) })
+	return &MempoolSpaceClient{baseURL: baseURL, client: httpClient}
 }
 
 // mempool.space API response types
@@ -112,7 +44,8 @@ type mempoolOutput struct {
 // BlockchainClient implementation
 
 func (m *MempoolSpaceClient) GetTipHeight() (uint64, error) {
-	resp, err := m.get("/blocks/tip/height")
+	url := fmt.Sprintf("%s/blocks/tip/height", m.baseURL)
+	resp, err := m.client.Get(url)
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +62,8 @@ func (m *MempoolSpaceClient) GetTipHeight() (uint64, error) {
 
 func (m *MempoolSpaceClient) GetBlockHashAtHeight(height uint64) (string, int, error) {
 	slog.Info("getting hash for block", "height", height)
-	resp, err := m.get(fmt.Sprintf("/block-height/%d", height))
+	url := fmt.Sprintf("%s/block-height/%d", m.baseURL, height)
+	resp, err := m.client.Get(url)
 	if err != nil {
 		return "", 0, err
 	}
@@ -146,7 +80,8 @@ func (m *MempoolSpaceClient) GetBlockHashAtHeight(height uint64) (string, int, e
 
 func (m *MempoolSpaceClient) GetRawBlock(hash string) ([]byte, error) {
 	slog.Info("getting raw data for block", "hash", hash)
-	resp, err := m.get(fmt.Sprintf("/block/%s/raw", hash))
+	url := fmt.Sprintf("%s/block/%s/raw", m.baseURL, hash)
+	resp, err := m.client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +93,8 @@ func (m *MempoolSpaceClient) GetRawBlock(hash string) ([]byte, error) {
 }
 
 func (m *MempoolSpaceClient) GetAddressTxs(address string) ([]TxHistoryEntry, error) {
-	resp, err := m.get(fmt.Sprintf("/address/%s/txs/chain", address))
+	url := fmt.Sprintf("%s/address/%s/txs/chain", m.baseURL, address)
+	resp, err := m.client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +140,8 @@ func (m *MempoolSpaceClient) GetTxStatus(txid string) (bool, error) {
 }
 
 func (m *MempoolSpaceClient) GetTxDetails(txid string) (TxConfirmationDetails, error) {
-	resp, err := m.get(fmt.Sprintf("/tx/%s/status", txid))
+	url := fmt.Sprintf("%s/tx/%s/status", m.baseURL, txid)
+	resp, err := m.client.Get(url)
 	if err != nil {
 		return TxConfirmationDetails{}, err
 	}
@@ -224,7 +161,8 @@ func (m *MempoolSpaceClient) GetTxDetails(txid string) (TxConfirmationDetails, e
 	}
 
 	// Fetch the ordered txid list for this block to find the tx's position.
-	txidsResp, err := m.get(fmt.Sprintf("/block/%s/txids", status.BlockHash))
+	txidsURL := fmt.Sprintf("%s/block/%s/txids", m.baseURL, status.BlockHash)
+	txidsResp, err := m.client.Get(txidsURL)
 	if err != nil {
 		return TxConfirmationDetails{}, fmt.Errorf("failed to fetch block txids: %w", err)
 	}
@@ -253,13 +191,8 @@ func (m *MempoolSpaceClient) GetTxDetails(txid string) (TxConfirmationDetails, e
 }
 
 func (m *MempoolSpaceClient) PostTx(rawTx string) error {
-	resp, err := m.do(func(base string) (*http.Request, error) {
-		req, err := http.NewRequest(http.MethodPost, base+"/tx", bytes.NewReader([]byte(rawTx)))
-		if err == nil {
-			req.Header.Set("Content-Type", "text/plain")
-		}
-		return req, err
-	})
+	url := fmt.Sprintf("%s/tx", m.baseURL)
+	resp, err := m.client.Post(url, "text/plain", bytes.NewReader([]byte(rawTx)))
 	if err != nil {
 		return err
 	}

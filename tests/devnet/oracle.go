@@ -1,17 +1,12 @@
 package devnet
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"vsc-node/modules/common/params"
@@ -69,8 +64,13 @@ func (d *Devnet) WriteOracleConfigs(ctx context.Context) error {
 	}
 
 	for i := 1; i <= d.cfg.Nodes; i++ {
-		if err := d.writeNodeConfigFile(ctx, i, "oracleConfig.json", data); err != nil {
-			return err
+		nodeDir := filepath.Join(d.devnetDir, fmt.Sprintf("data-%d", i), "config")
+		if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", nodeDir, err)
+		}
+		path := filepath.Join(nodeDir, "oracleConfig.json")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
 		}
 		targets := make([]string, 0, len(chains))
 		for name, c := range chains {
@@ -79,38 +79,6 @@ func (d *Devnet) WriteOracleConfigs(ctx context.Context) error {
 		log.Printf("[devnet] wrote oracle config for magi-%d -> %v", i, targets)
 	}
 	return nil
-}
-
-// writeNodeConfigFile writes data-<node>/config/<name>. A node container
-// creates its data directory as its own user (uid 1000, mode 0700, files
-// 0600), so a runner on another uid cannot write there and, before this,
-// the oracle config silently kept its default host (N4 11-03: every node's
-// BTC relay dialed "vsc-btcd", the solvency watch never ran). The file then
-// goes in through a running node container, as the node's user (every magi
-// container mounts the same devnet-data at /data/devnet).
-func (d *Devnet) writeNodeConfigFile(ctx context.Context, node int, name string, data []byte) error {
-	nodeDir := filepath.Join(d.devnetDir, fmt.Sprintf("data-%d", node), "config")
-	err := os.MkdirAll(nodeDir, 0o755)
-	if err == nil {
-		err = os.WriteFile(filepath.Join(nodeDir, name), data, 0o644)
-	}
-	if err == nil || !errors.Is(err, fs.ErrPermission) {
-		return err
-	}
-	target := fmt.Sprintf("/data/devnet/data-%d/config/%s", node, name)
-	var last error
-	for i := 1; i <= d.cfg.Nodes; i++ {
-		cmd := exec.CommandContext(ctx, "docker", "exec", "-i", d.containerName(i),
-			"sh", "-c", `mkdir -p "$(dirname "$1")" && cat > "$1"`, "sh", target)
-		cmd.Stdin = bytes.NewReader(data)
-		out, e := cmd.CombinedOutput()
-		if e == nil {
-			log.Printf("[devnet] %s written through %s (the runner cannot write the node's data dir)", target, d.containerName(i))
-			return nil
-		}
-		last = fmt.Errorf("%s: %v: %s", d.containerName(i), e, strings.TrimSpace(string(out)))
-	}
-	return fmt.Errorf("writing %s: %w; through the node containers: %v", target, err, last)
 }
 
 // WriteOracleConfigsForHost is like WriteOracleConfigs but points the BTC
@@ -133,8 +101,13 @@ func (d *Devnet) WriteOracleConfigsForHost(ctx context.Context, rpcHost string) 
 	}
 
 	for i := 1; i <= d.cfg.Nodes; i++ {
-		if err := d.writeNodeConfigFile(ctx, i, "oracleConfig.json", data); err != nil {
-			return err
+		nodeDir := filepath.Join(d.devnetDir, fmt.Sprintf("data-%d", i), "config")
+		if err := os.MkdirAll(nodeDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", nodeDir, err)
+		}
+		path := filepath.Join(nodeDir, "oracleConfig.json")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", path, err)
 		}
 		log.Printf("[devnet] wrote oracle config for magi-%d -> %s", i, rpcHost)
 	}

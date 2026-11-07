@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 	"time"
 	DataLayer "vsc-node/lib/datalayer"
-	"vsc-node/lib/hive"
 	"vsc-node/lib/vsclog"
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
@@ -69,11 +68,6 @@ type Oracle struct {
 	// collection, submission). It backs the devnet block pacemaker's quiescence
 	// probe (ChainRelaysInFlight) and carries no consensus state.
 	chainRelays atomic.Int64
-
-	// N4: the node's Hive creator (the BTC solvency votes) and the guard that
-	// keeps one solvency check running at a time.
-	hiveCreator     hive.HiveTransactionCreator
-	solvencyRunning atomic.Bool
 }
 
 // ChainRelaysInFlight is how many chain-relay rounds are running. Read-only;

@@ -77,8 +77,6 @@ type contractExecutionContext struct {
 	// consensus version and it propagates into nested calls, so the new price
 	// starts at a coordinated height and history re-executes unchanged.
 	sp1WorkPricing bool
-	// bigSwapAmounts: pendulum_apply_swap_fees takes big amounts (0.13.0).
-	bigSwapAmounts bool
 
 	// keyResharedActive gates TssGetKey's fifth field (consensus 0.11.0): "1"
 	// once the key has been reshared since the keygen that created it. Like
@@ -217,17 +215,6 @@ func WithSp1WorkPricing(active bool) Option {
 // by work; the SDK host call reads it.
 func (ctx *contractExecutionContext) Sp1WorkPricingActive() bool {
 	return ctx.sp1WorkPricing
-}
-
-// WithBigSwapAmounts lets pendulum_apply_swap_fees take big amounts
-// (consensus 0.13.0, consensusversion.BigSwapAmountsActive).
-func WithBigSwapAmounts(active bool) Option {
-	return func(ctx *contractExecutionContext) { ctx.bigSwapAmounts = active }
-}
-
-// BigSwapAmountsActive reports whether this execution takes big swap amounts.
-func (ctx *contractExecutionContext) BigSwapAmountsActive() bool {
-	return ctx.bigSwapAmounts
 }
 
 func (ctx *contractExecutionContext) IOGas() int {
@@ -725,9 +712,7 @@ func (ctx *contractExecutionContext) ContractCall(
 				// TssGetKey output format as the top-level tx (fork-safe at depth).
 				WithVaultRotationV2(ctx.vaultRotationV2Active),
 				WithKeyReshared(ctx.keyResharedActive),
-				WithSp1WorkPricing(ctx.sp1WorkPricing),
-				// A pool reached through the router swaps in the nested context.
-				WithBigSwapAmounts(ctx.bigSwapAmounts))
+				WithSp1WorkPricing(ctx.sp1WorkPricing))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)

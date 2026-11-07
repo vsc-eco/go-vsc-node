@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"math/big"
 	"os"
 	"slices"
 	"sort"
@@ -1957,7 +1956,14 @@ func (ep *electionProposer) HoldElection(blk uint64) error {
 		}
 
 		bv := finalCircuit.RawBitVector()
-		votedWeight, totalWeight := electionVoteWeights(electionResult, bv)
+		votedWeight := uint64(0)
+		totalWeight := uint64(0)
+		for i := 0; i < bv.BitLen(); i++ {
+			if bv.Bit(i) == 1 {
+				votedWeight += electionResult.Weights[i]
+			}
+			totalWeight += electionResult.Weights[i]
+		}
 
 		blocksSinceLastElection := anchorBh
 		if !firstElection {
@@ -2555,45 +2561,4 @@ func selectPoaTopUp(unseated []string, incumbent map[string]bool, rank map[strin
 		out[sorted[i]] = struct{}{}
 	}
 	return out
-}
-
-// electionVoteWeights is the signed and total weight of an election signature
-// over prev's members, folded as the verifiers fold it (state-processing
-// system_txs.go: missing weights count one each, duplicate BLS seats once when
-// B13 is active, the total over every member). I-25 (testnet 11-04): the
-// proposer summed only up to the highest signer's bit (bv.BitLen()), so with
-// the high-indexed members silent it judged 4 of 4 signed where the verifiers
-// saw 4 of 6, logged "election ratified and broadcast" and sent an election
-// every verifier rejects.
-func electionVoteWeights(prev elections.ElectionResult, bv *big.Int) (voted, total uint64) {
-	memberKeys := make([]string, len(prev.Members))
-	for i, m := range prev.Members {
-		memberKeys[i] = m.Key
-	}
-	weights := prev.Weights
-	if len(weights) == 0 {
-		weights = make([]uint64, len(prev.Members))
-		for i := range weights {
-			weights[i] = 1
-		}
-	}
-	var included []dids.BlsDID
-	for idx := range prev.Members {
-		if bv.Bit(idx) == 1 {
-			included = append(included, dids.BlsDID(prev.Members[idx].Key))
-		}
-	}
-	if consensusversion.BlsWeightDedupActive(elections.ResultVersion(prev)) {
-		voted, total, _ = dids.FoldSignedWeight(memberKeys, weights, included)
-		return voted, total
-	}
-	for _, w := range weights {
-		total += w
-	}
-	for idx := range prev.Members {
-		if bv.Bit(idx) == 1 && idx < len(weights) {
-			voted += weights[idx]
-		}
-	}
-	return voted, total
 }
