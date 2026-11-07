@@ -240,12 +240,23 @@ type SettlementReduction struct {
 // read path to the per-witness reductions. REWARD-ATTEST-1's devnet proof needs
 // exactly these rows.
 func (d *Devnet) GetSettlementReductions(ctx context.Context, node int, epoch uint64) ([]SettlementReduction, bool, error) {
-	const q = `query($e:Uint64!){getElection(epoch:$e){epoch settlement{epoch reward_reductions{account bps}}}}`
+	rows, _, ok, err := d.GetSettlementReductionsWithBucket(ctx, node, epoch)
+	return rows, ok, err
+}
+
+// GetSettlementReductionsWithBucket also returns the record's
+// bucket_balance_hbd. Callers need it because ComposeRecord short-circuits an
+// empty-activity epoch: with BucketBalanceHBD == 0 it emits a marker-only
+// record with nil reductions, so an empty reward_reductions list says nothing
+// about what the scorer computed.
+func (d *Devnet) GetSettlementReductionsWithBucket(ctx context.Context, node int, epoch uint64) ([]SettlementReduction, int64, bool, error) {
+	const q = `query($e:Uint64!){getElection(epoch:$e){epoch settlement{epoch bucket_balance_hbd reward_reductions{account bps}}}}`
 	var out struct {
 		GetElection *struct {
 			Epoch      uint64 `json:"epoch"`
 			Settlement *struct {
 				Epoch            uint64 `json:"epoch"`
+				BucketBalanceHBD int64  `json:"bucket_balance_hbd"`
 				RewardReductions []struct {
 					Account string `json:"account"`
 					Bps     int    `json:"bps"`
@@ -254,14 +265,14 @@ func (d *Devnet) GetSettlementReductions(ctx context.Context, node int, epoch ui
 		} `json:"getElection"`
 	}
 	if err := d.gqlQuery(ctx, node, q, map[string]any{"e": epoch}, &out); err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 	if out.GetElection == nil || out.GetElection.Settlement == nil {
-		return nil, false, nil
+		return nil, 0, false, nil
 	}
 	rows := make([]SettlementReduction, 0, len(out.GetElection.Settlement.RewardReductions))
 	for _, r := range out.GetElection.Settlement.RewardReductions {
 		rows = append(rows, SettlementReduction{Account: r.Account, Bps: r.Bps})
 	}
-	return rows, true, nil
+	return rows, out.GetElection.Settlement.BucketBalanceHBD, true, nil
 }

@@ -69,30 +69,32 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 
 	cfg := DefaultConfig()
 	cfg.LogLevel = "error,pendulum=trace"
-	// ElectionInterval 1000, and the reason is PerEpochForgivenessBps.
+	// ElectionInterval 800 so an epoch holds enough L2 blocks for a seat's
+	// absences to survive PerEpochForgivenessBps (250, i.e. 11 absences at 25
+	// bps each). At the 120 this test first used, a ~165-block epoch holds at
+	// most ~16 L2 blocks (one per 10-block slot); with 5 seats and a bar of 4
+	// each block omits exactly one seat, so a seat accrues ~3 absences and ~75
+	// bps, forgiven every time however much traffic is generated. 800 gives
+	// ~840 blocks per epoch, ~84 L2 blocks, ~16 absences per seat.
 	//
-	// The first attempt used 120, which spans a 100-block pendulum tick and so
-	// looked sufficient. It was not, and the CONTROL arm is what caught it: at
-	// floor 0.13, with the fix inert and 16 of 16 blocks closing at the bar with
-	// a seat missing, the settlements still carried ZERO reductions. Arithmetic,
-	// not a bug — ComputeReductionsForEpoch subtracts PerEpochForgivenessBps
-	// (250) and drops any witness at or below zero, so a seat needs 11 absences
-	// in ONE epoch (11 x 25 = 275) to survive it. L2 blocks arrive at most one
-	// per SlotLength (10 L1 blocks), so a 165-block epoch holds ~16 blocks; with
-	// 5 seats and a bar of 4 each block omits exactly one seat, giving a seat ~3
-	// absences and ~75 bps. Forgiven every time, however much traffic is
-	// generated — that fixture could never have shown anything either way.
+	// ⚠ NECESSARY BUT NOT SUFFICIENT, and the reason the arms SKIP rather than
+	// assert on an unfunded devnet. ComposeRecord short-circuits an
+	// empty-activity epoch: with BucketBalanceHBD == 0 it emits a marker-only
+	// record carrying NIL reductions, so reward_reductions is empty whatever the
+	// scorer computed. A devnet credits pendulum:nodes:hbd only through a real
+	// swap on a whitelisted pool -- see TestPendulumLPFloorDevnet, which deploys
+	// an amm-pool contract, whitelists it, restarts the fleet, funds it and fires
+	// a swap. Until this test does the same, BOTH arms read empty and neither
+	// proves anything.
 	//
-	// 1000 gives ~1040 blocks per epoch (the interval plus the election's own
-	// proposal and signing latency) and so ~104 L2 blocks, ~20 absences per seat,
-	// ~500 bps raw and ~250 effective. That clears forgiveness with room, and in
-	// the control EVERY seat clears it, which is the mainnet fingerprint the
-	// control has to reproduce.
+	// (An earlier revision of this comment blamed forgiveness alone for the void
+	// control run. That was wrong: forgiveness does bite, but it sits downstream
+	// of a gate that was never reached.)
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
 		ConsensusParams: &params.ConsensusParams{
 			ConsensusVersionFloorEpoch:     1,
 			ConsensusVersionFloorConsensus: floorConsensus,
-			ElectionInterval:               1000,
+			ElectionInterval:               800,
 		},
 	}
 
@@ -102,22 +104,36 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 	// 600 blocks, against an epoch that landed near block 862 -- so these are
 	// sized in blocks, not in wall time.
 	//
-	// At ElectionInterval 1000 an epoch costs ~1040 blocks, so epoch 3 lands near
-	// block 3,160: ~158 minutes of TEST clock, and roughly 25 minutes of wall
+	// At ElectionInterval 800 an epoch costs ~840 blocks, so epoch 4 lands near
+	// block 3,400: ~170 minutes of TEST clock, and roughly 25 minutes of wall
 	// clock under FastBlocks. That exceeds vfDevnetBudgetCap's 75-minute default,
 	// so the runner exports DEVNET_BUDGET_CAP; without it vfTestBudget truncates
 	// to the cap (loudly) and the run strands mid-epoch.
-	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(220*time.Minute))
+	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(230*time.Minute))
 
 	t.Log("waiting for the first running election on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		// 70 min of test clock = ~1,400 blocks; epoch 1 lands around block 1,040.
+		// 70 min of test clock = ~1,400 blocks; epoch 1 is the genesis election.
 		nodeCtx, cancel := devnetWithTimeout(ctx, 70*time.Minute)
 		err := d.waitForElectionEpoch(nodeCtx, n, 1, 70*time.Minute)
 		cancel()
 		if err != nil {
 			dumpDiagnostics(t, d, ctx)
 			t.Fatalf("magi-%d never ingested epoch >= 1: %v", n, err)
+		}
+	}
+
+	// Wait for epoch 2 — the first election a node generates under this config,
+	// and therefore the first one carrying the version floor. Checking the line
+	// before it exists reads 0.0 on every arm.
+	t.Log("waiting for epoch 2, the first election generated under this config...")
+	for n := 1; n <= cfg.Nodes; n++ {
+		nodeCtx, cancel := devnetWithTimeout(ctx, 70*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, 2, 70*time.Minute)
+		cancel()
+		if err != nil {
+			dumpDiagnostics(t, d, ctx)
+			t.Fatalf("magi-%d never ingested epoch >= 2: %v", n, err)
 		}
 	}
 
@@ -166,16 +182,28 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 		}
 	}()
 
-	// Epoch 3: two settled epochs (2 and 3), each with ~104 L2 blocks behind it,
-	// which is what it takes for a seat to clear PerEpochForgivenessBps. Fewer
-	// epochs than the first attempt, but each one can actually carry evidence --
-	// four epochs that all round to zero proved nothing.
-	const targetEpoch = uint64(3)
+	// Epoch 4, and the floor's activation timing is why it is not 2 or 3.
+	//
+	// The devnet's genesis-elector writes epoch 1 directly, and that election
+	// carries NO version floor; the first election generated by a node under this
+	// config is epoch 2. So the chain-active line only becomes `wantActiveLine`
+	// at epoch 2's election, and the ticks INSIDE epoch 2 resolve against the
+	// pre-activation floor (buildTickInputs resolves ActiveConsensusVersion at
+	// the tick height). Epoch 2's settlement is therefore scored under the OLD
+	// rule even in the gate arm, and only epoch 3 onwards is scored under the
+	// gate. firstScoredEpoch encodes that; targeting 4 leaves two usable epochs.
+	//
+	// At ElectionInterval 120 this was invisible: epoch 2 landed within seconds
+	// of epoch 1, so the line was already active when the arm checked it. At 800
+	// it is ~12 minutes out, and the precondition below caught it -- an arm that
+	// would have scored every epoch under the wrong rule and called it a pass.
+	const targetEpoch = uint64(4)
+	const firstScoredEpoch = uint64(3)
 	t.Logf("generating L2 traffic and waiting for epoch >= %d on every node...", targetEpoch)
 	for n := 1; n <= cfg.Nodes; n++ {
-		// 190 min of test clock = ~3,800 blocks against the ~3,160 epoch 3 needs.
-		nodeCtx, cancel := devnetWithTimeout(ctx, 190*time.Minute)
-		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 190*time.Minute)
+		// 200 min of test clock = ~4,000 blocks against the ~3,400 epoch 4 needs.
+		nodeCtx, cancel := devnetWithTimeout(ctx, 200*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 200*time.Minute)
 		cancel()
 		if err != nil {
 			close(stopTraffic)
@@ -213,12 +241,24 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 
 	// Read the attested reduction rows for every settled epoch, on every node.
 	var perEpoch []attestEpochReductions
-	for epoch := uint64(2); epoch <= targetEpoch; epoch++ {
+	for epoch := firstScoredEpoch; epoch <= targetEpoch; epoch++ {
 		var first map[string]int
 		for n := 1; n <= cfg.Nodes; n++ {
-			rows, ok, err := d.GetSettlementReductions(ctx, n, epoch)
+			rows, bucket, ok, err := d.GetSettlementReductionsWithBucket(ctx, n, epoch)
 			if err != nil {
 				t.Fatalf("magi-%d reading settlement for epoch %d: %v", n, epoch, err)
+			}
+			if ok && bucket == 0 {
+				// ComposeRecord's empty-activity short circuit: a zero bucket
+				// yields a marker-only record with nil reductions, so there is
+				// nothing to assert here -- on EITHER arm. Skipping is the honest
+				// outcome; asserting "no reductions" would be a pass that proves
+				// nothing, which is the failure mode this test exists to avoid.
+				t.Skipf("epoch %d settled with bucket_balance_hbd=0, so ComposeRecord emitted a "+
+					"marker-only record with nil reductions and reward_reductions is empty "+
+					"regardless of the gate. This arm cannot prove anything until the fixture "+
+					"credits the pendulum:nodes:hbd bucket with a real swap on a whitelisted "+
+					"pool (recipe: TestPendulumLPFloorDevnet).", epoch)
 			}
 			if !ok {
 				if n == 1 {
