@@ -738,7 +738,10 @@ type SentSweep struct {
 	SentAt          int64    `json:"sent_at"`
 	LastBroadcastAt int64    `json:"last_broadcast_at,omitempty"`
 	ConfirmTxId     string   `json:"confirm_tx_id,omitempty"`
-	NextTryAt       int64    `json:"next_try_at,omitempty"`
+	// ConfirmSubmittedAt: when ConfirmTxId was submitted. One the node still
+	// does not know confirmVanishGrace later is gone, and is sent again.
+	ConfirmSubmittedAt int64 `json:"confirm_submitted_at,omitempty"`
+	NextTryAt          int64 `json:"next_try_at,omitempty"`
 }
 
 // lowestOpenNonce is the lowest nonce among gen's open sweeps.
@@ -780,15 +783,29 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 		cp.mu.Unlock()
 	}
 
-	// A confirmSweep already submitted settles it (or failed: retry later).
+	// A confirmSweep already submitted settles it: the record then disappears
+	// from msr. FAILED retries later. One the node does not know long after its
+	// submission is gone, as a confirmSpend (B-R1): the pool deletes a call that
+	// loses its nonce to another. FS2 11-03: B-R1b took a confirmSweep's nonce
+	// and, with nothing to send it again, the sweep stayed open, the books at
+	// the old generation and the queued withdrawal unissued for the whole run.
 	if ss.ConfirmTxId != "" {
 		status, err := gql.fetchTransactionStatus(ctx, ss.ConfirmTxId)
-		if err != nil || status == "CONFIRMED" {
-			return // closed: the record disappears from msr
-		}
-		if status == "FAILED" {
+		switch {
+		case err == nil && status == "FAILED":
 			ss.ConfirmTxId, ss.NextTryAt = "", time.Now().Add(vaultOpMinInterval).Unix()
 			save()
+		case errors.Is(err, errTxNotFound):
+			switch {
+			case ss.ConfirmSubmittedAt == 0: // an entry from before the field
+				ss.ConfirmSubmittedAt = time.Now().Unix()
+				save()
+			case time.Since(time.Unix(ss.ConfirmSubmittedAt, 0)) > confirmVanishGrace:
+				slog.Error("confirmSweep is unknown to the node long after its submission; re-sending",
+					"sweep", key, "l2Tx", ss.ConfirmTxId, "submittedAt", ss.ConfirmSubmittedAt)
+				ss.ConfirmTxId = ""
+				save()
+			}
 		}
 		return
 	}
@@ -897,7 +914,7 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			slog.Warn("confirmSweep submit", "sweep", key, "err", err)
 			return
 		}
-		ss.ConfirmTxId = txId
+		ss.ConfirmTxId, ss.ConfirmSubmittedAt = txId, time.Now().Unix()
 		save()
 		slog.Info("confirmSweep submitted", "sweep", key, "l2Tx", txId)
 		return
