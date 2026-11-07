@@ -197,7 +197,7 @@ func MakeNode(input MakeNodeInput) *Node {
 
 	blockConsumer := blockconsumer.New(se)
 
-	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem, se, sysConfig.NetId())
+	txpool := transactionpool.New(p2p, txDb, nonceDb, electionDb, hiveBlocks, datalayer, identityConfig, se.RcSystem, se)
 
 	dbNuker := NewDbNuker(vscDb)
 

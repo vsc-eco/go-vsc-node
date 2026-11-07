@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"vsc-node/lib/btcvault"
 	datalayer "vsc-node/lib/datalayer"
-	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/db/vsc/elections"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	"vsc-node/modules/vaultrotation"
@@ -75,11 +73,9 @@ func (se *StateEngine) btcContractStateReaderAtStrict(contractID string, height 
 	if perr != nil {
 		return miss // committed StateMerkle is identical on all nodes → deterministic, fail-open
 	}
-	// 18u: read each key on its own path (datalayer.GetPathCid, identical
-	// answers to DataBin.Get) instead of loading the whole contract state; the
-	// theft-halt mirror calls this every block.
+	databin := datalayer.NewDataBinFromCid(se.da, stateCid)
 	return func(key string) ([]byte, bool) {
-		keyCid, gerr := datalayer.GetPathCid(se.da, stateCid, key)
+		keyCid, gerr := databin.Get(key)
 		if gerr != nil || keyCid == nil {
 			return nil, false // datalayer blocks for non-local; an error here is deterministic corruption
 		}
@@ -103,29 +99,19 @@ func (se *StateEngine) btcContractStateReaderAtStrict(contractID string, height 
 // false (inert) unless VaultRotationV2Enabled(height) AND a retiring/draining BTC gen
 // exists → byte-identical no-op on mainnet today.
 func (se *StateEngine) IsBondLockedRetiringMember(account string, height uint64) bool {
-	btcContract := ""
-	if se.vaultRotationV2InForce(height) {
-		btcContract = se.sconf.OracleParams().ContractId("BTC")
+	if !se.vaultRotationV2InForce(height) {
+		return false
 	}
-	evmContracts := se.evmRotatingContracts(height)
-	if btcContract == "" && len(evmContracts) == 0 {
+	btcContract := se.sconf.OracleParams().ContractId("BTC")
+	if btcContract == "" {
 		return false
 	}
 	var locked bool
 	blockingRetry(fmt.Sprintf("bondLock(%s,%d)", account, height), func() error {
 		var transient error
-		reader := func(string) ([]byte, bool) { return nil, false }
-		if btcContract != "" {
-			reader = se.btcContractStateReaderAtStrict(btcContract, height, &transient)
-		}
-		var evmRegs []vaultrotation.RegistrySource
-		for _, c := range evmContracts {
-			evmRegs = append(evmRegs, vaultrotation.RegistrySource{Contract: c, Base: btcvault.EvmVaultKeyBase,
-				ReadKey: se.btcContractStateReaderAtStrict(c, height, &transient)})
-		}
+		reader := se.btcContractStateReaderAtStrict(btcContract, height, &transient)
 		set := vaultrotation.ComputeRetiringSignerSet(vaultrotation.RetiringSignerDeps{
-			BtcContract:   btcContract,
-			EvmRegistries: evmRegs,
+			BtcContract: btcContract,
 			// An emptied (Inactive) generation no longer holds its last committee's
 			// bond; signing eligibility (the tss caller) still counts it.
 			ExcludeInactive: true,
@@ -171,18 +157,4 @@ func bondLockMatches(set vaultrotation.RetiringSignerSet, account string) bool {
 		return true
 	}
 	return set.Has(strings.TrimPrefix(account, "hive:"))
-}
-
-// evmRotatingContracts are the EVM bridge contracts whose vault rolls keys at
-// height (A01, consensus 0.13.0): each one's registry feeds the same rules as
-// the BTC registry. Nil below 0.13.0.
-func (se *StateEngine) evmRotatingContracts(height uint64) []string {
-	if se.sconf == nil {
-		return nil
-	}
-	ids := se.sconf.OracleParams().EvmBridgeContractIds(height)
-	if len(ids) == 0 || !consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(height)) {
-		return nil
-	}
-	return ids
 }

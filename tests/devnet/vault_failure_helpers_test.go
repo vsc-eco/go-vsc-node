@@ -327,12 +327,8 @@ func vfSetup(t *testing.T, d *Devnet, ctx context.Context, wasm string, hpin uin
 	if s := vstatus(t, d, ctx, 1, cid, "seedBlocks", fmt.Sprintf(`{"block_header":"%s","block_height":%d}`, hdr1, seedH)); !isOK(s) {
 		t.Fatalf("seedBlocks: %s", s)
 	}
-	if err := d.WriteOracleConfigs(ctx); err != nil {
-		t.Fatalf("oracle config (the nodes' bitcoind): %v", err)
-	}
-	if err := d.SetOracleContractIDs(map[string]string{"BTC": cid}); err != nil {
-		t.Fatalf("oracle contract id: %v", err)
-	}
+	d.WriteOracleConfigs(ctx)
+	d.SetOracleContractIDs(map[string]string{"BTC": cid})
 	d.RestartAllMagiNodes(ctx)
 	devnetSleep(10 * time.Second)
 
@@ -414,21 +410,9 @@ func vfRegisterAndActivate(t *testing.T, d *Devnet, ctx context.Context, cid, pr
 	// DEVNET_TIMEOUT_SCALE like every other wait; unscaled, a check-sig that lands under
 	// two-devnet CPU load just after the last try fails the rotation (F9, 2026-10-05).
 	attempts = int(math.Ceil(float64(attempts) * vfTimeoutScale()))
-	lastWhy := ""
 	for i := 0; i < attempts; i++ {
 		if isOK(vstatus(t, d, ctx, 1, cid, "activateKey", "")) {
 			return true
-		}
-		// The refusal is not always BRK-2 (11-03 BB2: the check-signature was
-		// verified on every node, activateKey still refused 20 times): read the
-		// contract's own reason with a dry run and log it when it changes.
-		why := "unreadable"
-		if ok, msg := vfSimulate(d, ctx, 1, cid, "hive:"+d.witnessAccount(1), "activateKey", ""); !ok && msg != "" {
-			why = msg
-		}
-		if why != lastWhy {
-			t.Logf("activateKey refused: %s", why)
-			lastWhy = why
 		}
 		t.Logf("activateKey not yet (awaiting BRK-2 check-sig)... retry %d", i)
 		devnetSleep(15 * time.Second)

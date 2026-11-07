@@ -110,7 +110,5 @@ func swap(input *string) *string {
 	sdk.StateSetObject("node_share", jsonField(res, "node_share_output"))
 	sdk.StateSetObject("s_after", jsonField(res, "s_after_bps"))
 	sdk.StateSetObject("node_bucket", jsonField(res, "node_bucket_credited_hbd"))
-	sdk.StateSetObject("user_output", jsonField(res, "user_output"))
-	sdk.StateSetObject("curve", jsonField(res, "curve"))
 	return &res
 }

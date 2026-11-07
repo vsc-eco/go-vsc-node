@@ -221,13 +221,9 @@ func (tsc *tssCommitments) GetCommitmentByHeight(keyId string, height uint64, qt
 		return TssCommitment{}, findResult.Err()
 	}
 	var commitment TssCommitment
-	if err := findResult.Decode(&commitment); err != nil {
-		// A row that is there but does not decode is the same on every node:
-		// marked, so a consensus caller decides (POA-1 holds the bond) instead
-		// of retrying it forever as a transient read.
-		return commitment, fmt.Errorf("failed to decode commitment: %w: %w", db.ErrDecode, err)
-	}
-	return commitment, nil
+	err := findResult.Decode(&commitment)
+
+	return commitment, err
 }
 
 // FindCommitments returns commitment rows matching the filter, with

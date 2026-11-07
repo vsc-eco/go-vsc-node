@@ -275,14 +275,7 @@ func waitSigningData(t *testing.T, d *Devnet, ctx context.Context, cid, txid str
 // sighash for keyId, until status=complete.
 func waitSignature(t *testing.T, d *Devnet, ctx context.Context, keyId string, sighash []byte) []byte {
 	msgHex := hex.EncodeToString(sighash)
-	// 40 polls (120 s) cover a few fast-block sign intervals; at the real 3 s
-	// cadence one 50-block sign interval alone is 150 s, so a request made just
-	// after a sign tick was given up on before its first chance (FS15 11-03).
-	polls := 40
-	if d.cfg.RealCadence {
-		polls = 120
-	}
-	for i := 0; i < polls; i++ {
+	for i := 0; i < 40; i++ {
 		reqs, err := d.GetTssRequests(ctx, 2, keyId)
 		if err == nil {
 			for _, r := range reqs {

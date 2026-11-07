@@ -775,9 +775,6 @@ func (d *Devnet) harnessHold() string {
 	if why := d.netFaults.active(); why != "" {
 		return why
 	}
-	if why := d.externalHold(); why != "" {
-		return why
-	}
 	if !testWaiting() {
 		return "test running"
 	}

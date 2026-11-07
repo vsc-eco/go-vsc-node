@@ -3,7 +3,6 @@ package oracle
 import (
 	"slices"
 	"vsc-node/lib/utils"
-	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/elections"
 	"vsc-node/modules/oracle/chain"
 	"vsc-node/modules/oracle/p2p"
@@ -67,11 +66,6 @@ func (o *Oracle) blockTick(bh uint64, headHeight *uint64) {
 		isProducer       = witnessSlot != nil &&
 			witnessSlot.Account == username
 	)
-
-	// N4: the BTC solvency watch checks at each checkpoint (solvency_watch.go).
-	if isWitness && bh%params.BTC_SOLVENCY_CHECK_EVERY == 0 {
-		o.startBtcSolvencyCheck(bh)
-	}
 
 	signal := p2p.BlockTickSignal{
 		IsProducer:     isProducer,

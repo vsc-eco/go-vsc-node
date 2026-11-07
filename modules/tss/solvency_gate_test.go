@@ -20,8 +20,6 @@ import (
 type fakeSolvencyScheduler struct {
 	halted      bool
 	theftHalted bool
-	evmHalted   bool
-	solvHalted  bool
 	minVer      consensusversion.Version
 }
 
@@ -29,10 +27,8 @@ func (f *fakeSolvencyScheduler) GetSchedule(uint64) []stateEngine.WitnessSlot { 
 func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusversion.Version {
 	return f.minVer
 }
-func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool  { return f.halted }
-func (f *fakeSolvencyScheduler) BtcTheftHalted() bool    { return f.theftHalted }
-func (f *fakeSolvencyScheduler) EvmKeysignHalted() bool  { return f.evmHalted }
-func (f *fakeSolvencyScheduler) BtcSolvencyHalted() bool { return f.solvHalted }
+func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool { return f.halted }
+func (f *fakeSolvencyScheduler) BtcTheftHalted() bool   { return f.theftHalted }
 
 // TestBtcKeysignFrozen_FlagAndScope covers the deterministic FLAG layer and the
 // BTC-only scoping. The SIGNAL layer stays inert here (MainnetConfig ships an
@@ -72,14 +68,29 @@ func TestBtcKeysignFrozen_FlagAndScope(t *testing.T) {
 			}
 		})
 	}
-	// N4: the witnesses' solvency halt freezes the BTC vault key on its own,
-	// and only the BTC vault key.
-	solv := &TssManager{sconf: sconf, scheduler: &fakeSolvencyScheduler{solvHalted: true}}
-	if !solv.btcKeysignFrozen(btcKey) {
-		t.Fatal("solvency halt: the BTC vault key was not frozen")
+}
+
+func TestParseSupplySats(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint64
+		ok   bool
+	}{
+		{"123456", 123456, true},
+		{`"7890"`, 7890, true},
+		{"  42  ", 42, true},
+		{"0", 0, true},
+		{"", 0, false},
+		{"abc", 0, false},
+		{"-5", 0, false},
+		{"1.5", 0, false},
+		{"0x10", 0, false},
 	}
-	if solv.btcKeysignFrozen(nonBtcKey) {
-		t.Fatal("solvency halt froze a non-BTC key")
+	for _, tc := range cases {
+		got, ok := parseSupplySats([]byte(tc.in))
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Fatalf("parseSupplySats(%q) = (%d, %v), want (%d, %v)", tc.in, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 

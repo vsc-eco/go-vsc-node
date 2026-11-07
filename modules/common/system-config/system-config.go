@@ -34,36 +34,7 @@ type SystemConfig interface {
 	TssParams() params.TssParams
 	PendulumPoolWhitelistAt(blockHeight uint64) []string
 	PendulumCollateralPoolsAt(blockHeight uint64) []string
-	// StablePoolAt returns the StableSwap listing of a pool contract in force
-	// at a Hive L1 height, if it has one.
-	StablePoolAt(contractID string, blockHeight uint64) (StablePool, bool)
 	LoadOverrides(path string) error
-}
-
-// StablePool lists one pool contract whose swaps price on the StableSwap
-// curve (pendulum StableSwapActive, 0.13.0) instead of the constant product.
-// It is how "only that pool" is enforced: the curve applies to a contract id
-// listed here, at or after FromHeight, for exactly this asset pair, and only
-// when the pool contract itself was initialized stable with the same
-// amplification and decimals. Consensus input: append-only, network-baked on
-// mainnet and testnet (an operator's -sysconfig cannot change it, like the
-// EVM bridge map, A21); devnet takes it from -sysconfig for tests.
-//
-// A stays fixed for the pool's life. Changing A on live reserves moves the
-// price at once (Curve ramps it over days); a different A is a new pool.
-type StablePool struct {
-	ID string `json:"id"`
-	// FromHeight is the Hive L1 block at which the listing takes effect. Zero
-	// means immediately (devnet).
-	FromHeight uint64 `json:"fromHeight"`
-	// Amp is the amplification coefficient A, 1..10000.
-	Amp int64 `json:"amp"`
-	// The pair, lowercase as the pool stores it, and each asset's decimals
-	// (HBD 3, USDC 6).
-	Asset0    string `json:"asset0"`
-	Decimals0 uint8  `json:"decimals0"`
-	Asset1    string `json:"asset1"`
-	Decimals1 uint8  `json:"decimals1"`
 }
 
 // PendulumPoolAddition stages one pool into the pendulum at a coordinated
@@ -119,21 +90,9 @@ type config struct {
 	// staged rollout exists to keep default-configured nodes in step, not to
 	// second-guess an operator who set the value deliberately.
 	pendulumWhitelistOverridden bool
-	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
+  // Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-	rcHiveFreeAmount int64
-	// evmBridgesBaked: the EVM bridge map (OracleParams.EvmBridgeContracts and
-	// EvmBridgeFromHeight) is this network's, set here, and an operator's
-	// override of it is ignored (A21). It is a consensus input from 0.13.0
-	// (custody, bond lock, the rolling vault's signing rules), and a per-operator
-	// map gave nodes different answers. A bridge ships in a build, with a height
-	// the chain has not reached.
-	evmBridgesBaked bool
-	// stablePools: the StableSwap listings (StablePool). Append-only.
-	stablePools []StablePool
-	// stablePoolsBaked: the list is this network's and an override is ignored
-	// (mainnet, testnet), as evmBridgesBaked.
-	stablePoolsBaked bool
+  rcHiveFreeAmount      int64
 }
 
 func (c *config) OnMainnet() bool {
@@ -268,23 +227,6 @@ func (c *config) PendulumCollateralPoolsAt(blockHeight uint64) []string {
 	return c.poolsAt(blockHeight, true)
 }
 
-// StablePoolAt returns the newest StableSwap listing of contractID whose
-// FromHeight has been reached at blockHeight.
-func (c *config) StablePoolAt(contractID string, blockHeight uint64) (StablePool, bool) {
-	var found StablePool
-	ok := false
-	for _, p := range c.stablePools {
-		if p.ID == "" || p.ID != contractID {
-			continue
-		}
-		if p.FromHeight != 0 && blockHeight < p.FromHeight {
-			continue
-		}
-		found, ok = p, true
-	}
-	return found, ok
-}
-
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
@@ -298,7 +240,6 @@ type SysConfigOverrides struct {
 	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
 	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
 	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
-	StablePools           *[]StablePool           `json:"stablePools,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -319,7 +260,6 @@ func (c *config) LoadOverrides(path string) error {
 		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
 		TssParams             json.RawMessage `json:"tssParams,omitempty"`
 		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
-		StablePools           *[]StablePool   `json:"stablePools,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -345,14 +285,8 @@ func (c *config) LoadOverrides(path string) error {
 		}
 	}
 	if raw.OracleParams != nil {
-		bridges, from := c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight
-		c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = copyMap(bridges), copyMap(from)
 		if err := json.Unmarshal(raw.OracleParams, &c.oracleParams); err != nil {
 			return fmt.Errorf("applying oracle overrides: %w", err)
-		}
-		if c.evmBridgesBaked && (!sameMap(bridges, c.oracleParams.EvmBridgeContracts) || !sameMap(from, c.oracleParams.EvmBridgeFromHeight)) {
-			fmt.Fprintf(os.Stderr, "sysconfig: the EVM bridge map is part of the %s build; the override of evmBridgeContracts/evmBridgeFromHeight is ignored (A21)\n", c.network)
-			c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = bridges, from
 		}
 	}
 	if raw.TssParams != nil {
@@ -367,37 +301,7 @@ func (c *config) LoadOverrides(path string) error {
 		// once the activation height passes.
 		c.pendulumWhitelistOverridden = true
 	}
-	if raw.StablePools != nil {
-		if c.stablePoolsBaked {
-			fmt.Fprintf(os.Stderr, "sysconfig: the stable pool list is part of the %s build; the override of stablePools is ignored\n", c.network)
-		} else {
-			c.stablePools = append([]StablePool(nil), (*raw.StablePools)...)
-		}
-	}
 	return nil
-}
-
-func copyMap[V comparable](m map[string]V) map[string]V {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]V, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-func sameMap[V comparable](a, b map[string]V) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if w, ok := b[k]; !ok || w != v {
-			return false
-		}
-	}
-	return true
 }
 
 func (c *config) StartHeight() uint64 {
@@ -409,15 +313,9 @@ func MainnetConfig() SystemConfig {
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
-		// A21: no EVM bridge yet; one ships here (oracleParams
-		// EvmBridgeContracts + EvmBridgeFromHeight), never per operator.
-		evmBridgesBaked: true,
-		// No stable pool listed yet: a listing names the deployed pool's
-		// contract id and ships in a node release with a FromHeight.
-		stablePoolsBaked: true,
-		hiveChainId:      "beeab0de00000000000000000000000000000000000000000000000000000000",
-		gatewayWallet:    "vsc.gateway",
-		startHeight:      94601000,
+		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
+		gatewayWallet:  "vsc.gateway",
+		startHeight:    94601000,
 		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
@@ -510,8 +408,12 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
-			// Unused (params.OracleParams.BtcL1BaseURL): the N4 solvency watch
-			// reads each witness's own bitcoind, as the council asked.
+			// BTC keysign solvency observation endpoint — STAGED FOR M1.1b
+			// (observeBtcSolvencyInsolvent), not yet wired, so INERT today.
+			// BtcVaultAddresses is intentionally left empty. NOTE (council): when
+			// M1.1b activates the observation, use a per-node TRUSTED full node
+			// here, not this shared public API a thief could rate-limit into a
+			// fail-open. The live M1.1a freeze is the deterministic governance FLAG.
 			BtcL1BaseURL: "https://mempool.space/api",
 		},
 		tssParams: params.DefaultTssParams,
@@ -561,15 +463,9 @@ func TestnetConfig() SystemConfig {
 		bootstrapPeers: TESTNET_BOOTSTRAP,
 		network:        "testnet",
 		netId:          "vsc-testnet",
-		// A21: the EVM bridge ships here (oracleParams EvmBridgeContracts +
-		// EvmBridgeFromHeight), never per operator.
-		evmBridgesBaked: true,
-		// No stable pool listed yet: a listing names the deployed pool's
-		// contract id and ships in a node release with a FromHeight.
-		stablePoolsBaked: true,
-		hiveChainId:      "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
-		gatewayWallet:    "vsc.gateway",
-		startHeight:      2,
+		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet:  "vsc.gateway",
+		startHeight:    2,
 		// Short (~90s) timelock so the mechanism is testable on testnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
@@ -651,14 +547,8 @@ func TestnetConfig() SystemConfig {
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
 			ZKVerifierChains: map[string]string{
-				"ETH": "vsc1BUdUnJymESf3bBuZmunPQxZumfTMF4TDRW",
+				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
 			},
-			// The Sepolia bridge (account-mapping a68320d, deployed 2026-10-31
-			// at Hive block 7,817,502). Its rules apply only once 0.13.0 is
-			// chain-active (EvmVaultRotationActive), so the height can be the
-			// deploy height.
-			EvmBridgeContracts:  map[string]string{"ETH": "vsc1Bo8h3TMFAYX5rkgCeauXFywZGiMbUftQL2"},
-			EvmBridgeFromHeight: map[string]uint64{"ETH": 7_817_502},
 			// BTC keysign solvency SIGNAL: testnet esplora endpoint.
 			BtcL1BaseURL: "https://mempool.space/testnet/api",
 		},

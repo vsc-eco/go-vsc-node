@@ -79,11 +79,6 @@ type Bot struct {
 	// The first entry is tried first; subsequent entries are fallbacks.
 	gqlURLs    []string
 	gqlClients []*graphql.Client
-	// gqlRank is the I-39 walk order (indices into gqlURLs / gqlClients, ranked
-	// by freshness in RankGqlByHead); nil = as configured.
-	gqlRank     atomic.Pointer[[]int]
-	gqlRankMu   sync.Mutex
-	gqlRankedAt time.Time
 
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
