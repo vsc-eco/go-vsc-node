@@ -82,8 +82,14 @@ func TestB11_HealthAlarms(t *testing.T) {
 
 	_, l2, gql, rpc = healthWorld(t, 10)
 	l2.set("vsc1bridge", "gr", eth(0.06).String()) // above the contract's 0.05 floor, below 0.1
-	if r := checked(t, gql, rpc, emptyCP()); !hasIssue(r, "B12: gas reserve") {
+	r := checked(t, gql, rpc, emptyCP())
+	if !hasIssue(r, "B12: gas reserve") {
 		t.Fatalf("low gas reserve: %+v", r)
+	}
+	// BB-1 (11-06): the alarm level and the contract's floor are two numbers,
+	// and ETH withdrawals do not use the reserve (queue.go, issueQueued).
+	if !hasIssue(r, "is below the 100000000000000000 wei alarm level: ERC-20 withdrawals wait below 0.05 ETH") || hasIssue(r, "refused") {
+		t.Fatalf("the alarm misstates what the reserve holds up: %+v", r)
 	}
 	_, l2, gql, rpc = healthWorld(t, 10)
 	l2.set("vsc1bridge", "gr", eth(0.1).String())

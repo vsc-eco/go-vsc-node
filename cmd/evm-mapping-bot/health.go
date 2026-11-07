@@ -16,7 +16,7 @@ import (
 )
 
 // B11 / B12 / C4 / D7: the bot had no alarm for running out of RC (every map
-// and confirm stops), for a drained gas reserve (withdrawals are refused), for
+// and confirm stops), for a drained gas reserve (ERC-20 withdrawals and sweeps wait), for
 // a vault holding less ETH, or less of a watched ERC-20 (TOKENS), than the
 // bridge has credited, or for the vault key nearing expiry (it retires ~14
 // days after expiring and then can never sign again; renewKey), and nothing
@@ -176,7 +176,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 			reserve = new(big.Int)
 		}
 		if reserve.Cmp(h.reserveWarn) < 0 {
-			warn(fmt.Sprintf("B12: gas reserve %s wei is below %s: withdrawals are refused below 0.05 ETH (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
+			warn(fmt.Sprintf("B12: gas reserve %s wei is below the %s wei alarm level: ERC-20 withdrawals wait below 0.05 ETH, and migration sweeps when it cannot cover their gas (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
 		}
 		// The bridge lowers custody when it queues a withdrawal, before the L1
 		// transfer, and credits a reverted one back only after it mined, so

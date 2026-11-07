@@ -197,14 +197,21 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 
 // fakeL2 serves the Magi GraphQL calls the bot makes: contract state, TSS
 // signatures, the account nonce, transaction submission and status.
+// fakeOutput is one contract's result for a transaction in its block's output.
+type fakeOutput struct {
+	contract string
+	result   map[string]any
+}
+
 type fakeL2 struct {
 	mu        sync.Mutex
-	state     map[string]map[string]string // contract id -> key -> value
-	sigs      map[string]string            // sighash hex -> DER hex
-	sigKey    map[string]string            // sighash hex -> the only key id it is served for (absent: any)
-	submitted [][]byte                     // signed L2 txs, decoded from base64
-	status    func(txID string) string     // nil: every tx is CONFIRMED
-	errMsg    func(txID string) string     // a tx's contract error in its block output (nil: none)
+	state     map[string]map[string]string   // contract id -> key -> value
+	sigs      map[string]string              // sighash hex -> DER hex
+	sigKey    map[string]string              // sighash hex -> the only key id it is served for (absent: any)
+	submitted [][]byte                       // signed L2 txs, decoded from base64
+	status    func(txID string) string       // nil: every tx is CONFIRMED
+	errMsg    func(txID string) string       // a tx's contract error in its block output (nil: none)
+	outputs   func(txID string) []fakeOutput // a tx's block outputs, in order (nil: one, the bridge's, with errMsg's result)
 	nonce     uint64
 	keys      map[string][2]string // TSS key id -> {status, public key}
 	rc        map[string]int64     // getAccountRC by account (absent: no record)
@@ -474,7 +481,15 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				break
 			}
 			if strings.Contains(req.Query, "output") {
-				data = map[string]any{"findTransaction": []map[string]any{{"output": []map[string]string{{"id": "out-" + id}}}}}
+				n := 1
+				if f.outputs != nil {
+					n = len(f.outputs(id))
+				}
+				list := []map[string]string{}
+				for i := 0; i < n; i++ {
+					list = append(list, map[string]string{"id": fmt.Sprintf("out-%d-%s", i, id)})
+				}
+				data = map[string]any{"findTransaction": []map[string]any{{"output": list}}}
 				break
 			}
 			st := "CONFIRMED"
@@ -487,12 +502,17 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 			}
 			data = map[string]any{"findTransaction": []map[string]string{{"status": st}}}
 		case strings.Contains(req.Query, "getDagByCID"):
-			id := strings.TrimPrefix(fmt.Sprint(req.Variables["c"]), "out-")
+			idx, id, _ := strings.Cut(strings.TrimPrefix(fmt.Sprint(req.Variables["c"]), "out-"), "-")
 			msg := ""
 			if f.errMsg != nil {
 				msg = f.errMsg(id)
 			}
-			out, _ := json.Marshal(map[string]any{"inputs": []string{"other", id}, "results": []map[string]any{{"ok": true}, {"ok": msg == "", "errMsg": msg}}})
+			output := fakeOutput{"vsc1bridge", map[string]any{"ok": msg == "", "errMsg": msg}}
+			if f.outputs != nil {
+				i, _ := strconv.Atoi(idx)
+				output = f.outputs(id)[i]
+			}
+			out, _ := json.Marshal(map[string]any{"contract_id": output.contract, "inputs": []string{"other", id}, "results": []map[string]any{{"ok": true}, output.result}})
 			data = map[string]any{"getDagByCID": string(out)}
 		default:
 			t.Errorf("fakeL2: unexpected query %.60s", req.Query)
