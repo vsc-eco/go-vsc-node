@@ -1365,6 +1365,47 @@ func (g *vscGraphQL) fetchTransactionStatus(ctx context.Context, txID string) (s
 // with: its result in the contract output of the block that ran it ("" when
 // none is recorded).
 func (g *vscGraphQL) fetchTransactionError(ctx context.Context, txID string) (string, error) {
+	results, err := g.fetchTransactionResults(ctx, txID)
+	if err != nil {
+		return "", err
+	}
+	for _, r := range results {
+		if r.ErrMsg != "" {
+			return r.ErrMsg, nil
+		}
+	}
+	return "", nil
+}
+
+// txResult is a transaction's result in one contract's output of the block that
+// ran it (modules/db/vsc/contracts ContractOutputResults).
+type txResult struct {
+	Contract string   `json:"-"`
+	Ret      string   `json:"ret"`
+	ErrMsg   string   `json:"errMsg"`
+	Logs     []string `json:"logs"`
+}
+
+// fetchTransactionResult is the result in contract's output: for the contract a
+// call named, its return value and logs. Zero when none is recorded.
+func (g *vscGraphQL) fetchTransactionResult(ctx context.Context, txID, contract string) (txResult, error) {
+	results, err := g.fetchTransactionResults(ctx, txID)
+	if err != nil {
+		return txResult{}, err
+	}
+	for _, r := range results {
+		if r.Contract == contract {
+			return r, nil
+		}
+	}
+	return txResult{}, nil
+}
+
+// fetchTransactionResults reads the transaction's result in every contract
+// output that holds one. A call that also touched another contract (the bridge
+// reading its verifier) has one per contract, in no fixed order, and only the
+// called contract's carries the return value (state-processing, ProcessTxBatch).
+func (g *vscGraphQL) fetchTransactionResults(ctx context.Context, txID string) ([]txResult, error) {
 	data, err := g.query(ctx,
 		`query FindTransaction($filterOptions: TransactionFilter) {
 			findTransaction(filterOptions: $filterOptions) {
@@ -1374,7 +1415,7 @@ func (g *vscGraphQL) fetchTransactionError(ctx context.Context, txID string) (st
 		map[string]interface{}{"filterOptions": map[string]interface{}{"byId": txID}},
 	)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var parsed struct {
 		FindTransaction []struct {
@@ -1384,38 +1425,40 @@ func (g *vscGraphQL) fetchTransactionError(ctx context.Context, txID string) (st
 		} `json:"findTransaction"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return "", fmt.Errorf("decode transaction: %w", err)
+		return nil, fmt.Errorf("decode transaction: %w", err)
 	}
 	if len(parsed.FindTransaction) == 0 {
-		return "", fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
+		return nil, fmt.Errorf("transaction %s: %w", txID, errTxNotFound)
 	}
+	var results []txResult
 	for _, o := range parsed.FindTransaction[0].Output {
 		raw, err := g.query(ctx, `query($c: String!) { getDagByCID(cidString: $c) }`, map[string]interface{}{"c": o.ID})
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		var dag struct {
 			GetDagByCID string `json:"getDagByCID"`
 		}
 		var out struct {
-			Inputs  []string `json:"inputs"`
-			Results []struct {
-				ErrMsg string `json:"errMsg"`
-			} `json:"results"`
+			ContractID string     `json:"contract_id"`
+			Inputs     []string   `json:"inputs"`
+			Results    []txResult `json:"results"`
 		}
 		if err := json.Unmarshal(raw, &dag); err != nil {
-			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+			return nil, fmt.Errorf("decode output %s: %w", o.ID, err)
 		}
 		if err := json.Unmarshal([]byte(dag.GetDagByCID), &out); err != nil {
-			return "", fmt.Errorf("decode output %s: %w", o.ID, err)
+			return nil, fmt.Errorf("decode output %s: %w", o.ID, err)
 		}
 		for i, in := range out.Inputs {
 			if in == txID && i < len(out.Results) {
-				return out.Results[i].ErrMsg, nil
+				r := out.Results[i]
+				r.Contract = out.ContractID
+				results = append(results, r)
 			}
 		}
 	}
-	return "", nil
+	return results, nil
 }
 
 // errAlreadyProcessed is the bridge's refusal of a deposit it has credited

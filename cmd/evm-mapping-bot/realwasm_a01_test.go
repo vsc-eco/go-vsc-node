@@ -320,6 +320,16 @@ func TestRealWasm_A01_RotationEndToEnd(t *testing.T) {
 	p, _ := buildConfirmSweepPayload(context.Background(), ch109.rpc(t), 0, 3, 109, 0)
 	rc.call("hive:anyone", "confirmSweep", p)
 
+	// The same confirmSweep again (a lagging node reported the first as unknown,
+	// and the bot re-sent it): refused, and nothing moves.
+	bookAfter, msrAfter := ct.StateGet(rwBridge, "vb-0-eth"), ct.StateGet(rwBridge, "msr")
+	if res := rwCallLimit(ct, "hive:anyone", "confirmSweep", p, 1_000_000); res.Success || !strings.Contains(res.ErrMsg, "no open sweep") {
+		t.Fatalf("second confirmSweep of a settled sweep: %v %s", res.Success, res.ErrMsg)
+	}
+	if b, m := ct.StateGet(rwBridge, "vb-0-eth"), ct.StateGet(rwBridge, "msr"); b != bookAfter || m != msrAfter {
+		t.Fatalf("a refused confirmSweep moved the books: %q -> %q, msr %q -> %q", bookAfter, b, msrAfter, m)
+	}
+
 	// Retire, then purge after the grace (64 L1 blocks off mainnet) and the
 	// I-26 map window (another 64): a deposit mined at the end of the grace
 	// still gets its header and its map in first.

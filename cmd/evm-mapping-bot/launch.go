@@ -1143,9 +1143,72 @@ func drainIsNoop(ctx context.Context, g *vscGraphQL, caller, contract string, pa
 // it is under an hour old (MaxPricingHeaderAge); older, a drain does nothing.
 var drainPricingMaxAge = 55 * time.Minute
 
+// sentDrain is a drainWithdrawalQueue the bot sent and has no result for yet.
+type sentDrain struct {
+	tx               string
+	queued, inFlight uint64 // read before the call
+	at               time.Time
+}
+
+// sentDrains: callContractL2 only says the pool took a drain, so its result is
+// logged when the chain has one. Logging success at the broadcast called 65
+// drains in a row "drained" while the queue did not move (BB-1, 11-06).
+var sentDrains []sentDrain
+
+// reportDrains logs what each sent drain did, once the chain has answered.
+func reportDrains(ctx context.Context, gql *vscGraphQL, contract string) {
+	waiting := sentDrains[:0]
+	for _, d := range sentDrains {
+		if !reportDrain(ctx, gql, contract, d) {
+			waiting = append(waiting, d)
+		}
+	}
+	sentDrains = waiting
+}
+
+// reportDrain logs d's result. False: none yet, ask again next tick. A drain
+// with no result after confirmVanishGrace is logged as that and dropped; the
+// next drain tick decides afresh whether to send another.
+func reportDrain(ctx context.Context, gql *vscGraphQL, contract string, d sentDrain) bool {
+	status, err := gql.fetchTransactionStatus(ctx, d.tx)
+	late := time.Since(d.at) > confirmVanishGrace
+	switch {
+	case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
+		r, rerr := gql.fetchTransactionResult(ctx, d.tx, contract)
+		if rerr != nil && !late {
+			return false
+		}
+		refunded := 0
+		for _, l := range r.Logs {
+			if strings.HasPrefix(l, "unmapq|refund|") {
+				refunded++
+			}
+		}
+		attrs := []any{"tx", d.tx, "issued", r.Ret, "refunded", refunded, "queuedBefore", d.queued, "inFlightBefore", d.inFlight}
+		switch {
+		case r.Ret == "": // none recorded, or rerr: then r is zero
+			slog.Warn("RP-11: drain landed; its result is unreadable", append(attrs, "err", rerr)...)
+		case r.Ret == "0" && refunded == 0:
+			slog.Info("RP-11: drain landed and moved no withdrawal", attrs...)
+		default:
+			slog.Info("RP-11: drain landed", attrs...)
+		}
+		return true
+	case err == nil && status == "FAILED":
+		msg, _ := gql.fetchTransactionError(ctx, d.tx)
+		slog.Warn("RP-11: drain failed on chain", "tx", d.tx, "err", msg, "queuedBefore", d.queued, "inFlightBefore", d.inFlight)
+		return true
+	case late:
+		slog.Warn("RP-11: drain has no result", "tx", d.tx, "status", status, "err", err, "sentAt", d.at)
+		return true
+	}
+	return false
+}
+
 // drainIfQueued issues queued withdrawals into free slots
 // (drainWithdrawalQueue; only that call issues queued ones, ~5k RC each).
 func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, cfg EVMBotConfig) {
+	reportDrains(ctx, gql, cfg.ContractID)
 	if time.Since(lastDrainAt) < drainEvery {
 		return
 	}
@@ -1207,11 +1270,13 @@ func drainIfQueued(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter,
 	if refunds > drainScanMax {
 		refunds = drainScanMax
 	}
-	if _, err := submitter.callContractL2(ctx, cfg.ContractID, "drainWithdrawalQueue", p, 6_000*max+4_000+drainRefundRC*refunds); err != nil {
+	tx, err := submitter.callContractL2(ctx, cfg.ContractID, "drainWithdrawalQueue", p, 6_000*max+4_000+drainRefundRC*refunds)
+	if err != nil {
 		slog.Warn("RP-11: drainWithdrawalQueue", "err", err)
 		return
 	}
-	slog.Info("RP-11: drained the withdrawal queue", "max", max, "queued", t-h, "inFlight", np-n)
+	sentDrains = append(sentDrains, sentDrain{tx: tx, queued: t - h, inFlight: np - n, at: time.Now()})
+	slog.Info("RP-11: drainWithdrawalQueue sent", "tx", tx, "max", max, "queued", t-h, "inFlight", np-n)
 }
 
 // ---------------------------------------------------------------------------
