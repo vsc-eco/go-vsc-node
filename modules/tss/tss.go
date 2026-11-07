@@ -1948,7 +1948,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Constraints 1-3). btcSignRefused logs the specific reason.
 			// A01: an EVM bridge's rotating vault is scoped the same way
 			// (evm_output_scoping.go); evmSignRefused passes every other key.
-			if tssMgr.btcSignRefused(action.KeyId, action.Args, bh) || tssMgr.evmSignRefused(action.KeyId, action.Args, bh) {
+			btcRefused := tssMgr.btcSignRefused(action.KeyId, action.Args, bh)
+			if btcRefused || tssMgr.evmSignRefused(action.KeyId, action.Args, bh) {
 				// B16: leave a trace. This skip used to `continue` with no database
 				// status update at all, so a signing request refused by policy sat
 				// unsigned forever with nothing recording why — an infinite SILENT
@@ -1966,8 +1967,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					Msg:    hex.EncodeToString(action.Args),
 					Status: tss_db.SignFailed,
 				})
-				log.Warn("BTC sign refused by policy; request marked failed for visibility",
-					"keyId", action.KeyId, "blockHeight", bh)
+				// I-12: this said "BTC" for an EVM key's refusal too.
+				refusedBy := "EVM"
+				if btcRefused {
+					refusedBy = "BTC"
+				}
+				if policyRefusalLogDue(policyRefusalKey("request", action.KeyId, action.Args)) {
+					log.Warn(refusedBy+" sign refused by policy; request marked failed for visibility (repeats of this request are logged at most every "+policyRefusalLogEvery.String()+")",
+						"keyId", action.KeyId, "blockHeight", bh)
+				}
 				continue
 			}
 

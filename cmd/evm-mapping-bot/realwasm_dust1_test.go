@@ -68,6 +68,7 @@ func TestRealWasm_DUST1_TokenBelowTheFloorIsNotCredited(t *testing.T) {
 // instead (it paid a MagiDeposit deposit).
 func TestRealWasm_DUST1_MagiDepositBelowTheFloorIsNotCredited(t *testing.T) {
 	c, _ := rwUSDCBridge(t)
+	rwAttestDeposit(t, c.ct, c.vault, 0, 99) // I-28: depositAddress names it once attested
 	r := rwCall(c.ct, "hive:anyone", "depositAddress", []byte(`{}`))
 	dc := common.HexToAddress(r.Ret)
 	userKey, _ := ethCrypto.GenerateKey()

@@ -33,6 +33,7 @@ type fakeL1 struct {
 	freeze    map[string]map[string][]string // eth_call freeze view: token -> selector -> frozen holders (absent selector: "0x")
 	freezeRaw map[string]string              // eth_call freeze views: token -> the raw 32-byte word it answers (a fallback, not a boolean)
 	logs      string                         // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
+	code      map[string]string              // eth_getCode by lowercase address ("error": a JSON-RPC error; absent: "0x")
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -127,6 +128,16 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 					}
 				}
 			}
+		case "eth_getCode":
+			c := f.code[strings.ToLower(arg0)]
+			if c == "error" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000, "message": "header not found"}})
+				return
+			}
+			if c == "" {
+				c = "0x"
+			}
+			result = c
 		case "eth_getBalance":
 			b := f.balances[strings.ToLower(arg0)]
 			if b == nil {
@@ -204,6 +215,10 @@ type fakeL2 struct {
 	// sim answers simulateContractCalls for an action (nil: the dry run is
 	// unavailable, a GraphQL error, and the bot keeps its configured rc_limit).
 	sim func(action string) map[string]any
+	// simCalls, when set, answers a whole simulateContractCalls request (every
+	// call's action in order), for a dry run whose later call depends on an
+	// earlier one's state (I-20 follow-up: attestHeaders after attestHistoryRoot).
+	simCalls func(actions []string) []map[string]any
 	// onDemand: a verifier stores only the headers set with set() (RP-9). Off,
 	// a contract with "h" also serves a stored header "b-N" for every N <= h,
 	// as the verifier did when it stored every header (old tests).
@@ -225,6 +240,9 @@ type fakePool struct {
 	// stuck: transactions this node holds that no block can include (the nodes
 	// a block needs never received them: TX-GOSSIP-STALL, devnet FS2/FS6).
 	stuck map[string]bool
+	// refuse: the next submissions the node refuses before any nonce check,
+	// as it refuses a call the account lacks the RC for (IngestTx).
+	refuse int
 }
 
 type fakePoolTx struct {
@@ -239,6 +257,10 @@ func (p *fakePool) submit(raw []byte) (string, error) {
 	}
 	n := shell.Headers.Nonce
 	id := localTxID(raw)
+	if p.refuse > 0 {
+		p.refuse--
+		return "", fmt.Errorf("not enough RCS available: %d < %d", 0, shell.Headers.RcLimit)
+	}
 	switch {
 	case n < p.confirmed:
 		return "", fmt.Errorf("nonce too low: %d < %d", n, p.confirmed)
@@ -323,6 +345,10 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 		defer f.mu.Unlock()
 		var data any
 		switch {
+		case strings.Contains(req.Query, "getStateByKeys") && len(anySlice(req.Variables["keys"])) > 100:
+			// the node's limit (gql schema.resolvers.go)
+			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "number of state keys to query must be between 1 and 100"}}})
+			return
 		case strings.Contains(req.Query, "getStateByKeys") && f.failState[fmt.Sprint(req.Variables["contractId"])]:
 			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "state read failed"}}})
 			return
@@ -374,11 +400,28 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				c, _ := calls[0].(map[string]any)
 				action, _ = c["action"].(string)
 			}
+			if f.simCalls != nil {
+				var actions []string
+				for _, c := range calls {
+					m, _ := c.(map[string]any)
+					a, _ := m["action"].(string)
+					actions = append(actions, a)
+				}
+				data = map[string]any{"simulateContractCalls": f.simCalls(actions)}
+				break
+			}
 			if f.sim == nil {
 				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "dry run unavailable"}}})
 				return
 			}
-			data = map[string]any{"simulateContractCalls": []map[string]any{f.sim(action)}}
+			// one result per call, as the node answers (each from its own action)
+			res := []map[string]any{f.sim(action)}
+			for _, c := range calls[min(1, len(calls)):] {
+				m, _ := c.(map[string]any)
+				a, _ := m["action"].(string)
+				res = append(res, f.sim(a))
+			}
+			data = map[string]any{"simulateContractCalls": res}
 		case strings.Contains(req.Query, "getAccountRC"):
 			var rec any
 			if v, ok := f.rc[fmt.Sprint(req.Variables["a"])]; ok {
@@ -438,6 +481,10 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 			if f.status != nil {
 				st = f.status(id)
 			}
+			if st == "-" { // the node does not know the transaction
+				data = map[string]any{"findTransaction": []map[string]string{}}
+				break
+			}
 			data = map[string]any{"findTransaction": []map[string]string{{"status": st}}}
 		case strings.Contains(req.Query, "getDagByCID"):
 			id := strings.TrimPrefix(fmt.Sprint(req.Variables["c"]), "out-")
@@ -457,3 +504,8 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 }
 
 func writeFileForTest(path, content string) error { return os.WriteFile(path, []byte(content), 0600) }
+
+func anySlice(v any) []any {
+	a, _ := v.([]any)
+	return a
+}

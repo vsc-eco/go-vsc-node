@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,26 @@ type ChaosRPC struct {
 	on       bool
 	counts   map[string]int
 	snaps    map[string][]chaosSnap // head query -> recent answers, oldest first
+	// methodFault forces one fault on every call of a method, over the seeded
+	// draw (SetMethodFault): the C1104 waves' targeted RPC weather.
+	methodFault map[string]string
+}
+
+// SetMethodFault makes every call of method fail one way until cleared with
+// "": "429" refuses it (HTTP 429, no answer), "rpcerr:<code>:<message>"
+// answers it with that JSON-RPC error (an answer, as an endpoint that cannot
+// serve the call gives). Counted as "m429"/"mrpcerr".
+func (c *ChaosRPC) SetMethodFault(method, fault string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.methodFault == nil {
+		c.methodFault = map[string]string{}
+	}
+	if fault == "" {
+		delete(c.methodFault, method)
+		return
+	}
+	c.methodFault[method] = fault
 }
 
 // ChaosConfig sets each fault's probability per call (0..1).
@@ -205,6 +226,32 @@ func (c *ChaosRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := ""
 	if json.Unmarshal(body, &req) == nil { // a batch (array) passes without a stale answer
 		key = headKey(req.Method, req.Params)
+	}
+	c.mu.Lock()
+	mf := c.methodFault[req.Method]
+	if mf != "" {
+		if strings.HasPrefix(mf, "rpcerr:") {
+			c.counts["mrpcerr"]++
+		} else {
+			c.counts["m"+mf]++
+		}
+	}
+	c.mu.Unlock()
+	switch {
+	case mf == "429":
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	case strings.HasPrefix(mf, "rpcerr:"):
+		parts := strings.SplitN(strings.TrimPrefix(mf, "rpcerr:"), ":", 2)
+		code, _ := strconv.Atoi(parts[0])
+		msg := ""
+		if len(parts) == 2 {
+			msg = parts[1]
+		}
+		out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": code, "message": msg}})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+		return
 	}
 	f := c.fault(key != "")
 	switch f {

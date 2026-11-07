@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"vsc-node/lib/dids"
+	"vsc-node/lib/utils"
 	"vsc-node/modules/common/params"
 	"vsc-node/modules/db/vsc/contracts"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -50,6 +51,9 @@ import (
 // ---------------------------------------------------------------------------
 
 type EVMBotConfig struct {
+	// Paused: the bridge's pause flag at this tick (I-13); the calls the
+	// bridge refuses while paused are skipped, everything else runs.
+	Paused         bool
 	EthRPC         string
 	VaultAddress   string            // 0x... lowercase
 	Tokens         map[string]string // ERC-20 address (lowercase) → name for logs (parseTokens)
@@ -135,7 +139,28 @@ type l2Submitter struct {
 	lastConfirmed  uint64
 	confirmedSince time.Time
 	now            func() time.Time // nil: time.Now (tests set it)
+
+	// I-8: the signed bytes of the bot's accepted transactions above the
+	// account nonce, by nonce, for rebroadcastStalled; and its own reading of
+	// when the account nonce last moved. Guarded by mu.
+	held        map[uint64]heldL2Tx
+	rbConfirmed uint64
+	rbSince     time.Time
+	rbAt        time.Time
 }
+
+// heldL2Tx is one accepted L2 transaction, as submitted.
+type heldL2Tx struct{ tx, sig string }
+
+// stallRebroadcastAfter: how long the account nonce may stay put with the
+// bot's transactions above it before they are re-broadcast to every endpoint;
+// stallRebroadcastEvery: how often while it stays put. A re-broadcast sends
+// the same bytes (the same transaction id, the pool keeps one), so it can be
+// sooner than the B-R1b resend.
+var (
+	stallRebroadcastAfter = 2 * time.Minute
+	stallRebroadcastEvery = 2 * time.Minute
+)
 
 // nonceStallGrace: how long the account nonce may stay put while the bot has
 // transactions above it before the bot starts again from the account nonce,
@@ -188,6 +213,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	shutdownCtx = ctx
 
 	if err := RunLoop(ctx, cfg, ethKey, did); err != nil && err != context.Canceled {
 		slog.Error("bot exited with error", "err", err)
@@ -362,8 +388,12 @@ type Checkpoint struct {
 	// known yet, keyed by L2 tx id (B4).
 	PendingMaps map[string]PendingMap `json:"pending_maps,omitempty"`
 	// DeadLetters: deposits the bot will not map automatically, with the
-	// reason, kept for an operator (B4/B6).
+	// reason, kept for an operator (B4/B6); an AutoRetry one is mapped again
+	// on the next tick (I-46).
 	DeadLetters []DeadLetter `json:"dead_letters,omitempty"`
+	// MapVanishes: how many times a deposit's map vanished (the node no longer
+	// knew it), by deposit tx in lowercase (I-46).
+	MapVanishes map[string]int `json:"map_vanishes,omitempty"`
 	// RP-9: blocks whose header the bot needs stored (first seen, unix), the
 	// EIP-2935 proofs fetched for them by root block, and since when the
 	// operator has been asked for a proof (NEEDS_FILE).
@@ -372,6 +402,14 @@ type Checkpoint struct {
 	WaitingDeposits map[uint64][]detectedDeposit `json:"waiting_deposits,omitempty"`
 	AttestCache     map[uint64]*attestEntry      `json:"attest_cache,omitempty"`
 	WantProofSince  int64                        `json:"want_proof_since,omitempty"`
+	// WantBatchSince/WantBatchTip: the operator's batch clock (the needs file's
+	// "since"), restarted when the proven tip moves (I-43); WantProofSince keeps
+	// counting for the A10 alarm.
+	WantBatchSince int64 `json:"want_batch_since,omitempty"`
+	// PurgeWantTip: an Inactive generation's purge waits only for the stored L1
+	// height to reach this (I-38); writeNeedsFile asks for a proof until it does.
+	PurgeWantTip uint64 `json:"purge_want_tip,omitempty"`
+	WantBatchTip uint64 `json:"want_batch_tip,omitempty"`
 	// AttestSentAt / LinkSentAt: when attestations from a root, and a run of
 	// linked headers, were last submitted. An L2 call executes a few blocks
 	// later; resending it every tick until then would burn RC.
@@ -398,6 +436,7 @@ type PendingMap struct {
 	Block       uint64 `json:"block"`
 	DepositTx   string `json:"deposit_tx"`
 	SubmittedAt int64  `json:"submitted_at"`
+	Vault       string `json:"vault,omitempty"` // the deposit's (I-26)
 }
 
 // DeadLetter is a deposit the bot gave up mapping, and why.
@@ -407,6 +446,9 @@ type DeadLetter struct {
 	MapTxId   string `json:"map_tx_id,omitempty"`
 	Reason    string `json:"reason"`
 	At        int64  `json:"at"`
+	// AutoRetry: the map vanished rather than failed, so the bot maps the
+	// deposit again itself (I-46); not one for the operator.
+	AutoRetry bool `json:"auto_retry,omitempty"`
 }
 
 // deadLetter records a deposit the bot will not map automatically. Caller
@@ -417,6 +459,66 @@ func (cp *Checkpoint) deadLetter(block uint64, depositTx, mapTxId, reason string
 	cp.mu.Lock()
 	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix()})
 	cp.mu.Unlock()
+}
+
+// mapVanishRetries: how many times a deposit whose map vanished is mapped
+// again by the bot before it is left to the operator (I-46).
+const mapVanishRetries = 3
+
+// mapVanished handles a map the node no longer knows long after it was sent
+// (I-46, testnet 11-05 18:38: the map lost its nonce to another of the bot's
+// calls and the pool deleted it). It never failed on chain, so, as B-R1 does
+// for a confirmSpend and the BTC bot for a map that did not land
+// (BOT-MAP-SKIP-1), the deposit is mapped again: up to mapVanishRetries times,
+// then it is left to the operator. A map that did land after all is refused
+// as already processed on the retry, which closes it.
+func (cp *Checkpoint) mapVanished(block uint64, depositTx, mapTxId, reason string) {
+	key := strings.ToLower(depositTx)
+	cp.mu.Lock()
+	if cp.MapVanishes == nil {
+		cp.MapVanishes = map[string]int{}
+	}
+	cp.MapVanishes[key]++
+	n := cp.MapVanishes[key]
+	cp.mu.Unlock()
+	if n > mapVanishRetries {
+		cp.deadLetter(block, depositTx, mapTxId, fmt.Sprintf("%s; its map vanished %d times", reason, n))
+		return
+	}
+	slog.Warn("I-46: the node no longer knows this deposit's map (it lost its nonce or was dropped); mapping the deposit again",
+		"block", block, "tx", depositTx, "mapTx", mapTxId, "vanished", n, "of", mapVanishRetries)
+	cp.mu.Lock()
+	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix(), AutoRetry: true})
+	cp.mu.Unlock()
+}
+
+// mapDone forgets a deposit's vanished maps once one lands (I-46).
+func (cp *Checkpoint) mapDone(depositTx string) {
+	cp.mu.Lock()
+	delete(cp.MapVanishes, strings.ToLower(depositTx))
+	cp.mu.Unlock()
+}
+
+// deadLetterKeep is how long a dead letter stays for an operator's retry
+// (PS-6, the BTC mapping bot prunes its failed-tx store after 30 days,
+// 25499491): without it the list, written into the checkpoint every tick, only
+// grew.
+const deadLetterKeep = 30 * 24 * time.Hour
+
+// pruneDeadLetters drops dead letters older than deadLetterKeep.
+func (cp *Checkpoint) pruneDeadLetters(now time.Time) {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	kept := cp.DeadLetters[:0]
+	for _, d := range cp.DeadLetters {
+		if d.At == 0 || now.Sub(time.Unix(d.At, 0)) <= deadLetterKeep { // no time recorded: age unknown, kept
+			kept = append(kept, d)
+		} else {
+			slog.Warn("PS-6: dead letter dropped after 30 days; the deposit stays on L1 unmapped", "block", d.Block, "tx", d.DepositTx, "reason", d.Reason)
+			delete(cp.MapVanishes, strings.ToLower(d.DepositTx))
+		}
+	}
+	cp.DeadLetters = kept
 }
 
 const blockRetryAlertThreshold = 10
@@ -455,6 +557,9 @@ type SentTx struct {
 	// FinalAt: when the bot first saw the withdrawal mined and final (RP-6
 	// confirm-lag alarm).
 	FinalAt int64 `json:"final_at,omitempty"`
+	// MinedBlock: the final block it mined in, once seen while an earlier
+	// withdrawal held the confirm queue (I-21), so its header is asked for once.
+	MinedBlock uint64 `json:"mined_block,omitempty"`
 }
 
 // confirmVanishGrace: a submitted confirmSpend the node has no record of after
@@ -598,7 +703,7 @@ type ethRPC struct {
 }
 
 func newEthRPC(urls string) *ethRPC {
-	e := &ethRPC{client: &http.Client{Timeout: 30 * time.Second}}
+	e := &ethRPC{client: utils.NewHTTPClient(30 * time.Second)} // I-35: HTTP/2 health checks
 	for _, u := range strings.Split(urls, ",") {
 		if u = strings.TrimSpace(u); u != "" {
 			e.urls = append(e.urls, u)
@@ -707,21 +812,38 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
+// shutdownCtx ends when the bot is told to stop (SIGINT/SIGTERM). The L1 calls
+// that take no tick context use it (I-34, testnet 11-05 01:28: a SIGTERM was
+// not honored for 75 s, until a SIGQUIT, because the block scan's eth_getLogs
+// calls ran on context.Background(): each call up to 30 s, per endpoint, per
+// head check, per retry). A stop now ends them; the block is failed and
+// scanned again on the next start.
+var shutdownCtx = context.Background()
+
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
-	return e.callCtx(context.Background(), method, params)
+	return e.callCtx(shutdownCtx, method, params)
 }
 
 // callCtx is call bounded by ctx: a call still waiting when ctx ends is
 // abandoned (TICKSTALL-1: a block's proof fetch must not outlast the tick).
 func (e *ethRPC) callCtx(ctx context.Context, method string, params string) (json.RawMessage, error) {
 	body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[%s],"id":1}`, method, params)
-	var lastErr error
+	var lastErr, capErr error
 	first := int(e.start.Load())
 	for k := range e.urls {
 		i := (first + k) % len(e.urls)
 		res, answered, err := e.callOne(ctx, e.urls[i], method, body)
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
+		}
+		if answered && method == "eth_getProof" && isProofCapabilityErr(err) {
+			// I-5: the endpoint cannot serve this proof (its proof window or
+			// state history is shorter than the block needs); another may.
+			capErr = err
+			if k+1 < len(e.urls) {
+				slog.Warn("I-5: ETH RPC endpoint cannot serve this proof, trying the next", "endpoint", i, "method", method, "err", err)
+			}
+			continue
 		}
 		if answered {
 			if i != first {
@@ -734,10 +856,70 @@ func (e *ethRPC) callCtx(ctx context.Context, method string, params string) (jso
 			slog.Warn("B14: ETH RPC endpoint did not answer, trying the next", "endpoint", i, "method", method, "err", err)
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no ETH RPC endpoint configured")
+	// An endpoint that did not answer may serve the proof next time; only
+	// when every endpoint answered "cannot" is that the answer (I-18).
+	if lastErr != nil {
+		return nil, lastErr
 	}
-	return nil, lastErr
+	if capErr != nil {
+		return nil, capErr
+	}
+	return nil, errors.New("no ETH RPC endpoint configured")
+}
+
+// rpcAnswerError is a JSON-RPC error an endpoint answered with: the chain's
+// (or that endpoint's) answer, not an endpoint that failed to answer (B14).
+type rpcAnswerError struct{ Message string }
+
+func (e *rpcAnswerError) Error() string { return "rpc error: " + e.Message }
+
+// proofCapabilityErrs are eth_getProof answers that say the endpoint keeps
+// too little state for the block, not that the request is wrong (I-5:
+// publicnode's proof window is under Sepolia's ~70-block finality lag).
+var proofCapabilityErrs = []string{
+	"maximum proof window", // publicnode, erigon-style: "distance to target block exceeds maximum proof window"
+	"missing trie node",    // geth hash-scheme pruned state
+	"historical state",     // geth path-scheme: "historical state ... is not available"
+	"state is not available",
+	"state not available",
+	"state histories",
+	"pruned",
+}
+
+// isProofCapabilityErr reports whether err is an endpoint's answer that it
+// cannot serve the proof at that block (I-5).
+func isProofCapabilityErr(err error) bool {
+	var ae *rpcAnswerError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	m := strings.ToLower(ae.Message)
+	for _, p := range proofCapabilityErrs {
+		if strings.Contains(m, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isThrottleAnswer reports whether a JSON-RPC error is the endpoint refusing
+// for load (I-32, testnet 11-05: thirdweb answers HTTP 200 with code -32005
+// "Rate limit exceeded"; EIP-1474's -32005 is "limit exceeded"; some providers
+// put 429 in the JSON code). Not the chain's answer: the call never ran.
+func isThrottleAnswer(code int, msg string) bool {
+	if code == -32005 || code == 429 {
+		return true
+	}
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "rate limit") || strings.Contains(m, "too many requests")
+}
+
+// isRPCAnswer reports whether err is an endpoint's answer (a JSON-RPC error
+// or a null result), as opposed to no endpoint answering (transport, HTTP
+// status, timeout): the latter may succeed on the next tick (I-18).
+func isRPCAnswer(err error) bool {
+	var ae *rpcAnswerError
+	return errors.As(err, &ae) || (err != nil && strings.Contains(err.Error(), "null result from"))
 }
 
 // redactURL keeps only the scheme and host of the URL in an HTTP request
@@ -792,15 +974,23 @@ func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res jso
 	}
 
 	var result struct {
-		Result json.RawMessage           `json:"result"`
-		Error  *struct{ Message string } `json:"error"`
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, false, fmt.Errorf("malformed rpc response: %w", err)
 	}
 	res, err = result.Result, nil
 	if result.Error != nil {
-		return nil, true, fmt.Errorf("rpc error: %s", result.Error.Message)
+		if isThrottleAnswer(result.Error.Code, result.Error.Message) {
+			// I-32: a rate limit sent as a JSON-RPC error in a 200 is no
+			// answer, like an HTTP 429: fail over, and retry later.
+			return nil, false, fmt.Errorf("rpc rate limited (code %d): %s", result.Error.Code, result.Error.Message)
+		}
+		return nil, true, &rpcAnswerError{Message: result.Error.Message}
 	}
 	if result.Result == nil || string(result.Result) == "null" {
 		return nil, true, fmt.Errorf("null result from %s", method)
@@ -809,7 +999,7 @@ func (e *ethRPC) callOne(ctx context.Context, url, method, body string) (res jso
 }
 
 func (e *ethRPC) getFinalizedBlock() (uint64, error) {
-	data, err := callRetry(context.Background(), e, "eth_getBlockByNumber", `"finalized", false`) // P5
+	data, err := callRetry(shutdownCtx, e, "eth_getBlockByNumber", `"finalized", false`) // P5
 	if err != nil {
 		return 0, err
 	}
@@ -821,11 +1011,11 @@ func (e *ethRPC) getFinalizedBlock() (uint64, error) {
 }
 
 func (e *ethRPC) getBlockWithTxs(height uint64) (json.RawMessage, error) {
-	return callRetry(context.Background(), e, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height)) // P5
+	return callRetry(shutdownCtx, e, "eth_getBlockByNumber", fmt.Sprintf(`"0x%x", true`, height)) // P5
 }
 
 func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
-	return callRetry(context.Background(), e, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash)) // P5
+	return callRetry(shutdownCtx, e, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 // getTransactionByHash fetches the canonical transaction object for a hash.
@@ -833,7 +1023,7 @@ func (e *ethRPC) getReceipt(txHash string) (json.RawMessage, error) {
 // recovery actually corresponds to a transaction the RPC knows about, so a
 // hostile RPC cannot fabricate a receipt for a hash we never broadcast.
 func (e *ethRPC) getTransactionByHash(txHash string) (json.RawMessage, error) {
-	return callRetry(context.Background(), e, "eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash)) // P5
+	return callRetry(shutdownCtx, e, "eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
 func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
@@ -864,10 +1054,109 @@ func fetchContractPaused(ctx context.Context, gql *vscGraphQL, contractID string
 type vscGraphQL struct {
 	urls   []string
 	client *http.Client
+	// ranked is urls ordered by freshness (I-39, rankByHead); nil = urls.
+	ranked   atomic.Pointer[[]string]
+	rankMu   sync.Mutex
+	rankedAt time.Time
+}
+
+// I-39 (devnet 11-05): a GraphQL endpoint cut off from its Magi peers kept
+// answering from a frozen state, and the bot, which fails over only on an
+// error, read it as truth: a deposit whose header the live chain stored 17 s
+// into the cut was mapped 44 s after the heal. A cut-off node's last processed
+// Hive block stops (TestC1104_StaleNodeHeadExperiment: frozen at 114 from 40 s
+// into the cut while the others reached 158; caught up 20 s after the heal), so
+// every gqlRankEvery the endpoints are ranked by it: one more than
+// gqlStaleBlocks behind the best is walked last (still a last resort). One that
+// does not answer the head query keeps its place; the walk's failover handles it.
+const gqlStaleBlocks = 10 // Hive blocks, ~30 s
+
+var gqlRankEvery = 30 * time.Second
+
+// order is the endpoint walk order: ranked by freshness, or as configured.
+func (g *vscGraphQL) order() []string {
+	if p := g.ranked.Load(); p != nil {
+		return *p
+	}
+	return g.urls
+}
+
+// rankByHead re-ranks the endpoints by their last processed Hive block, at most
+// once per gqlRankEvery.
+func (g *vscGraphQL) rankByHead(ctx context.Context) {
+	if len(g.urls) < 2 {
+		return
+	}
+	g.rankMu.Lock()
+	if !g.rankedAt.IsZero() && time.Since(g.rankedAt) < gqlRankEvery {
+		g.rankMu.Unlock()
+		return
+	}
+	g.rankedAt = time.Now()
+	g.rankMu.Unlock()
+	heads := make([]uint64, len(g.urls))
+	known := make([]bool, len(g.urls))
+	var wg sync.WaitGroup
+	for i, u := range g.urls {
+		wg.Add(1)
+		go func(i int, u string) {
+			defer wg.Done()
+			if h, err := g.headOf(ctx, u); err == nil {
+				heads[i], known[i] = h, true
+			}
+		}(i, u)
+	}
+	wg.Wait()
+	var best uint64
+	for i := range heads {
+		if known[i] && heads[i] > best {
+			best = heads[i]
+		}
+	}
+	var fresh, stale []string
+	for i, u := range g.urls {
+		if known[i] && heads[i]+gqlStaleBlocks < best {
+			stale = append(stale, u)
+			continue
+		}
+		fresh = append(fresh, u)
+	}
+	out := append(fresh, stale...)
+	prev := g.order()
+	g.ranked.Store(&out)
+	if strings.Join(prev, ",") != strings.Join(out, ",") {
+		if len(stale) > 0 {
+			slog.Warn("I-39: a GraphQL endpoint is behind the others; it is read last until it catches up", "behind", stale, "best_block", best)
+		} else {
+			slog.Info("I-39: every GraphQL endpoint is current again", "best_block", best)
+		}
+	}
+}
+
+// headOf is an endpoint's last processed Hive block (localNodeInfo).
+func (g *vscGraphQL) headOf(ctx context.Context, url string) (uint64, error) {
+	body, _ := json.Marshal(map[string]any{"query": `{ localNodeInfo { last_processed_block } }`})
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, err := g.doGQL(cctx, url, body)
+	if err != nil {
+		return 0, err
+	}
+	var out struct {
+		Data struct {
+			LocalNodeInfo *struct {
+				LastProcessedBlock uint64 `json:"last_processed_block"`
+			} `json:"localNodeInfo"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.Data.LocalNodeInfo == nil {
+		return 0, fmt.Errorf("no localNodeInfo from %s", url)
+	}
+	return out.Data.LocalNodeInfo.LastProcessedBlock, nil
 }
 
 func newVSCGraphQL(urls []string) *vscGraphQL {
-	return &vscGraphQL{urls: urls, client: &http.Client{Timeout: 30 * time.Second}}
+	return &vscGraphQL{urls: urls, client: utils.NewHTTPClient(30 * time.Second)} // I-35
 }
 
 func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[string]interface{}) (json.RawMessage, error) {
@@ -877,7 +1166,8 @@ func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[s
 	})
 
 	var lastErr error
-	for i, url := range g.urls {
+	urls := g.order() // I-39: freshest endpoints first
+	for i, url := range urls {
 		// MED-115 (m39 F-INJ-B3): rotating to a fallback endpoint after a primary
 		// failure must NOT be silent. A transient 502 on URL[0] followed by a 200
 		// from a less-trusted fallback previously looked identical to a clean
@@ -888,7 +1178,7 @@ func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[s
 		res, err := g.doGQL(ctx, url, body)
 		if err != nil {
 			lastErr = err
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: GraphQL endpoint failed — rotating to next endpoint (degraded to fallback; data may be staler)",
 					"failedURL", url, "err", err)
 			}
@@ -903,7 +1193,7 @@ func (g *vscGraphQL) query(ctx context.Context, gqlQuery string, variables map[s
 		}
 		if err := json.Unmarshal(res, &result); err != nil {
 			lastErr = fmt.Errorf("decode: %w", err)
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: GraphQL endpoint returned undecodable body — rotating to next endpoint",
 					"failedURL", url, "err", err)
 			}
@@ -978,7 +1268,30 @@ func (g *vscGraphQL) fetchContractStateHex(ctx context.Context, contractID strin
 	return st, nil
 }
 
+// maxStateKeysPerQuery is the node's getStateByKeys limit (gql
+// schema.resolvers.go: "number of state keys to query must be between 1 and
+// 100").
+const maxStateKeysPerQuery = 100
+
 func (g *vscGraphQL) fetchContractStateEnc(ctx context.Context, contractID string, keys []string, encoding string) (map[string]string, error) {
+	// PS-5 (BTC mapping-bot 4a158b42 parity): over the node's limit the whole
+	// read failed, so with more than 100 header needs or parked deposit blocks
+	// (after an outage) headersStored errored every tick: no header was
+	// attested and nothing mapped, and the backlog only grew. Larger reads go
+	// in pages.
+	if len(keys) > maxStateKeysPerQuery {
+		out := make(map[string]string, len(keys))
+		for i := 0; i < len(keys); i += maxStateKeysPerQuery {
+			page, err := g.fetchContractStateEnc(ctx, contractID, keys[i:min(i+maxStateKeysPerQuery, len(keys))], encoding)
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range page {
+				out[k] = v
+			}
+		}
+		return out, nil
+	}
 	data, err := g.query(ctx,
 		`query GetState($contractId: String!, $keys: [String!]!, $encoding: String) {
 			getStateByKeys(contractId: $contractId, keys: $keys, encoding: $encoding)
@@ -1208,12 +1521,13 @@ func (g *vscGraphQL) FetchAccountNonce(ctx context.Context, account string) (uin
 	})
 
 	var lastErr error
-	for i, url := range g.urls {
+	urls := g.order() // I-39: freshest endpoints first
+	for i, url := range urls {
 		// MED-57 + MED-116: capped read + per-URL deadline via doGQL.
 		raw, err := g.doGQL(ctx, url, reqBody)
 		if err != nil {
 			lastErr = err
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: nonce endpoint failed — rotating to next endpoint",
 					"failedURL", url, "err", err)
 			}
@@ -1232,7 +1546,7 @@ func (g *vscGraphQL) FetchAccountNonce(ctx context.Context, account string) (uin
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
 			lastErr = fmt.Errorf("decode nonce: %w", err)
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: nonce endpoint returned undecodable body — rotating to next endpoint",
 					"failedURL", url, "err", err)
 			}
@@ -1255,7 +1569,8 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 	})
 
 	var lastErr error
-	for i, url := range g.urls {
+	urls := g.order() // I-39: freshest endpoints first
+	for i, url := range urls {
 		// MED-57 + MED-116: capped read + per-URL deadline via doGQL. Rotation
 		// semantics are unchanged from the original loop; L2 nonce-reuse / double-
 		// submit safety on this broadcast path is enforced upstream in
@@ -1263,7 +1578,7 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 		raw, err := g.doGQL(ctx, url, reqBody)
 		if err != nil {
 			lastErr = err
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: submit endpoint failed — rotating to next endpoint",
 					"failedURL", url, "err", err)
 			}
@@ -1282,7 +1597,7 @@ func (g *vscGraphQL) SubmitTransactionV1(ctx context.Context, txB64, sigB64 stri
 		}
 		if err := json.Unmarshal(raw, &result); err != nil {
 			lastErr = fmt.Errorf("decode submit: %w", err)
-			if i < len(g.urls)-1 {
+			if i < len(urls)-1 {
 				slog.Warn("MED-115: submit endpoint returned undecodable body — rotating to next endpoint",
 					"failedURL", url, "err", err)
 			}
@@ -1438,6 +1753,10 @@ func (s *l2Submitter) callContractL2(
 		return "", fmt.Errorf("broadcast L2 tx: %w", err)
 	}
 	s.next, s.haveNext, s.holeSince = nonce+1, true, time.Time{}
+	if s.held == nil {
+		s.held = map[uint64]heldL2Tx{}
+	}
+	s.held[nonce] = heldL2Tx{tx: base64.URLEncoding.EncodeToString(sTx.Tx), sig: base64.URLEncoding.EncodeToString(sTx.Sig)}
 
 	slog.Info("L2 tx broadcast",
 		"id", txID,
@@ -1502,7 +1821,10 @@ func (s *l2Submitter) callWithRetry(
 		// recovered and lets the honest bot out-bid contention rather than be
 		// censored. Full anti-censorship is a protocol-level priority concern
 		// (structural) — this is the bot-local mitigation.
-		if isRcExhaustionErr(err) || isRcContentionErr(err) {
+		// I-44 (testnet 11-05 14:50): "not enough RCS available: A < B" says the
+		// account holds less RC than the limit; a higher limit can only be refused
+		// the same way. The escalation is for a payload that needs more than its limit.
+		if (isRcExhaustionErr(err) || isRcContentionErr(err)) && !isRcBalanceShortErr(err) {
 			next := s.cfg.RcLimit * 4
 			if rcOverride > 0 {
 				next = rcOverride * 4
@@ -1572,7 +1894,90 @@ func (s *l2Submitter) nextNonce(ctx context.Context, account string) (uint64, er
 		}
 		return s.next, nil
 	}
+	// I-19 (testnet 11-04): nothing of the bot's is above the account nonce,
+	// so nothing can be stuck: the stall clock starts now, with the call that
+	// takes this nonce. Counted from the last account-nonce change instead,
+	// any quiet period over nonceStallGrace (idle, or RC refusals) made the
+	// next call after this one look stalled and go out again at this nonce:
+	// two calls on one nonce, the pool keeps one, the other is lost while the
+	// bot logs both as sent (attestHeaders@76 07:18, @192 12:10).
+	s.confirmedSince = now
 	return confirmed, nil
+}
+
+// rebroadcastStalled is I-8 (TX-GOSSIP-STALL live on testnet 11-04 03:54,
+// nonces 29-35 stuck 30+ min): the node the bot submitted to kept its
+// transactions and never gossiped them, so no block took them, and B-R1b
+// resends only when the bot makes a new call, which a bot whose work waits on
+// the stuck transactions never does. Run every tick: when the account nonce
+// has not moved for stallRebroadcastAfter with the bot's transactions above
+// it, the same signed bytes go to every endpoint (each node that lacked them
+// ingests and gossips them; the ones that have them return the same id), at
+// most every stallRebroadcastEvery. No nonce is reused and nothing new is
+// signed. The clock starts when the bot has something above the account nonce
+// (an idle stretch is not a stall, I-19).
+func (s *l2Submitter) rebroadcastStalled(ctx context.Context) {
+	s.mu.Lock()
+	idle := len(s.held) == 0
+	s.mu.Unlock()
+	if idle {
+		return
+	}
+	confirmed, err := s.gql.FetchAccountNonce(ctx, s.did.String())
+	if err != nil {
+		return
+	}
+	now := s.clock()
+	s.mu.Lock()
+	for n := range s.held {
+		if n < confirmed {
+			delete(s.held, n)
+		}
+	}
+	if len(s.held) == 0 {
+		s.rbSince = time.Time{}
+		s.mu.Unlock()
+		return
+	}
+	if s.rbSince.IsZero() || confirmed != s.rbConfirmed {
+		s.rbConfirmed, s.rbSince = confirmed, now
+	}
+	if now.Sub(s.rbSince) < stallRebroadcastAfter || now.Sub(s.rbAt) < stallRebroadcastEvery {
+		s.mu.Unlock()
+		return
+	}
+	s.rbAt = now
+	nonces := make([]uint64, 0, len(s.held))
+	for n := range s.held {
+		nonces = append(nonces, n)
+	}
+	sort.Slice(nonces, func(i, j int) bool { return nonces[i] < nonces[j] })
+	txs := make([]heldL2Tx, len(nonces))
+	for i, n := range nonces {
+		txs[i] = s.held[n]
+	}
+	since := s.rbSince
+	s.mu.Unlock()
+	slog.Warn("I-8: the account nonce has not moved with the bot's calls pending; re-broadcasting them to every endpoint",
+		"confirmed", confirmed, "pending", len(txs), "from", nonces[0], "since", since)
+	for _, tx := range txs {
+		s.gql.submitEverywhere(ctx, tx.tx, tx.sig)
+	}
+}
+
+// submitEverywhere posts one signed L2 transaction to every endpoint (I-8).
+// An endpoint's answer is not needed: the bot follows the transaction by its
+// account nonce.
+func (g *vscGraphQL) submitEverywhere(ctx context.Context, txB64, sigB64 string) {
+	reqBody, _ := json.Marshal(map[string]any{
+		"query":     `query($tx: String!, $sig: String!){ submitTransactionV1(tx: $tx, sig: $sig){ id } }`,
+		"variables": map[string]any{"tx": txB64, "sig": sigB64},
+	})
+	for _, url := range g.urls {
+		if _, err := g.doGQL(ctx, url, reqBody); err != nil {
+			slog.Debug("I-8: re-broadcast to an endpoint failed", "err", err)
+		}
+	}
 }
 
 // localTxID is the id the node gives a submitted transaction: the CID
@@ -1659,6 +2064,12 @@ func isRcExhaustionErr(err error) bool {
 			strings.Contains(msg, "not enough"))
 }
 
+// isRcBalanceShortErr: the node refused a call because the account holds less
+// RC than the call's limit (transaction-pool.go "not enough RCS available").
+func isRcBalanceShortErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not enough rcs available")
+}
+
 // isRcContentionErr reports whether an L2 submission error looks like an
 // RC-contention / mempool-priority rejection (a competing bot outbidding the
 // honest bot). MED-96 (M33-H1) — bot-local mitigation only; full anti-censorship
@@ -1693,6 +2104,10 @@ type detectedDeposit struct {
 	// Amount deposited (wei or token units; nil in a checkpoint from before
 	// DUST-1), checked against the bridge's minimum deposit.
 	Amount *big.Int `json:",omitempty"`
+	// Vault is the vault generation's address the deposit paid, lower case
+	// (empty in a checkpoint from before I-26): retireVault waits while a
+	// deposit to an Inactive generation is unmapped.
+	Vault string `json:",omitempty"`
 }
 
 type blockScanResult struct {
@@ -1793,7 +2208,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 	blockHex := fmt.Sprintf("0x%x", height)
 	// P5: one refused or dropped call must not stop the scan at this block
 	// for the whole tick (the BTC bot retries every chain call: callWithRetry).
-	blockData, err := callRetry(context.Background(), rpc, "eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
+	blockData, err := callRetry(shutdownCtx, rpc, "eth_getBlockByNumber", fmt.Sprintf(`"%s", true`, blockHex))
 	if err != nil {
 		return nil, fmt.Errorf("fetch block %d: %w", height, err)
 	}
@@ -1842,6 +2257,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 				TxHash:      tx.Hash,
 				DepositType: "eth",
 				Amount:      amount,
+				Vault:       strings.ToLower(tx.To),
 			})
 		}
 	}
@@ -1916,6 +2332,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 				DepositType:  "erc20",
 				TokenAddress: tokenAddr,
 				Amount:       new(big.Int).SetBytes(hexToBytes(log.Data)),
+				Vault:        vaultLower,
 			})
 		}
 	}
@@ -2478,6 +2895,27 @@ func callRetry(ctx context.Context, rpc *ethRPC, method, params string) (json.Ra
 	return nil, err
 }
 
+// callRetryNoAnswer is callRetry for a call whose JSON-RPC error answer is
+// final (a method an endpoint does not serve): only a call no endpoint
+// answered is retried (I-16).
+func callRetryNoAnswer(ctx context.Context, rpc *ethRPC, method, params string) (json.RawMessage, error) {
+	var err error
+	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(callRetryPauses[attempt-1]):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		var res json.RawMessage
+		if res, err = rpc.callCtx(ctx, method, params); err == nil || ctx.Err() != nil || isRPCAnswer(err) {
+			return res, err
+		}
+	}
+	return nil, err
+}
+
 // logsAtRetry is logsAt retried after callRetryPauses. Every attempt keeps
 // logsAt's A19 rule (an empty answer counts only from an endpoint that has
 // reached the block), so a retry can only replace a failure with an answer
@@ -2486,11 +2924,18 @@ func logsAtRetry(rpc *ethRPC, params string, toBlock uint64) (json.RawMessage, e
 	var err error
 	for attempt := 0; attempt < len(callRetryPauses)+1; attempt++ {
 		if attempt > 0 {
-			time.Sleep(callRetryPauses[attempt-1])
+			select {
+			case <-time.After(callRetryPauses[attempt-1]):
+			case <-shutdownCtx.Done():
+				return nil, shutdownCtx.Err()
+			}
 		}
 		var res json.RawMessage
-		if res, err = rpc.logsAt(context.Background(), params, toBlock); err == nil {
+		if res, err = rpc.logsAt(shutdownCtx, params, toBlock); err == nil {
 			return res, nil
+		}
+		if shutdownCtx.Err() != nil {
+			return nil, shutdownCtx.Err()
 		}
 	}
 	return nil, err
@@ -2963,11 +3408,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 	slog.Info("loaded checkpoint", "lastBlock", cp.LastScannedBlock, "pendingTxs", len(cp.SentWithdrawals))
 
-	// MED-51 (F-M37-7): exponential backoff applied when the contract is paused
-	// so the tick loop does not burn RC retrying against a paused contract.
-	pausedBackoff := cfg.PollInterval
-	const maxPausedBackoff = 10 * time.Minute
-
+	pausedSeen := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -2976,29 +3417,25 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		default:
 		}
 
-		// MED-51: if the contract is paused, skip the tick body and back off
-		// exponentially instead of hammering it with RC-charged calls.
+		// I-13 (testnet 11-04 05:07-05:28): a paused bridge refuses maps,
+		// unmaps, drains, vault ops and refund confirms, and the bot used to
+		// skip the whole tick (MED-51, backing off to 10 min), so it also
+		// stopped confirming paid withdrawals, attesting headers, re-posting
+		// signed withdrawals and reporting custody and theft (the reporter is
+		// what sets the theft halt), and saw the unpause up to 10 min late.
+		// Now only the refused calls are skipped, at the normal interval.
 		pauseCtx, pauseCancel := context.WithTimeout(ctx, 15*time.Second)
 		paused, pErr := fetchContractPaused(pauseCtx, gql, cfg.ContractID)
 		pauseCancel()
-		if pErr == nil && paused {
-			slog.Warn("contract is paused — skipping tick and backing off",
-				"backoff", pausedBackoff.String())
-			health.recordTick(time.Now(), errors.New("contract is paused"), cp)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(pausedBackoff):
+		cfg.Paused = pErr == nil && paused
+		if cfg.Paused != pausedSeen {
+			if cfg.Paused {
+				slog.Warn("I-13: the bridge is paused: maps, drains and vault ops wait; confirms of paid withdrawals, attestations and the custody/theft reporter go on")
+			} else {
+				slog.Info("I-13: the bridge is unpaused")
 			}
-			if pausedBackoff < maxPausedBackoff {
-				pausedBackoff *= 2
-				if pausedBackoff > maxPausedBackoff {
-					pausedBackoff = maxPausedBackoff
-				}
-			}
-			continue
+			pausedSeen = cfg.Paused
 		}
-		pausedBackoff = cfg.PollInterval // reset once unpaused
 
 		loopCtx, loopCancel := context.WithTimeout(ctx, 60*time.Second)
 
@@ -3019,22 +3456,33 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 			cfg.VaultGens = v.Gens
 		}
 
+		gql.rankByHead(loopCtx) // I-39
 		err := runOnceSafe(loopCtx, rpc, gql, submitter, cp, cfg, tssKeyID)
 		if err != nil {
 			slog.Error("loop tick failed", "err", err)
 		}
-		driveVaultRotationSafe(loopCtx, rpc, gql, submitter, cp, cfg, view)
-		driveReporterSafe(loopCtx, rpc, gql, submitter, cfg, view) // B6
-
+		submitter.rebroadcastStalled(loopCtx) // I-8
 		loopCancel()
+		// OQ-11 (I-34, testnet 11-05 01:32): after a tick overran its 60 s on a slow
+		// scan block, the rotation step and the custody reporter ran on the expired
+		// context and did nothing (a reporter round lost for 10 min). Each now gets
+		// its own budget from the loop's parent context (a stop still ends them), as
+		// the BTC bot runs HandleVaultRotation each cycle outside the scan's deadline.
+		if !cfg.Paused { // every vault op is pause-gated (BTC bot BOT-PAUSE-1)
+			ownBudget(ctx, stepBudget, func(c context.Context) { driveVaultRotationSafe(c, rpc, gql, submitter, cp, cfg, view) })
+		}
+		ownBudget(ctx, stepBudget, func(c context.Context) { driveReporterSafe(c, rpc, gql, submitter, cfg, view) }) // B6
 
+		if err == nil && cfg.Paused {
+			err = errors.New("contract is paused")
+		}
 		health.recordTick(time.Now(), err, cp)
 		if health.due(time.Now()) {
 			hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
 			cp.mu.Lock()
 			wantSince := cp.WantProofSince
 			cp.mu.Unlock()
-			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, cfg.healthKeys(tssKeyID), did.String(), cfg.scanVaults(), cfg.Tokens, wantSince)
+			health.check(hctx, time.Now(), gql, rpc, cfg.ContractID, cfg.healthKeys(tssKeyID), did.String(), cfg.scanVaults(), cfg.Tokens, wantSince, cfg.depositVaultsWithPending(hctx, gql))
 			hcancel()
 		}
 
@@ -3046,6 +3494,17 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		case <-time.After(cfg.PollInterval):
 		}
 	}
+}
+
+// stepBudget is the rotation step's and the reporter's own deadline per tick.
+const stepBudget = 60 * time.Second
+
+// ownBudget runs f on its own deadline d under parent (OQ-11): a step after a
+// slow part of the tick does not inherit that part's expired context.
+func ownBudget(parent context.Context, d time.Duration, f func(context.Context)) {
+	c, cancel := context.WithTimeout(parent, d)
+	defer cancel()
+	f(c)
 }
 
 // runOnceSafe wraps runOnce with a panic recover. MED-46 (EVM-B-M6): a latent
@@ -3366,8 +3825,10 @@ func runOnce(
 	// re-submission of a processed deposit is harmless — the contract
 	// deduplicates via the observed block list.
 	// ---------------------------------------------------------------
-	requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
-	mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
+	if !cfg.Paused { // I-13: a paused bridge refuses maps; the found deposits stay parked
+		requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
+		mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -3385,8 +3846,10 @@ func runOnce(
 	// ---------------------------------------------------------------
 	handleConfirmations(ctx, rpc, gql, submitter, cp, cfg)
 
-	// RP-11: issue queued withdrawals into free slots.
-	drainIfQueued(ctx, gql, submitter, cfg)
+	// RP-11: issue queued withdrawals into free slots (refused while paused).
+	if !cfg.Paused {
+		drainIfQueued(ctx, gql, submitter, cfg)
+	}
 
 	// RP-9: store the headers deposits and confirmations wait on; tell the
 	// operator when a proof is needed.
@@ -3418,6 +3881,7 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 	}
 	var bp *blockProofs
 	blockFailed, progressed, noTime := false, false, false
+	rcOnly := true // I-44: every failed map in this block was an RC refusal
 	for _, dep := range deps {
 		if done[depositKey(dep)] {
 			continue
@@ -3457,11 +3921,12 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 			slog.Error("map submission failed — block checkpoint will NOT advance",
 				"block", h, "tx", dep.TxHash, "err", err)
 			blockFailed = true
+			rcOnly = rcOnly && isRcBalanceShortErr(err)
 			continue
 		}
 		if txID != "" {
 			cp.mu.Lock()
-			cp.PendingMaps[txID] = PendingMap{Block: h, DepositTx: dep.TxHash, SubmittedAt: time.Now().Unix()}
+			cp.PendingMaps[txID] = PendingMap{Block: h, DepositTx: dep.TxHash, SubmittedAt: time.Now().Unix(), Vault: dep.Vault}
 			cp.mu.Unlock()
 		}
 		markMapped(cp, h, dep)
@@ -3486,7 +3951,11 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 	}
 	cp.BlockRetries[h]++
 	retries := cp.BlockRetries[h]
-	if retries >= blockRetryAlertThreshold {
+	if retries >= blockRetryAlertThreshold && rcOnly {
+		// I-44: every refusal was the bot's RC; the block maps once RC refills.
+		slog.Warn("block held for the bot's RC: its maps are refused until RC refills (no manual step; fund the bot's RC if this lasts)",
+			"block", h, "retries", retries, "minutes_stuck", retries*int(cfg.PollInterval.Seconds())/60)
+	} else if retries >= blockRetryAlertThreshold {
 		slog.Error("CRITICAL: block has been failing for multiple ticks — manual intervention required",
 			"block", h,
 			"retries", retries,
@@ -3866,6 +4335,8 @@ func handleConfirmations(
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool { return sent[keys[i]].Nonce < sent[keys[j]].Nonce })
+	var later []string // withdrawals behind an unconfirmed earlier one (I-21)
+	defer func() { noteLaterWithdrawalHeaders(ctx, rpc, gql, cp, cfg, later) }()
 	for _, nonceKey := range keys {
 		stx := sent[nonceKey]
 		select {
@@ -3921,6 +4392,9 @@ func handleConfirmations(
 			continue
 		}
 		if stx.Nonce != nextConfirmable {
+			if stx.Nonce > nextConfirmable {
+				later = append(later, nonceKey)
+			}
 			continue // an earlier withdrawal is not confirmed yet
 		}
 		if stx.NextConfirmAt != 0 && time.Now().Unix() < stx.NextConfirmAt {
@@ -3985,6 +4459,12 @@ func handleConfirmations(
 			continue
 		}
 
+		if status != 1 && cfg.Paused {
+			// I-13: the confirm of a reverted withdrawal refunds it, and a
+			// paused bridge refuses refunds (errRefundWhilePaused).
+			slog.Debug("reverted withdrawal: its refund confirm waits for the unpause", "txHash", stx.TxHash, "nonce", stx.Nonce)
+			continue
+		}
 		if status == 1 {
 			slog.Info("withdrawal TX confirmed successfully on L1",
 				"txHash", stx.TxHash,
@@ -4059,6 +4539,79 @@ func handleConfirmations(
 	}
 }
 
+// noteLaterWithdrawalHeaders asks for the header of every mined and final
+// withdrawal that waits behind an earlier one (I-21, testnet 11-04). The
+// bridge confirms withdrawals in nonce order, and only the head's header was
+// asked for, so each later withdrawal's header was first wanted once the one
+// before it confirmed: one confirm per proof cycle (06:01-08:47, the queue
+// grew to 16). Asked for together, one proof (or one EIP-2935 attestation
+// run) covers them all, and the confirms still go out in nonce order. A
+// withdrawal's final block is kept (MinedBlock), so its receipt is read once.
+func noteLaterWithdrawalHeaders(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, later []string) {
+	if len(later) == 0 || ctx.Err() != nil {
+		return
+	}
+	var finalized uint64
+	var blocks []uint64
+	for _, nonceKey := range later {
+		cp.mu.Lock()
+		stx, ok := cp.SentWithdrawals[nonceKey]
+		cp.mu.Unlock()
+		if !ok {
+			continue
+		}
+		if stx.MinedBlock == 0 {
+			var block uint64
+			for _, h := range append([]string{stx.TxHash}, stx.PrevTxHashes...) {
+				data, err := rpc.getReceipt(h)
+				if err != nil || data == nil {
+					continue
+				}
+				var r struct {
+					BlockNumber string `json:"blockNumber"`
+				}
+				if json.Unmarshal(data, &r) == nil {
+					block = hexToUint64(r.BlockNumber)
+				}
+				break
+			}
+			if block == 0 {
+				continue // not mined yet
+			}
+			if finalized == 0 {
+				f, err := rpc.getFinalizedBlock()
+				if err != nil {
+					return
+				}
+				finalized = f
+			}
+			if block > finalized {
+				continue // not final: it could still move
+			}
+			cp.mu.Lock()
+			if cur, ok := cp.SentWithdrawals[nonceKey]; ok {
+				cur.MinedBlock = block
+				cp.SentWithdrawals[nonceKey] = cur
+			}
+			cp.mu.Unlock()
+			stx.MinedBlock = block
+		}
+		blocks = append(blocks, stx.MinedBlock)
+	}
+	if len(blocks) == 0 {
+		return
+	}
+	stored, err := headersStored(ctx, gql, cfg.ContractID, blocks)
+	if err != nil {
+		return
+	}
+	for _, b := range blocks {
+		if !stored[b] {
+			noteHeaderNeed(cp, b)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -4089,6 +4642,7 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 		switch {
 		case err == nil && (status == "CONFIRMED" || status == "PROCESSED"):
 			slog.Info("map confirmed on chain", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+			cp.mapDone(pm.DepositTx)
 		case err == nil && status == "FAILED":
 			// DEADLETTER-DUP: a map that failed because the deposit was already
 			// credited (another mapper's map landed first, RP-8, or this bot's
@@ -4101,6 +4655,7 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 			}
 			if strings.Contains(msg, errAlreadyProcessed) {
 				slog.Info("map not needed: the deposit was already credited", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
+				cp.mapDone(pm.DepositTx)
 				break
 			}
 			reason := "map failed on chain"
@@ -4109,7 +4664,12 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 			}
 			cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)
 		case time.Since(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout:
-			cp.deadLetter(pm.Block, pm.DepositTx, txID, fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err))
+			reason := fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err)
+			if errors.Is(err, errTxNotFound) {
+				cp.mapVanished(pm.Block, pm.DepositTx, txID, reason)
+			} else {
+				cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)
+			}
 		default:
 			continue // not final yet
 		}
@@ -4204,7 +4764,7 @@ func buildMapPayloadFrom(bp *blockProofs, dep detectedDeposit) json.RawMessage {
 
 // txSucceeded reports whether an L1 tx's receipt has status 1.
 func txSucceeded(rpc *ethRPC, hash string) (bool, error) {
-	data, err := callRetry(context.Background(), rpc, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
+	data, err := callRetry(shutdownCtx, rpc, "eth_getTransactionReceipt", fmt.Sprintf(`"%s"`, hash))
 	if err != nil {
 		return false, err
 	}

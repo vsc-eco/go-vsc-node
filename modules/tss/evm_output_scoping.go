@@ -350,7 +350,9 @@ func (tssMgr *TssManager) evmSignRefused(keyId string, sighash []byte, bh uint64
 		if verdict == scopeRefuse {
 			log.Warn("EVM vault keysign refused by output scoping (A01)", "keyId", keyId, "bh", bh)
 		} else {
-			log.Warn("EVM vault keysign halted (governance vsc.tss_halt evm or the bridge's theft flag); skipping issuance", "keyId", keyId, "bh", bh)
+			// I-12 (testnet 11-04): the custody halt (si) was missing from this
+			// text, so operators chased governance and the theft flag.
+			log.Warn("EVM vault keysign halted (governance vsc.tss_halt evm, or the bridge's theft halt th or custody halt si); skipping issuance", "keyId", keyId, "bh", bh)
 		}
 		return true
 	}

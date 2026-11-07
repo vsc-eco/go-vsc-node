@@ -37,6 +37,8 @@ type blockProofs struct {
 
 	txRoot      []byte // the header's transactionsRoot
 	receiptRoot []byte // the header's receiptsRoot
+
+	blockCallWarned bool // the one-call path's failure was logged for this block (I-16)
 }
 
 // proofFetchWorkers bounds one block's concurrent RPC calls, like the scan's
@@ -152,9 +154,16 @@ func (bp *blockProofs) fill(ctx context.Context, rpc *ethRPC, height uint64, raw
 // that does not serve the method (or answers short, out of order or wrong)
 // just leaves the receipts to the per-tx path.
 func (bp *blockProofs) receiptsFromBlockCall(ctx context.Context, rpc *ethRPC, height uint64) {
-	data, err := rpc.callCtx(ctx, "eth_getBlockReceipts", fmt.Sprintf(`"0x%x"`, height))
+	// I-16 (testnet 11-04 06:35): one dropped call here sent a 1,198-tx block
+	// to the per-tx path (~2,400 calls) and was logged at Debug. A call no
+	// endpoint answered is retried like the per-tx calls; an answer (the
+	// method is not served) is not, and either is logged once per block.
+	data, err := callRetryNoAnswer(ctx, rpc, "eth_getBlockReceipts", fmt.Sprintf(`"0x%x"`, height))
 	if err != nil {
-		slog.Debug("BP-1: eth_getBlockReceipts unavailable, per-tx receipts", "block", height, "err", err)
+		if !bp.blockCallWarned {
+			bp.blockCallWarned = true
+			slog.Warn("BP-1: eth_getBlockReceipts unavailable, per-tx receipts", "block", height, "txs", len(bp.hashes), "err", err)
+		}
 		return
 	}
 	var rs []receiptForProof

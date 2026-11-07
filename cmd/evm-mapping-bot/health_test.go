@@ -39,7 +39,7 @@ func checked(t *testing.T, gql *vscGraphQL, rpc *ethRPC, cp *Checkpoint) healthR
 	h := newBotHealth(12 * time.Second)
 	now := time.Now()
 	h.recordTick(now, nil, cp)
-	h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, nil, 0)
+	h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, nil, 0, nil)
 	return h.report(now)
 }
 
@@ -183,7 +183,7 @@ func TestC4_TokenCustodyAlarm(t *testing.T) {
 		h := newBotHealth(12 * time.Second)
 		now := time.Now()
 		h.recordTick(now, nil, emptyCP())
-		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, tokens, 0)
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", []string{healthVault}, tokens, 0, nil)
 		return h.report(now)
 	}
 
@@ -314,7 +314,7 @@ func TestHealthCheckEvery(t *testing.T) {
 // A01: during a rotation the custody is split across the vault generations:
 // C4 sums them (it alarmed on every rotation, the active vault alone holding
 // part); a real shortfall across them still alarms; a retiring generation's
-// key nearing expiry warns too. A10: a header proof wanted for hours alarms.
+// key nearing expiry warns too. A10: a header proof wanted for 45 minutes alarms.
 func TestA01Health_RotationAwareAlarms(t *testing.T) {
 	const oldVault = "0x00000000000000000000000000000000000000bb"
 	run := func(l1 *fakeL1, gql *vscGraphQL, rpc *ethRPC, keys, vaults []string, wantSince int64) healthReport {
@@ -322,7 +322,7 @@ func TestA01Health_RotationAwareAlarms(t *testing.T) {
 		h := newBotHealth(12 * time.Second)
 		now := time.Now()
 		h.recordTick(now, nil, emptyCP())
-		h.check(context.Background(), now, gql, rpc, "vsc1bridge", keys, "did:bot", vaults, nil, wantSince)
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", keys, "did:bot", vaults, nil, wantSince, nil)
 		return h.report(now)
 	}
 	l1, l2, gql, rpc := healthWorld(t, 4) // 4 of the 10 ETH at the active vault
@@ -346,8 +346,13 @@ func TestA01Health_RotationAwareAlarms(t *testing.T) {
 	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-7*time.Hour).Unix()); !hasIssue(r, "A10") {
 		t.Fatalf("a proof wanted for 7h: no alarm: %v", r.Issues)
 	}
-	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-time.Hour).Unix()); hasIssue(r, "A10") {
-		t.Fatalf("a proof wanted for 1h alarmed: %v", r.Issues)
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-30*time.Minute).Unix()); hasIssue(r, "A10") {
+		t.Fatalf("a proof wanted for 30 min (a normal cycle is 15-25) alarmed: %v", r.Issues)
+	}
+	// I-30: a spent proof budget left the bridge 9 h 20 m without a proven tip; the
+	// alarm now comes 45 minutes into a wait, not 6 hours.
+	if r := run(l1, gql, rpc, []string{"vsc1bridge-primaryv1"}, []string{healthVault}, time.Now().Add(-50*time.Minute).Unix()); !hasIssue(r, "A10") {
+		t.Fatalf("a proof wanted for 50 min: no alarm: %v", r.Issues)
 	}
 }
 
@@ -402,7 +407,7 @@ func TestC4_FrozenVaultAlarm(t *testing.T) {
 		h := newBotHealth(12 * time.Second)
 		now := time.Now()
 		h.recordTick(now, nil, emptyCP())
-		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", vaults, map[string]string{healthUSDC: healthUSDC}, 0)
+		h.check(context.Background(), now, gql, rpc, "vsc1bridge", []string{"vsc1bridge-primary"}, "did:bot", vaults, map[string]string{healthUSDC: healthUSDC}, 0, nil)
 		return h.report(now)
 	}
 	one := []string{healthVault}

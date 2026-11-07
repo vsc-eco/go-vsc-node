@@ -320,11 +320,17 @@ func TestRealWasm_A01_RotationEndToEnd(t *testing.T) {
 	p, _ := buildConfirmSweepPayload(context.Background(), ch109.rpc(t), 0, 3, 109, 0)
 	rc.call("hive:anyone", "confirmSweep", p)
 
-	// Retire, then purge after the grace (64 L1 blocks off mainnet).
+	// Retire, then purge after the grace (64 L1 blocks off mainnet) and the
+	// I-26 map window (another 64): a deposit mined at the end of the grace
+	// still gets its header and its map in first.
 	if r = rc.call(rwRelayer, "retireVault", nil); !strings.Contains(r.Ret, "inactivated=0") {
 		t.Fatalf("retire: %q", r.Ret)
 	}
 	rwHeaderAt(ct, 109+65, &fakeChain{}, rwBlockTime)
+	if r = rc.call(rwRelayer, "retireVault", nil); strings.Contains(r.Ret, "purged=") {
+		t.Fatalf("purged at the end of the grace, inside the I-26 map window: %q", r.Ret)
+	}
+	rwHeaderAt(ct, 109+65+64, &fakeChain{}, rwBlockTime)
 	if r = rc.call(rwRelayer, "retireVault", nil); !strings.Contains(r.Ret, "purged=0") {
 		t.Fatalf("purge: %q", r.Ret)
 	}

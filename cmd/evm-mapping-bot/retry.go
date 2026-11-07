@@ -134,15 +134,32 @@ func (r *deadLetterRetries) handler() http.HandlerFunc {
 	}
 }
 
-// requeueDeadLetters moves the queued dead-lettered deposits back to
-// WaitingDeposits. A deposit not in DeadLetters is ignored (logged); a block
+// requeueDeadLetters moves the queued dead-lettered deposits, and the ones
+// whose map vanished (AutoRetry, I-46, with or without the operator API), back
+// to WaitingDeposits. A deposit not in DeadLetters is ignored (logged); a block
 // that cannot be re-scanned now keeps its dead letter and the request is put
 // back for the next tick.
 func requeueDeadLetters(rpc *ethRPC, cp *Checkpoint, cfg EVMBotConfig, r *deadLetterRetries) {
-	if r == nil {
-		return
+	cp.pruneDeadLetters(time.Now())
+	var txs []string
+	seen := map[string]bool{}
+	cp.mu.Lock()
+	for _, dl := range cp.DeadLetters {
+		if k := strings.ToLower(dl.DepositTx); dl.AutoRetry && !seen[k] {
+			seen[k] = true
+			txs = append(txs, dl.DepositTx)
+		}
 	}
-	for _, tx := range r.drain() {
+	cp.mu.Unlock()
+	if r != nil {
+		for _, tx := range r.drain() {
+			if k := strings.ToLower(tx); !seen[k] {
+				seen[k] = true
+				txs = append(txs, tx)
+			}
+		}
+	}
+	for _, tx := range txs {
 		cp.mu.Lock()
 		idx := -1
 		for i, dl := range cp.DeadLetters {
@@ -163,9 +180,11 @@ func requeueDeadLetters(rpc *ethRPC, cp *Checkpoint, cfg EVMBotConfig, r *deadLe
 		res, err := scanBlockSafe(rpc, block, cfg.scanVaults(), cfg.Tokens)
 		if err != nil {
 			slog.Warn("P7: cannot re-scan the dead-lettered deposit's block; trying next tick", "deposit", tx, "block", block, "err", err)
-			r.mu.Lock()
-			r.queued[tx] = true
-			r.mu.Unlock()
+			if r != nil { // an AutoRetry dead letter stays and is tried again anyway
+				r.mu.Lock()
+				r.queued[tx] = true
+				r.mu.Unlock()
+			}
 			continue
 		}
 		var found []detectedDeposit
@@ -176,6 +195,11 @@ func requeueDeadLetters(rpc *ethRPC, cp *Checkpoint, cfg EVMBotConfig, r *deadLe
 		}
 		cp.mu.Lock()
 		if len(found) == 0 {
+			for i := range cp.DeadLetters { // left to the operator: not re-scanned every tick (I-46)
+				if strings.EqualFold(cp.DeadLetters[i].DepositTx, tx) {
+					cp.DeadLetters[i].AutoRetry = false
+				}
+			}
 			cp.mu.Unlock()
 			slog.Warn("P7: the dead-lettered deposit is not in its block on re-scan; kept dead-lettered", "deposit", tx, "block", block)
 			continue

@@ -31,9 +31,17 @@ import (
 // unspent on its own bitcoind. One that is not is either a spend the contract
 // never authorized (a theft, caught here without anyone reporting it) or a
 // registration of an output that never existed (a bad deposit proof, which
-// the contract's theft report cannot catch). Every unmap and migration sweep
-// reserves its inputs when it is built, and the settle deletes the UTXO and
-// its reservation together, so an authorized spend is never counted.
+// the contract's theft report cannot catch). An authorized spend is never
+// counted: an unmap reserves its inputs ("ru-") when it is built, and a
+// migration sweep lists its inputs in its "ms-" record, in flight while its
+// txid is in "msl" (it reserves only unconfirmed-pool inputs). The settle
+// deletes the UTXO with its reservation or sweep record.
+//
+// I-40 (testnet 11-05): the watch read only "ru-", so a mined migration sweep
+// counted every confirmed input it spent as missing until it settled; the
+// gen-13 -> gen-14 sweep (5 inputs, 338,992 sats) made 2/3 of the witnesses
+// vote insolvent and halted the BTC vault keysigns at the first checkpoint
+// after it was mined.
 //
 // The observation abstains (returns an error, so no vote) on anything it
 // cannot read, and when the node's bitcoind is behind the contract's relayed
@@ -102,9 +110,13 @@ func ObserveBtcSolvency(state SolvencyStateReader, l1 SolvencyL1, gapSats uint64
 		if err != nil {
 			return SolvencyObservation{}, err
 		}
+		freshSweeping, err := sweepInputs(fresh)
+		if err != nil {
+			return SolvencyObservation{}, err
+		}
 		kept := candidates[:0]
 		for _, c := range candidates {
-			still, err := unreservedOutpoint(fresh, c.id)
+			still, err := unreservedOutpoint(fresh, freshSweeping, c.id)
 			if err != nil {
 				return SolvencyObservation{}, err
 			}
@@ -145,12 +157,16 @@ func spentCandidates(read func(string) ([]byte, bool, error), l1 SolvencyL1, obs
 	if err != nil {
 		return nil, err
 	}
+	sweeping, err := sweepInputs(read)
+	if err != nil {
+		return nil, err
+	}
 	var out []solvencyCandidate
 	for _, e := range reg {
 		if e.Id < btcvault.UtxoConfirmedPoolStart {
 			continue
 		}
-		op, err := unreservedOutpoint(read, e.Id)
+		op, err := unreservedOutpoint(read, sweeping, e.Id)
 		if err != nil {
 			return nil, err
 		}
@@ -169,9 +185,49 @@ func spentCandidates(read func(string) ([]byte, bool, error), l1 SolvencyL1, obs
 	return out, nil
 }
 
+// sweepInputs returns the UTXO ids the in-flight migration sweeps spend: the
+// inputs of every "ms-" record whose txid is in "msl". A listed sweep without a
+// record adds nothing (the contract writes and deletes the two together); an
+// unreadable or malformed value is an error, so the watch abstains.
+func sweepInputs(read func(string) ([]byte, bool, error)) (map[uint16]bool, error) {
+	raw, ok, err := read(btcvault.MigrationSweepRegistryKey)
+	if err != nil {
+		return nil, fmt.Errorf("migration sweep registry: %w", err)
+	}
+	if !ok || len(raw) == 0 {
+		return nil, nil
+	}
+	txids, err := btcvault.UnmarshalMigrationSweepRegistry(raw)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[uint16]bool{}
+	for _, txid := range txids {
+		rec, ok, err := read(btcvault.MigrationSweepKey(txid))
+		if err != nil {
+			return nil, fmt.Errorf("migration sweep %s: %w", txid, err)
+		}
+		if !ok {
+			continue
+		}
+		in, err := btcvault.MigrationSweepInputIds(rec)
+		if err != nil {
+			return nil, fmt.Errorf("migration sweep %s: %w", txid, err)
+		}
+		for _, id := range in {
+			ids[id] = true
+		}
+	}
+	return ids, nil
+}
+
 // unreservedOutpoint returns registered id's outpoint, or nil when it is
-// reserved, no longer registered, or has no record.
-func unreservedOutpoint(read func(string) ([]byte, bool, error), id uint16) (*btcvault.UtxoOutpoint, error) {
+// reserved, spent by an in-flight migration sweep (sweeping), no longer
+// registered, or has no record.
+func unreservedOutpoint(read func(string) ([]byte, bool, error), sweeping map[uint16]bool, id uint16) (*btcvault.UtxoOutpoint, error) {
+	if sweeping[id] {
+		return nil, nil
+	}
 	res, ok, err := read(btcvault.ReservedUtxoKey(id))
 	if err != nil {
 		return nil, fmt.Errorf("reservation %d: %w", id, err)

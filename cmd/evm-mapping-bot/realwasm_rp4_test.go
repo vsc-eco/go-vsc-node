@@ -228,8 +228,13 @@ func TestRealWasm_GLAM1_ETHWithdrawalCarriesItsGasLimit(t *testing.T) {
 // ERC-20 path then refuses).
 func TestRealWasm_RP7_MagiDepositCreditsTheRecipient(t *testing.T) {
 	c, _ := rwUSDCBridge(t)
+	// I-28: the bridge names its MagiDeposit only once the code is proven on L1.
+	if r := rwCall(c.ct, "hive:anyone", "depositAddress", []byte(`{}`)); !r.Success || r.Ret != "" {
+		t.Fatalf("depositAddress before the attestation: %v %q, want \"\"", r.Success, r.Ret)
+	}
+	rwAttestDeposit(t, c.ct, c.vault, 0, 99)
 	r := rwCall(c.ct, "hive:anyone", "depositAddress", []byte(`{}`))
-	if !r.Success || !common.IsHexAddress(r.Ret) {
+	if !r.Success || !common.IsHexAddress(r.Ret) || !strings.EqualFold(r.Ret, depositContractAddress(c.vault.Hex())) {
 		t.Fatalf("depositAddress: %v %q %s", r.Success, r.Ret, r.ErrMsg)
 	}
 	dc := common.HexToAddress(r.Ret)

@@ -28,10 +28,53 @@ const (
 func UtxoKey(id uint16) string { return "u-" + strconv.FormatUint(uint64(id), 16) }
 
 // ReservedUtxoKey marks a UTXO committed to an in-flight spend the contract
-// authorized ("ru-" and the id in decimal): every unmap and migration sweep
-// reserves its inputs when it is built, and the settle deletes the UTXO and the
-// mark together.
+// authorized ("ru-" and the id in decimal). An unmap reserves every input when
+// it is built; a migration sweep reserves only its unconfirmed-pool inputs (ids
+// below UtxoConfirmedPoolStart, migration.go migrateTranche) and keeps
+// its confirmed inputs in its "ms-" record instead (MigrationSweepKey). The
+// settle deletes the UTXO and the mark together.
 func ReservedUtxoKey(id uint16) string { return "ru-" + strconv.FormatUint(uint64(id), 10) }
+
+// MigrationSweepRegistryKey lists the BTC contract's in-flight migration
+// sweeps (constants.go MigrationSweepRegistryKey "msl"): their txids, 32 raw
+// bytes each, appended when a sweep is built and removed when it settles or is
+// abandoned (MarshalTxSpendsRegistry).
+const MigrationSweepRegistryKey = "msl"
+
+// MigrationSweepKey is an in-flight migration sweep's record: "ms-" and the
+// txid in lowercase hex (constants.go MigrationSweepPrefix).
+func MigrationSweepKey(txid string) string { return "ms-" + txid }
+
+// UnmarshalMigrationSweepRegistry splits the "msl" value into txids (hex).
+func UnmarshalMigrationSweepRegistry(data []byte) ([]string, error) {
+	if len(data)%32 != 0 {
+		return nil, errors.New("migration sweep registry: length not a multiple of 32")
+	}
+	out := make([]string, 0, len(data)/32)
+	for i := 0; i < len(data); i += 32 {
+		out = append(out, hex.EncodeToString(data[i:i+32]))
+	}
+	return out, nil
+}
+
+// MigrationSweepInputIds returns the UTXO ids an "ms-" record spends, as the
+// contract's MarshalMigrationSweep writes it: fee u64, successor generation
+// u32, build height u32, n u16, n input ids u16, then the successor address.
+func MigrationSweepInputIds(data []byte) ([]uint16, error) {
+	const head = 8 + 4 + 4
+	if len(data) < head+2 {
+		return nil, errors.New("migration sweep record too short")
+	}
+	n := int(binary.BigEndian.Uint16(data[head:]))
+	if len(data) < head+2+2*n {
+		return nil, errors.New("migration sweep record: truncated input list")
+	}
+	ids := make([]uint16, n)
+	for i := range ids {
+		ids[i] = binary.BigEndian.Uint16(data[head+2+2*i:])
+	}
+	return ids, nil
+}
 
 // UtxoRegistryEntry is one registered UTXO.
 type UtxoRegistryEntry struct {

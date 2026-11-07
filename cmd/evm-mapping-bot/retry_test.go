@@ -122,3 +122,19 @@ func TestP7_RequeueMovesTheDeadLetterBackToWaiting(t *testing.T) {
 		t.Fatalf("waiting %d, want 1 (no duplicate)", n)
 	}
 }
+
+// PS-6: dead letters older than 30 days are dropped (BTC 25499491 parity);
+// younger ones stay for the operator's retry.
+func TestPS6_OldDeadLettersArePruned(t *testing.T) {
+	now := time.Unix(10_000_000, 0)
+	cp := &Checkpoint{DeadLetters: []DeadLetter{
+		{DepositTx: "0xold", At: now.Add(-deadLetterKeep - time.Hour).Unix()},
+		{DepositTx: "0xnew", At: now.Add(-time.Hour).Unix()},
+		{DepositTx: "0xedge", At: now.Add(-deadLetterKeep).Unix()},
+		{DepositTx: "0xunknown"}, // no time recorded: kept
+	}}
+	cp.pruneDeadLetters(now)
+	if len(cp.DeadLetters) != 3 || cp.DeadLetters[0].DepositTx != "0xnew" || cp.DeadLetters[1].DepositTx != "0xedge" || cp.DeadLetters[2].DepositTx != "0xunknown" {
+		t.Fatalf("dead letters %+v, want the two younger than 30 days and the undated one", cp.DeadLetters)
+	}
+}
