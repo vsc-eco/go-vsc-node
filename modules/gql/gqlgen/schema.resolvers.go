@@ -985,6 +985,7 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
 			ctxOpts = append(ctxOpts,
 				contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
+				contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
 			)
 		}
 		ctxValue := contract_execution_context.New(

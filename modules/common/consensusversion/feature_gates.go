@@ -798,6 +798,89 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 	return Version0_11_0Active(active)
 }
 
+// V0_13_0 is the EVM bridge line: the key-custody rules extended to the EVM
+// bridge's vault key (C1, C2) and the keygen-once rule (TSS-KG-1). A new line
+// because the TSS-PARTY batch ships 0.12.0 first, without the EVM bridge; a
+// behaviour tied to an active line would switch per node during a rolling
+// upgrade. Binaries announce it from this batch on (version.go
+// currentConsensus); every rule on it is inert until the chain floor reaches it.
+var V0_13_0 = Version{Major: 0, Consensus: 13, NonConsensus: 0}
+
+// Version0_13_0Active reports whether the 0.13.0 line is in force given the
+// chain-active consensus version.
+func Version0_13_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_13_0)
+}
+
+// EvmVaultCustodyActive reports whether the EVM bridge's vault key (the
+// "primary" TSS key of each OracleParams.EvmBridgeContracts contract, from its
+// EvmBridgeFromHeight) gets the
+// key-custody rules of the active BTC vault key: the holders named by its
+// newest keygen/reshare commitment stay readiness/signing-eligible after leaving
+// the election (C1, as ActiveKeyHoldersBoundActive), and while the key exists
+// those holders, the current committee and every electable or recently active
+// witness cannot unstake their bond (C2, as POA-1). Resolve `active` at the
+// decision height.
+func EvmVaultCustodyActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// EvmVaultRotationActive (0.13.0, A01): the EVM bridge's vault rolls keys like
+// the BTC vault. Each EVM bridge contract's vault registry ("v", the BTC layout,
+// keys "primary"/"primaryv<N>") drives the same rules as the BTC registry: a
+// superseded generation is not reshared and signs only sweeps that pay the
+// active generation (output scoping), the parties of every keygen/reshare of a
+// funded generation keep their bonds locked (POA-1), and a pending
+// generation's check signature is enqueued and marked (BRK-2). Resolve `active`
+// at the decision height.
+func EvmVaultRotationActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// BtcSolvencyWatchActive (0.13.0, N4): witnesses check that every confirmed,
+// unreserved UTXO the BTC mapping contract has registered is still unspent on
+// their own bitcoind and vote "vsc.btc_solvency" when they see otherwise; 2/3
+// of the election's weight voting insolvent at a checkpoint halts BTC vault
+// keysigns (BtcSolvencyHalted) until 2/3 vote solvent, as THORChain's
+// solvency checker halts a chain. Below the line the vote op is ignored and the
+// flag is never set. Resolve `active` from the version active at the block
+// being processed.
+func BtcSolvencyWatchActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// StableSwapActive (0.13.0): a pool system-config lists in StablePools prices
+// its swaps on the StableSwap invariant (two assets, Curve's integer form)
+// instead of the constant product, with the slip fee measured on that curve.
+// Every other pool is unchanged. Below the line a listed pool's swap is
+// refused: its contract only accepts the stable curve. Resolve `active` at the
+// swap's block.
+func StableSwapActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// BigSwapAmountsActive (0.13.0): system.pendulum_apply_swap_fees reads the
+// swap amounts and reserves as big integers and answers in them (SP-0d).
+// Before it they had to fit int64, so a pool of an 18-decimal asset (ETH in
+// wei) refused every swap once a reserve passed ~9.22 of it. The node-share
+// HBD credit is still an int64 ledger amount. Resolve `active` at the swap's
+// block.
+func BigSwapAmountsActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
+// keygen already activated is neither stored nor applied (TSS-KG-1), and a
+// node signs and reshares with the share of the keygen the chain activated.
+// Keygen re-runs while a key is still "created", so several keygens can
+// succeed before the first commitment lands; storing the later rows let a
+// later keygen's shares take over a key whose on-chain pubkey is the first's,
+// which can then never sign. Resolve `active` at the commitment's block (A)
+// and at the session height (B).
+func KeygenOnceActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
 // without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
 // ValidateDetailed within the slot window - only a byte-identical Hive tx is

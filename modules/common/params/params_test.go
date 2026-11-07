@@ -1,6 +1,7 @@
 package params
 
 import (
+	"strings"
 	"testing"
 
 	"vsc-node/modules/common/consensusversion"
@@ -127,5 +128,34 @@ func TestEffectiveMaxNewMembers(t *testing.T) {
 		if got := cp.EffectiveMaxNewMembers(tc.bh); got != tc.want {
 			t.Fatalf("EffectiveMaxNewMembers(bh=%d) value=3 height=100 = %d, want %d", tc.bh, got, tc.want)
 		}
+	}
+}
+
+// C-R2: an EVM bridge is a consensus input only from its activation height;
+// one without a height never is, and fails validation.
+func TestEvmVaultKeyIdsFromTheActivationHeight(t *testing.T) {
+	o := OracleParams{
+		EvmBridgeContracts:  map[string]string{"ETH": "vsc1eth", "BASE": "vsc1base", "ARB": "vsc1arb"},
+		EvmBridgeFromHeight: map[string]uint64{"ETH": 100, "BASE": 50},
+	}
+	for _, c := range []struct {
+		h    uint64
+		want []string
+	}{
+		{49, []string{}},
+		{50, []string{"vsc1base-primary"}},
+		{99, []string{"vsc1base-primary"}},
+		{100, []string{"vsc1base-primary", "vsc1eth-primary"}},
+	} {
+		if got := o.EvmVaultKeyIds(c.h); strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("height %d: %v, want %v", c.h, got, c.want)
+		}
+	}
+	if err := o.ValidateEvmBridges(); err == nil || !strings.Contains(err.Error(), "ARB") {
+		t.Fatalf("a bridge with no height: err %v, want ARB refused", err)
+	}
+	delete(o.EvmBridgeContracts, "ARB")
+	if err := o.ValidateEvmBridges(); err != nil {
+		t.Fatal(err)
 	}
 }

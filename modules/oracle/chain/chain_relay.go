@@ -168,6 +168,9 @@ type ChainOracle struct {
 	// (uncatchable by recover).
 	recentlyWitnessedMu sync.Mutex
 	recentlyWitnessed   map[string]time.Time // "SYMBOL:startHeight-endHeight" -> when witnessed
+	// statusCache serves GetAllChainStatuses (localNodeInfo) without a chain
+	// RPC on the request path (status_cache.go, POST-LAUNCH 18x).
+	statusCache chainStatusCache
 }
 
 // markWitnessed records that this node signed `key` as a witness (write path).
@@ -632,28 +635,6 @@ func (c *ChainOracle) getStoredBlockHeaderHex(contractId string, height uint64) 
 	}
 
 	return fmt.Sprintf("%x", rawVal), nil
-}
-
-// ChainStatus holds the block height status of a single chain relayer.
-type ChainStatus struct {
-	Symbol      string
-	BlockHeight *uint64 // nil if unreachable or not configured
-}
-
-// GetAllChainStatuses returns the block height status for every registered chain.
-func (c *ChainOracle) GetAllChainStatuses() []ChainStatus {
-	statuses := make([]ChainStatus, 0, len(c.chainRelayers))
-	for symbol, chain := range c.chainRelayers {
-		cs := ChainStatus{Symbol: symbol}
-		if chain.ContractId() != "" {
-			if state, err := chain.GetLatestValidHeight(); err == nil {
-				h := state.blockHeight
-				cs.BlockHeight = &h
-			}
-		}
-		statuses = append(statuses, cs)
-	}
-	return statuses
 }
 
 // makeChainSessionID builds a unique session identifier for P2P signature

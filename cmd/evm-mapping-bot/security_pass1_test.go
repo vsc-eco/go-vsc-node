@@ -67,11 +67,13 @@ func TestSecurityAttack1_ParsePendingSpend_EmptyFieldValues(t *testing.T) {
 }
 
 func TestSecurityAttack1_ParsePendingSpend_AmountOverflow(t *testing.T) {
-	// An amount beyond int64 fails to decode and the entry is refused. The pipe
-	// parser this replaced read it as 0 and carried on.
+	// The contract stores the amount as a big.Int, so a value beyond int64 is
+	// an ordinary wei amount. It must decode exactly: never refused, and never
+	// read as 0 the way the old pipe parser did.
 	input := `{"from":"from","to":"to","asset":"eth","amount":99999999999999999999999999,"unsigned_tx_hex":"aabbcc","block_height":12345}`
-	if ps := parsePendingSpend(0, input); ps != nil {
-		t.Fatalf("an int64-overflowing amount was accepted: %+v", ps)
+	ps := parsePendingSpend(0, input)
+	if ps == nil || ps.Amount.String() != "99999999999999999999999999" {
+		t.Fatalf("an amount beyond int64 was not carried exactly: %+v", ps)
 	}
 }
 
@@ -664,10 +666,11 @@ func TestSecurityAttack11_HexToUint64_NoOverflowProtection(t *testing.T) {
 }
 
 func TestSecurityAttack11_ParseInt64_AmountOverflow(t *testing.T) {
-	// Overflowing amount: refused, never read as 0.
+	// An amount beyond int64 decodes exactly (the contract stores a big.Int).
 	input := `{"from":"from","to":"to","asset":"eth","amount":9999999999999999999999,"unsigned_tx_hex":"aabbcc","block_height":12345}`
-	if ps := parsePendingSpend(0, input); ps != nil {
-		t.Fatalf("an overflowing amount was accepted: %+v", ps)
+	ps := parsePendingSpend(0, input)
+	if ps == nil || ps.Amount.String() != "9999999999999999999999" {
+		t.Fatalf("an amount beyond int64 was not carried exactly: %+v", ps)
 	}
 }
 
@@ -955,9 +958,9 @@ func TestSecurityAttack1_ParsePendingSpend_PipeInFieldValue(t *testing.T) {
 	// Amount would be "with" → ParseInt error → 0
 	// UnsignedTxHex would be "pipe"
 	// BlockHeight would be "1000"
-	if ps.Amount == 0 {
+	if ps.Amount.Sign() == 0 {
 		t.Logf("FINDING (INFO): Pipe characters in field values corrupt parsing. "+
-			"Amount=%d (should not be 0), UnsignedTxHex=%q (corrupted)",
+			"Amount=%s (should not be 0), UnsignedTxHex=%q (corrupted)",
 			ps.Amount, ps.UnsignedTxHex)
 	}
 }

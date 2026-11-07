@@ -3,6 +3,8 @@ package tss
 import (
 	"bytes"
 	"encoding/hex"
+	"sync"
+	"time"
 
 	"vsc-node/lib/btcvault"
 	tss_db "vsc-node/modules/db/vsc/tss"
@@ -164,6 +166,7 @@ const (
 	scopeRefuse                             // retiring-gen sign that is NOT a successor sweep, or an unknown/non-fund-holding gen
 	scopeSuccessorSweep                     // retiring-gen sign PROVEN to pay only the successor (V-8: exempt from the halt)
 	scopeCheckSig                           // pending-gen sign PROVEN to be the canonical BRK-2 check-signature M (halt-exempt; moves no funds)
+	scopeOwnWithdrawal                      // EVM (A01): retiring-gen sign PROVEN to be one of its own withdrawals issued before its cut-over
 )
 
 // evaluateScope applies S3 output scoping for a BTC-vault keyId whose sign
@@ -296,7 +299,9 @@ func (tssMgr *TssManager) btcSignRefused(keyId string, sighash []byte, bh uint64
 	// Combine with the M1.1a solvency halt (FLAG) + the V-8 evacuation exemption.
 	if btcSignGateDecision(verdict, tssMgr.btcKeysignFrozen(keyId)) {
 		if verdict == scopeRefuse {
-			log.Warn("BTC keysign refused by output scoping (S3 NN#1)", "keyId", keyId, "bh", bh)
+			if policyRefusalLogDue(policyRefusalKey("scope", keyId, sighash)) {
+				log.Warn("BTC keysign refused by output scoping (S3 NN#1)", "keyId", keyId, "bh", bh)
+			}
 		} else {
 			log.Warn("BTC keysign frozen by solvency gate; skipping issuance", "keyId", keyId, "bh", bh)
 		}
@@ -423,4 +428,48 @@ func btcNetParams(mainnet bool) *chaincfg.Params {
 		return &chaincfg.MainNetParams
 	}
 	return &chaincfg.TestNet3Params
+}
+
+// policyRefusalLogEvery bounds how often the same policy refusal is logged
+// (I-3, testnet 11-04: a sign request for mainv5, a generation that never went
+// active, is revived every sign interval, refused and marked failed again, two
+// warnings each time: 620 refusals in 27 h). A refusal is keyed by its key AND
+// its message, so a new refused sighash on a key (an output-scoping refusal is
+// a security signal) is always logged; only the same request's repeats are
+// dropped. The refusal and the request's status are unchanged.
+const policyRefusalLogEvery = 30 * time.Minute
+
+// policyRefusalLogPruneAt: past this many remembered refusals, the ones older
+// than policyRefusalLogEvery are dropped, so the map stays bounded.
+const policyRefusalLogPruneAt = 4096
+
+var policyRefusalLog = struct {
+	sync.Mutex
+	at map[string]time.Time
+}{at: map[string]time.Time{}}
+
+// policyRefusalKey names one refused request for policyRefusalLogDue: its kind,
+// its key and its message.
+func policyRefusalKey(kind, keyId string, msg []byte) string {
+	return kind + ":" + keyId + ":" + hex.EncodeToString(msg)
+}
+
+// policyRefusalLogDue reports whether refusal k (policyRefusalKey) is to be
+// logged now.
+func policyRefusalLogDue(k string) bool {
+	policyRefusalLog.Lock()
+	defer policyRefusalLog.Unlock()
+	now := time.Now()
+	if last, ok := policyRefusalLog.at[k]; ok && now.Sub(last) < policyRefusalLogEvery {
+		return false
+	}
+	if len(policyRefusalLog.at) >= policyRefusalLogPruneAt {
+		for key, at := range policyRefusalLog.at {
+			if now.Sub(at) >= policyRefusalLogEvery {
+				delete(policyRefusalLog.at, key)
+			}
+		}
+	}
+	policyRefusalLog.at[k] = now
+	return true
 }

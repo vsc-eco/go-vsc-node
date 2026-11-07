@@ -1014,6 +1014,22 @@ func (ms *MultiSig) waitForSigs(
 	go func() {
 		signedWeight := uint64(0)
 		sigs := make([]string, 0)
+		// H3 (RV re-verify): backstop recover. This collector goroutine processes
+		// `sign_response` messages that ANY peer can send (ValidateMessage only
+		// gates `sign_request`), and a panic here has no parent recover — it would
+		// crash the whole node. The R-zero guard in RecoverPublicKey closes the
+		// known nil-panic; this recover ensures any future panic in the signer
+		// path degrades to a dropped collection round (best-effort result handed
+		// back so waitForSigs does not block) instead of taking down the process.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("waitForSigs collector recovered from panic (dropping this collection round)", "err", r)
+				select {
+				case resCh <- collectResult{sigs, signedWeight}:
+				default:
+				}
+			}
+		}()
 		// S1: dedup on the recovered signer pubkey, not on the raw signature
 		// string. ECDSA sigs are malleable — a single signer can submit (r,s)
 		// and (r,N-s,v^1) which differ as strings but recover the same pubkey;

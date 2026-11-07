@@ -12,6 +12,9 @@ import (
 // the error from Stop, as many cleanups do.
 func TestMain(m *testing.M) {
 	code := m.Run()
+	for _, stop := range afterRun {
+		stop()
+	}
 	if failures := IntegrityFailures(); len(failures) > 0 {
 		fmt.Fprintf(os.Stderr, "\nFAST-MODE INTEGRITY FAILURES (%d): these runs cannot be trusted\n", len(failures))
 		for _, f := range failures {
@@ -23,6 +26,11 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(code)
 }
+
+// afterRun holds teardowns for devnets that outlive any one test (the EVM
+// waves' shared devnet); TestMain runs them before reading the integrity
+// failures their Stop records.
+var afterRun []func()
 
 // stopDevnetChecked tears d down and fails t on a fast-mode integrity failure;
 // any other teardown error stays a warning, as before.

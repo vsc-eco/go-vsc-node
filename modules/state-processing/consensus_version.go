@@ -53,6 +53,15 @@ func (se *StateEngine) BtcKeysignHalted() bool {
 	return se.chainConsensusCache.BtcKeysignHalted
 }
 
+// EvmKeysignHalted reports whether the governance multisig has frozen the EVM
+// bridges' vault keysigns via vsc.tss_halt {"keyId":"evm"} (N2). Read by the
+// EVM sign gate through GetScheduler, like BtcKeysignHalted.
+func (se *StateEngine) EvmKeysignHalted() bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return se.chainConsensusCache.EvmKeysignHalted
+}
+
 // BtcTheftHalted reports whether the BTC mapping contract's deterministic theft-halt flag
 // ("th", M1.1b SPV-proven auto-trip) is set, mirrored into the consensus cache each block by
 // refreshBtcTheftHalt. Read by the TSS solvency gate through GetScheduler — a set flag freezes

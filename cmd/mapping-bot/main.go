@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"vsc-node/cmd/mapping-bot/chain"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
+	"vsc-node/lib/utils"
 	"vsc-node/modules/aggregate"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db"
@@ -105,11 +107,20 @@ func main() {
 	// Resolve chain configuration from CLI flags
 	// review2 LOW #117: http.DefaultClient has no timeout, so every
 	// mempool.space call could hang forever on an unresponsive endpoint.
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := utils.NewHTTPClient(30 * time.Second) // I-35: HTTP/2 health checks
 	chainCfg, err := chain.Resolve(args.chainName, args.chainNetwork, httpClient)
 	if err != nil {
 		slog.Error("unsupported chain", "err", err)
 		os.Exit(1)
+	}
+	if args.chainAPI != "" {
+		mc, ok := chainCfg.Client.(*chain.MempoolSpaceClient)
+		if !ok {
+			slog.Error("-chain-api is set but this chain's client is not an Esplora client", "chain", args.chainName)
+			os.Exit(1)
+		}
+		mc.SetBaseURLs(strings.Split(args.chainAPI, ","))
+		slog.Info("chain API endpoints (B7 failover)", "count", len(mc.BaseURLs()))
 	}
 
 	// Use chain-specific default DB name if not overridden
@@ -164,6 +175,7 @@ func main() {
 	stop, stopCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopCancel()
 	var lastLeaseWaitLog time.Time
+	var blocks rawBlockCache // I-42
 
 	var wg sync.WaitGroup
 	for {
@@ -172,6 +184,7 @@ func main() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bot.RankGqlByHead(ctx) // I-39: a GraphQL endpoint far behind is read last
 
 		// Periodic cleanup (every 24h)
 		if time.Since(lastClear).Hours() > 24 {
@@ -249,6 +262,7 @@ func main() {
 			bot.HandleUnmap()
 			bot.HandleConfirmations()
 			bot.HandleVaultRotation()
+			bot.WarnKeyExpiry() // B8: D7 key-expiry alarm
 			releaseBlockLease(bot, blockHeight, instanceID)
 			sleepOrStop(stop, chainCfg.SleepInterval)
 			cancel()
@@ -260,7 +274,7 @@ func main() {
 			cancel()
 			continue
 		}
-		blockBytes, err := bot.Chain.Client.GetRawBlock(hash)
+		blockBytes, err := blocks.get(hash, bot.Chain.Client.GetRawBlock) // I-42: not again while it waits for depth
 		if err != nil {
 			bot.L.Error("error fetching raw block", "hash", hash, "err", err)
 			releaseBlockLease(bot, blockHeight, instanceID)
@@ -286,6 +300,7 @@ func main() {
 			// confirmations so a sweep that just settled is seen as settled. No-op on a
 			// contract with no vault registry, and internally rate-limited.
 			bot.HandleVaultRotation()
+			bot.WarnKeyExpiry() // B8: D7 key-expiry alarm
 		}()
 		wg.Wait()
 		releaseBlockLease(bot, blockHeight, instanceID)
