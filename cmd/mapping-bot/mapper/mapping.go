@@ -3,6 +3,7 @@ package mapper
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"vsc-node/modules/common/params"
 
 	"github.com/btcsuite/btcd/wire"
 )
@@ -105,6 +108,16 @@ func (b *Bot) HandleMap(
 	// deposit behind it; it is recorded for the operator instead.
 	retryBlock := false
 	for i, tx := range jsonMessages {
+		// MAP-SIZE-1: a map over the node's contract-payload cap even in the compact
+		// form fails on chain; record it for the operator, as an oversize L2 tx, and
+		// do not hold the block or spend RC on it.
+		if n := mapPayloadNodeSize(foundTxs[i]); n > params.MAX_CONTRACT_PAYLOAD_SIZE {
+			btcTxId := txIDFromTxData(foundTxs[i].TxData)
+			b.L.Error("deposit tx is too large for a map call even without its witness; recorded for the operator",
+				"btcTxId", btcTxId, "blockHeight", blockHeight, "payloadBytes", n, "limit", params.MAX_CONTRACT_PAYLOAD_SIZE)
+			b.recordFailedTx(ctx, "map-too-large-"+btcTxId, "map", tx)
+			continue
+		}
 		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err == nil {
 			b.recordDeposits(ctx, foundTxs[i].Instructions)
 		} else {
@@ -112,7 +125,7 @@ func (b *Bot) HandleMap(
 			switch {
 			case errors.Is(err, ErrTxFailed):
 			case isTooBigForPool(err):
-				btcTxId := txIDFromRawTxHex(foundTxs[i].TxData.RawTxHex)
+				btcTxId := txIDFromTxData(foundTxs[i].TxData)
 				b.L.Error("deposit tx is too large for a map call and cannot be credited; recorded for the operator",
 					"btcTxId", btcTxId, "blockHeight", blockHeight, "error", err)
 				b.recordFailedTx(ctx, "map-too-large-"+btcTxId, "map", tx)
@@ -211,7 +224,7 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 
 		// Only map historical txs that were present in the address history.
 		for _, tx := range foundTxs {
-			txID := txIDFromRawTxHex(tx.TxData.RawTxHex)
+			txID := txIDFromTxData(tx.TxData)
 			if _, ok := wantedTxIDs[txID]; !ok {
 				continue
 			}
@@ -235,6 +248,25 @@ func txIDFromRawTxHex(rawTxHex string) string {
 	if err != nil {
 		return ""
 	}
+	return txIDFromRawTx(rawTx)
+}
+
+// txIDFromTxData is the deposit's txid from either encoding (MAP-SIZE-1).
+func txIDFromTxData(td *VerificationRequest) string {
+	if td == nil {
+		return ""
+	}
+	if td.RawTxB64 != "" {
+		rawTx, err := base64.StdEncoding.DecodeString(td.RawTxB64)
+		if err != nil {
+			return ""
+		}
+		return txIDFromRawTx(rawTx)
+	}
+	return txIDFromRawTxHex(td.RawTxHex)
+}
+
+func txIDFromRawTx(rawTx []byte) string {
 	var tx wire.MsgTx
 	if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
 		return ""

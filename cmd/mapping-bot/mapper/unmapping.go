@@ -14,6 +14,7 @@ import (
 	"vsc-node/cmd/mapping-bot/chain"
 	contractinterface "vsc-node/cmd/mapping-bot/contract-interface"
 	"vsc-node/cmd/mapping-bot/database"
+	chainparams "vsc-node/modules/common/params"
 
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
@@ -267,6 +268,12 @@ func (b *Bot) buildConfirmSpendPayload(
 			TxIndex:        uint64(details.TxIndex),
 		},
 		Indices: indices,
+	}
+	// MAP-SIZE-1: a sweep or a many-coin withdrawal passes the node's 8 KB cap in hex.
+	confirmed := msgBlock.Transactions[details.TxIndex]
+	fitTxData(params.TxData, confirmed, func() int { return payloadNodeSize(params) })
+	if n := payloadNodeSize(params); n > chainparams.MAX_CONTRACT_PAYLOAD_SIZE {
+		return nil, fmt.Errorf("confirmSpend for %s is %d bytes even in base64 without witnesses, over the node's %d-byte cap", confirmed.TxID(), n, chainparams.MAX_CONTRACT_PAYLOAD_SIZE)
 	}
 	return json.Marshal(params)
 }
