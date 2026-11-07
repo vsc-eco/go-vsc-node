@@ -69,34 +69,51 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 
 	cfg := DefaultConfig()
 	cfg.LogLevel = "error,pendulum=trace"
-	// ElectionInterval 120 (L1 blocks) so every epoch's snapshot range spans at
-	// least one 100-block pendulum tick. At the default 20 the range is shorter
-	// than a tick and ComputeReductionsForEpoch scores nothing in most epochs —
-	// a run that would have "passed" with an empty scorer.
+	// ElectionInterval 1000, and the reason is PerEpochForgivenessBps.
+	//
+	// The first attempt used 120, which spans a 100-block pendulum tick and so
+	// looked sufficient. It was not, and the CONTROL arm is what caught it: at
+	// floor 0.13, with the fix inert and 16 of 16 blocks closing at the bar with
+	// a seat missing, the settlements still carried ZERO reductions. Arithmetic,
+	// not a bug — ComputeReductionsForEpoch subtracts PerEpochForgivenessBps
+	// (250) and drops any witness at or below zero, so a seat needs 11 absences
+	// in ONE epoch (11 x 25 = 275) to survive it. L2 blocks arrive at most one
+	// per SlotLength (10 L1 blocks), so a 165-block epoch holds ~16 blocks; with
+	// 5 seats and a bar of 4 each block omits exactly one seat, giving a seat ~3
+	// absences and ~75 bps. Forgiven every time, however much traffic is
+	// generated — that fixture could never have shown anything either way.
+	//
+	// 1000 gives ~1040 blocks per epoch (the interval plus the election's own
+	// proposal and signing latency) and so ~104 L2 blocks, ~20 absences per seat,
+	// ~500 bps raw and ~250 effective. That clears forgiveness with room, and in
+	// the control EVERY seat clears it, which is the mainnet fingerprint the
+	// control has to reproduce.
 	cfg.SysConfigOverrides = &systemconfig.SysConfigOverrides{
 		ConsensusParams: &params.ConsensusParams{
 			ConsensusVersionFloorEpoch:     1,
 			ConsensusVersionFloorConsensus: floorConsensus,
-			ElectionInterval:               120,
+			ElectionInterval:               1000,
 		},
 	}
 
 	// EVERY budget here is on the TEST CLOCK, which is denominated in BLOCKS:
-	// devclock.go, "a budget of X covers at most about X/3s blocks". The first
-	// run of this test died on that and not on its subject -- a 30-minute wait
-	// for epoch 5 is 600 blocks, and epoch 5 lands around block 862, so it could
-	// never have arrived. Measured on this devnet: epoch 0 at block 37, epoch 1
-	// at 202, i.e. ~165 blocks per epoch (ElectionInterval 120 plus the
-	// election's own proposal and signature-gathering latency). Epoch 5 is
-	// therefore ~862 blocks ~= 43 minutes of test clock, and the budgets below
-	// are sized against that with margin, not against wall time.
-	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(70*time.Minute))
+	// devclock.go, "a budget of X covers at most about X/3s blocks". An earlier
+	// run died on exactly that rather than on its subject -- a 30-minute wait is
+	// 600 blocks, against an epoch that landed near block 862 -- so these are
+	// sized in blocks, not in wall time.
+	//
+	// At ElectionInterval 1000 an epoch costs ~1040 blocks, so epoch 3 lands near
+	// block 3,160: ~158 minutes of TEST clock, and roughly 25 minutes of wall
+	// clock under FastBlocks. That exceeds vfDevnetBudgetCap's 75-minute default,
+	// so the runner exports DEVNET_BUDGET_CAP; without it vfTestBudget truncates
+	// to the cap (loudly) and the run strands mid-epoch.
+	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(220*time.Minute))
 
 	t.Log("waiting for the first running election on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		// 20 min of test clock = ~400 blocks; epoch 1 lands around block 202.
-		nodeCtx, cancel := devnetWithTimeout(ctx, 20*time.Minute)
-		err := d.waitForElectionEpoch(nodeCtx, n, 1, 20*time.Minute)
+		// 70 min of test clock = ~1,400 blocks; epoch 1 lands around block 1,040.
+		nodeCtx, cancel := devnetWithTimeout(ctx, 70*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, 1, 70*time.Minute)
 		cancel()
 		if err != nil {
 			dumpDiagnostics(t, d, ctx)
@@ -149,14 +166,16 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 		}
 	}()
 
-	// Observe four committee transitions, so at least three settlements are
-	// composed with a full tick of evidence behind them.
-	const targetEpoch = uint64(5)
+	// Epoch 3: two settled epochs (2 and 3), each with ~104 L2 blocks behind it,
+	// which is what it takes for a seat to clear PerEpochForgivenessBps. Fewer
+	// epochs than the first attempt, but each one can actually carry evidence --
+	// four epochs that all round to zero proved nothing.
+	const targetEpoch = uint64(3)
 	t.Logf("generating L2 traffic and waiting for epoch >= %d on every node...", targetEpoch)
 	for n := 1; n <= cfg.Nodes; n++ {
-		// 60 min of test clock = ~1200 blocks against the ~862 epoch 5 needs.
-		nodeCtx, cancel := devnetWithTimeout(ctx, 60*time.Minute)
-		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 60*time.Minute)
+		// 190 min of test clock = ~3,800 blocks against the ~3,160 epoch 3 needs.
+		nodeCtx, cancel := devnetWithTimeout(ctx, 190*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 190*time.Minute)
 		cancel()
 		if err != nil {
 			close(stopTraffic)
