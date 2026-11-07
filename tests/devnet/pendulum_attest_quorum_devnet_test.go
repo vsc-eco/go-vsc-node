@@ -81,12 +81,22 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 		},
 	}
 
-	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(50*time.Minute))
+	// EVERY budget here is on the TEST CLOCK, which is denominated in BLOCKS:
+	// devclock.go, "a budget of X covers at most about X/3s blocks". The first
+	// run of this test died on that and not on its subject -- a 30-minute wait
+	// for epoch 5 is 600 blocks, and epoch 5 lands around block 862, so it could
+	// never have arrived. Measured on this devnet: epoch 0 at block 37, epoch 1
+	// at 202, i.e. ~165 blocks per epoch (ElectionInterval 120 plus the
+	// election's own proposal and signature-gathering latency). Epoch 5 is
+	// therefore ~862 blocks ~= 43 minutes of test clock, and the budgets below
+	// are sized against that with margin, not against wall time.
+	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(70*time.Minute))
 
 	t.Log("waiting for the first running election on every node...")
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := devnetWithTimeout(ctx, 10*time.Minute)
-		err := d.waitForElectionEpoch(nodeCtx, n, 1, 10*time.Minute)
+		// 20 min of test clock = ~400 blocks; epoch 1 lands around block 202.
+		nodeCtx, cancel := devnetWithTimeout(ctx, 20*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, 1, 20*time.Minute)
 		cancel()
 		if err != nil {
 			dumpDiagnostics(t, d, ctx)
@@ -129,7 +139,7 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 				return
 			case <-ctx.Done():
 				return
-			case <-time.After(4 * time.Second):
+			case <-devnetAfter(4 * time.Second):
 				if _, err := d.Transfer(1, 2, "0.001", "hbd", "attest-quorum"); err != nil {
 					atomic.AddInt64(&failed, 1)
 					continue
@@ -144,8 +154,9 @@ func runAttestQuorumArm(t *testing.T, floorConsensus uint64, wantActiveLine stri
 	const targetEpoch = uint64(5)
 	t.Logf("generating L2 traffic and waiting for epoch >= %d on every node...", targetEpoch)
 	for n := 1; n <= cfg.Nodes; n++ {
-		nodeCtx, cancel := devnetWithTimeout(ctx, 30*time.Minute)
-		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 30*time.Minute)
+		// 60 min of test clock = ~1200 blocks against the ~862 epoch 5 needs.
+		nodeCtx, cancel := devnetWithTimeout(ctx, 60*time.Minute)
+		err := d.waitForElectionEpoch(nodeCtx, n, targetEpoch, 60*time.Minute)
 		cancel()
 		if err != nil {
 			close(stopTraffic)

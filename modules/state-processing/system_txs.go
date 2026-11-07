@@ -603,6 +603,54 @@ func aggregatePotentialWeight(election *elections.ElectionResult) int {
 }
 
 // ProcessTx implements VSCTransaction.
+// getDagNodeBlocking reads a CID from the data layer and decodes it as dag-cbor,
+// retrying a local read fault instead of handing a nil node to RawData().
+//
+// Both callers sit in TxElectionResult.ExecuteTx, which runSystemOpSafely wraps.
+// The old `node, _ := se.da.Get(...)` followed by `node.RawData()` nil-dereferenced
+// on a read fault. Before SC-08 that panic killed the process, which then
+// reprocessed the block and the election landed anyway -- ugly, but self-healing.
+// With the recover() in place the panic is swallowed instead, and a swallowed
+// election is PERMANENT: the next epoch finds no previous election ("election
+// ignored: no previous election", ExecuteTx below) and so does every epoch after
+// it, so the node sits on a stale committee until somebody resyncs it. Found by
+// lordbutterfly reviewing #289; his patch calls this getDagOrBlock.
+//
+// Returning an error and skipping would reproduce exactly that divergence, so
+// this BLOCKS instead, the same choice the ledger apply path makes for the same
+// reason (skipping the entry forks, so the read is retried until it succeeds --
+// lib/datalayer/dir.go's "blocking until it succeeds"). A node that cannot read
+// its own store stops making progress, loudly, rather than quietly adopting a
+// different committee from its peers.
+func (se *StateEngine) getDagNodeBlocking(c cid.Cid, what string) *dagCbor.Node {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		node, err := se.da.Get(c, nil)
+		if err == nil && node != nil {
+			dagNode, decErr := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			if decErr == nil {
+				if attempt > 1 {
+					log.Error("election dag read recovered; resuming", "what", what, "cid", c, "attempts", attempt)
+				}
+				return dagNode
+			}
+			err = decErr
+		} else if err == nil {
+			err = fmt.Errorf("data layer returned no node")
+		}
+		log.Error("election dag read failed; blocking until it succeeds (skipping would fork the committee)",
+			"what", what, "cid", c, "attempt", attempt, "err", err)
+		time.Sleep(delay)
+		if delay *= 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
 func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
@@ -613,9 +661,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			node, _ := se.da.Get(parsedCid, nil)
-
-			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			dagNode := se.getDagNodeBlocking(parsedCid, "genesis election")
 			elecResult := elections.ElectionResult{}
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
@@ -758,8 +804,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			// latestSettledEpoch so the defensive gate below passes for
 			// the new flow.
 			se.da.GetDag(parsedCid)
-			node, _ := se.da.Get(parsedCid, nil)
-			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			dagNode := se.getDagNodeBlocking(parsedCid, "election result")
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
 				BlockHeight: tx.Self.BlockHeight,

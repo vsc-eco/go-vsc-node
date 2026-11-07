@@ -1088,11 +1088,20 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 					"blockHeight", bh, "reshareErr", reshareErr, "newErr", newErr)
 				reshareKeys, newKeys = nil, nil
 			}
-			if tssMgr.sessionShapeActive(bh + blocksUntilReshare) {
-				reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
+			// 18j: the ACTION paths filter the allowlist before they act
+			// (filterScheduledKeys at the two rotate sites), and readiness did
+			// not -- so a contract's non-permitted keys still counted toward
+			// every member's preParamsNeed, holding readiness against sessions
+			// that can never run. Same gate, and resolved at the same target
+			// height the rest of this block already resolves at. Found by
+			// lordbutterfly reviewing #289.
+			target := bh + blocksUntilReshare
+			reshareKeys = tssMgr.filterScheduledKeys(reshareKeys, target, "readiness-reshare")
+			newKeys = tssMgr.filterScheduledKeys(newKeys, target, "readiness-keygen")
+			if tssMgr.sessionShapeActive(target) {
+				reshareKeys = reshareWindow(reshareKeys, target, rotateInterval)
 			}
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
-				target := bh + blocksUntilReshare
 				gossipTargets[target] = true
 				preParamsNeed[target] = countPreParamsNeed(reshareKeys, newKeys, func(keyId string) bool {
 					return tssMgr.shouldSkipReshareForVaultRotation(keyId, target)
@@ -1996,7 +2005,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore(currentElection)
-	// 18an: from 0.13.0 the ban that excludes a node is the one scored against
+	// 18an: from 0.14.0 the ban that excludes a node is the one scored against
 	// THAT key's family, so an EVM-only fault cannot evict a witness from the
 	// BTC vault's committee. Off => BannedFor returns the global set and every
 	// decision below is byte-identical to before.

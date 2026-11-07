@@ -98,6 +98,21 @@ type PendulumPoolAddition struct {
 	Collateral bool
 }
 
+// TssKeyContractAddition is an append-only, height-staged entry for the TSS key
+// allowlist (KEY-SPAM-1 / 18j). Widening the allowlist is a consensus change --
+// it decides which create_key transactions succeed -- so a new contract cannot
+// just be appended to the base list: nodes would start enforcing the wider list
+// as each one took the build, and two nodes disagreeing about whether a
+// create_key is valid is a fork. An addition carries the height at which every
+// node starts honouring it, so the widening happens at one agreed block.
+type TssKeyContractAddition struct {
+	ID string
+	// FromHeight is the Hive L1 block at which the addition takes effect.
+	// Zero means immediately (testnet/devnet, where the list is unrestricted
+	// anyway).
+	FromHeight uint64
+}
+
 type config struct {
 	network         string
 	bootstrapPeers  []string
@@ -119,6 +134,13 @@ type config struct {
 	// keys (KEY-SPAM-1 / 18j). Empty = unrestricted; see
 	// TssKeyContractAllowlistAt for why that is the default on test networks.
 	tssKeyContractAllowlist []string
+
+	// tssKeyContractAllowlistAdditions widens the list above at an agreed
+	// height. APPEND-ONLY: removing or re-dating an entry that has already
+	// activated changes what a replay of that history decides. Adding the EVM
+	// bridge's contract on mainnet goes here, with a FromHeight far enough out
+	// that every node is on the build before it binds -- not into the base list.
+	tssKeyContractAllowlistAdditions []TssKeyContractAddition
 	// pendulumPoolAdditions stages further pools in at a height, each choosing
 	// whether it also counts as collateral. Append-only.
 	pendulumPoolAdditions []PendulumPoolAddition
@@ -282,14 +304,43 @@ func (c *config) PendulumPoolWhitelistAt(blockHeight uint64) []string {
 //
 // Height-parameterised for the same reason as PendulumPoolWhitelistAt: this is
 // consensus input, so there is deliberately no height-less accessor to reach
-// for. The list is currently static per network; a staged addition would slot
-// in here the way pendulumPoolAdditions does.
+// for. The base list is static per network and widened by
+// tssKeyContractAllowlistAdditions, each taking effect at its own FromHeight.
+//
+// The height was previously ACCEPTED AND IGNORED, which is worse than not
+// having it: it reads as staged at the call site while a wider list would in
+// fact bind the moment a node took the build, and nodes disagreeing about
+// whether a create_key is valid is a fork. Reported by lordbutterfly reviewing
+// #289, who needs the EVM bridge added to mainnet's list -- that is an addition
+// with a FromHeight, never an edit to the base list.
 func (c *config) TssKeyContractAllowlistAt(blockHeight uint64) []string {
-	if len(c.tssKeyContractAllowlist) == 0 {
+	out := make([]string, 0, len(c.tssKeyContractAllowlist)+len(c.tssKeyContractAllowlistAdditions))
+	seen := make(map[string]struct{}, cap(out))
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range c.tssKeyContractAllowlist {
+		add(id)
+	}
+	for _, a := range c.tssKeyContractAllowlistAdditions {
+		if blockHeight < a.FromHeight {
+			continue
+		}
+		add(a.ID)
+	}
+	if len(out) == 0 {
+		// nil, not an empty slice: callers read "no entries" as UNRESTRICTED
+		// (filterScheduledKeys, TssCreateKey), and the two must not diverge on
+		// which empty they got.
 		return nil
 	}
-	out := make([]string, len(c.tssKeyContractAllowlist))
-	copy(out, c.tssKeyContractAllowlist)
 	return out
 }
 
@@ -586,8 +637,10 @@ func MainnetConfig() SystemConfig {
 		// contract, updated in place for vault v2). Set in code, not left to an
 		// operator override, because an empty list means UNRESTRICTED and a
 		// funded network must not depend on remembering to populate it.
-		// Enforced only once consensus 0.13.0 is active
+		// Enforced only once consensus 0.14.0 is active
 		// (consensusversion.TssKeyAllowlistActive), so this is inert today.
+		// Widening it later is an append to tssKeyContractAllowlistAdditions
+		// with a FromHeight, never an edit here.
 		tssKeyContractAllowlist: []string{
 			"vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d", // BTC mapping contract
 		},
