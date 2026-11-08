@@ -87,7 +87,6 @@ func TestAwaitPreParams_CancelledContextCleanFails(t *testing.T) {
 	}
 }
 
-
 // The bound must come from the TIMER, not only from a caller's context.
 //
 // Without this, TestAwaitPreParams_EmptyPoolCleanFails passes purely because the

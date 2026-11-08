@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
@@ -45,6 +46,7 @@ import (
 	blsu "github.com/protolambda/bls12-381-util"
 
 	flatfs "github.com/ipfs/go-ds-flatfs"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 var log = vsclog.Module("tss")
@@ -77,11 +79,19 @@ const (
 	// rotate blocks.
 	MAX_RESHARES_PER_ROTATE = 4
 
-	TSS_MESSAGE_RETRY_COUNT     = 3             // Number of retries for failed messages
-	TSS_BAN_THRESHOLD_PERCENT   = 60            // Failure rate threshold for long-term bans
-	TSS_BLAME_THRESHOLD_PERCENT = 33            // Failure rate threshold for short-term per-key blame exclusion
-	TSS_BAN_GRACE_PERIOD_EPOCHS = 3             // Epochs before new nodes can be banned (as int for comparison)
-	BLAME_EXPIRE                = uint64(28800) // 24 hour blame
+	TSS_MESSAGE_RETRY_COUNT     = 3  // Number of retries for failed messages
+	TSS_BAN_THRESHOLD_PERCENT   = 60 // Failure rate threshold for long-term bans
+	TSS_BLAME_THRESHOLD_PERCENT = 33 // Failure rate threshold for short-term per-key blame exclusion
+	TSS_BAN_GRACE_PERIOD_EPOCHS = 3  // Epochs before new nodes can be banned (as int for comparison)
+	// TSS_BAN_MIN_FAMILY_BLAMES is the floor on blames against a node, within
+	// one key family, before the percentage threshold may ban it (18an).
+	//
+	// Needed only on the per-family path: splitting the score by family shrinks
+	// each sample, and a percentage over a tiny denominator bans on noise. With
+	// a single blame against a single session the rate is 100%. Three is the
+	// smallest count that cannot be reached by one bad session plus one retry.
+	TSS_BAN_MIN_FAMILY_BLAMES = 3
+	BLAME_EXPIRE              = uint64(28800) // 24 hour blame
 	// BLAME_WINDOW_MAX_ROWS bounds how many blame commitments a blame-window query
 	// returns. It is a memory bound, NOT a policy knob: it must sit far above
 	// anything the window can legitimately hold, because the query sorts by height
@@ -227,6 +237,17 @@ func (tssMgr *TssManager) sessionShapeActive(bh uint64) bool {
 		return false
 	}
 	return consensusversion.TssSessionShapeActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
+}
+
+// perKeyFamilyBanActive reports whether the TSS ban score is scored per key
+// family at this height (18an). Nil-guarded like sessionShapeActive: a manager
+// with no scheduler (unit tests, and any path that has not wired one) falls back
+// to the single network-wide ban set, which is the pre-18an behaviour.
+func (tssMgr *TssManager) perKeyFamilyBanActive(bh uint64) bool {
+	if tssMgr.scheduler == nil {
+		return false
+	}
+	return consensusversion.TssPerKeyFamilyBanActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh))
 }
 
 // blameWindowRows is the row limit of the per-key blame-window reads: the 0.3.0
@@ -1055,13 +1076,32 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	if blocksUntilReshare <= readinessOffset && bh%rotateInterval != 0 {
 		// Check if there are keys that need reshare at the next rotate interval.
 		if electionData, err := tssMgr.electionDb.GetElectionByHeight(bh); err == nil {
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
-			if tssMgr.sessionShapeActive(bh + blocksUntilReshare) {
-				reshareKeys = reshareWindow(reshareKeys, bh+blocksUntilReshare, rotateInterval)
+			// A23: these two reads used to drop their error, so a Mongo blip
+			// read as "no keys" and this node silently skipped readiness
+			// gossip for a rotation its peers were preparing. Readiness gates
+			// participation, so that is not a harmless miss. Say so and leave
+			// the targets alone; the next tick re-evaluates.
+			reshareKeys, reshareErr := tssMgr.tssKeys.FindEpochKeys(electionData.Epoch)
+			newKeys, newErr := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
+			if reshareErr != nil || newErr != nil {
+				log.Error("readiness gossip: key read failed, not scheduling gossip this tick",
+					"blockHeight", bh, "reshareErr", reshareErr, "newErr", newErr)
+				reshareKeys, newKeys = nil, nil
 			}
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh + blocksUntilReshare)
+			// 18j: the ACTION paths filter the allowlist before they act
+			// (filterScheduledKeys at the two rotate sites), and readiness did
+			// not -- so a contract's non-permitted keys still counted toward
+			// every member's preParamsNeed, holding readiness against sessions
+			// that can never run. Same gate, and resolved at the same target
+			// height the rest of this block already resolves at. Found by
+			// lordbutterfly reviewing #289.
+			target := bh + blocksUntilReshare
+			reshareKeys = tssMgr.filterScheduledKeys(reshareKeys, target, "readiness-reshare")
+			newKeys = tssMgr.filterScheduledKeys(newKeys, target, "readiness-keygen")
+			if tssMgr.sessionShapeActive(target) {
+				reshareKeys = reshareWindow(reshareKeys, target, rotateInterval)
+			}
 			if len(reshareKeys) > 0 || len(newKeys) > 0 {
-				target := bh + blocksUntilReshare
 				gossipTargets[target] = true
 				preParamsNeed[target] = countPreParamsNeed(reshareKeys, newKeys, func(keyId string) bool {
 					return tssMgr.shouldSkipReshareForVaultRotation(keyId, target)
@@ -1072,7 +1112,15 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 	blocksUntilSign := signInterval - (bh % signInterval)
 	if blocksUntilSign <= readinessOffset && bh%signInterval != 0 {
 		// Check if there are unsigned signing requests pending.
-		signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		signingRequests, reqErr := tssMgr.tssRequests.FindUnsignedRequests(bh)
+		if reqErr != nil {
+			// Readiness gossip, same reasoning as the key reads above: a failed
+			// read is not "no work", and not gossiping readiness keeps this node
+			// out of a session its peers are preparing.
+			log.Error("readiness gossip: sign-request read failed, not scheduling gossip this tick",
+				"blockHeight", bh, "err", reqErr)
+			signingRequests = nil
+		}
 		if len(signingRequests) > 0 {
 			gossipTargets[bh+blocksUntilSign] = true
 		}
@@ -1240,7 +1288,19 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 
 			epoch := electionData.Epoch
-			reshareKeys, _ := tssMgr.tssKeys.FindEpochKeys(epoch)
+			// A23: fail CLOSED, like the election read just above. This is the
+			// rotate SCHEDULER: a dropped error read as "no keys", so a node
+			// with a momentary Mongo fault generated no reshare/keygen actions
+			// at a rotate block where every healthy peer generated them --
+			// diverging on scheduling rather than on one lookup. Skipping the
+			// whole tick is correct and cheap: the next rotate interval
+			// re-selects the same keys.
+			reshareKeys, reshareErr := tssMgr.tssKeys.FindEpochKeys(epoch)
+			if reshareErr != nil {
+				log.Error("reshare key read failed, skipping rotate", "blockHeight", bh, "epoch", epoch, "err", reshareErr)
+				return
+			}
+			reshareKeys = tssMgr.filterScheduledKeys(reshareKeys, bh, "reshare")
 			if shapeActive {
 				reshareKeys = reshareWindow(reshareKeys, bh, rotateInterval)
 			}
@@ -1276,7 +1336,14 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 				})
 				keyLocks[key.Id] = true
 			}
-			newKeys, _ := tssMgr.tssKeys.FindNewKeys(bh)
+			// A23: fail closed, as above -- an unread "created" key means this
+			// node skips a keygen its peers run.
+			newKeys, newErr := tssMgr.tssKeys.FindNewKeys(bh)
+			if newErr != nil {
+				log.Error("new key read failed, skipping rotate", "blockHeight", bh, "err", newErr)
+				return
+			}
+			newKeys = tssMgr.filterScheduledKeys(newKeys, bh, "keygen")
 
 			for _, key := range newKeys {
 				generatedActions = append(generatedActions, QueuedAction{
@@ -1288,10 +1355,34 @@ func (tssMgr *TssManager) BlockTick(bh uint64, headHeight *uint64) {
 			}
 		}
 		if bh%signInterval == 0 {
-			signingRequests, _ := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			signingRequests, reqErr := tssMgr.tssRequests.FindUnsignedRequests(bh)
+			if reqErr != nil {
+				// Same fail-closed reasoning as the rotate scheduler above: an
+				// unread request list is not an empty one, and silently
+				// scheduling nothing diverges from peers whose read worked.
+				log.Error("unsigned sign-request read failed, skipping sign scheduling this tick",
+					"blockHeight", bh, "err", reqErr)
+				signingRequests = nil
+			}
 
 			for _, signReq := range signingRequests {
-				keyInfo, _ := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				// This read used to drop its error, and the consequence was the
+				// worst of the set: a zero-value TssKey has Status "", which is
+				// not TssKeyActive, so a transient Mongo blip did not skip the
+				// request -- it marked a perfectly good pending signature
+				// FAILED, and SignFailed is not retried. One bad read destroyed
+				// a signing request.
+				// Classified, not blanket-skipped: FindKey returns
+				// mongo.ErrNoDocuments for a key that genuinely does not exist,
+				// and a request naming a nonexistent key SHOULD be failed --
+				// that was the one correct outcome of the old code. Only a
+				// TRANSIENT error leaves the request pending for a later tick.
+				keyInfo, keyErr := tssMgr.tssKeys.FindKey(signReq.KeyId)
+				if keyErr != nil && !errors.Is(keyErr, mongo.ErrNoDocuments) {
+					log.Error("sign request key read failed, leaving the request pending",
+						"keyId", signReq.KeyId, "blockHeight", bh, "err", keyErr)
+					continue
+				}
 				if keyInfo.Status != tss_db.TssKeyActive {
 					log.Warn(
 						"marking sign request as failed for non-active key",
@@ -1389,6 +1480,62 @@ type ScoreMap struct {
 	// BanOrder lists the banned accounts lowest blame score first (ties by
 	// account), the order in which readmitBanned lets them back in.
 	BanOrder []string
+
+	// ByFamily holds the same decision computed per KEY FAMILY -- the contract
+	// that owns the key, as tssKeyOwner resolves it (18an). Always populated;
+	// only consulted when PerFamilyActive.
+	ByFamily map[string]FamilyBans
+	// PerFamilyActive is set by the caller from
+	// consensusversion.TssPerKeyFamilyBanActive. False => BannedFor/BanOrderFor
+	// return the global set, so behaviour is byte-identical to before 18an.
+	PerFamilyActive bool
+}
+
+// FamilyBans is one key family's ban decision (18an).
+type FamilyBans struct {
+	BannedNodes map[string]bool
+	BanOrder    []string
+}
+
+// BannedFor returns the ban set that applies to keyId.
+//
+// 18an: before this, there was one global set and an EVM-only fault could ban a
+// witness from the BTC vault's committee. The family is the key's owning
+// contract, so each bridge's faults are scored against that bridge only.
+//
+// Two deliberate fallbacks to the global set: when the gate is off (so
+// pre-activation behaviour is unchanged), and when the key id has no resolvable
+// owner (it was not created through the contract path, so it has no family and
+// the conservative answer is the network-wide set). A family that exists but has
+// no blames bans nobody.
+func (s ScoreMap) BannedFor(keyId string) map[string]bool {
+	if !s.PerFamilyActive {
+		return s.BannedNodes
+	}
+	family, ok := tssKeyOwner(keyId)
+	if !ok {
+		return s.BannedNodes
+	}
+	if f, present := s.ByFamily[family]; present {
+		return f.BannedNodes
+	}
+	return map[string]bool{}
+}
+
+// BanOrderFor is BannedFor's companion for the ban-yield path, which readmits
+// banned members lowest-score-first when too few remain to land a session.
+func (s ScoreMap) BanOrderFor(keyId string) []string {
+	if !s.PerFamilyActive {
+		return s.BanOrder
+	}
+	family, ok := tssKeyOwner(keyId)
+	if !ok {
+		return s.BanOrder
+	}
+	if f, present := s.ByFamily[family]; present {
+		return f.BanOrder
+	}
+	return nil
 }
 
 // BlameScore computes the banned-node set from on-chain blame data, anchored on the
@@ -1438,6 +1585,22 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 	timeoutBlameMap := make(map[string]int) // Separate tracking for timeouts vs errors
 	errorBlameMap := make(map[string]int)
 
+	// 18an: the same tallies, split by key family (the contract owning the key).
+	// Accumulated unconditionally and only CONSULTED behind the version gate, so
+	// nothing about the pre-activation decision changes.
+	famBlame := make(map[string]map[string]int)
+	famWeight := make(map[string]map[string]int)
+	famTimeout := make(map[string]map[string]int)
+	famError := make(map[string]map[string]int)
+	bump := func(m map[string]map[string]int, family, account string) {
+		inner, ok := m[family]
+		if !ok {
+			inner = make(map[string]int)
+			m[family] = inner
+		}
+		inner[account]++
+	}
+
 	for _, election := range electionMap {
 		blames, _ := tss.tssCommitments.GetBlames(&election.Epoch)
 
@@ -1474,9 +1637,17 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 			// Weight is counted per non-systemic blame commit so the
 			// denominator stays consistent with the filtered numerator.
+			//
+			// 18an: the per-family denominator is counted the same way, but only
+			// over the commits of THAT family, so each bridge's failure rate is
+			// measured against its own session count.
+			family, hasFamily := tssKeyOwner(blame.KeyId)
 			for _, member := range election.Members {
 				if currentMembers[member.Account] {
 					weightMap[member.Account]++
+					if hasFamily {
+						bump(famWeight, family, member.Account)
+					}
 				}
 			}
 
@@ -1497,11 +1668,62 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 					} else {
 						errorBlameMap[member.Account] += 1
 					}
+					if hasFamily {
+						bump(famBlame, family, member.Account)
+						if isTimeout {
+							bump(famTimeout, family, member.Account)
+						} else {
+							bump(famError, family, member.Account)
+						}
+					}
 				}
 			}
 		}
 	}
 
+	bannedNodes, banOrder := decideBans(
+		blameMap, weightMap, timeoutBlameMap, errorBlameMap,
+		nodeFirstEpoch, currentEpoch, len(initialElection.Members), 0, "network",
+	)
+
+	// 18an: and once per key family, each against its own denominator and with
+	// a minimum blame count, because a per-family sample is small enough that a
+	// bare percentage would ban on noise.
+	byFamily := make(map[string]FamilyBans, len(famWeight))
+	for family, weights := range famWeight {
+		fb, fo := decideBans(
+			famBlame[family], weights, famTimeout[family], famError[family],
+			nodeFirstEpoch, currentEpoch, len(initialElection.Members),
+			TSS_BAN_MIN_FAMILY_BLAMES, "family:"+family,
+		)
+		byFamily[family] = FamilyBans{BannedNodes: fb, BanOrder: fo}
+	}
+
+	return ScoreMap{
+		BannedNodes: bannedNodes,
+		BanOrder:    banOrder,
+		ByFamily:    byFamily,
+	}
+}
+
+// decideBans turns blame tallies into a ban set. Extracted from BlameScore so
+// the identical rules -- grace period, the percentage threshold, the ban cap
+// that keeps threshold+1 members seated, and the deterministic total order --
+// apply to the network-wide score and to each per-key-family score (18an).
+//
+// minBlames is the floor below which the percentage cannot ban; 0 for the
+// network-wide score, which keeps its pre-18an behaviour exactly.
+func decideBans(
+	blameMap map[string]int,
+	weightMap map[string]int,
+	timeoutBlameMap map[string]int,
+	errorBlameMap map[string]int,
+	nodeFirstEpoch map[string]uint64,
+	currentEpoch uint64,
+	electionSize int,
+	minBlames int,
+	what string,
+) (map[string]bool, []string) {
 	sortedArray := make([]score, 0)
 	for account, weight := range weightMap {
 		firstEpoch, exists := nodeFirstEpoch[account]
@@ -1537,7 +1759,6 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 	// Ban cap: never ban so many nodes that fewer than threshold+1 remain.
 	// This prevents cascading blame from making the network inoperable.
-	electionSize := len(initialElection.Members)
 	networkThreshold, _ := tss_helpers.GetThreshold(electionSize)
 	maxBans := electionSize - (networkThreshold + 1)
 	if maxBans < 0 {
@@ -1569,6 +1790,14 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 		thresholdPercent := TSS_BAN_THRESHOLD_PERCENT
 		failureRate := float64(entry.Score) / float64(entry.Weight) * 100.0
 
+		// 18an: a per-family sample is small, so the percentage alone bans on
+		// noise -- one blame against one session is a 100% rate. minBlames is 0
+		// for the network-wide score, which therefore behaves exactly as before.
+		if entry.Score < minBlames {
+			log.Verbose("below the minimum blame count, not banning",
+				"scope", what, "account", entry.Account, "score", entry.Score, "minBlames", minBlames)
+			continue
+		}
 		if entry.Weight > 0 && entry.Score > entry.Weight*thresholdPercent/100 {
 			if len(bannedList) >= maxBans {
 				log.Verbose("ban cap reached, not banning further nodes",
@@ -1629,10 +1858,7 @@ func (tss *TssManager) BlameScore(initialElection elections.ElectionResult) Scor
 
 	banOrder := slices.Clone(bannedList)
 	slices.Reverse(banOrder)
-	return ScoreMap{
-		BannedNodes: bannedNodes,
-		BanOrder:    banOrder,
-	}
+	return bannedNodes, banOrder
 }
 
 //Call process
@@ -1779,6 +2005,11 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}
 
 	blameMap := tssMgr.BlameScore(currentElection)
+	// 18an: from 0.14.0 the ban that excludes a node is the one scored against
+	// THAT key's family, so an EVM-only fault cannot evict a witness from the
+	// BTC vault's committee. Off => BannedFor returns the global set and every
+	// decision below is byte-identical to before.
+	blameMap.PerFamilyActive = tssMgr.perKeyFamilyBanActive(bh)
 	shapeActive := tssMgr.sessionShapeActive(bh)
 
 	log.Info(
@@ -1864,8 +2095,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					excludedAccounts = append(excludedAccounts, member.Account+" (blamed)")
 					continue
 				}
-				//if node is banned
-				if blameMap.BannedNodes[member.Account] {
+				//if node is banned (18an: for THIS key's family)
+				if blameMap.BannedFor(action.KeyId)[member.Account] {
 					excludedAccounts = append(excludedAccounts, member.Account+" (banned)")
 					continue
 				}
@@ -1990,7 +2221,16 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 				bv = bv.SetBytes(commitmentBytes)
 			}
 
-			keyInfo, _ := tssMgr.tssKeys.FindKey(action.KeyId)
+			// keyInfo.Epoch below is the dispatcher's epoch, which selects the
+			// election the commitment bitset is decoded against. A dropped error
+			// left it 0, so a blip here started a sign session against the wrong
+			// epoch instead of not starting one.
+			keyInfo, keyErr := tssMgr.tssKeys.FindKey(action.KeyId)
+			if keyErr != nil {
+				log.Error("sign action key read failed, skipping this action",
+					"keyId", action.KeyId, "blockHeight", bh, "err", keyErr)
+				continue
+			}
 
 			participants := make([]Participant, 0)
 
@@ -2125,7 +2365,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding blamed node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
-				if blameMap.BannedNodes[p.Account] {
+				if blameMap.BannedFor(action.KeyId)[p.Account] {
 					log.Verbose("excluding banned node from signing", "sessionId", sessionId, "account", p.Account)
 					continue
 				}
@@ -2150,9 +2390,9 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// Ban stall (0.9.0): let ready banned holders back in when bans plus
 			// non-ready holders leave fewer than threshold+1 (see the reshare
 			// path and TssBanYieldsToQuorumActive).
-			if consensusversion.TssBanYieldsToQuorumActive(minSignVer) && len(blameMap.BanOrder) > 0 {
+			if consensusversion.TssBanYieldsToQuorumActive(minSignVer) && len(blameMap.BanOrderFor(action.KeyId)) > 0 {
 				var back []string
-				participants, back = readmitBanned(participants, origThreshold+1, blameMap.BanOrder, signHolders, signReadyAccounts, signBlamedAccounts, nil)
+				participants, back = readmitBanned(participants, origThreshold+1, blameMap.BanOrderFor(action.KeyId), signHolders, signReadyAccounts, signBlamedAccounts, nil)
 				if len(back) > 0 {
 					log.Warn("readmitting banned holders: too few left to sign", "sessionId", sessionId,
 						"readmitted", back, "needed", origThreshold+1)
@@ -2321,7 +2561,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						log.Verbose("excluding blamed node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
-					if blameMap.BannedNodes[member.Account] {
+					if blameMap.BannedFor(action.KeyId)[member.Account] {
 						log.Verbose("excluding banned node from old committee", "sessionId", sessionId, "account", member.Account)
 						continue
 					}
@@ -2346,7 +2586,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					log.Verbose("excluding blamed node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
 				}
-				if blameMap.BannedNodes[member.Account] {
+				if blameMap.BannedFor(action.KeyId)[member.Account] {
 					excludedNodes = append(excludedNodes, member.Account)
 					log.Verbose("excluding banned node from new committee", "sessionId", sessionId, "account", member.Account)
 					continue
@@ -2371,10 +2611,21 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// threshold+1 of the old committee that would run.
 			var accusedOut map[string]bool
 			if consensusversion.TssPerAccusedBlameActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
-				if counts := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock); len(counts) > 0 {
+				// H13: fail CLOSED. An incomplete accusation read would
+				// under-accuse whoever sits in the rows that did not arrive, so
+				// on a transient read error this key gets NO exclusion this
+				// tick rather than a partial one. The session may simply fail
+				// and retry; a wrong exclusion blocks the key for the whole
+				// blame window, since only a SUCCESSFUL reshare clears it.
+				counts, countsErr := tssMgr.reshareAccusedCounts(action.KeyId, bh, commitment.BlockHeight, blameExpireBlock)
+				if countsErr != nil {
+					log.Error("POA-8: accusation counts unavailable, making NO exclusions for this key this tick",
+						"sessionId", sessionId, "keyId", action.KeyId, "err", countsErr)
+				}
+				if countsErr == nil && len(counts) > 0 {
 					alreadyOut := 0
 					for _, member := range currentElection.Members {
-						if blamedAccounts[member.Account] || blameMap.BannedNodes[member.Account] {
+						if blamedAccounts[member.Account] || blameMap.BannedFor(action.KeyId)[member.Account] {
 							alreadyOut++
 						}
 					}
@@ -2398,7 +2649,7 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 			// threshold+1 old holders, and on the new side the commit quorum
 			// (non-parties do not sign the commitment) or the threshold floor,
 			// whichever is higher.
-			if consensusversion.TssBanYieldsToQuorumActive(minReshareVer) && len(blameMap.BanOrder) > 0 {
+			if consensusversion.TssBanYieldsToQuorumActive(minReshareVer) && len(blameMap.BanOrderFor(action.KeyId)) > 0 {
 				oldThr, _ := tss_helpers.GetThreshold(fullOldCommitteeSize)
 				electionSize := len(currentElection.Members)
 				elecThr, _ := tss_helpers.GetThreshold(electionSize)
@@ -2411,8 +2662,8 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 					members[m.Account] = true
 				}
 				var backOld, backNew []string
-				commitedMembers, backOld = readmitBanned(commitedMembers, oldThr+1, blameMap.BanOrder, oldHolders, readyAccounts, blamedAccounts, accusedOut)
-				newParticipants, backNew = readmitBanned(newParticipants, needNew, blameMap.BanOrder, members, readyAccounts, blamedAccounts, accusedOut)
+				commitedMembers, backOld = readmitBanned(commitedMembers, oldThr+1, blameMap.BanOrderFor(action.KeyId), oldHolders, readyAccounts, blamedAccounts, accusedOut)
+				newParticipants, backNew = readmitBanned(newParticipants, needNew, blameMap.BanOrderFor(action.KeyId), members, readyAccounts, blamedAccounts, accusedOut)
 				if len(backOld)+len(backNew) > 0 {
 					log.Warn("readmitting banned members: too few parties left to complete the reshare", "sessionId", sessionId,
 						"old", backOld, "new", backNew, "needOld", oldThr+1, "needNew", needNew)
@@ -2652,10 +2903,18 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 						res.Commitment,
 					)
 
-					commitment := result.Serialize()
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+					commitment, sErr := result.Serialize()
+					if sErr != nil {
+						// 18h: do not publish a commitment the node could not
+						// compute. Never fires for a keygen (its commitment is
+						// already computed and stored), handled for the
+						// interface's sake.
+						log.Error("not publishing keygen commitment", "sessionId", dsc.SessionId(), "err", sErr)
+					} else {
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 				} else if result.Type() == KeySignResultType {
 					res := result.(KeySignResult)
 
@@ -2689,11 +2948,15 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 
 					log.Info("reshare success", "sessionId", res.SessionId, "keyId", res.KeyId, "blockHeight", res.BlockHeight, "epoch", res.NewEpoch, "commitment", res.Commitment)
 
-					commitment := result.Serialize()
-					commitment.BlockHeight = bh
-					resultsMu.Lock()
-					commitableResults = append(commitableResults, commitment)
-					resultsMu.Unlock()
+					commitment, sErr := result.Serialize()
+					if sErr != nil {
+						log.Error("not publishing reshare commitment", "sessionId", res.SessionId, "keyId", res.KeyId, "err", sErr)
+					} else {
+						commitment.BlockHeight = bh
+						resultsMu.Lock()
+						commitableResults = append(commitableResults, commitment)
+						resultsMu.Unlock()
+					}
 
 				} else if result.Type() == ErrorType {
 					res := result.(ErrorResult)
@@ -2739,8 +3002,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							"sessionId", res.SessionId,
 							"culprits", errorCulpritCount,
 							"maxBlamed", maxBlamed)
+					} else if commitment, sErr := result.Serialize(); sErr != nil {
+						// 18h: the blame bitset is computed from the epoch's
+						// election, and if that election cannot be read the
+						// commitment would accuse the WRONG nodes (or nobody)
+						// while still being BLS-signed as this node's word.
+						// Publish nothing; the session is retried.
+						log.Error("not publishing blame commitment", "err", sErr)
 					} else {
-						commitment := result.Serialize()
 						commitment.BlockHeight = bh
 						resultsMu.Lock()
 						commitableResults = append(commitableResults, commitment)
@@ -2771,8 +3040,14 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 							"sessionId", res.SessionId,
 							"culprits", len(res.Culprits),
 							"maxBlamed", maxBlamed)
+					} else if commitment, sErr := result.Serialize(); sErr != nil {
+						// 18h: the blame bitset is computed from the epoch's
+						// election, and if that election cannot be read the
+						// commitment would accuse the WRONG nodes (or nobody)
+						// while still being BLS-signed as this node's word.
+						// Publish nothing; the session is retried.
+						log.Error("not publishing blame commitment", "err", sErr)
 					} else {
-						commitment := result.Serialize()
 						commitment.BlockHeight = bh
 						resultsMu.Lock()
 						commitableResults = append(commitableResults, commitment)
@@ -3023,8 +3298,93 @@ func (tssMgr *TssManager) RunActions(actions []QueuedAction, leader string, isLe
 	}()
 }
 
-func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) string {
-	electionData := tssMgr.electionDb.GetElection(epoch)
+// setToCommitment encodes `participants` as a bitset over the epoch's election
+// members.
+//
+// 18h: this used to call GetElection, which swallows ANY read error -- including
+// a transient Mongo blip -- to a nil *ElectionResult, and then dereference it
+// as electionData.Members. A nil deref here is unusually expensive: two of the
+// callers run on bare goroutines, so the panic is unrecovered and takes the
+// whole process down rather than failing one session.
+//
+// It now uses GetElectionStrict and surfaces the error, for two reasons. The
+// panic is the lesser one: a commitment computed against a MISSING election is
+// silently wrong (an empty or under-populated bitset) and is consensus-visible
+// data, so callers must be able to decline to publish it rather than vouch for
+// garbage. The nil check is kept alongside the error check deliberately -- the
+// interface permits (nil, nil) and this is a consensus input.
+// tssKeyOwner returns the contract that owns a TSS key id, and false when the
+// id is not contract-owned.
+//
+// TssCreateKey builds every contract key as "<contractId>-<keyName>", and both
+// halves are constrained: contract ids carry no dash and key names are
+// validated against ^[a-zA-Z0-9]+$, so the FIRST dash is an unambiguous
+// separator. An id with no dash was not created through the contract path at
+// all and has no owner to check.
+func tssKeyOwner(keyId string) (string, bool) {
+	i := strings.IndexByte(keyId, '-')
+	if i <= 0 || i == len(keyId)-1 {
+		return "", false
+	}
+	return keyId[:i], true
+}
+
+// filterScheduledKeys drops keys whose owning contract is not permitted to hold
+// them (KEY-SPAM-1 / 18j, second half).
+//
+// The create_key allowlist stops NEW junk keys. This stops ones that already
+// exist from being scheduled, which matters because a "created" key is picked
+// up at every rotate block forever -- no cap, no expiry -- and each keygen
+// holds tssMgr.lock while it waits for pre-parameters. Without this, keys minted
+// before the allowlist existed would keep costing a lock-hold per rotation.
+//
+// Unattributable ids are KEPT. An id with no owner cannot have come from the
+// contract spam path (which always prefixes the contract id), so dropping it
+// would risk stranding a legitimately-provisioned key for no benefit.
+//
+// Gated with the same version as the creation check: this changes which actions
+// the scheduler generates, which is consensus-visible, so every node must start
+// filtering at the same height. An empty allowlist filters nothing.
+func (tssMgr *TssManager) filterScheduledKeys(keys []tss_db.TssKey, bh uint64, what string) []tss_db.TssKey {
+	if tssMgr.sconf == nil {
+		return keys
+	}
+	if tssMgr.scheduler == nil ||
+		!consensusversion.TssKeyAllowlistActive(tssMgr.scheduler.TssMinimumConsensusVersion(bh)) {
+		return keys
+	}
+	allowed := tssMgr.sconf.TssKeyContractAllowlistAt(bh)
+	if len(allowed) == 0 {
+		return keys
+	}
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, id := range allowed {
+		permitted[id] = struct{}{}
+	}
+
+	out := make([]tss_db.TssKey, 0, len(keys))
+	for _, k := range keys {
+		owner, ok := tssKeyOwner(k.Id)
+		if ok {
+			if _, allow := permitted[owner]; !allow {
+				log.Warn("skipping key whose contract is not permitted to hold TSS keys",
+					"keyId", k.Id, "owner", owner, "stage", what, "blockHeight", bh)
+				continue
+			}
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint64) (string, error) {
+	electionData, err := tssMgr.electionDb.GetElectionStrict(epoch)
+	if err != nil {
+		return "", fmt.Errorf("commitment for epoch %d: election unavailable: %w", epoch, err)
+	}
+	if electionData == nil {
+		return "", fmt.Errorf("commitment for epoch %d: election unavailable: nil result", epoch)
+	}
 
 	bitset := &big.Int{}
 	for _, p := range participants {
@@ -3036,7 +3396,7 @@ func (tssMgr *TssManager) setToCommitment(participants []Participant, epoch uint
 		}
 	}
 
-	return base64.RawURLEncoding.EncodeToString(bitset.Bytes())
+	return base64.RawURLEncoding.EncodeToString(bitset.Bytes()), nil
 }
 
 func (tssMgr *TssManager) waitForSigs(

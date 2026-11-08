@@ -46,7 +46,7 @@ func TestSessionResults_StoreAndRetrieve(t *testing.T) {
 	mgr.sessionResults = make(map[string]sessionResultEntry)
 	sessionId := "reshare-100-0-k1"
 	result := ReshareResult{
-		Commitment:  mgr.setToCommitment([]Participant{{Account: "alice"}, {Account: "bob"}, {Account: "carol"}}, epoch),
+		Commitment:  mustSetToCommitment(t, mgr, []Participant{{Account: "alice"}, {Account: "bob"}, {Account: "carol"}}, epoch),
 		KeyId:       "k1",
 		SessionId:   sessionId,
 		NewEpoch:    epoch,
@@ -66,7 +66,7 @@ func TestSessionResults_StoreAndRetrieve(t *testing.T) {
 	mgr.bufferLock.RUnlock()
 
 	require.True(t, hasResult)
-	commitment := entry.result.Serialize()
+	commitment := mustSerialize(t, entry.result)
 	assert.Equal(t, "reshare", commitment.Type)
 	assert.Equal(t, epoch, commitment.Epoch)
 }

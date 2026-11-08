@@ -86,6 +86,14 @@ type contractExecutionContext struct {
 	// state engine sets it per tx from the chain-active version and it propagates
 	// into nested calls; the field is appended only together with the fourth.
 	keyResharedActive bool
+
+	// tssKeyContractAllowlist restricts which contracts may create TSS keys
+	// (KEY-SPAM-1 / 18j). Set per tx by the state engine from the
+	// height-addressable sysconfig list, and only once
+	// consensusversion.TssKeyAllowlistActive -- nil before activation, which
+	// makes create_key behave byte-identically to today. nil or empty means
+	// unrestricted, so an un-gated or unconfigured network is unaffected.
+	tssKeyContractAllowlist []string
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -205,6 +213,16 @@ func WithVaultRotationV2(active bool) Option {
 // reshared since its keygen (consensusversion.KeyResharedFlagActive).
 func WithKeyReshared(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.keyResharedActive = active }
+}
+
+// WithTssKeyAllowlist restricts tss.create_key to the given contracts
+// (KEY-SPAM-1 / 18j). The state engine passes the sysconfig list only when
+// consensusversion.TssKeyAllowlistActive, and nil otherwise, so the
+// restriction starts at a coordinated height: an un-gated rollout would have
+// upgraded nodes rejecting a create_key that un-upgraded nodes accept, which
+// forks. nil or empty = unrestricted.
+func WithTssKeyAllowlist(contracts []string) Option {
+	return func(ctx *contractExecutionContext) { ctx.tssKeyContractAllowlist = contracts }
 }
 
 // WithSp1WorkPricing prices sp1_verify_groth16 by work
@@ -779,7 +797,47 @@ func (ctx *contractExecutionContext) ContractCall(
 	))
 }
 
+// ContractMayCreateTssKey reports whether contractId may create a TSS key under
+// the given allowlist (KEY-SPAM-1 / 18j).
+//
+// A nil or empty allowlist is UNRESTRICTED: that is both the pre-activation
+// state (the state engine passes nil until consensus 0.13.0) and how test
+// networks are configured, so this must stay permissive or the gate would not
+// be fork-safe. Membership is an exact match, never a prefix.
+//
+// Exported and kept separate from TssCreateKey so the decision is testable on
+// its own: TssCreateKey's success path writes a session log, which needs a real
+// datalayer, and that scaffolding would obscure what is being asserted.
+func ContractMayCreateTssKey(allowlist []string, contractId string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	for _, id := range allowlist {
+		if id == contractId {
+			return true
+		}
+	}
+	return false
+}
+
 func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string] {
+	// KEY-SPAM-1 (18j): the only checks before this were that the key name was
+	// alphanumeric and the type was eddsa/ecdsa, for 1,000,000 gas. Any contract
+	// could mint unlimited keys; every "created" key becomes a keygen at each
+	// rotate block with no cap and no expiry, and each keygen waits for
+	// pre-parameters holding tssMgr.lock, so N junk keys hold that lock for
+	// about N minutes while every reshare and sign tick in between is dropped.
+	//
+	// Enforced here rather than in the SDK functions because both the `tss` and
+	// `tss_v2` namespaces funnel through this one method, so neither namespace
+	// can be left behind.
+	//
+	// nil/empty allowlist = unrestricted, which is both the pre-activation state
+	// and the test-network configuration.
+	if !ContractMayCreateTssKey(ctx.tssKeyContractAllowlist, ctx.env.ContractId) {
+		return result.Err[string](errors.New("contract not permitted to create TSS keys"))
+	}
+
 	fullKey := ctx.env.ContractId + "-" + keyId
 	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
 

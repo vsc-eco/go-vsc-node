@@ -140,3 +140,25 @@ func TestV0_5_0Gates(t *testing.T) {
 			RunningVersion().Format(), V0_5_0.Format())
 	}
 }
+
+// TestSettlementAttestationQuorumActiveOnlyAtOrAboveTheLine: below 0.14.0 the
+// strict rule stands, so a node replaying the epochs mainnet settled under it
+// re-derives the same reward reductions; at and above it, a block that closed
+// at the leader's bar stops docking its absentees (REWARD-ATTEST-1).
+func TestSettlementAttestationQuorumActiveOnlyAtOrAboveTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		active Version
+		want   bool
+	}{
+		{Version{Major: 0, Consensus: 0}, false},
+		{Version{Major: 0, Consensus: 12}, false}, // the line mainnet is on today
+		{Version{Major: 0, Consensus: 13}, false}, // the EVM bridge line
+		{Version{Major: 0, Consensus: 14}, true},
+		{Version{Major: 0, Consensus: 15}, true},
+		{Version{Major: 1, Consensus: 14}, true},
+	} {
+		if got := SettlementAttestationQuorumActive(tc.active); got != tc.want {
+			t.Errorf("SettlementAttestationQuorumActive(%s) = %v, want %v", tc.active.Format(), got, tc.want)
+		}
+	}
+}

@@ -1226,7 +1226,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
-						txResult := parsedTx.ExecuteTx(se)
+						var txResult TxResult
+						runSystemOpSafely(cj.Id, txSelf, func() {
+							txResult = parsedTx.ExecuteTx(se)
+						})
 
 						if txResult.Success {
 							se.LedgerSystem.Deposit(ledgerSystem.Deposit{
@@ -1255,7 +1258,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						}
 
 					} else {
-						parsedTx.ExecuteTx(se)
+						runSystemOpSafely(cj.Id, txSelf, func() {
+							parsedTx.ExecuteTx(se)
+						})
 					}
 					se.profiler.Record(PhaseTxParseCreateContract, time.Since(createContractStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
@@ -1277,7 +1282,23 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						json.Unmarshal(cj.Json, &parsedTx)
 
 						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
-						txResult := parsedTx.ExecuteTx(se, hasFee)
+						var txResult UpdateContractResult
+						runSystemOpSafely(cj.Id, txSelf, func() {
+							txResult = parsedTx.ExecuteTx(se, hasFee)
+						})
+						if !txResult.Success {
+							// A rejected contract update was silent, which made
+							// a refused update indistinguishable from one that
+							// was never seen -- both for an operator and for a
+							// test. Says WHY, which for the SC-08 guards is the
+							// only evidence that the malformed op reached the
+							// handler at all rather than being filtered earlier.
+							log.Warn("vsc.update_contract rejected",
+								"txId", tx.TransactionID,
+								"contractId", parsedTx.Id,
+								"hasFee", hasFee,
+								"reason", txResult.Err)
+						}
 
 						if hasFee {
 							if txResult.Success && txResult.CodeUpdated {
@@ -1329,7 +1350,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							Self: txSelf,
 						}
 						json.Unmarshal(cj.Json, &parsedTx)
-						parsedTx.ExecuteTx(se)
+						runSystemOpSafely(cj.Id, txSelf, func() {
+							parsedTx.ExecuteTx(se)
+						})
 					}
 					se.profiler.Record(PhaseTxParseCancelContractUpdate, time.Since(cancelContractUpdateStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
@@ -1345,7 +1368,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// and the subsequent ExecuteTx call would panic with a
 					// nil receiver.
 					json.Unmarshal(cj.Json, parsedTx)
-					parsedTx.ExecuteTx(se)
+					runSystemOpSafely(cj.Id, txSelf, func() {
+						parsedTx.ExecuteTx(se)
+					})
 					se.profiler.Record(PhaseTxParseElectionResult, time.Since(electionResultStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
@@ -1353,7 +1378,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					proposeConsensusVersionStart := time.Now()
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
-					parsedTx.ExecuteTx(se)
+					runSystemOpSafely(cj.Id, txSelf, func() {
+						parsedTx.ExecuteTx(se)
+					})
 					se.profiler.Record(PhaseTxParseProposeConsensusVersion, time.Since(proposeConsensusVersionStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
@@ -1361,7 +1388,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					recoverySuspendStart := time.Now()
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
-					parsedTx.ExecuteTx(se)
+					runSystemOpSafely(cj.Id, txSelf, func() {
+						parsedTx.ExecuteTx(se)
+					})
 					se.profiler.Record(PhaseTxParseRecoverySuspend, time.Since(recoverySuspendStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
@@ -1369,7 +1398,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					recoveryRequireVersionStart := time.Now()
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
 					json.Unmarshal(cj.Json, parsedTx)
-					parsedTx.ExecuteTx(se)
+					runSystemOpSafely(cj.Id, txSelf, func() {
+						parsedTx.ExecuteTx(se)
+					})
 					se.profiler.Record(PhaseTxParseRecoveryRequireVersion, time.Since(recoveryRequireVersionStart))
 					se.profiler.Record(PhaseTxParse, time.Since(parseStart))
 					continue
@@ -2196,6 +2227,45 @@ func isUnsupportedGatewaySavingsDeposit(opType, from, to string) bool {
 	return opType == "transfer_to_savings" && from != params.GATEWAY_WALLET && to == params.GATEWAY_WALLET
 }
 
+// runSystemOpSafely runs an L1 custom_json system-op handler with panic
+// recovery, and is the L1-path counterpart to executeTxSafely.
+//
+// The L2 batch path routes every op through executeTxSafely, so a panic there
+// becomes one failed op. The L1 system-op handlers in ProcessBlock are called
+// directly, and nothing on that path recovers: a panic unwinds out of
+// ProcessBlock and kills the process. Worse, it kills it again on every
+// restart, because the streamer only advances its saved checkpoint after a
+// block finishes, so the node re-ingests the same block and re-panics. A
+// single malformed op therefore halts every node that reaches that block,
+// permanently and without an operator-side remedy (SC-08).
+//
+// Recovering here downgrades that from "the network stops" to "this op did
+// nothing". Shipping it ungated does not risk a fork: an un-patched node
+// produces no state for the block at all -- it dies -- so there is no
+// divergent-but-valid history for a patched node to disagree with, and
+// un-patched nodes converge on upgrade. Among patched nodes the outcome is
+// deterministic: same op, same panic, same skip.
+//
+// Note the handler may already have mutated state before panicking, so the op
+// can be left half-applied. That is deterministic across patched nodes, and
+// strictly preferable to a chain halt, but it is a backstop and not a licence
+// to skip input validation in the handlers themselves.
+func runSystemOpSafely(opId string, self TxSelf, run func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error(
+				"PANIC during L1 system op execution",
+				"opId", opId,
+				"txId", self.TxId,
+				"blockHeight", self.BlockHeight,
+				"panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	run()
+}
+
 // executeTxSafely runs a transaction handler with panic recovery so that a
 // malformed or attacker-crafted op cannot halt block processing. A panic in
 // the handler is converted to a failed TxResult; the failure is recorded
@@ -2262,6 +2332,81 @@ func tickSlotRange(fromBlock, tickHeight, slotLen uint64, closedOnly bool) (firs
 	return first, last
 }
 
+// attestationQuorumFor projects an election's weight onto ACCOUNT names, folded
+// the way dids.FoldSignedWeight folds it (a key seated twice counts once, the
+// first seat keeping the weight), because that is the shape a block header
+// records its signers in: TxProposeBlock.ValidateDetailed maps each included
+// BLS DID back to the member account that holds it. rewards then sums the map
+// over a header's Signers and asks dids.LeaderSigsComplete whether the block
+// had already closed.
+//
+// Pure function of the stored election, so every node building this tick reaches
+// the identical map — which it must, since the result decides settlement money.
+//
+// Returns nil when the weight cannot be folded, which leaves attestation
+// scoring on the pre-0.14.0 strict rule rather than silently treating every
+// block as closed: wrongly docking is recoverable, wrongly paying is not.
+func attestationQuorumFor(election elections.ElectionResult) *rewards.AttestationQuorum {
+	if len(election.Members) == 0 {
+		return nil
+	}
+	weights := election.Weights
+	if len(weights) != len(election.Members) {
+		if weights != nil {
+			// A weight vector that exists but does not line up with the members
+			// is corrupt, not legacy. Do not guess at it.
+			return nil
+		}
+		// Legacy elections carry no weights and every member counts one —
+		// the same reading elections.CalculateSigningScore and
+		// StoreElection's TotalWeight give them.
+		weights = make([]uint64, len(election.Members))
+		for i := range weights {
+			weights[i] = 1
+		}
+	}
+	memberKeys := make([]string, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+	}
+	_, foldedTotal, ok := dids.FoldSignedWeight(memberKeys, weights, nil)
+	if !ok || foldedTotal == 0 {
+		return nil
+	}
+	byAccount := make(map[string]uint64, len(election.Members))
+	seenKey := make(map[string]struct{}, len(election.Members))
+	for i, m := range election.Members {
+		w := weights[i]
+		if _, dupKey := seenKey[m.Key]; dupKey {
+			// A seat whose BLS key another seat already holds cannot sign
+			// independently of it, so it carries no weight — the collapse
+			// FoldSignedWeight applies, for the same reason: left in, a
+			// duplicated key would make a block look closed when the distinct
+			// signers behind it never reached the bar.
+			w = 0
+		} else {
+			seenKey[m.Key] = struct{}{}
+		}
+		if _, exists := byAccount[m.Account]; exists {
+			// One account at two seats appears ONCE in a header's Signers list
+			// however many of its seats signed, so keep the first seat's weight
+			// and drop the rest. Undercounting signed weight can only make this
+			// scorer dock more, never less — the safe direction for a rule whose
+			// job is to decide when to STOP docking.
+			continue
+		}
+		byAccount[m.Account] = w
+	}
+	// ElectionTotal is the raw stored total, deliberately not defaulted: it is
+	// the same value the leader compares against (blockProducer.waitForSigs),
+	// and StoreElection always writes it as >= len(Members).
+	return &rewards.AttestationQuorum{
+		WeightByAccount: byAccount,
+		FoldedTotal:     foldedTotal,
+		ElectionTotal:   election.TotalWeight,
+	}
+}
+
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
 // aggregator scores. Pure read on on-chain caches; deterministic across
 // nodes given identical chain state. Returns a zero-Committee TickInputs
@@ -2294,6 +2439,19 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	}
 
 	in := rewards.TickInputs{Committee: committee}
+
+	// REWARD-ATTEST-1 (0.14.0): carry the signature bar the block leader
+	// actually waits for, so attestation scoring can skip the blocks that
+	// closed AT it — the leader never waits for every member (at 16 seats it
+	// stops at 14), so two seats are absent from every healthy block and were
+	// being docked 25 bps each for it. Nil below the line, which keeps the
+	// epochs already settled under the strict rule re-deriving to the same
+	// bytes. Resolved at the TICK height, exactly like the committee above, so
+	// the proposer, every signer and every later re-derivation read the same
+	// election and the same gate.
+	if consensusversion.SettlementAttestationQuorumActive(se.ActiveConsensusVersion(tickHeight)) {
+		in.AttestationQuorum = attestationQuorumFor(election)
+	}
 
 	// Block production + attestation: iterate slots in the tick window.
 	if se.vscBlocks != nil {

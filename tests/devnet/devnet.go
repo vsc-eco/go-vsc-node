@@ -631,7 +631,9 @@ RUN . /home/app/.wasmedge/env && \
     go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo devnet)" -o magid vsc-node/cmd/vsc-node
 
 FROM rockylinux:9.3-minimal
-RUN microdnf install -y iptables && microdnf clean all
+# Rocky 9.3 is EOL: its mirrorlist returns no mirrors and microdnf hangs
+# forever on "Downloading metadata". Point the repos at the vault.
+RUN sed -i -e 's|^mirrorlist=|#mirrorlist=|' -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir/$releasever/|baseurl=https://dl.rockylinux.org/vault/rocky/9.3/|' /etc/yum.repos.d/*.repo && microdnf install -y iptables && microdnf clean all
 RUN useradd -m app
 RUN mkdir -p /data/mapping-bot /data/devnet && chown app:app /data/mapping-bot /data/devnet
 USER app

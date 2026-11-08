@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 	"vsc-node/lib/datalayer"
 	"vsc-node/lib/dids"
@@ -16,6 +17,7 @@ import (
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -199,6 +201,12 @@ func (t TxVscCallContract) ExecuteTx(
 		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
 		// 0.13.0 big swap amounts (SP-0d), same gating.
 		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
+		// KEY-SPAM-1 (18j): restrict tss.create_key to the contracts the network
+		// allows keys for, from 0.13.0. nil before activation, so create_key
+		// behaves byte-identically to today until the coordinated height.
+		contract_execution_context.WithTssKeyAllowlist(
+			tssKeyAllowlistFor(se.SystemConfig(), t.Self.BlockHeight, activeVersion),
+		),
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -1111,19 +1119,44 @@ func (tx *TransactionContainer) Type() string {
 // non-nil. (A genuinely undecodable payload is deterministic and identical on
 // every node, so it would block all nodes alike — a network-wide fail-stop, not
 // a fork.)
+// dagFetchStallWarnAfter is how long a single block-path content fetch may
+// retry before the node says, once and loudly, that it is stuck. blockingRetry
+// backs off to a 30s ceiling and logs each attempt as a "DB read" failure, so
+// without this a network-wide content stall is indistinguishable from a local
+// Mongo blip in the logs -- which is how 18r presented: a node that had simply
+// stopped advancing, with nothing saying why.
+const dagFetchStallWarnAfter = 2 * time.Minute
+
 func getDagOrBlock(da *datalayer.DataLayer, c cid.Cid, what string) *dagCbor.Node {
 	var node *dagCbor.Node
+	start := time.Now()
+	warned := false
 	blockingRetry(what, func() error {
 		var err error
 		node, err = da.GetDag(c)
-		if err != nil {
-			return err
+		if err == nil && node == nil {
+			err = fmt.Errorf("GetDag returned nil node for %s", c)
 		}
-		if node == nil {
-			return fmt.Errorf("GetDag returned nil node for %s", c)
+		if err != nil && !warned && time.Since(start) >= dagFetchStallWarnAfter {
+			warned = true
+			// 18r: deliberately NOT a bail-out. Skipping the entry would let
+			// this node apply a different op set than its peers and silently
+			// fork its ledger, which is precisely what the blocking above
+			// exists to prevent -- so the node must keep waiting. What it can
+			// do is stop being silent about it, and name the CID that is
+			// missing so an operator can go find a peer that still holds it.
+			log.Error("CONTENT FETCH STALLED — this node cannot advance until these bytes are found; it is NOT skipping the entry, because doing so would fork its ledger",
+				"op", what,
+				"cid", c.String(),
+				"stalled_for", time.Since(start).String(),
+				"err", err,
+				"hint", "the payload may be held by no reachable peer; check that the producing/submitting node is up and serving, and that this node's datalayer peers are connected")
 		}
-		return nil
+		return err
 	})
+	if warned {
+		log.Error("CONTENT FETCH RECOVERED — resuming", "op", what, "cid", c.String(), "stalled_for", time.Since(start).String())
+	}
 	return node
 }
 
@@ -1584,4 +1617,17 @@ type VscTxContainer interface {
 	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
 	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
 	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
+}
+
+// tssKeyAllowlistFor resolves the TSS key-creation allowlist for a transaction
+// (KEY-SPAM-1 / 18j), or nil when the restriction is not yet in force.
+//
+// Returning nil before activation is what keeps the change fork-safe: an empty
+// allowlist means unrestricted in TssCreateKey, so a node running this binary
+// before 0.13.0 accepts exactly the same create_key calls as one that is not.
+func tssKeyAllowlistFor(sconf systemconfig.SystemConfig, blockHeight uint64, activeVersion consensusversion.Version) []string {
+	if sconf == nil || !consensusversion.TssKeyAllowlistActive(activeVersion) {
+		return nil
+	}
+	return sconf.TssKeyContractAllowlistAt(blockHeight)
 }

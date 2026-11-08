@@ -153,9 +153,29 @@ import (
 //     an earlier keygen activated is dropped (KeygenOnceActive, TSS-KG-1). A
 //     new line because 0.12.0 ships first without the EVM bridge. Inert until
 //     0.13.0 is chain-active.
+//   - 0.14.0 (consensusversion.V0_14_0): the post-0.12 fix batch, three rules
+//     activated together.
+//     (a) the settlement-attestation fix (REWARD-ATTEST-1,
+//     SettlementAttestationQuorumActive): pendulum reward scoring stops docking
+//     a committee member for a block whose signers already met the bar the
+//     block leader waits for (dids.LeaderSigsComplete, 90% of the folded
+//     committee weight). The leader never waits for every member — at 16 seats
+//     it stops at 14 — so two seats were absent from every healthy block and
+//     were charged 25 bps each for it. Live on mainnet: in epoch 2221 all 16
+//     seats were docked, 3% to 66%, none at zero;
+//     (b) the TSS key allowlist (18j, TssKeyAllowlistActive) and
+//     (c) the per-key-family TSS ban score (18an, TssPerKeyFamilyBanActive),
+//     both first written against 0.13.0 and moved here.
+//     A new line rather than an addition to 0.13.0 because the TESTNET HAS
+//     ACTIVATED 0.13 (epoch 1500, develop head 3b4c95f6): amending an active
+//     line diverges a replay of that history, and a rule added to one has no
+//     rollout window — the first node to take the build enforces it alone. See
+//     V0_14_0 in feature_gates.go for what a mainnet floor rise past 0.13
+//     therefore also carries. Inert until 0.14.0 is chain-active, so settled
+//     history re-derives byte-identically.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 13
+	currentConsensus    uint64 = 14
 	currentNonConsensus uint64 = 0
 )
 

@@ -746,6 +746,50 @@ func TssAccuseStackActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// TssKeyAllowlistActive reports whether tss.create_key is restricted to the
+// contracts on the network's TSS key allowlist (KEY-SPAM-1 / 18j).
+//
+// Gated because it changes which transactions succeed: an un-gated rollout
+// would have upgraded nodes rejecting a create_key that un-upgraded nodes
+// accept, which forks.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against. The
+// testnet has ACTIVATED 0.13 (epoch 1500, running develop head 3b4c95f6), so a
+// rule newly added to that line is in force the instant one node takes the
+// build while its peers have not. There is no coordination window left on 0.13,
+// and that window is the whole reason this is version-gated. It stays paired
+// with TssPerKeyFamilyBanActive on one line so a mixed fleet cannot disagree
+// about one and not the other. Inert on mainnet (0.12) and on the testnet until
+// the floor reaches 0.14.
+func TssKeyAllowlistActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
+// TssPerKeyFamilyBanActive reports whether the TSS ban score is computed PER KEY
+// FAMILY rather than across every key at once (18an).
+//
+// Without it, BlameScore sums the blames of every key in an epoch and the
+// resulting ban excludes a witness from keygen, signing AND reshare of EVERY
+// key. Once the EVM bridge holds keys, a witness with an EVM-only fault is
+// blamed in every EVM session, can cross the ban threshold, and is then removed
+// from the BTC vault's committee too -- though its BTC shares are perfectly
+// good. The reverse holds as well.
+//
+// Gated because it changes a TSS party-list input: two nodes disagreeing about
+// who is banned build different party lists and the session fails on an SSID
+// mismatch.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against, and
+// this is the sharper of the pair: unlike the key allowlist it has no config
+// escape, so nothing makes it inert on a network whose floor is at or above its
+// line. The testnet is AT 0.13 (epoch 1500, develop head 3b4c95f6), so on 0.13
+// the first node to take this build would score bans per family while its peers
+// still scored them globally -- exactly the SSID mismatch above. 0.14 restores
+// the coordination window on both chains.
+func TssPerKeyFamilyBanActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS
@@ -896,3 +940,59 @@ func KeygenOnceActive(active Version) bool {
 // never demonstrated to cost a slot; if a devnet A/B ever demonstrates it, re-add a
 // 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
 // different Hive tx Id, so own-block restart-reprocess still runs.)
+
+// V0_14_0 is the version line of THIS batch: the settlement-attestation fix
+// (REWARD-ATTEST-1, SettlementAttestationQuorumActive), the TSS key allowlist
+// (18j, TssKeyAllowlistActive) and the per-key-family ban score (18an,
+// TssPerKeyFamilyBanActive).
+//
+// A new line rather than an addition to 0.13.0, and not because 0.13 *may* be
+// adopted somewhere: the testnet is ALREADY RUNNING IT — epoch 1500, develop
+// head 3b4c95f6, active_consensus_line 0.13. Amending a line a chain has
+// activated makes a node replaying that history diverge from the chain it
+// joins, and leaves a newly added rule with no rollout window at all: the first
+// node to take the build enforces it while its peers do not. 0.13 is therefore
+// frozen as the EVM bridge line exactly as the testnet has been running it, and
+// everything this batch adds lands here instead. 18j and 18an were written
+// against 0.13 before that activation and were moved here for the same reason.
+//
+// Mainnet, active on 0.12, raises its floor once and takes 0.13 and 0.14
+// together. That bundling is not avoidable — floors are monotone and no unused
+// line is left below 0.13 — but 0.13 is not unproven code: it has carried
+// testnet chain history since epoch 1500. The 0.13 rules a mainnet rise would
+// also switch on are BtcSolvencyWatchActive, StableSwapActive,
+// BigSwapAmountsActive and KeygenOnceActive; the EVM-vault ones need
+// OracleParams.EvmBridgeContracts and StableSwapActive needs a pool in
+// StablePools, so those stay inert there.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// every rule on it is inert until the chain floor reaches it.
+var V0_14_0 = Version{Major: 0, Consensus: 14, NonConsensus: 0}
+
+// Version0_14_0Active reports whether the 0.14.0 line is in force given the
+// chain-active consensus version.
+func Version0_14_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_14_0)
+}
+
+// SettlementAttestationQuorumActive (0.14.0, REWARD-ATTEST-1) reports whether
+// pendulum reward-attestation scoring skips a block whose recorded signers
+// already met the bar the leader waits for (dids.LeaderSigsComplete: 90% of the
+// folded committee weight, and more than 2/3 of the election weight).
+//
+// Below the line every committee member is expected to sign every block. The
+// leader never waits for every member: on the 16-seat mainnet committee it
+// stops at 14, so two seats are absent from every healthy block and which two
+// is a matter of network latency. The result was live on mainnet — in epoch
+// 2221 all 16 seats were docked, 3% to 66%, none of them at zero — so honest
+// witnesses were paying for signatures nobody waited for. Above the line only a
+// block broadcast BELOW the bar (the leader's collection window timed out)
+// scores its absentees.
+//
+// Resolve `active` at the TICK height, the same height buildTickInputs resolves
+// the committee at: the election proposer, every signer and every node
+// re-deriving the settlement later read the same election and the same gate
+// there, so the re-derived record byte-matches.
+func SettlementAttestationQuorumActive(active Version) bool {
+	return Version0_14_0Active(active)
+}

@@ -229,7 +229,7 @@ func blameOf(t *testing.T, errs []*btss.Error, dropUnattributable bool, members 
 	tssErr, culprits, text := d.snapshotTssError()
 	require.NotNil(t, tssErr, "the party saw a btss error")
 	res := ErrorResult{tssMgr: mgr, tssErr: tssErr, Culprits: culprits, ErrorText: text, Epoch: epoch}
-	return decodeBlameBitset(res.Serialize().Commitment, makeElection(epoch, members).Members)
+	return decodeBlameBitset(mustSerialize(t, res).Commitment, makeElection(epoch, members).Members)
 }
 
 func (r *frameRig) allIds() []string {
@@ -498,7 +498,7 @@ func TestTssFrame1_EveryNodeResolvesTheSameBlame(t *testing.T) {
 		d.done <- struct{}{}
 		res, err := d.Done().Await(context.Background())
 		require.NoError(t, err)
-		bc := (*res).Serialize()
+		bc := mustSerialize(t, *res)
 		bz, err := common.EncodeDagCbor(bc)
 		require.NoError(t, err)
 		c, err := common.HashBytes(bz, multicodec.DagCbor)

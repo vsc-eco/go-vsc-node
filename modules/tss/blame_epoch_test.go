@@ -50,7 +50,7 @@ func TestBlameEpochMismatchProvesBug(t *testing.T) {
 	sort.Strings(culprits)
 
 	// ---- BUG: encode with keygen epoch (what dispatcher.epoch was) ----
-	bugEncoded := tssMgr.setToCommitment(participants, keygenEpoch)
+	bugEncoded := mustSetToCommitment(t, tssMgr, participants, keygenEpoch)
 
 	// Decode against current election (what RunActions does)
 	bugDecoded := decodeBlameBitset(bugEncoded, mockDb.Elections[currentEpoch].Members)
@@ -74,7 +74,7 @@ func TestBlameEpochMismatchProvesBug(t *testing.T) {
 	}
 
 	// ---- FIX: encode with current epoch (what dispatcher.newEpoch gives) ----
-	fixEncoded := tssMgr.setToCommitment(participants, currentEpoch)
+	fixEncoded := mustSetToCommitment(t, tssMgr, participants, currentEpoch)
 
 	// Decode against current election (same as RunActions)
 	fixDecoded := decodeBlameBitset(fixEncoded, mockDb.Elections[currentEpoch].Members)
@@ -126,7 +126,7 @@ func TestBlameEpochDispatcherField(t *testing.T) {
 		Epoch:       currentEpoch, // dispatcher.newEpoch
 	}
 
-	serialized := result.Serialize()
+	serialized := mustSerialize(t, result)
 
 	// Verify the commitment epoch matches
 	if serialized.Epoch != currentEpoch {
