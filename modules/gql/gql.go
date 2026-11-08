@@ -76,6 +76,9 @@ func (g *gqlManager) Init() error {
 	// creates GraphQL server with Apollo
 	gqlServer := handler.New(g.schema)
 	gqlServer.AddTransport(transport.POST{})
+	// Keep parser messages, Go type names and database text out of client
+	// responses (errors.go).
+	gqlServer.SetErrorPresenter(presentError)
 	gqlServer.Use(extension.Introspection{})
 	gqlServer.Use(extension.FixedComplexityLimit(g.conf.GetMaxComplexity()))
 	// F10: cap total field selections per operation, independent
