@@ -337,6 +337,34 @@ func (tx *TxUpdateContract) ToData() map[string]interface{} {
 	}
 }
 
+// validateCodeUpdateFields rejects a contract-code update that omits a field the
+// code-update path then dereferences unconditionally (SC-08).
+//
+// `runtime` and `storage_proof` are `omitempty` pointers, so an update that
+// leaves either key out -- or sends an explicit `null` -- unmarshals to a nil
+// pointer and still reaches the code-update branch. Both are then dereferenced:
+// `tx.Runtime.String()` auto-derefs because Runtime.String has a value
+// receiver, and StorageProof.Verify reads sp.Hash. Either deref panics.
+//
+// That panic is not survivable. It happens inside ProcessBlock, which -- unlike
+// the L2 batch path's executeTxSafely -- had no recover() on it, so the node
+// dies on that block; and because the streamer only advances its saved
+// checkpoint after a block completes, it re-ingests the same block and dies
+// again on every restart. Any account able to pay the deployment fee could
+// therefore halt the whole network permanently with one malformed op.
+//
+// Kept as a separate method, rather than inline in ExecuteTx, so the rejection
+// is unit-testable without standing up a StateEngine.
+func (tx *TxUpdateContract) validateCodeUpdateFields() error {
+	if tx.Runtime == nil {
+		return errors.New("runtime is required to update contract code")
+	}
+	if tx.StorageProof == nil {
+		return errors.New("storage proof is required to update contract code")
+	}
+	return nil
+}
+
 func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContractResult {
 	if len(tx.Self.RequiredAuths) == 0 {
 		return UpdateContractResult{
@@ -384,6 +412,15 @@ func (tx *TxUpdateContract) ExecuteTx(se *StateEngine, hasFee bool) UpdateContra
 	}
 	if hasFee && tx.Code != "" && tx.Code != existing.Code {
 		// update contract code
+		//
+		// SC-08: reject an update whose optional pointer fields are absent
+		// before anything dereferences them. See validateCodeUpdateFields.
+		if err := tx.validateCodeUpdateFields(); err != nil {
+			return UpdateContractResult{
+				Success: false,
+				Err:     err.Error(),
+			}
+		}
 		if wasm_runtime.NewFromString(tx.Runtime.String()).IsErr() {
 			return UpdateContractResult{
 				Success: false,
@@ -566,6 +603,54 @@ func aggregatePotentialWeight(election *elections.ElectionResult) int {
 }
 
 // ProcessTx implements VSCTransaction.
+// getDagNodeBlocking reads a CID from the data layer and decodes it as dag-cbor,
+// retrying a local read fault instead of handing a nil node to RawData().
+//
+// Both callers sit in TxElectionResult.ExecuteTx, which runSystemOpSafely wraps.
+// The old `node, _ := se.da.Get(...)` followed by `node.RawData()` nil-dereferenced
+// on a read fault. Before SC-08 that panic killed the process, which then
+// reprocessed the block and the election landed anyway -- ugly, but self-healing.
+// With the recover() in place the panic is swallowed instead, and a swallowed
+// election is PERMANENT: the next epoch finds no previous election ("election
+// ignored: no previous election", ExecuteTx below) and so does every epoch after
+// it, so the node sits on a stale committee until somebody resyncs it. Found by
+// lordbutterfly reviewing #289; his patch calls this getDagOrBlock.
+//
+// Returning an error and skipping would reproduce exactly that divergence, so
+// this BLOCKS instead, the same choice the ledger apply path makes for the same
+// reason (skipping the entry forks, so the read is retried until it succeeds --
+// lib/datalayer/dir.go's "blocking until it succeeds"). A node that cannot read
+// its own store stops making progress, loudly, rather than quietly adopting a
+// different committee from its peers.
+func (se *StateEngine) getDagNodeBlocking(c cid.Cid, what string) *dagCbor.Node {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 30 * time.Second
+	)
+	delay := baseDelay
+	for attempt := 1; ; attempt++ {
+		node, err := se.da.Get(c, nil)
+		if err == nil && node != nil {
+			dagNode, decErr := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			if decErr == nil {
+				if attempt > 1 {
+					log.Error("election dag read recovered; resuming", "what", what, "cid", c, "attempts", attempt)
+				}
+				return dagNode
+			}
+			err = decErr
+		} else if err == nil {
+			err = fmt.Errorf("data layer returned no node")
+		}
+		log.Error("election dag read failed; blocking until it succeeds (skipping would fork the committee)",
+			"what", what, "cid", c, "attempt", attempt, "err", err)
+		time.Sleep(delay)
+		if delay *= 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
 func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 	// ctx := context.Background()
 	if tx.Epoch == 0 {
@@ -576,9 +661,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				return
 			}
-			node, _ := se.da.Get(parsedCid, nil)
-
-			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			dagNode := se.getDagNodeBlocking(parsedCid, "genesis election")
 			elecResult := elections.ElectionResult{}
 			bbytes, _ := dagNode.MarshalJSON()
 			json.Unmarshal(bbytes, &elecResult)
@@ -721,8 +804,7 @@ func (tx *TxElectionResult) ExecuteTx(se *StateEngine) {
 			// latestSettledEpoch so the defensive gate below passes for
 			// the new flow.
 			se.da.GetDag(parsedCid)
-			node, _ := se.da.Get(parsedCid, nil)
-			dagNode, _ := dagCbor.Decode(node.RawData(), mh.SHA2_256, -1)
+			dagNode := se.getDagNodeBlocking(parsedCid, "election result")
 			elecResult := elections.ElectionResult{
 				Proposer:    tx.Self.RequiredAuths[0],
 				BlockHeight: tx.Self.BlockHeight,
