@@ -33,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"vsc-node/lib/buildinfo"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common/params"
@@ -202,6 +203,7 @@ func main() {
 	ethKey, did := initEthKey(cfg)
 
 	slog.Info("evm-mapping-bot starting",
+		"git_commit", buildinfo.Commit(),
 		"rpc", rpcHosts(cfg.EthRPC),
 		"vault", cfg.VaultAddress,
 		"contract", cfg.ContractID,

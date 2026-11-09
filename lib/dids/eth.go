@@ -35,6 +35,10 @@ import (
 // - https://github.com/w3c-ccg/did-pkh/blob/main/did-pkh-method-draft.md
 const EthDIDPrefix = "did:pkh:eip155:1:"
 
+// ethDIDHalfOrderN is N/2 of the secp256k1 group order; an S above it is the
+// non-canonical (high-S) twin of a valid signature (see EthDID.Verify).
+var ethDIDHalfOrderN = new(big.Int).Rsh(ethCrypto.S256().Params().N, 1)
+
 const debug = false
 
 func runDebug(run func() error) error {
@@ -131,6 +135,18 @@ func (d EthDID) Verify(block blocks.Block, sig string) (bool, error) {
 	sigBytes, err := hexutil.Decode(sig)
 	if err != nil {
 		return false, fmt.Errorf("failed to decode signature: %v", err)
+	}
+
+	// An Ethereum signature is exactly 65 bytes, R(32) | S(32) | V(1). Check the
+	// length before reading V below, and reject anything else as invalid.
+	if len(sigBytes) != 65 {
+		return false, fmt.Errorf("invalid signature length: got %d bytes, want 65", len(sigBytes))
+	}
+	// HG-H5 parity (BtcDID.Verify, lib/dids/btc.go): Ecrecover recovers the same
+	// key from S and N-S, so one message would have two valid signature strings.
+	// Accept only the canonical low-S form (0 < S <= N/2), as wallets produce.
+	if s := new(big.Int).SetBytes(sigBytes[32:64]); s.Sign() <= 0 || s.Cmp(ethDIDHalfOrderN) > 0 {
+		return false, fmt.Errorf("non-canonical signature: high-S form not allowed")
 	}
 
 	if sigBytes[64] != 0 && sigBytes[64] != 1 {
