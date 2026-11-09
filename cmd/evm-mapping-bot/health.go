@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"vsc-node/lib/buildinfo"
 )
 
 // B11 / B12 / C4 / D7: the bot had no alarm for running out of RC (every map
@@ -377,7 +378,8 @@ func supplyActive(rec string) (*big.Int, bool) {
 }
 
 type healthReport struct {
-	Status           string   `json:"status"` // starting, ok, unhealthy
+	Status           string   `json:"status"`    // starting, ok, unhealthy
+	GitCommit        string   `json:"gitCommit"` // source commit of this binary
 	LastTickAt       string   `json:"lastTickAt,omitempty"`
 	LastScannedBlock uint64   `json:"lastScannedBlock"`
 	Withdrawals      int      `json:"pendingWithdrawals"`
@@ -390,7 +392,7 @@ type healthReport struct {
 func (h *botHealth) report(now time.Time) healthReport {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r := healthReport{LastScannedBlock: h.scanned, Withdrawals: h.withdrawals, PendingMaps: h.pendingMaps, DeadLetters: h.deadLetters}
+	r := healthReport{GitCommit: buildinfo.Commit(), LastScannedBlock: h.scanned, Withdrawals: h.withdrawals, PendingMaps: h.pendingMaps, DeadLetters: h.deadLetters}
 	if h.lastTickAt.IsZero() {
 		r.Status = "starting"
 		return r

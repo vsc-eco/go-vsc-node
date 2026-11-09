@@ -7,6 +7,8 @@ GIT_COMMIT := $(shell git rev-parse HEAD)
 # Build flags
 BUILD_FLAGS := -buildvcs=false
 LDFLAGS := -X vsc-node/modules/announcements.GitCommit=$(GIT_COMMIT)
+# The EVM bot reports this commit on /health (lib/buildinfo).
+BOT_LDFLAGS := -X vsc-node/lib/buildinfo.GitCommit=$(GIT_COMMIT)
 
 # Installation directory (default to /usr/local/bin)
 PREFIX ?= /usr/local
@@ -20,7 +22,7 @@ GQL_GENERATED := modules/gql/gqlgen/generated.go
 GO_SOURCES := $(shell find modules lib -type f -name '*.go') go.mod go.sum
 
 # Targets
-.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot feed-publisher generate test test-full test-regression
+.PHONY: all clean install magid contract-deployer genesis-elector devnet-setup mapping-bot evm-mapping-bot feed-publisher generate test test-full test-regression
 
 all: $(GQL_GENERATED) magid contract-deployer genesis-elector devnet-setup mapping-bot feed-publisher
 
@@ -44,6 +46,9 @@ devnet-setup: $(BUILD_DIR)/devnet-setup
 mapping-bot: $(BUILD_DIR)/mapping-bot
 	@echo "Built mapping-bot"
 
+evm-mapping-bot: $(BUILD_DIR)/evm-mapping-bot
+	@echo "Built evm-mapping-bot"
+
 feed-publisher: $(BUILD_DIR)/feed-publisher
 	@echo "Built feed-publisher"
 
@@ -64,6 +69,9 @@ $(BUILD_DIR)/devnet-setup: $(BUILD_DIR) $(GO_SOURCES)
 
 $(BUILD_DIR)/mapping-bot: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/mapping-bot
+
+$(BUILD_DIR)/evm-mapping-bot: $(BUILD_DIR) $(GO_SOURCES)
+	go build $(BUILD_FLAGS) -ldflags "$(BOT_LDFLAGS)" -o $@ vsc-node/cmd/evm-mapping-bot
 
 $(BUILD_DIR)/feed-publisher: $(BUILD_DIR) $(GO_SOURCES)
 	go build $(BUILD_FLAGS) -o $@ vsc-node/cmd/feed-publisher
