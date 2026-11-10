@@ -16,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -78,7 +79,7 @@ func (w *scopeWorld) deps() evmScopeDeps {
 		findKey: func(id string) (tss_db.TssKey, error) {
 			k, ok := w.keys[id]
 			if !ok {
-				return tss_db.TssKey{}, errors.New("no key")
+				return tss_db.TssKey{}, mongo.ErrNoDocuments // as tss_keys FindKey answers a missing key
 			}
 			return k, nil
 		},
@@ -228,10 +229,18 @@ func TestA01_EvmScopeRegistryStates(t *testing.T) {
 	if v := w.deps().evaluate(key(1), []byte{1}); v != scopeRefuse {
 		t.Fatalf("a generation key with no registry: %v", v)
 	}
-	// Unreadable: refuse even the primary.
+	// CG-1: a registry THIS node cannot read is not a refusal (an EVM vault
+	// signature needs every listed signer; the signers that read it decide).
 	w.err = errors.New("blockstore")
+	for _, k := range []string{key(0), key(1)} {
+		if v := w.deps().evaluate(k, []byte{1}); v != scopeAllow {
+			t.Fatalf("registry unreadable on this node, %s: %v, want scopeAllow", k, v)
+		}
+	}
+	// A committed output that does not decode is the same on every node: refused.
+	w.err = errEvmOutputUndecodable
 	if v := w.deps().evaluate(key(0), []byte{1}); v != scopeRefuse {
-		t.Fatalf("unreadable registry: %v", v)
+		t.Fatalf("undecodable committed output: %v, want scopeRefuse", v)
 	}
 	// Corrupt, duplicate generation, two active: refuse.
 	for name, reg := range map[string][]byte{

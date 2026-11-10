@@ -63,6 +63,11 @@ type GetScheduler interface {
 	// vault keysigns via vsc.tss_halt {"keyId":"evm"} (N2, from 0.13.0). Read by
 	// the EVM sign gate (evm_halt.go).
 	EvmKeysignHalted() bool
+	// EvmBridgeHalted reports whether the EVM bridge contract's own theft flag
+	// ("th") or custody flag ("si") is set, mirrored into the consensus cache at
+	// the end of each block (CG-1). Read by the EVM sign gate with
+	// EvmKeysignHalted (either freezes).
+	EvmBridgeHalted(contract string) bool
 	// BtcSolvencyHalted reports whether witnesses holding 2/3 of the weight voted
 	// the BTC vault insolvent (N4, from 0.13.0; state-processing btc_solvency.go).
 	// Read by the BTC sign gate with the other two BTC halts.

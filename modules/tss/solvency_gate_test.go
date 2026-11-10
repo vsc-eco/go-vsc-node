@@ -1,7 +1,7 @@
 package tss
 
 import (
-	"errors"
+	"fmt"
 	"testing"
 
 	"vsc-node/modules/common/consensusversion"
@@ -11,6 +11,7 @@ import (
 	stateEngine "vsc-node/modules/state-processing"
 
 	promise "github.com/chebyrash/promise"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // fakeSolvencyScheduler is a minimal GetScheduler for the gate tests: the
@@ -21,6 +22,7 @@ type fakeSolvencyScheduler struct {
 	halted      bool
 	theftHalted bool
 	evmHalted   bool
+	evmBridges  map[string]bool // EVM bridges whose th or si is mirrored as set
 	solvHalted  bool
 	minVer      consensusversion.Version
 }
@@ -29,10 +31,11 @@ func (f *fakeSolvencyScheduler) GetSchedule(uint64) []stateEngine.WitnessSlot { 
 func (f *fakeSolvencyScheduler) TssMinimumConsensusVersion(uint64) consensusversion.Version {
 	return f.minVer
 }
-func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool  { return f.halted }
-func (f *fakeSolvencyScheduler) BtcTheftHalted() bool    { return f.theftHalted }
-func (f *fakeSolvencyScheduler) EvmKeysignHalted() bool  { return f.evmHalted }
-func (f *fakeSolvencyScheduler) BtcSolvencyHalted() bool { return f.solvHalted }
+func (f *fakeSolvencyScheduler) BtcKeysignHalted() bool        { return f.halted }
+func (f *fakeSolvencyScheduler) BtcTheftHalted() bool          { return f.theftHalted }
+func (f *fakeSolvencyScheduler) EvmKeysignHalted() bool        { return f.evmHalted }
+func (f *fakeSolvencyScheduler) BtcSolvencyHalted() bool       { return f.solvHalted }
+func (f *fakeSolvencyScheduler) EvmBridgeHalted(c string) bool { return f.evmBridges[c] }
 
 // TestBtcKeysignFrozen_FlagAndScope covers the deterministic FLAG layer and the
 // BTC-only scoping. The SIGNAL layer stays inert here (MainnetConfig ships an
@@ -232,7 +235,9 @@ func (stubTssKeys) FindNewlyRetired(uint64) ([]tss_db.TssKey, error)    { return
 func (stubTssKeys) DeprecateLegacyKeys() error                          { return nil }
 func (stubTssKeys) SetSignatureVerified(string) error                   { return nil }
 
-var errStubNotFound = errors.New("stub: not found")
+// errStubNotFound is what tss_keys FindKey returns for a key it does not hold:
+// the FindOne's mongo.ErrNoDocuments (db/vsc/tss/keys.go).
+var errStubNotFound = fmt.Errorf("stub: not found: %w", mongo.ErrNoDocuments)
 
 // TestBtcSignRefused_FloorOnlyActivation is the VR2-02 wiring-gap regression
 // test: the TSS half must be in force under EXACTLY the conditions that put the

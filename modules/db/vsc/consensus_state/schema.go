@@ -47,6 +47,12 @@ type ChainConsensusState struct {
 	// cleared) — provenance/observability only.
 	EvmKeysignHaltHeight uint64 `bson:"evm_keysign_halt_height"`
 
+	// EvmBridgeHalted lists the EVM bridge contracts whose own theft flag ("th")
+	// or custody flag ("si") is set, sorted. Refreshed from each bridge's
+	// committed output at the end of every block, as BtcTheftHalted is for BTC;
+	// the EVM sign gate (modules/tss/evm_halt.go) reads it with no I/O.
+	EvmBridgeHalted []string `bson:"evm_bridge_halted,omitempty"`
+
 	// BtcSolvency is the BTC solvency watch (N4, from 0.13.0): the witnesses'
 	// votes at the current checkpoint and the halt they decide.
 	BtcSolvency BtcSolvencyState `bson:"btc_solvency"`
