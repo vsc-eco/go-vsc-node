@@ -964,11 +964,13 @@ func packHeadersFromEnd(items []map[string]string, max int, wrap func([]map[stri
 // is wanted: a needed header has no stored root above it, or withdrawals wait
 // on a price older than pricingStaleAfter, or one is in flight while the tip
 // header is old (the roll/expiry windows count proven L1 blocks).
+//
+// NEW-BOT-4: whether a proof is wanted (cp.WantProofSince, which /health's A10
+// alarm reads) is tracked with or without NEEDS_FILE; the file is only written
+// when it is set. It returned first, so with NEEDS_FILE unset a proof could be
+// wanted for days with no alarm.
 func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EVMBotConfig, tip uint64, wantRoot bool) {
 	path := os.Getenv("NEEDS_FILE")
-	if path == "" {
-		return
-	}
 	cp.mu.Lock()
 	var blocks []uint64
 	for x := range cp.HeaderNeeds {
@@ -1019,6 +1021,9 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 	}
 	since := cp.WantBatchSince
 	cp.mu.Unlock()
+	if path == "" {
+		return
+	}
 	data, _ := json.Marshal(map[string]any{"want_proof": len(reasons) > 0, "since": since, "reasons": reasons,
 		"blocks": blocks, "tip": tip, "updated": time.Now().Unix()})
 	tmp := path + ".tmp"

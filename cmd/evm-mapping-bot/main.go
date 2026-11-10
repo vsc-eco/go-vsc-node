@@ -475,6 +475,15 @@ const mapVanishRetries = 3
 // then it is left to the operator. A map that did land after all is refused
 // as already processed on the retry, which closes it.
 func (cp *Checkpoint) mapVanished(block uint64, depositTx, mapTxId, reason string) {
+	cp.mapAgain(block, depositTx, mapTxId, reason, "its map vanished",
+		"I-46: the node no longer knows this deposit's map (it lost its nonce or was dropped); mapping the deposit again")
+}
+
+// mapAgain puts a deposit whose map did not credit it, through no fault of the
+// deposit, on the bot's own retry path (an AutoRetry dead letter, re-scanned
+// and mapped on a later unpaused tick): up to mapVanishRetries times per
+// deposit, then it is left to the operator.
+func (cp *Checkpoint) mapAgain(block uint64, depositTx, mapTxId, reason, what, logMsg string) {
 	key := strings.ToLower(depositTx)
 	cp.mu.Lock()
 	if cp.MapVanishes == nil {
@@ -484,11 +493,10 @@ func (cp *Checkpoint) mapVanished(block uint64, depositTx, mapTxId, reason strin
 	n := cp.MapVanishes[key]
 	cp.mu.Unlock()
 	if n > mapVanishRetries {
-		cp.deadLetter(block, depositTx, mapTxId, fmt.Sprintf("%s; its map vanished %d times", reason, n))
+		cp.deadLetter(block, depositTx, mapTxId, fmt.Sprintf("%s; %s %d times", reason, what, n))
 		return
 	}
-	slog.Warn("I-46: the node no longer knows this deposit's map (it lost its nonce or was dropped); mapping the deposit again",
-		"block", block, "tx", depositTx, "mapTx", mapTxId, "vanished", n, "of", mapVanishRetries)
+	slog.Warn(logMsg, "block", block, "tx", depositTx, "mapTx", mapTxId, "try", n, "of", mapVanishRetries)
 	cp.mu.Lock()
 	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix(), AutoRetry: true})
 	cp.mu.Unlock()
@@ -1028,13 +1036,26 @@ func (e *ethRPC) getTransactionByHash(txHash string) (json.RawMessage, error) {
 	return callRetry(shutdownCtx, e, "eth_getTransactionByHash", fmt.Sprintf(`"%s"`, txHash)) // P5
 }
 
+// broadcastTx sends a signed tx and returns its hash. NEW-BOT-2: the hash is
+// computed here from the signed bytes (keccak256 of the raw, EIP-2718 typed,
+// tx), as a sweep's is, not taken from the RPC's answer: a withdrawal's receipt
+// is looked up by this hash, so a wrong one from a faulty or hostile endpoint
+// would leave the bot never seeing its own withdrawal mine. A different answer
+// is logged.
 func (e *ethRPC) broadcastTx(signedTxHex string) (string, error) {
+	raw, err := hex.DecodeString(strings.TrimPrefix(signedTxHex, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("signed tx is not hex: %w", err)
+	}
 	data, err := e.call("eth_sendRawTransaction", fmt.Sprintf(`"0x%s"`, signedTxHex))
 	if err != nil {
 		return "", err
 	}
-	var txHash string
-	json.Unmarshal(data, &txHash)
+	txHash := ethCrypto.Keccak256Hash(raw).Hex()
+	var answered string
+	if json.Unmarshal(data, &answered) != nil || !strings.EqualFold(answered, txHash) {
+		slog.Warn("NEW-BOT-2: the RPC answered a different hash for the broadcast tx; using the tx's own", "answered", string(data), "hash", txHash)
+	}
 	return txHash, nil
 }
 
@@ -1466,6 +1487,10 @@ func (g *vscGraphQL) fetchTransactionResults(ctx context.Context, txID string) (
 // errAlreadyProcessed is the bridge's refusal of a deposit it has credited
 // (account-mapping ErrAlreadyObserved).
 const errAlreadyProcessed = "deposit already processed"
+
+// errContractPaused is the bridge's refusal of any paused-gated call
+// (account-mapping AssertNotPaused).
+const errContractPaused = "contract is paused"
 
 // errTxNotFound: the node holds no transaction with that id. Right after a
 // submission that can be gossip; much later the transaction is gone (the pool
@@ -2478,6 +2503,19 @@ func buildMapPayload(deposit detectedDeposit, leaf []byte, proofNodes, receiptNo
 		"instructions": []string{},
 	}
 	data, _ := json.Marshal(payload)
+	// ETH-PAYLOAD-1: this form sends the tx twice in hex (raw_hex, and the leaf
+	// inside merkle_proof_hex), so a deposit tx above ~600 bytes in a busy block
+	// takes the payload past the node's cap and the deposit could never be
+	// mapped. Over the cap, send the tx-trie nodes once in base64 (tx_proof; the
+	// leaf is the tx), as confirmSweep does. Only then: a payload under the cap
+	// stays byte-identical, so a bridge wasm without tx_proof maps everything it
+	// mapped before, whichever of the bot and the contract is updated first.
+	if deposit.DepositType == "eth" && nodePayloadSize(data) > params.MAX_CONTRACT_PAYLOAD_SIZE {
+		delete(txData, "raw_hex")
+		delete(txData, "merkle_proof_hex")
+		txData["tx_proof"] = base64.StdEncoding.EncodeToString(bytes.Join(proofNodes, nil))
+		data, _ = json.Marshal(payload)
+	}
 	return data
 }
 
@@ -3612,9 +3650,22 @@ func fetchTssVault(ctx context.Context, gql *vscGraphQL, tssKeyID string) (vault
 // signed the vault check message and someone has shown it the signature
 // (account-mapping mapping/vaultcheck.go). While it waits the bot does both
 // (driveVaultCheck), so a fresh bridge goes live on its own.
+//
+// CG-A4: once the bridge has rotated, the vault is the registry's active
+// generation, and it is taken from there. Generation 0's key ("-primary") is no
+// longer renewed once that generation holds nothing, and is retired; waiting on
+// it kept a restarted bot from ever starting. A registry with an Active
+// generation exists only after that generation passed its check (attestVault
+// for generation 0, activateKey for later ones), so the vault is live.
 func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contractID, tssKeyID, configured string, poll time.Duration) (string, error) {
 	var vc vaultCheckTimes
 	for {
+		rctx, rcancel := context.WithTimeout(ctx, 15*time.Second)
+		view, verr := fetchVaultView(rctx, gql, contractID)
+		rcancel()
+		if verr == nil && view.Registry && view.Active != nil && view.Active.Address != "" {
+			return registryVault(view, configured)
+		}
 		qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		vault, pub, active, ok, err := fetchTssVault(qctx, gql, tssKeyID)
 		cancel()
@@ -3643,6 +3694,29 @@ func waitForTssVault(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, con
 		case <-time.After(poll):
 		}
 	}
+}
+
+// registryVault is the active generation's address of a rotated bridge. A
+// configured VAULT_ADDRESS must be one of the bridge's fund-holding addresses
+// (the contract credits deposits to every one of them); one that is not the
+// active generation's is logged, and the active one is used, as the main loop
+// does on every tick.
+func registryVault(view vaultView, configured string) (string, error) {
+	active := view.Active.Address
+	if configured != "" && !strings.EqualFold(configured, active) {
+		known := false
+		for _, a := range view.fundHolding() {
+			if strings.EqualFold(a, configured) {
+				known = true
+			}
+		}
+		if !known {
+			return "", fmt.Errorf("VAULT_ADDRESS %s is not an address of the bridge's vault (active generation %d is %s); the contract credits only deposits to its vault generations", configured, view.Active.Gen, active)
+		}
+		slog.Warn("CG-A4: VAULT_ADDRESS is an older vault generation's address; using the active generation's", "configured", configured, "generation", view.Active.Gen, "vault", active)
+	}
+	slog.Info("A18: vault is the bridge's active generation", "generation", view.Active.Gen, "keyId", view.Active.KeyID, "vault", active)
+	return active, nil
 }
 
 // vaultCheckRetry is how long the bot waits for the TSS group's check
@@ -4695,8 +4769,8 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 			// deposit was dead-lettered by the one that lost, and /health stayed
 			// unhealthy.
 			msg, merr := gql.fetchTransactionError(ctx, txID)
-			if merr != nil && time.Since(time.Unix(pm.SubmittedAt, 0)) <= mapResultTimeout {
-				continue // the failure's reason is not readable yet
+			if merr != nil {
+				continue // CG-A3: the failure's reason is not readable; read it again next tick
 			}
 			if strings.Contains(msg, errAlreadyProcessed) {
 				slog.Info("map not needed: the deposit was already credited", "block", pm.Block, "tx", pm.DepositTx, "mapTx", txID)
@@ -4707,7 +4781,23 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 			if msg != "" {
 				reason += ": " + msg
 			}
+			if strings.Contains(msg, errContractPaused) {
+				// B-12: the map ran while the bridge was paused (sent just before
+				// the pause landed); nothing is wrong with the deposit. Maps wait
+				// while the bridge is paused (I-13), so it is mapped again after
+				// the unpause, bounded as a vanished map is.
+				cp.mapAgain(pm.Block, pm.DepositTx, txID, reason, "its map ran while the bridge was paused",
+					"B-12: the map ran while the bridge was paused; mapping the deposit again once it is unpaused")
+				break
+			}
 			cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)
+		case err != nil && !errors.Is(err, errTxNotFound):
+			// CG-A3: the status could not be read (the node's GraphQL down or
+			// erroring), so nothing is known about this map and nothing is
+			// decided: it stays pending and is read again next tick; /health
+			// reports it once it is older than mapResultTimeout. It used to be
+			// dead-lettered for the operator after 30 minutes, landed or not.
+			continue
 		case time.Since(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout:
 			reason := fmt.Sprintf("no on-chain result after %s (status %q, err %v)", mapResultTimeout, status, err)
 			if errors.Is(err, errTxNotFound) {

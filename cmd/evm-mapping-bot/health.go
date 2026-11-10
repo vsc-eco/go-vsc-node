@@ -62,9 +62,13 @@ type botHealth struct {
 	scanStale   time.Duration // no advance for longer is an alarm (B9)
 	withdrawals int
 	pendingMaps int
-	deadLetters int
-	checkedAt   time.Time
-	alarms      []string
+	// unresolvedMaps: pending maps older than mapResultTimeout (CG-A3: their
+	// result could not be read), and the oldest one's submit time.
+	unresolvedMaps   int
+	unresolvedOldest int64
+	deadLetters      int
+	checkedAt        time.Time
+	alarms           []string
 }
 
 func newBotHealth(poll time.Duration) *botHealth {
@@ -102,6 +106,17 @@ func (h *botHealth) recordTick(now time.Time, err error, cp *Checkpoint) {
 	h.scanned = cp.LastScannedBlock
 	h.withdrawals = len(cp.SentWithdrawals)
 	h.pendingMaps = len(cp.PendingMaps)
+	h.unresolvedMaps, h.unresolvedOldest = 0, 0
+	cp.mu.Lock()
+	for _, pm := range cp.PendingMaps {
+		if now.Sub(time.Unix(pm.SubmittedAt, 0)) > mapResultTimeout {
+			h.unresolvedMaps++
+			if h.unresolvedOldest == 0 || pm.SubmittedAt < h.unresolvedOldest {
+				h.unresolvedOldest = pm.SubmittedAt
+			}
+		}
+	}
+	cp.mu.Unlock()
 	h.deadLetters = 0 // for the operator: an AutoRetry one is mapped again by the bot (I-46)
 	for _, d := range cp.DeadLetters {
 		if !d.AutoRetry {
@@ -136,6 +151,9 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 		warn(a)
 	}
 	for _, a := range stuckSweepAlarms() {
+		warn(a)
+	}
+	if a := headWithdrawalAlarm(ctx, gql, contractID); a != "" {
 		warn(a)
 	}
 
@@ -193,6 +211,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 			warn(fmt.Sprintf("C4: vault %s holds %s wei, %s short of the %s wei of ETH the bridge has credited", strings.Join(vaults, "+"), bal, short, custody))
 		}
 		checkTokenCustody(ctx, warn, gql, rpc, contractID, st["chainid"], vaults, tokens)
+		checkUnwatchedTokens(ctx, warn, gql, contractID, tokens)
 	}
 	checkDepositContracts(warn, rpc, depositVaults)
 
@@ -412,6 +431,9 @@ func (h *botHealth) report(now time.Time) healthReport {
 	}
 	if h.deadLetters > 0 {
 		r.Issues = append(r.Issues, fmt.Sprintf("%d deposit(s) dead-lettered: map them by hand", h.deadLetters))
+	}
+	if h.unresolvedMaps > 0 {
+		r.Issues = append(r.Issues, fmt.Sprintf("CG-A3: %d map(s) with no readable result for over %s (oldest sent %ds ago): the node's GraphQL cannot answer for them", h.unresolvedMaps, mapResultTimeout, int64(now.Sub(time.Unix(h.unresolvedOldest, 0)).Seconds())))
 	}
 	r.Issues = append(r.Issues, h.alarms...)
 	r.Status = "ok"
