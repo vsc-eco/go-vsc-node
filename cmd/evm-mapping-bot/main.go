@@ -3715,7 +3715,8 @@ func registryVault(view vaultView, configured string) (string, error) {
 		}
 		slog.Warn("CG-A4: VAULT_ADDRESS is an older vault generation's address; using the active generation's", "configured", configured, "generation", view.Active.Gen, "vault", active)
 	}
-	slog.Info("A18: vault is the bridge's active generation", "generation", view.Active.Gen, "keyId", view.Active.KeyID, "vault", active)
+	// The same line as the key path: devnet tests and operators wait for it.
+	slog.Info("A18: vault is the TSS key's address", "keyId", view.Active.KeyID, "generation", view.Active.Gen, "vault", active)
 	return active, nil
 }
 
