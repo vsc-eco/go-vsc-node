@@ -96,6 +96,25 @@ func (se *StateEngine) btcSolvencyWatchActive(height uint64) bool {
 	return consensusversion.BtcSolvencyWatchActive(se.ActiveConsensusVersion(height))
 }
 
+// trustedSelfActive reports whether SELF-INJECTION-1's trusted-Self rebuild is in
+// force at height. When true, every tx/op decode restores TxSelf from the
+// trusted block/envelope context instead of trusting the decoded payload.
+func (se *StateEngine) trustedSelfActive(height uint64) bool {
+	return consensusversion.SelfInjectionTrustedSelfActive(se.ActiveConsensusVersion(height))
+}
+
+// cloneTxSelf returns a deep copy of a TxSelf whose slice fields do NOT share a
+// backing array with the original. SELF-INJECTION-1 restores the trusted Self
+// AFTER json.Unmarshal; but `TxX{Self: txSelf}` aliases txSelf's RequiredAuths
+// slice into the decoded struct, and Unmarshal overwrites that shared array in
+// place, corrupting the original. Capturing this clone BEFORE the decode gives
+// the restore a pristine trusted Self to assign back.
+func cloneTxSelf(s TxSelf) TxSelf {
+	s.RequiredAuths = append([]string(nil), s.RequiredAuths...)
+	s.RequiredPostingAuths = append([]string(nil), s.RequiredPostingAuths...)
+	return s
+}
+
 // processBtcSolvencyVote handles one "vsc.btc_solvency" op.
 func (se *StateEngine) processBtcSolvencyVote(voter string, raw []byte, height uint64, txId string) {
 	if se.consensusState == nil || !se.btcSolvencyWatchActive(height) {

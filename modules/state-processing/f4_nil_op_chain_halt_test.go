@@ -47,7 +47,7 @@ func TestF4_UnknownOpFailsWholeTx(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction(consensusversion.Version{})
+	ops, err := tx.ToTransaction(consensusversion.Version{}, false)
 	if err == nil {
 		t.Fatal("F4 REGRESSION: unknown op did not fail the tx (err == nil) — halt path open")
 	}
@@ -69,7 +69,7 @@ func TestF4_ValidPlusInvalidFailsWholeTx(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction(consensusversion.Version{})
+	ops, err := tx.ToTransaction(consensusversion.Version{}, false)
 	if err == nil {
 		t.Fatal("F4 ATOMICITY: tx with one invalid op must fail entirely (err == nil)")
 	}
@@ -93,7 +93,7 @@ func TestF4_ValidTxResolvesAllOpsNoNil(t *testing.T) {
 	}
 	tx.Headers.RequiredAuths = []string{"hive:alice"}
 
-	ops, err := tx.ToTransaction(consensusversion.Version{})
+	ops, err := tx.ToTransaction(consensusversion.Version{}, false)
 	if err != nil {
 		t.Fatalf("F4: valid tx unexpectedly failed to resolve: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestF14_UnstakeHbdDirectionVersionGated(t *testing.T) {
 			})},
 		}
 		tx.Headers.RequiredAuths = []string{"hive:alice"}
-		ops, err := tx.ToTransaction(active)
+		ops, err := tx.ToTransaction(active, false)
 		if err != nil {
 			t.Fatalf("F14: valid unstake_hbd unexpectedly failed: %v", err)
 		}
@@ -186,7 +186,7 @@ func TestF21_BadPayloadFailsWholeTx(t *testing.T) {
 		)
 		func() {
 			defer func() { panicVal = recover() }()
-			ops, err = tx.ToTransaction(consensusversion.Version{})
+			ops, err = tx.ToTransaction(consensusversion.Version{}, false)
 		}()
 		if panicVal != nil {
 			t.Fatalf("F21 REGRESSION: ToTransaction panicked on empty-payload %q op: %v", opType, panicVal)

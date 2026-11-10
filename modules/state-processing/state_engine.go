@@ -1092,7 +1092,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								Signature:           dids.SerializedCircuit{},
 							},
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedBlock)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedBlock.Self = trustedSelf
+						} // SELF-INJECTION-1
 						// First-seen-wins: whichever block ref this replaying node
 						// observes first for (slot, account) becomes the reference;
 						// any later op from the same account with a different block
@@ -1212,7 +1216,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxCreateContract{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
 						hasFee, feeAmt, feePayer := hasFeePaymentOp(
@@ -1279,7 +1287,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						parsedTx := TxUpdateContract{
 							Self: txSelf,
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedTx)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedTx.Self = trustedSelf
+						} // SELF-INJECTION-1
 
 						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
 						var txResult UpdateContractResult
@@ -1349,7 +1361,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						parsedTx := TxCancelContractUpdate{
 							Self: txSelf,
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedTx)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedTx.Self = trustedSelf
+						} // SELF-INJECTION-1
 						runSystemOpSafely(cj.Id, txSelf, func() {
 							parsedTx.ExecuteTx(se)
 						})
@@ -1367,7 +1383,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// payload of `null` would set the inner pointer to nil
 					// and the subsequent ExecuteTx call would panic with a
 					// nil receiver.
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1377,7 +1397,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.propose_consensus_version" {
 					proposeConsensusVersionStart := time.Now()
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1387,7 +1411,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.recovery_suspend" {
 					recoverySuspendStart := time.Now()
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1397,7 +1425,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.recovery_require_version" {
 					recoveryRequireVersionStart := time.Now()
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1604,7 +1636,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxVSCWithdraw{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					// log.Debug("parsedTx vsc.withdraw", parsedTx)
 
@@ -1613,14 +1649,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxVscCallContract{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = parsedTx
 				} else if cj.Id == "vsc.transfer" {
 					parsedTx := TxVSCTransfer{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.stake_hbd" {
@@ -1628,7 +1672,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxStakeHbd{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.unstake_hbd" {
@@ -1636,7 +1684,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxUnstakeHbd{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.consensus_stake" {
@@ -1644,7 +1696,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Self: txSelf,
 					}
 
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.consensus_unstake" {
@@ -1652,7 +1708,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Self: txSelf,
 					}
 
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
