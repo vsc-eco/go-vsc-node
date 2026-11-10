@@ -112,6 +112,13 @@ func (m *MockConsensusState) SetBtcTheftHalt(_ context.Context, halted bool, hei
 	return nil
 }
 
+func (m *MockConsensusState) SetEvmBridgeHalted(_ context.Context, halted []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.S.EvmBridgeHalted = append([]string(nil), halted...)
+	return nil
+}
+
 func (m *MockConsensusState) SetForcedActivationAndClearSuspension(_ context.Context, s *consensus_state.VersionProposal) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

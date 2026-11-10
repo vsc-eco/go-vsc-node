@@ -2207,6 +2207,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
 
+	// CG-1: mirror each EVM bridge's theft and custody flags once this block's
+	// outputs are in, so the next block's TSS tick reads them from the cache.
+	se.refreshEvmBridgeHalts(block.BlockNumber)
+
 	// Emit the periodic indexing-performance summary for the window since
 	// the last emission (once per 1000 blocks live-synced / 100000 during
 	// catch-up), then reset. Runs last so every phase above is counted.

@@ -2,6 +2,7 @@ package state_engine
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	"vsc-node/modules/common/consensusversion"
@@ -121,6 +122,75 @@ func (se *StateEngine) refreshBtcTheftHalt(height uint64) {
 		// while others freeze (a self-healing stall, not a fork) until a later block succeeds.
 		log.Error("M1.1b: SetBtcTheftHalt FAILED — theft-halt mirror not updated on this node",
 			"halted", halted, "height", height, "err", err)
+		return
+	}
+	se.refreshChainConsensusCache()
+}
+
+// EvmBridgeHalted reports whether the EVM bridge contract's own theft flag ("th")
+// or custody flag ("si") is set, mirrored by refreshEvmBridgeHalts. Read by the
+// EVM sign gate through GetScheduler, like BtcTheftHalted.
+func (se *StateEngine) EvmBridgeHalted(contract string) bool {
+	se.chainConsensusMu.RLock()
+	defer se.chainConsensusMu.RUnlock()
+	return slices.Contains(se.chainConsensusCache.EvmBridgeHalted, contract)
+}
+
+// evmTheftHaltKey and evmSolvencyHaltKey are the EVM bridge contract's theft and
+// custody flags (account-mapping constants.TheftHaltKey, SolvencyHaltKey). Any
+// value halts; the contract clears them by deleting them.
+const (
+	evmTheftHaltKey    = "th"
+	evmSolvencyHaltKey = "si"
+)
+
+// refreshEvmBridgeHalts mirrors each rotating EVM bridge's "th" and "si" flags
+// into the consensus cache, as refreshBtcTheftHalt mirrors the BTC contract's
+// "th" (CG-1). The EVM sign gate used to read them from Mongo and the datalayer
+// at sign time and count a failed read as a halt; an EVM vault signature needs
+// every listed signer, so one node's read error stopped it on every node. Here
+// a read error on one bridge keeps that bridge's last value and is retried next
+// block, and consensus_state is written only on a change.
+//
+// It runs at the END of ProcessBlock(height) and reads the last output at or
+// below height. The consumer launches the TSS tick for height+1 only after
+// ProcessBlock(height) has returned, so that tick reads the flags as of the
+// output committed at or before height on every node: what the old sign-time
+// read at bh-1 gave.
+func (se *StateEngine) refreshEvmBridgeHalts(height uint64) {
+	if se.consensusState == nil {
+		return
+	}
+	bridges := se.evmRotatingContracts(height)
+	se.chainConsensusMu.RLock()
+	cur := slices.Clone(se.chainConsensusCache.EvmBridgeHalted)
+	se.chainConsensusMu.RUnlock()
+	if len(bridges) == 0 && len(cur) == 0 {
+		return
+	}
+	next := make([]string, 0, len(bridges))
+	for _, c := range bridges { // sorted (EvmBridgeContractIds)
+		var transient error
+		read := se.btcContractStateReaderAtStrict(c, height, &transient)
+		if transient != nil {
+			log.Warn("CG-1: EVM bridge halt flags unreadable on this node; keeping the last value", "contract", c, "height", height, "err", transient)
+			if slices.Contains(cur, c) {
+				next = append(next, c)
+			}
+			continue
+		}
+		for _, key := range []string{evmTheftHaltKey, evmSolvencyHaltKey} {
+			if raw, found := read(key); found && len(raw) > 0 {
+				next = append(next, c)
+				break
+			}
+		}
+	}
+	if slices.Equal(next, cur) {
+		return
+	}
+	if err := se.consensusState.SetEvmBridgeHalted(context.Background(), next); err != nil {
+		log.Error("CG-1: SetEvmBridgeHalted failed; EVM bridge halt mirror not updated on this node", "halted", next, "height", height, "err", err)
 		return
 	}
 	se.refreshChainConsensusCache()

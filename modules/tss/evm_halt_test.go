@@ -123,59 +123,37 @@ func committedState(t *testing.T, da *datalayer.DataLayer, keys map[string]strin
 	return root.Cid().String()
 }
 
-// The halt flags, read from a real datalayer: the governance flag, the
-// bridge's "th" from the output committed before bh (an output written in bh
-// itself counts from bh+1 on every node), no output yet, and a read failure
-// (refuses).
+// The halt flags come from the consensus cache only (CG-1): the governance
+// flag, and this bridge's own theft or custody flag as the state engine
+// mirrored it. Another bridge's flag does not halt this one, and no contract
+// state, datalayer or Mongo is read (the manager has none).
 func TestN2_EvmKeysignHalted(t *testing.T) {
-	da := startTestDatalayer(t)
-	clean := committedState(t, da, map[string]string{"chainid": "1"})
-	theft := committedState(t, da, map[string]string{"chainid": "1", "th": "1"})
-	short := committedState(t, da, map[string]string{"chainid": "1", "si": "100"})
 	sched := &fakeSolvencyScheduler{minVer: consensusversion.V0_13_0}
-	mgr := &TssManager{da: da, scheduler: sched}
-
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{}}
-	if h, err := mgr.evmKeysignHalted("c", 100); h || err != nil {
-		t.Fatalf("no output yet: halted=%v err=%v, want false, nil", h, err)
+	mgr := &TssManager{scheduler: sched}
+	if mgr.evmKeysignHalted("c") {
+		t.Fatal("no flag set: halted")
 	}
-
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 100: theft}}
-	if h, err := mgr.evmKeysignHalted("c", 100); h || err != nil {
-		t.Fatalf("th written in block 100, read at tick 100: halted=%v err=%v; must wait for tick 101 (every node has processed 100 then)", h, err)
+	sched.evmBridges = map[string]bool{"other": true}
+	if mgr.evmKeysignHalted("c") {
+		t.Fatal("another bridge's th/si halted this one")
 	}
-	if h, err := mgr.evmKeysignHalted("c", 101); !h || err != nil {
-		t.Fatalf("tick 101 after th in block 100: halted=%v err=%v, want true, nil", h, err)
+	sched.evmBridges = map[string]bool{"c": true}
+	if !mgr.evmKeysignHalted("c") {
+		t.Fatal("this bridge's mirrored th/si did not halt it")
 	}
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 100: theft, 110: clean}}
-	if h, err := mgr.evmKeysignHalted("c", 111); h || err != nil {
-		t.Fatalf("after clearTheftHalt (th deleted in 110): halted=%v err=%v", h, err)
-	}
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 120: short}}
-	if h, err := mgr.evmKeysignHalted("c", 121); !h || err != nil {
-		t.Fatalf("custody short (si, account-mapping C2): halted=%v err=%v, want true", h, err)
-	}
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{90: clean, 100: theft, 110: clean}}
-
+	sched.evmBridges = nil
 	sched.evmHalted = true
-	if h, err := mgr.evmKeysignHalted("c", 111); !h || err != nil {
-		t.Fatalf("governance vsc.tss_halt evm: halted=%v err=%v, want true", h, err)
-	}
-	sched.evmHalted = false
-
-	mgr.contractState = &heightOutputs{err: errors.New("mongo: connection reset")}
-	if h, err := mgr.evmKeysignHalted("c", 111); !h || err == nil {
-		t.Fatalf("unreadable output: halted=%v err=%v, want true and the error (fail closed)", h, err)
+	if !mgr.evmKeysignHalted("c") {
+		t.Fatal("governance vsc.tss_halt evm did not halt")
 	}
 }
 
 // Through evmSignRefused on a 0.13.0 bridge whose one (pre-rotation) key the
-// scope allows: the theft flag and the governance halt each refuse it; a
-// 0.12.0 network never consults either.
+// scope allows: the bridge's mirrored theft/custody flag and the governance
+// halt each refuse it; a 0.12.0 network never consults either.
 func TestN2_EvmSignRefusedHonoursTheHalt(t *testing.T) {
 	da := startTestDatalayer(t)
 	clean := committedState(t, da, map[string]string{"chainid": "1"})
-	theft := committedState(t, da, map[string]string{"chainid": "1", "th": "1"})
 	bridges := map[string]string{"ETH": evmBridge}
 	primary := evmBridge + "-primary"
 
@@ -186,21 +164,43 @@ func TestN2_EvmSignRefusedHonoursTheHalt(t *testing.T) {
 	if mgr.evmSignRefused(primary, make([]byte, 32), 1000) {
 		t.Fatal("no halt: the bridge's key was refused")
 	}
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{10: theft}}
+	sched := mgr.scheduler.(*fakeSolvencyScheduler)
+	sched.evmBridges = map[string]bool{evmBridge: true}
 	if !mgr.evmSignRefused(primary, make([]byte, 32), 1000) {
-		t.Fatal("th set: a withdrawal signature was issued")
+		t.Fatal("th/si set: a withdrawal signature was issued")
 	}
-	mgr.contractState = &heightOutputs{byHeight: map[uint64]string{10: clean}}
-	mgr.scheduler.(*fakeSolvencyScheduler).evmHalted = true
+	sched.evmBridges = nil
+	sched.evmHalted = true
 	if !mgr.evmSignRefused(primary, make([]byte, 32), 1000) {
 		t.Fatal("governance EVM halt: a withdrawal signature was issued")
 	}
 
 	pre, _ := evmOnlyManager(t, consensusversion.V0_12_0, bridges)
 	pre.da = da
-	pre.contractState = &heightOutputs{byHeight: map[uint64]string{10: theft}}
+	pre.contractState = &heightOutputs{byHeight: map[uint64]string{10: clean}}
 	pre.scheduler.(*fakeSolvencyScheduler).evmHalted = true
+	pre.scheduler.(*fakeSolvencyScheduler).evmBridges = map[string]bool{evmBridge: true}
 	if pre.evmSignRefused(primary, make([]byte, 32), 1000) {
 		t.Fatal("0.12.0: the EVM gate, halt included, must be inert")
+	}
+}
+
+// CG-1: a read this node cannot make is not a refusal, but it does not lift a
+// halt either: the flags come from the consensus cache, not from that read.
+func TestCG1_HaltHoldsWhenThisNodeCannotRead(t *testing.T) {
+	mgr, _, _ := cg1Bridge(t)
+	mgr.contractState = &heightOutputs{err: errors.New("connection reset by peer")}
+	sched := mgr.scheduler.(*fakeSolvencyScheduler)
+	if mgr.evmSignRefused(cg1Gen1, cg1Junk, 1000) {
+		t.Fatal("read fault, no halt: the active generation was refused")
+	}
+	sched.evmBridges = map[string]bool{evmBridge: true}
+	if !mgr.evmSignRefused(cg1Gen1, cg1Junk, 1000) {
+		t.Fatal("read fault, bridge th/si set: a withdrawal signature was issued")
+	}
+	sched.evmBridges = nil
+	sched.evmHalted = true
+	if !mgr.evmSignRefused(cg1Gen1, cg1Junk, 1000) {
+		t.Fatal("read fault, governance EVM halt: a withdrawal signature was issued")
 	}
 }

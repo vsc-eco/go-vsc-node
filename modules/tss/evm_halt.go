@@ -1,12 +1,5 @@
 package tss
 
-import (
-	"errors"
-	"fmt"
-
-	"go.mongodb.org/mongo-driver/mongo"
-)
-
 // N2 — the EVM bridges' keysign halt, the BTC vault's (btcKeysignFrozen +
 // btcSignGateDecision, solvency_gate.go / output_scoping.go) for the EVM
 // vaults. A bridge's vault keysigns are halted while either
@@ -22,12 +15,17 @@ import (
 //     generation's address is below the booked custody (account-mapping C2),
 //     deleted by a later full proof or the owner's setCustodyCheck off.
 //
-// "th" is read from the bridge's committed output at bh-1, not bh. The TSS
-// tick for block bh runs while the state engine processes bh (consumer.go
-// launches the async ticks, then ProcessBlock), so an output written in bh is
-// visible to some nodes' ticks and not others; by bh every node has finished
-// bh-1, so every node reads the same flag. A read that fails (other than the
-// bridge having no output yet) refuses the sign: the same side as the halt.
+// Every flag is read from the consensus cache with no I/O (CG-1). "th" and
+// "si" are mirrored there by the state engine at the end of each block
+// (state-processing refreshEvmBridgeHalts), from the bridge's last output at
+// or below that block. The TSS tick for bh starts after block bh-1 is
+// processed, so every node reads them at least as of bh-1, as the old
+// sign-time read did; a node whose tick reaches this gate after it has also
+// processed bh reads them as of bh (a flag that changes in bh can fail that
+// one session, retried next round). They used to be read from Mongo and the datalayer here, and a failed
+// read counted as a halt: EVM vault signing needs every listed signer, so one
+// node's read error stopped every EVM vault signature. The mirror keeps a
+// bridge's last value when its read fails instead.
 //
 // While halted, the node still lends its share where refusing would trap the
 // funds the halt protects: a superseded generation's sweep to the active
@@ -37,45 +35,12 @@ import (
 // follows them, can be, and a re-sign or roll there re-signs only a
 // transaction the bridge authorized before the cut-over.
 
-// evmTheftHaltKey and evmSolvencyHaltKey are the bridge contract's theft and
-// custody flags (account-mapping constants.TheftHaltKey, SolvencyHaltKey).
-// Any value halts; the contract clears by deleting them.
-const (
-	evmTheftHaltKey    = "th"
-	evmSolvencyHaltKey = "si"
-)
-
-// evmKeysignHalted reports whether contract's vault keysigns are halted at bh.
-// A non-nil error is a halt flag this node could not read; halted is then true.
-func (tssMgr *TssManager) evmKeysignHalted(contract string, bh uint64) (bool, error) {
-	if tssMgr.scheduler != nil && tssMgr.scheduler.EvmKeysignHalted() {
-		return true, nil
+// evmKeysignHalted reports whether contract's vault keysigns are halted.
+func (tssMgr *TssManager) evmKeysignHalted(contract string) bool {
+	if tssMgr.scheduler == nil {
+		return true // unreachable: evmRotatingKey needs a scheduler
 	}
-	if tssMgr.contractState == nil {
-		return true, errors.New("contract state reader unavailable")
-	}
-	at := bh
-	if at > 0 {
-		at--
-	}
-	output, err := tssMgr.contractState.GetLastOutputStrict(contract, at)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return false, nil // the bridge has no output yet: nothing set
-	}
-	if err != nil {
-		return true, fmt.Errorf("get last output for %s@%d: %w", contract, at, err)
-	}
-	read := tssMgr.stateKeyReader(output.StateMerkle)
-	for _, key := range []string{evmTheftHaltKey, evmSolvencyHaltKey} {
-		raw, ok, err := read(key)
-		if err != nil {
-			return true, err
-		}
-		if ok && len(raw) > 0 {
-			return true, nil
-		}
-	}
-	return false, nil
+	return tssMgr.scheduler.EvmKeysignHalted() || tssMgr.scheduler.EvmBridgeHalted(contract)
 }
 
 // evmSignGateDecision combines the scope verdict with the halt (true = skip

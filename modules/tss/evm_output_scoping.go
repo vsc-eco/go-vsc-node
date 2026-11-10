@@ -2,19 +2,25 @@ package tss
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
 
 	"vsc-node/lib/btcvault"
+	"vsc-node/modules/db"
 	tss_db "vsc-node/modules/db/vsc/tss"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/ipfs/go-cid"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // A01 — output-scoped signing for the EVM bridge's rotating vault, the S3 gate
@@ -67,11 +73,49 @@ func (d evmScopeDeps) keyName(gen uint32) string {
 }
 
 // evaluate is the verdict for a signature by keyId over sighash.
+//
+// CG-1: a refusal that rests on a read THIS node could not make (its own Mongo
+// query, a state block it does not hold, a value it cannot load) is not a
+// refusal: the verdict is scopeAllow, still under the halt (evmSignGateDecision),
+// logged at error level. An EVM vault signature needs every listed signer, so a
+// refusal from one node's read error stopped it on every node, while a
+// signature this gate must stop is still stopped by any one signer that reads
+// the state. A refusal from what the state says (no such generation, a corrupt
+// or duplicate registry, a digest that is not the generation's sweep or
+// withdrawal) stays a refusal.
 func (d evmScopeDeps) evaluate(keyId string, sighash []byte) scopeVerdict {
+	var fault error
+	if read := d.readKeyStrict; read != nil {
+		d.readKeyStrict = func(key string) ([]byte, bool, error) {
+			raw, ok, err := read(key)
+			if err != nil && !errors.Is(err, errEvmOutputUndecodable) && fault == nil {
+				fault = fmt.Errorf("read %s: %w", key, err)
+			}
+			return raw, ok, err
+		}
+	}
+	if find := d.findKey; find != nil {
+		d.findKey = func(id string) (tss_db.TssKey, error) {
+			k, err := find(id)
+			if err != nil && !errors.Is(err, mongo.ErrNoDocuments) && fault == nil {
+				fault = fmt.Errorf("find key %s: %w", id, err)
+			}
+			return k, err
+		}
+	}
+	v := d.verdict(keyId, sighash)
+	if v == scopeRefuse && fault != nil {
+		log.Error("evm output-scoping: this node could not read what the verdict needs; not refusing (the signers that can read it decide)", "contract", d.contractId, "keyId", keyId, "err", fault)
+		return scopeAllow
+	}
+	return v
+}
+
+// verdict is evaluate before the CG-1 read-fault rule.
+func (d evmScopeDeps) verdict(keyId string, sighash []byte) scopeVerdict {
 	rawV, ok, err := d.readKeyStrict("v")
 	if err != nil {
-		log.Warn("evm output-scoping: vault registry unreadable, refusing (fail closed)", "contract", d.contractId, "err", err)
-		return scopeRefuse
+		return scopeRefuse // evaluate decides whether this node's read failure counts
 	}
 	if !ok || len(rawV) == 0 {
 		// Pre-rotation bridge: its one key is the vault, unscoped as before.
@@ -329,6 +373,54 @@ func evmTxPaysOnly(unsigned []byte, chainId uint64, successor common.Address) bo
 	return bytes.Equal(tx.Data[4:36], padded[:])
 }
 
+// evmContractStateReaderAt reads contract's committed state at bh for the EVM
+// scoping gate. Unlike contractStateReaderAtStrict it reports this node's own
+// read failures as errors, so evaluate can tell them from what the state says
+// (CG-1): a failed output query (contractStateReaderAtStrict reads it as no
+// state, so a rotated bridge's registry looked absent and its active key was
+// refused) and a state root this node does not hold (the LocalOnly view reads
+// every key of it as absent). No output yet, or no state in it, is absent; a
+// stored output that does not decode (the same document on every node) is an
+// error that evaluate keeps as a refusal, as before. A key missing below a
+// root this node holds still reads as absent (the LocalOnly view).
+func (tssMgr *TssManager) evmContractStateReaderAt(contract string, bh uint64) func(key string) ([]byte, bool, error) {
+	fail := func(err error) func(string) ([]byte, bool, error) {
+		return func(string) ([]byte, bool, error) { return nil, false, err }
+	}
+	if tssMgr.contractState == nil || tssMgr.da == nil {
+		return fail(errors.New("contract state reader unavailable"))
+	}
+	output, err := tssMgr.contractState.GetLastOutputStrict(contract, bh)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return func(string) ([]byte, bool, error) { return nil, false, nil }
+	}
+	if errors.Is(err, db.ErrDecode) {
+		return func(string) ([]byte, bool, error) { return nil, false, errEvmOutputUndecodable }
+	}
+	if err != nil {
+		return fail(fmt.Errorf("get last output for %s@%d: %w", contract, bh, err))
+	}
+	if output.StateMerkle != "" {
+		root, perr := cid.Parse(output.StateMerkle)
+		if perr != nil {
+			return func(string) ([]byte, bool, error) { return nil, false, errEvmOutputUndecodable }
+		}
+		local := tssMgr.da.LocalOnly()
+		if local == nil {
+			return fail(errors.New("local datalayer view unavailable"))
+		}
+		if _, gerr := local.DagServ.Get(context.Background(), root); gerr != nil {
+			return fail(fmt.Errorf("state %s of %s not held by this node: %w", root, contract, gerr))
+		}
+	}
+	return tssMgr.stateKeyReader(output.StateMerkle)
+}
+
+// errEvmOutputUndecodable marks committed contract output that cannot be read
+// on any node (a stored output or state CID that does not decode): a refusal,
+// not this node's read failure.
+var errEvmOutputUndecodable = errors.New("committed contract output does not decode")
+
 // evmSignRefused is the pre-issuance gate for a rotating EVM vault's key: true
 // when THIS node must skip lending its share. Other keys pass untouched.
 func (tssMgr *TssManager) evmSignRefused(keyId string, sighash []byte, bh uint64) bool {
@@ -338,14 +430,11 @@ func (tssMgr *TssManager) evmSignRefused(keyId string, sighash []byte, bh uint64
 	}
 	deps := evmScopeDeps{
 		contractId:    contract,
-		readKeyStrict: tssMgr.contractStateReaderAtStrict(contract, bh),
+		readKeyStrict: tssMgr.evmContractStateReaderAt(contract, bh),
 		findKey:       tssMgr.tssKeys.FindKey,
 	}
 	verdict := deps.evaluate(keyId, sighash)
-	halted, herr := tssMgr.evmKeysignHalted(contract, bh)
-	if herr != nil {
-		log.Warn("EVM vault keysign halt flag unreadable; treating as halted (fail closed)", "contract", contract, "bh", bh, "err", herr)
-	}
+	halted := tssMgr.evmKeysignHalted(contract)
 	if evmSignGateDecision(verdict, halted) {
 		if verdict == scopeRefuse {
 			log.Warn("EVM vault keysign refused by output scoping (A01)", "keyId", keyId, "bh", bh)
