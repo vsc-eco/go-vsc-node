@@ -1290,6 +1290,12 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				log.Error("block tx AsTransaction failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
 				continue
 			}
+			// SELF-INJECTION-1: restore the trusted block/anchor context so the
+			// payload "Self" cannot survive into ToTransaction. Below 0.14 the
+			// decoded (legacy) Self is kept, for byte-identical replay.
+			if se.trustedSelfActive(t.Self.BlockHeight) {
+				tx.Self = TxSelf{TxId: txInfo.Id, Index: idx, BlockHeight: uint64(t.SignedBlock.Headers.Br[1]), BlockId: t.Self.BlockId, Timestamp: t.Self.Timestamp}
+			}
 
 			// Run each transaction at most once. A transaction a prior block
 			// already included is no longer pending in the local index, and one
@@ -1341,7 +1347,7 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 				BlockHeight: uint64(t.SignedBlock.Headers.Br[1]),
 				//
 				Index: idx,
-			})
+			}, se.trustedSelfActive(t.Self.BlockHeight))
 
 			if len(tx.Headers.RequiredAuths) == 0 {
 				continue
@@ -1396,6 +1402,11 @@ func (t *TxProposeBlock) ExecuteTx(se *StateEngine) {
 			if err != nil {
 				log.Error("block tx AsOplog failed, skipping", "id", txInfo.Id, "idx", idx, "err", err)
 				continue
+			}
+			// SELF-INJECTION-1: restore the trusted anchor context (Self feeds the
+			// per-op BlockHeight stamp). Below 0.14 the decoded Self is kept.
+			if se.trustedSelfActive(t.Self.BlockHeight) {
+				oplog.Self = TxSelf{TxId: txInfo.Id, Index: idx, BlockHeight: uint64(t.SignedBlock.Headers.Br[1]), BlockId: t.Self.BlockId, Timestamp: t.Self.Timestamp}
 			}
 			oplog.ExecuteTx(se)
 		} else if txContainer.Type() == "pendulum_settlement" {

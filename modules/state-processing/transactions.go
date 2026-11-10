@@ -1414,13 +1414,13 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 // at the anchored height (same height used for execution in ExecuteBatch and by
 // the caller) so the indexed op types match what actually executes (e.g. F14
 // unstake_hbd direction).
-func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) ([]VSCTransaction, error) {
+func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf, trustedSelfActive bool) ([]VSCTransaction, error) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	// data := make(map[string]interface{})
-	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
+	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight), trustedSelfActive)
 	if txs == nil {
 		txs = make([]VSCTransaction, 0)
 	}
@@ -1483,9 +1483,14 @@ func (tx *OffchainTransaction) TxSelf() TxSelf {
 // Determinism: invalidity is a pure function of the content-addressed tx bytes
 // (op.Type string match + CBOR decodability), so every node either resolves the
 // identical op list or fails the identical tx, producing the same block CID.
-func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error) {
+func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version, trustedSelfActive bool) ([]VSCTransaction, error) {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
+	// SELF-INJECTION-1: pristine snapshot of the trusted base Self before the op
+	// loop. Each op is decoded via DecodeTxCbor, which (below the gate) may inject
+	// a payload "Self"; above the gate we restore each op's Self from this clone.
+	// tx.Self was already restored to the trusted anchor upstream (AsTransaction).
+	selfPristine := cloneTxSelf(self)
 
 	output := make([]VSCTransaction, 0)
 	for idx, op := range tx.Tx {
@@ -1500,6 +1505,10 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &callTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				callTx.Self = selfPristine
+				callTx.Self.OpIndex = idx
+			} // SELF-INJECTION-1
 
 			vtx = callTx
 		case "transfer":
@@ -1510,6 +1519,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &transferTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				transferTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = transferTx
 		case "withdraw":
@@ -1520,6 +1532,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &withdrawTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				withdrawTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &withdrawTx
 		case "stake_hbd":
@@ -1532,6 +1547,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				stakeTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &stakeTx
 		case "unstake_hbd":
@@ -1556,6 +1574,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 				if err := transactionpool.DecodeTxCbor(op, &unstakeTx); err != nil {
 					return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 				}
+				if trustedSelfActive {
+					unstakeTx.Self = selfPristine
+				} // SELF-INJECTION-1
 
 				vtx = &unstakeTx
 				break
@@ -1569,6 +1590,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				stakeTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &stakeTx
 		default:
@@ -1616,7 +1640,11 @@ type VscTxContainer interface {
 	// activeVersion is the chain-active consensus version at the tx's anchored
 	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
 	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
-	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
+	// trustedSelfActive (SELF-INJECTION-1) is resolved from the TRUSTED L1 landing
+	// height, not the producer-supplied block range, and gates the per-op Self
+	// rebuild; it is separate from activeVersion so the fix cannot be dodged for a
+	// window at the 0.14 boundary by a low Br[1].
+	ToTransaction(activeVersion consensusversion.Version, trustedSelfActive bool) ([]VSCTransaction, error)
 }
 
 // tssKeyAllowlistFor resolves the TSS key-creation allowlist for a transaction
