@@ -6,7 +6,15 @@ FROM golang:1.25.10 AS build
 # Wasmedge Install Dependencies
 RUN apt update && apt install -y git python3
 
-RUN useradd -m app
+# uid/gid 1000 matches the `app` user; the cache mounts below are created with
+# this ownership so the non-root build can write to them.
+RUN useradd -m --uid 1000 app
+
+# Keep Go's module cache and build cache out of the image layers (see the main
+# Dockerfile for details).
+ENV GOPATH=/home/app/go \
+    GOMODCACHE=/home/app/go/pkg/mod \
+    GOCACHE=/home/app/.cache/go-build
 
 USER app
 
@@ -26,13 +34,17 @@ RUN curl -sSfL https://raw.githubusercontent.com/WasmEdge/WasmEdge/0.13.4/utils/
 COPY go.mod go.sum ./
 
 # Download the dependencies
-RUN go mod download
+RUN --mount=type=cache,target=/home/app/go/pkg/mod,uid=1000,gid=1000 \
+    --mount=type=cache,target=/home/app/.cache/go-build,uid=1000,gid=1000 \
+    go mod download
 
 # Copy the rest of the application code
 COPY --chown=app:app . .
 
 # Generate GraphQL code and build the application
-RUN . /home/app/.wasmedge/env && go run github.com/99designs/gqlgen generate && go build -buildvcs=false -o mapping-bot vsc-node/cmd/mapping-bot
+RUN --mount=type=cache,target=/home/app/go/pkg/mod,uid=1000,gid=1000 \
+    --mount=type=cache,target=/home/app/.cache/go-build,uid=1000,gid=1000 \
+    . /home/app/.wasmedge/env && go run github.com/99designs/gqlgen generate && go build -buildvcs=false -o mapping-bot vsc-node/cmd/mapping-bot
 
 
 FROM rockylinux:9.3-minimal
@@ -48,7 +60,7 @@ WORKDIR /home/app/app
 COPY --from=build /home/app/app/mapping-bot .
 COPY --from=build /home/app/.wasmedge /home/app/.wasmedge
 
-ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/home/app/.wasmedge/lib
 ENV PATH=/home/app/.wasmedge/bin:$PATH
 
 RUN printf '#!/bin/sh\n\
