@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"vsc-node/modules/gateway"
+
 	"github.com/vsc-eco/hivego"
 )
 
@@ -353,10 +355,14 @@ func TestBothBridges_FS10_KeyLoad(t *testing.T) {
 }
 
 // FS11 (I8): a member stands down while both keygens run, so the next election
-// changes the committee and rotates the gateway multisig in the same window as
-// both vault rotations: three rotations at once. Every one must finish, the
-// leaver must drop out of the committee and the gateway, and L2 must keep
-// producing (the whole-cycle marks and the meter show the cost).
+// changes the committee in the same window as both vault rotations. Every one
+// must finish, the leaver must drop out of the committee, and L2 must keep
+// producing (the whole-cycle marks and the meter show the cost). The gateway
+// multisig only rotates with at least gateway.MIN_GATEWAY_KEYS (8) eligible
+// members (keyRotation, modules/gateway/multisig.go): on this 5-node devnet it
+// refuses ("not enough keys") and keeps its keys, the leaver's included. The
+// test checks that; the gateway leaver path itself is covered on 10 nodes by
+// gw_leavers_freeze and gw_below_floor.
 func TestBothBridges_FS11_CommitteeChangeMidBoth(t *testing.T) {
 	bbSkipShort(t)
 	b := newBothEnv(t, 300*time.Minute, bbWeatherLevel("none"), true)
@@ -396,7 +402,9 @@ func TestBothBridges_FS11_CommitteeChangeMidBoth(t *testing.T) {
 				}); err == nil {
 					b.mark("committee change (leaver out of the election)", start)
 				}
-				if err := pollUntil(b.ctx, 45*time.Minute, func() bool { has, _ := gatewayHas(leaverKey); return !has }); err == nil {
+				// n < 0 is a failed read, not a rotation (the 11-03 and 11-11 runs
+				// marked a "rotation" from one).
+				if err := pollUntil(b.ctx, 45*time.Minute, func() bool { has, n := gatewayHas(leaverKey); return n > 0 && !has }); err == nil {
 					b.mark("gateway multisig rotated (leaver's key out)", start)
 				}
 			}()
@@ -407,9 +415,18 @@ func TestBothBridges_FS11_CommitteeChangeMidBoth(t *testing.T) {
 			if err != nil || slices.Contains(m, acct) {
 				t.Errorf("%s still elected at epoch %d after standing down at %d (members %v, err %v)", acct, ep, epoch0, m, err)
 			}
-			if has, n := gatewayHas(leaverKey); has {
+			has, n := gatewayHas(leaverKey)
+			switch {
+			case n < 0:
+				t.Errorf("could not read vsc.gateway's authority")
+			case len(m) < gateway.MIN_GATEWAY_KEYS && (!has || n != d.cfg.Nodes):
+				t.Errorf("a %d-member committee is below the gateway floor (%d), so the multisig must keep its %d keys; it has %d (leaver listed: %v)",
+					len(m), gateway.MIN_GATEWAY_KEYS, d.cfg.Nodes, n, has)
+			case len(m) >= gateway.MIN_GATEWAY_KEYS && has:
 				t.Errorf("the gateway multisig still lists %s's key after the committee change (%d keys)", acct, n)
 			}
+			t.Logf("MEASURE FS11 gateway after the committee change: %d keys, leaver listed %v, committee %d (gateway floor %d)",
+				n, has, len(m), gateway.MIN_GATEWAY_KEYS)
 			assertAllNodesHealthy(t, d, b.ctx, 20)
 		},
 	})

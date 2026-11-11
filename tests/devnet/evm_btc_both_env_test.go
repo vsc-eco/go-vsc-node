@@ -193,6 +193,19 @@ type bothEnv struct {
 	userKey *ecdsa.PrivateKey
 	user    string // the user's did:pkh (ETH balance on the bridge, HBD for RC)
 	vault0  ethcommon.Address
+	// usdc is the MockUSDC registered on the bridge (zero with BB_USDC=0): the
+	// third asset of every BOTH cycle, next to BTC and ETH (owner 11-11: "since
+	// theres usdc eth and btc pool now ... consider every one"). usdcOwner
+	// mints it and can pause or blacklist it (Circle's rules, MockUSDC.sol).
+	usdc      ethcommon.Address
+	usdcOwner *ecdsa.PrivateKey
+	usdcRecip ethcommon.Address // the USDC withdrawal runCycle queues in the migration
+	// userMu serializes the user's L2 calls; userNonce is the last nonce one
+	// of them took (userNonceSet once any has), see userCall.
+	userMu       sync.Mutex
+	userNonce    uint64
+	userNonceSet bool
+	userNonceAt  time.Time
 
 	mu         sync.Mutex
 	proverHold time.Time // no header planted before this (late prover)
@@ -271,8 +284,27 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	if err := b.anvil.SetBalance(ctx, vault0, bbEth(1)); err != nil {
 		t.Fatal(err)
 	}
+	// USDC on L1, registered on the bridge before the bot starts (it is told
+	// the token through TOKENS), as the A01 and WUSDC waves do.
+	if bbUSDC() {
+		b.usdcOwner = mustKey(t)
+		if err := b.anvil.SetBalance(ctx, cryptoPubkeyAddr(b.usdcOwner), bbEth(100)); err != nil {
+			t.Fatal(err)
+		}
+		usdc, err := b.anvil.DeployMockUSDC(ctx, b.usdcOwner)
+		if err != nil {
+			t.Fatalf("deploy MockUSDC: %v", err)
+		}
+		if err := e.proposeExecute("registerToken", fmt.Sprintf(`{"address":"%s","symbol":"usdc","decimals":6,"min_withdrawal":1000000}`, usdc.Hex())); err != nil {
+			t.Fatalf("registerToken usdc: %v", err)
+		}
+		b.usdc = usdc
+	}
 	b.botCfg = BotConfig{EthRPC: rpcURL, ContractID: e.amID, GraphQLURL: b.d.GQLEndpoint(e.gqlNode),
 		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey)), NeedsFile: filepath.Join(t.TempDir(), "needs.json")}
+	if b.usdc != (ethcommon.Address{}) {
+		b.botCfg.Tokens = b.usdc.Hex()
+	}
 	b.bot = StartBot(t, ctx, b.botCfg)
 	// Real cadence while the test waits on the bot and while the bot is
 	// working (it logs each step; a deposit's steps are up to ~15 s apart).
@@ -303,6 +335,92 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 	if err := b.botPoll(15*time.Minute, func() bool { return e.stateStr("a-"+b.user+"-eth") != "" }); err != nil {
 		t.Fatalf("the user's ETH deposit was never mapped\nbot:\n%s", b.botLogs())
 	}
+	if b.usdc != (ethcommon.Address{}) {
+		// 25 USDC to generation 0 (a direct ERC-20 transfer, the plain path).
+		if rc, err := b.anvil.SendTx(ctx, b.usdcOwner, &b.usdc, usdcCall("mint(address,uint256)", userAddr, bbUSD(30)), 100_000); err != nil || rc.Status != 1 {
+			t.Fatalf("mint usdc: %v", err)
+		}
+		if rc, err := b.anvil.SendTx(ctx, b.userKey, &b.usdc, usdcCall("transfer(address,uint256)", vault0, bbUSD(25)), 100_000); err != nil || rc.Status != 1 {
+			t.Fatalf("usdc deposit: %v", err)
+		}
+		if err := b.botPoll(15*time.Minute, func() bool { return b.userUSDC() == bbUSD(25).String() }); err != nil {
+			t.Fatalf("the user's USDC deposit was never mapped (a-%s-usdc %q)\nbot:\n%s", b.user, e.stateStr("a-"+b.user+"-usdc"), b.botLogs())
+		}
+		t.Logf("BOTH: 25 USDC mapped at EVM generation 0 (token %s)", b.usdc.Hex())
+	}
+}
+
+// bbUSDC reports whether the BOTH cycles carry USDC as their third asset
+// (default on; BB_USDC=0 runs the BTC + ETH cycle the 10-31..11-10 runs used).
+func bbUSDC() bool { return os.Getenv("BB_USDC") != "0" }
+
+func bbUSD(n int64) *big.Int { return big.NewInt(n * 1_000_000) }
+
+// userUSDC is the user's USDC balance on the bridge (micro-units, the first
+// field of its a-<did>-usdc record; "" when absent).
+func (b *bothEnv) userUSDC() string {
+	return strings.SplitN(b.e.stateStr("a-"+b.user+"-usdc"), "|", 2)[0]
+}
+
+// usdcWithdraw asks the bridge to send units of USDC to a fresh L1 address
+// (unmapERC20; its L1 gas comes from the shared reserve); returns it.
+func (b *bothEnv) usdcWithdraw(units *big.Int) ethcommon.Address {
+	to := ethCrypto.PubkeyToAddress(mustKey(b.t).PublicKey)
+	id, err := b.userCall("unmapERC20", fmt.Sprintf(`{"to":"%s","amount":"%s","token_address":"%s"}`, to.Hex(), units.String(), b.usdc.Hex()))
+	if err != nil {
+		b.t.Fatalf("unmapERC20: %v", err)
+	}
+	// Fail at once if the bridge refused it, instead of waiting out the cycle.
+	if ok, msg := b.e.outResult(b.ctx, id); !ok {
+		b.t.Fatalf("unmapERC20 refused: %s", msg)
+	}
+	return to
+}
+
+// userCall sends an L2 contract call on the bridge signed by the user's key.
+// Calls from one account in quick succession must take consecutive nonces:
+// the node's account nonce counts only included transactions, and its pool
+// takes a second transaction at the same nonce and drops it once the first is
+// included (B-R1), so a back-to-back call at the fetched nonce is silently
+// lost. BB-1 with USDC, 11-11 run 1, lost its USDC withdrawal that way (sent
+// right after the ETH one). A call within userNonceWindow of the last one
+// takes the fetched nonce or the one after the last call's, whichever is
+// higher; a later call takes the fetched (confirmed) nonce, as a wallet does.
+// FS13 11-11: the withdrawal sent during the L2 halt never got 2/3 (18ah
+// TX-GOSSIP-STALL), so a call 30 min later at the next local nonce queued
+// behind it for good; at the confirmed nonce it replaces it (10-31 PASS).
+func (b *bothEnv) userCall(action, payload string) (string, error) {
+	b.userMu.Lock()
+	defer b.userMu.Unlock()
+	k, err := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(b.userKey)))
+	if err != nil {
+		return "", err
+	}
+	n, err := b.d.FetchL2Nonce(b.ctx, b.e.gqlNode, k.DID.String())
+	if err != nil {
+		return "", err
+	}
+	if b.userNonceSet && n <= b.userNonce && devnetNow().Sub(b.userNonceAt) < userNonceWindow {
+		n = b.userNonce + 1
+	}
+	id, err := b.d.CallContractEvmAt(b.ctx, b.e.gqlNode, k, b.e.amID, action, payload, 5_000_000, n)
+	if err == nil {
+		b.userNonce, b.userNonceSet, b.userNonceAt = n, true, devnetNow()
+	}
+	return id, err
+}
+
+// userNonceWindow: how long after a call the next one still assumes it is
+// pending (back-to-back calls land within seconds on devnet).
+const userNonceWindow = 2 * time.Minute
+
+// usdcAt is addr's MockUSDC balance on L1 (zero on a read error).
+func (b *bothEnv) usdcAt(addr ethcommon.Address) *big.Int {
+	v, err := b.anvil.ERC20BalanceOf(b.ctx, b.usdc, addr)
+	if err != nil {
+		return big.NewInt(0)
+	}
+	return v
 }
 
 // l1Background mines an anvil block every 12 s of chain time and stands in
@@ -665,10 +783,6 @@ func (b *bothEnv) loadGen(perHour int, stop <-chan struct{}) {
 		return
 	}
 	gap := time.Hour / time.Duration(perHour)
-	k, err := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(b.userKey)))
-	if err != nil {
-		return
-	}
 	evmOK, evmErr, btcOK, btcErr := 0, 0, 0, 0
 	defer func() {
 		b.note("load: EVM withdrawals %d ok / %d refused, BTC unmaps %d ok / %d refused", evmOK, evmErr, btcOK, btcErr)
@@ -682,8 +796,7 @@ func (b *bothEnv) loadGen(perHour int, stop <-chan struct{}) {
 		case <-devnetAfter(gap):
 		}
 		to := ethCrypto.PubkeyToAddress(mustKey(b.t).PublicKey)
-		if _, err := b.d.CallContractEvm(b.ctx, b.e.gqlNode, k, b.e.amID, "unmapETH",
-			fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), "20000000000000000"), 5_000_000); err != nil {
+		if _, err := b.userCall("unmapETH", fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), "20000000000000000")); err != nil {
 			evmErr++
 		} else {
 			evmOK++
@@ -735,12 +848,7 @@ func (b *bothEnv) evmWithdraw(wei *big.Int) ethcommon.Address {
 // evmWithdrawTx is evmWithdraw that also returns the L2 transaction id.
 func (b *bothEnv) evmWithdrawTx(wei *big.Int) (ethcommon.Address, string) {
 	to := ethCrypto.PubkeyToAddress(mustKey(b.t).PublicKey)
-	k, err := NewEthKey(hex.EncodeToString(ethCrypto.FromECDSA(b.userKey)))
-	if err != nil {
-		b.t.Fatal(err)
-	}
-	tx, err := b.d.CallContractEvm(b.ctx, b.e.gqlNode, k, b.e.amID, "unmapETH",
-		fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), wei.String()), 5_000_000)
+	tx, err := b.userCall("unmapETH", fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth"}`, to.Hex(), wei.String()))
 	if err != nil {
 		b.t.Fatalf("unmapETH: %v", err)
 	}
@@ -860,6 +968,10 @@ type cycleHooks struct {
 	btcSigning      func()                // the BTC sweep's signatures requested, the EVM batch running
 	btcSwept        func()                // the BTC sweep confirmed, the EVM batch maybe still running
 	settled         func()                // everything settled
+	// usdcOwn: the test checks the USDC side itself (FS16/FS17 stop the token
+	// sweep on purpose): runCycle neither waits for the USDC withdrawal on L1
+	// nor checks the three-asset end state.
+	usdcOwn bool
 }
 
 // runCycle is one full rotation of BOTH vaults in the same window:
@@ -912,6 +1024,16 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 	mig := devnetNow()
 	migBlock, _ := b.anvil.cli.BlockNumber(b.ctx)
 	recip := b.evmWithdraw(bbEth(1))
+	var urecip ethcommon.Address
+	if b.usdc != (ethcommon.Address{}) {
+		// The token side of the same window: it waits for the USDC sweep
+		// (activeGenCovers) and pays its gas from the reserve.
+		urecip = b.usdcWithdraw(bbUSD(5))
+	}
+	// Set before any hook runs: FS16/FS17 read it from btcSwept (FS16 11-11
+	// run 1 read the zero address there and failed although the withdrawal
+	// was paid at block 3587).
+	b.usdcRecip = urecip
 	if b.w.proverPause > 0 {
 		b.mu.Lock()
 		b.proverHold = mig.Add(b.w.proverPause)
@@ -944,10 +1066,29 @@ func (b *bothEnv) runCycle(h cycleHooks) {
 		t.Fatalf("the EVM withdrawal queued during both migrations never reached L1\nbot:\n%s", b.botLogs())
 	}
 	b.mark("EVM withdrawal queued in the migration -> on L1", mig)
+	if b.usdc != (ethcommon.Address{}) && !h.usdcOwn {
+		if err := b.botPoll(60*time.Minute, func() bool { return b.usdcAt(urecip).Cmp(bbUSD(5)) == 0 }); err != nil {
+			t.Fatalf("the USDC withdrawal queued during both migrations never reached L1 (holds %s)\nbot:\n%s", b.usdcAt(urecip), b.botLogs())
+		}
+		b.mark("USDC withdrawal queued in the migration -> on L1", mig)
+	}
 	if err := b.botPoll(60*time.Minute, b.evmMigrated); err != nil {
 		t.Fatalf("EVM generation 0 never drained, retired and purged: msr=%q\nbot:\n%s", e.stateStr("msr"), b.botLogs())
 	}
 	b.mark("EVM batch confirmed, gen 0 retired + purged", mig)
+	if b.usdc != (ethcommon.Address{}) && !h.usdcOwn {
+		// The three-asset end state: every USDC unit is where the books say.
+		vault1, ok := tssKeyAddress(e.keyPub(evmKeyName(1)))
+		if !ok {
+			t.Fatalf("no address for EVM generation 1")
+		}
+		g0, g1, user, sup := b.usdcAt(b.vault0), b.usdcAt(vault1), b.userUSDC(), e.stateStr("s-usdc")
+		if g0.Sign() != 0 || g1.Cmp(bbUSD(20)) != 0 || user != bbUSD(20).String() || b.usdcAt(urecip).Cmp(bbUSD(5)) != 0 || sup != "20000000|20000000|0|0" {
+			t.Fatalf("USDC after both migrations: gen0 %s, gen1 %s (want 20000000), user %q (want 20000000), recipient %s (want 5000000), s-usdc %q (want 20000000|20000000|0|0); vb-0-usdc=%q",
+				g0, g1, user, b.usdcAt(urecip), sup, e.stateStr("vb-0-usdc"))
+		}
+		t.Logf("CASE BB-USDC PASS: 20 USDC at generation 1 %s, 0 at generation 0, 5 paid out during both migrations, user holds 20 on L2", vault1.Hex())
+	}
 	if noop, total, err := b.noopVaultOps(); err != nil {
 		t.Logf("MEASURE no-op vault ops: unreadable (%v)", err)
 	} else {
