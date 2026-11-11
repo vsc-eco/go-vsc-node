@@ -197,3 +197,21 @@ func TestCGA4_UnreadableRegistryFallsBackToTheKey(t *testing.T) {
 		t.Fatalf("pre-rotation bridge: vault %q err %v, want the key's address %s", got, err, tssAddrG)
 	}
 }
+
+// The devnet waves and operators wait for "A18: vault is the TSS key's address";
+// the registry path must log the same line as the key path (the 11-10 regression
+// run stopped at that wait in 12 devnet tests when it did not).
+func TestCGA4_RegistryPathLogsTheA18Line(t *testing.T) {
+	logs := captureLogs(t)
+	l2 := newFakeL2()
+	l2.keys["vsc1bridge-primary"] = [2]string{"active", tssPubG}
+	l2.set("vsc1bridge", "v", string(rotRegistry(rotEntry{0, 1, btcvault.VaultStatusActive})))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := waitForTssVault(ctx, l2.gql(t), nil, "vsc1bridge", "vsc1bridge-primary", "", 20*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "A18: vault is the TSS key's address") {
+		t.Fatalf("registry path did not log the A18 line:\n%s", logs.String())
+	}
+}
