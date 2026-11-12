@@ -238,3 +238,36 @@ func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestTestnetConfig_ThreePoolsSwapFromTheirHeightAndNeverCount(t *testing.T) {
+	c := TestnetConfig().(*config)
+	h := params.TESTNET_PENDULUM_3POOL_HEIGHT
+	if h == 0 {
+		t.Fatal("the testnet 3-pool addition must be gated on a height")
+	}
+	pools := []string{
+		"vsc1Bmx2u1SiWvionujSpfhGxKffn9nkvwHLsG", // BTC:HBD
+		"vsc1Bh7AaQF7iti8PZz7wg3QMbaTM62eh1GCW8", // ETH:HBD
+		"vsc1BUoRhmA6px3mgfmdXbgd6nmU5NqL2shcDe", // HBD:USDC
+	}
+	base := []string{"vsc1BbGEc5XXqptJj7dC6AkToRZb4tJ6vi44Rn", "vsc1BYVWLFJRb13GuGZd721LoJ4suxnZZghLV7"}
+	for _, p := range pools {
+		if has(c.PendulumPoolWhitelistAt(h-1), p) {
+			t.Fatalf("%s must not swap before height %d", p, h)
+		}
+		if !has(c.PendulumPoolWhitelistAt(h), p) {
+			t.Fatalf("%s must swap from height %d", p, h)
+		}
+	}
+	for _, at := range []uint64{0, h - 1, h, 1 << 40} {
+		swap, coll := c.PendulumPoolWhitelistAt(at), c.PendulumCollateralPoolsAt(at)
+		for _, b := range base {
+			if !has(swap, b) || !has(coll, b) {
+				t.Fatalf("height %d: the base pool %s must keep both privileges (swap %v, collateral %v)", at, b, swap, coll)
+			}
+		}
+		if len(coll) != 2 {
+			t.Fatalf("height %d: collateral must stay exactly the two base pools, got %v", at, coll)
+		}
+	}
+}
