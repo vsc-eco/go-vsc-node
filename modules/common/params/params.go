@@ -284,6 +284,16 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
 var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
 
+// TESTNET_PENDULUM_3POOL_HEIGHT is the testnet Hive L1 block from which the three
+// pools of the testnet 3-pool campaign (BTC/HBD, ETH/HBD and HBD/USDC on dex-contracts
+// main 2ae12d3, deployed 2026-11-12 by hive:magi.contracts) pass the pendulum swap gate.
+// Testnet only, and consensus input like PENDULUM_WHITELIST_V2_HEIGHT: below it every
+// node refuses a swap through them, at and after it every node accepts one, so every
+// testnet node must run a build carrying it before the height. Pinned 2026-11-12 from
+// testnet head 8,163,848 + 28,800 blocks (~24 h at 3 s). Re-pin if the rollout slips
+// past it: a height already passed makes the addition live the moment a node upgrades.
+var TESTNET_PENDULUM_3POOL_HEIGHT uint64 = 8_192_650
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────

@@ -776,6 +776,16 @@ func TestnetConfig() SystemConfig {
 			"vsc1BbGEc5XXqptJj7dC6AkToRZb4tJ6vi44Rn",
 			"vsc1BYVWLFJRb13GuGZd721LoJ4suxnZZghLV7",
 		},
+		// The testnet 3-pool campaign (2026-11-12): swaps between BTC, ETH and USDC
+		// through HBD with both bridges live, on the pool and router code that goes to
+		// mainnet (dex-contracts main 2ae12d3; router vsc1BZMfSUB3tBAUf1vvvte5861EnSKR54jWmu).
+		// Owner hive:magi.contracts. Append-only and height-staged like mainnet's
+		// additions; swap-only, so the pendulum geometry (P) keeps the two pools above.
+		pendulumPoolAdditions: []PendulumPoolAddition{
+			{ID: "vsc1Bmx2u1SiWvionujSpfhGxKffn9nkvwHLsG", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // BTC:HBD
+			{ID: "vsc1Bh7AaQF7iti8PZz7wg3QMbaTM62eh1GCW8", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // ETH:HBD
+			{ID: "vsc1BUoRhmA6px3mgfmdXbgd6nmU5NqL2shcDe", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // HBD:USDC
+		},
 	}
 	return conf
 }
