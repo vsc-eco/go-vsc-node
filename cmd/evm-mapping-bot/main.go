@@ -3904,7 +3904,26 @@ func runOnce(
 	// PREFETCH the scan results concurrently with a bounded worker pool, then
 	// process them below in STRICT block order. The checkpoint-advancement and
 	// stop-at-first-failure semantics are unchanged — only the I/O is parallel.
-	scanResults := scanBlocksParallel(depCtx, rpc, cp.LastScannedBlock+1, scanUpTo, cfg)
+	// RESCAN-STARVE-1 (devnet BB2, 11-13): map the deposits already parked
+	// first, then scan with what is left of the deposit phase. A bot far behind
+	// (restarted with an empty checkpoint, or on a slow RPC) used to spend the
+	// whole phase scanning every tick, so deposits parked with their header
+	// stored were never mapped until the scan caught up, and retireVault waited
+	// on them (I-26). Mapping the parked deposits is finite work; the scan of a
+	// moving chain is not, so the finite work goes first and the scan keeps the
+	// rest (no fixed cap: a fixed share slowed every catch-up). Deposits the
+	// scan finds below are mapped in the same tick if time is left. This first
+	// pass gets at most half the phase: a parked block whose maps keep failing
+	// is retried every tick (it is not dead-lettered), and with no bound it and
+	// a slow RPC could hold the scan still instead.
+	if !cfg.Paused { // I-13: a paused bridge refuses maps; the found deposits stay parked
+		requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
+		parkedCtx, parkedCancel := context.WithTimeout(depCtx, depositPhaseBudget/2)
+		mapWaitingDeposits(parkedCtx, rpc, gql, submitter, cp, cfg, 0)
+		parkedCancel()
+	}
+	scanFrom := cp.LastScannedBlock + 1
+	scanResults := scanBlocksParallel(depCtx, rpc, scanFrom, scanUpTo, cfg)
 
 	var tokenMins map[string]*big.Int
 	minsRead := false
@@ -3938,16 +3957,16 @@ func runOnce(
 	}
 
 	// ---------------------------------------------------------------
-	// STEP 4: Build proofs and submit map calls for the parked blocks whose
-	// header is stored, oldest first. A block whose map fails, or that runs
-	// out of the deposit phase's time, stays parked and continues next tick,
-	// skipping the deposits whose maps were already submitted (TICKSTALL-1). A
-	// re-submission of a processed deposit is harmless — the contract
-	// deduplicates via the observed block list.
+	// STEP 4: Build proofs and submit map calls for the blocks this scan
+	// parked whose header is stored, oldest first (the earlier ones were
+	// mapped before the scan, RESCAN-STARVE-1). A block whose map fails, or
+	// that runs out of the deposit phase's time, stays parked and continues
+	// next tick, skipping the deposits whose maps were already submitted
+	// (TICKSTALL-1). A re-submission of a processed deposit is harmless — the
+	// contract deduplicates via the observed block list.
 	// ---------------------------------------------------------------
-	if !cfg.Paused { // I-13: a paused bridge refuses maps; the found deposits stay parked
-		requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
-		mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg)
+	if !cfg.Paused && cp.LastScannedBlock >= scanFrom {
+		mapWaitingDeposits(depCtx, rpc, gql, submitter, cp, cfg, scanFrom)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -3956,15 +3975,25 @@ func runOnce(
 	// B4: resolve the map calls submitted on earlier ticks.
 	resolvePendingMaps(ctx, gql, cp)
 
+	// HEADERNEED-STARVE (11-13): withdrawals and confirmations get at most
+	// withdrawConfirmBudget of the tick, so the steps after them (queue drain,
+	// gas refunds, header needs) always run with time left. Run on the rest of
+	// the shared tick, a slow RPC in these two steps handed those an expired
+	// context every tick: a newly needed header never reached the operator's
+	// needs file and queued withdrawals were not drained while the RPC stayed
+	// slow. Unfinished work continues next tick, as in the deposit phase.
+	wcCtx, wcCancel := context.WithTimeout(ctx, withdrawConfirmBudget)
+
 	// ---------------------------------------------------------------
 	// STEP 5: Handle withdrawals
 	// ---------------------------------------------------------------
-	handleWithdrawals(ctx, rpc, gql, cp, cfg, tssKeyID)
+	handleWithdrawals(wcCtx, rpc, gql, cp, cfg, tssKeyID)
 
 	// ---------------------------------------------------------------
 	// STEP 6: Handle confirmations
 	// ---------------------------------------------------------------
-	handleConfirmations(ctx, rpc, gql, submitter, cp, cfg)
+	handleConfirmations(wcCtx, rpc, gql, submitter, cp, cfg)
+	wcCancel()
 
 	// RP-11: issue queued withdrawals into free slots (refused while paused).
 	if !cfg.Paused {
@@ -4111,13 +4140,16 @@ func markMapped(cp *Checkpoint, h uint64, dep detectedDeposit) {
 	cp.depositWork = true
 }
 
-// mapWaitingDeposits maps the parked deposit blocks whose header is stored,
-// oldest first, and asks for the headers of the others (RP-9).
-func mapWaitingDeposits(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig) {
+// mapWaitingDeposits maps the parked deposit blocks at or above from whose
+// header is stored, oldest first, and asks for the headers of the others
+// (RP-9). from 0 is every parked block.
+func mapWaitingDeposits(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, submitter *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, from uint64) {
 	cp.mu.Lock()
 	var blocks []uint64
 	for h := range cp.WaitingDeposits {
-		blocks = append(blocks, h)
+		if h >= from {
+			blocks = append(blocks, h)
+		}
 	}
 	cp.mu.Unlock()
 	if len(blocks) == 0 {
@@ -4745,6 +4777,11 @@ func noteLaterWithdrawalHeaders(ctx context.Context, rpc *ethRPC, gql *vscGraphQ
 // may take; the rest is left for withdrawals, confirmations and headers
 // (TICKSTALL-1).
 var depositPhaseBudget = 30 * time.Second
+
+// withdrawConfirmBudget bounds the withdrawal and confirmation steps of a tick
+// (HEADERNEED-STARVE): with the deposit phase's 30 s it leaves at least 15 s of
+// the 60 s tick to the queue drain, gas refunds and header needs.
+var withdrawConfirmBudget = 15 * time.Second
 
 // mapResultTimeout: a submitted map with no on-chain result after this long is
 // dead-lettered (the L2 pool dropped it, or the node lost it).
