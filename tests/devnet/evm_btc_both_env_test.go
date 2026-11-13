@@ -301,7 +301,11 @@ func (b *bothEnv) startEVM(bctx context.Context) {
 		b.usdc = usdc
 	}
 	b.botCfg = BotConfig{EthRPC: rpcURL, ContractID: e.amID, GraphQLURL: b.d.GQLEndpoint(e.gqlNode),
-		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey)), NeedsFile: filepath.Join(t.TempDir(), "needs.json")}
+		EthPrivHex: hex.EncodeToString(ethCrypto.FromECDSA(botKey)), NeedsFile: filepath.Join(t.TempDir(), "needs.json"),
+		// The weather's bot restart is a process restart: the new bot keeps the checkpoint
+		// (StartBot makes a fresh one per call when this is empty, which re-scanned from
+		// START_BLOCK and turned the restart into a lost-disk case, BB2 11-13).
+		Checkpoint: filepath.Join(t.TempDir(), "both-checkpoint.json")}
 	if b.usdc != (ethcommon.Address{}) {
 		b.botCfg.Tokens = b.usdc.Hex()
 	}
