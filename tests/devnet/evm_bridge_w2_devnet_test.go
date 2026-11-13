@@ -90,6 +90,7 @@ func TestEVMBridge_W2_WithdrawalCloseout(t *testing.T) {
 		Asset         string   `json:"asset"`
 		VaultAtQueue  string   `json:"vault_at_queue"`
 		UnsignedTxHex string   `json:"unsigned_tx_hex"`
+		GasCost       *big.Int `json:"gas_cost"`
 	}
 	var ps pendingSpend
 	if err := pollUntil(ctx, evmL2Wait, func() bool {
@@ -162,6 +163,15 @@ func TestEVMBridge_W2_WithdrawalCloseout(t *testing.T) {
 	}
 	csPayload := fmt.Sprintf(`{"block_height":%d,"tx_index":%d,"tx_proof":"%s","receipt_proof":"%s","intent_nonce":%d,"intent_to":"%s","intent_amount":"%s","intent_asset":"%s"}`,
 		blockN, wIdx, txProofB64, rcptProofB64, ps.Nonce, ps.To, ps.Amount.String(), ps.Asset)
+	ethBal := func() *big.Int {
+		m, _ := e.d.GetStateByKeys(ctx, e.gqlNode, e.amID, []string{"a-" + did + "-eth"})
+		v, _ := new(big.Int).SetString(fmt.Sprintf("%v", m["a-"+did+"-eth"]), 10)
+		if v == nil {
+			v = new(big.Int)
+		}
+		return v
+	}
+	balBeforeConfirm := ethBal()
 	csTx, err := e.callOnce(e.ownerNode, e.amID, "confirmSpend", csPayload)
 	if err != nil {
 		t.Fatalf("confirmSpend broadcast: %v", err)
@@ -175,6 +185,27 @@ func TestEVMBridge_W2_WithdrawalCloseout(t *testing.T) {
 		dumpMapErr(t, e, ctx, csTx)
 		m, _ := e.d.GetStateByKeys(ctx, e.gqlNode, e.amID, []string{"n", "np"})
 		t.Fatalf("confirmSpend did not advance confirmed nonce (n=%v np=%v) — see DAG above", m["n"], m["np"])
+	}
+	// EVM-FEE-1: the withdrawer prepaid gas_cost (gas limit x fee cap) and gets back
+	// what the mined transaction did not burn (receipt gas used x effective price).
+	rcpt, err := anvil.cli.TransactionReceipt(ctx, wTxHash)
+	if err != nil || ps.GasCost == nil {
+		t.Fatalf("receipt / prepaid gas: %v (gas_cost %v)", err, ps.GasCost)
+	}
+	burned := new(big.Int).Mul(new(big.Int).SetUint64(rcpt.GasUsed), rcpt.EffectiveGasPrice)
+	wantRefund := new(big.Int).Sub(ps.GasCost, burned)
+	if wantRefund.Sign() < 0 {
+		wantRefund.SetInt64(0)
+	}
+	if wIdx == 0 {
+		if got := new(big.Int).Sub(ethBal(), balBeforeConfirm); got.Cmp(wantRefund) != 0 {
+			t.Fatalf("EVM-FEE-1: withdrawer refunded %s wei at confirmSpend, want %s (prepaid %s, used %d x %s)",
+				got, wantRefund, ps.GasCost, rcpt.GasUsed, rcpt.EffectiveGasPrice)
+		}
+		t.Logf("CASE EVM-FEE-1 PASS: prepaid %s wei, burned %s (gas %d x %s), %s refunded to the withdrawer at confirmSpend",
+			ps.GasCost, burned, rcpt.GasUsed, rcpt.EffectiveGasPrice, wantRefund)
+	} else {
+		t.Logf("EVM-FEE-1: withdrawal at tx index %d: settled by refundWithdrawalGas (gsl), not checked here", wIdx)
 	}
 	_ = strings.ToLower
 	t.Logf("W2 PASS — withdrawal confirmed, confirmed nonce 0->1. Proven: H-F1 (PendingSpend JSON), " +

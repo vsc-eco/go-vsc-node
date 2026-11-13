@@ -211,7 +211,10 @@ func TestRealWasm_USDC_WithdrawalLifecycle(t *testing.T) {
 	rwExpect(t, c.ct, "d-0", "")
 	rwExpect(t, c.ct, "a-"+user+"-usdc", "8000000")
 	rwExpect(t, c.ct, "s-usdc", "13000000|13000000|0|0")
-	rwExpect(t, c.ct, "gr", "99740000000000000")
+	// EVM-FEE-1: the transfer used 21,000 gas (the fake chain) at 1 gwei base +
+	// 2 gwei tip; the reserve gets the rest of the 260,000 gwei it fronted back.
+	rwExpect(t, c.ct, "gr", "99937000000000000")
+	rwExpect(t, c.ct, "s-eth", "99937000000000000|0|0|0")
 }
 
 // USDC-1: a usdc transfer to a Circle-blacklisted address reverts on L1 (USDC
@@ -230,9 +233,11 @@ func TestRealWasm_USDC1_RevertedWithdrawalRefundsTheTokensAndTheReservePays(t *t
 		rwExpect(t, c.ct, "a-"+user+"-usdc", "25000000")
 		rwExpect(t, c.ct, "s-usdc", "25000000|25000000|0|0")
 	}
-	// Two rounds of 65,000 gas x 4 gwei: the reserve and its ETH custody paid both.
-	rwExpect(t, c.ct, "gr", "99480000000000000")
-	rwExpect(t, c.ct, "s-eth", "99480000000000000|0|0|0")
+	// Two mined reverts, each 21,000 gas (the fake chain) at 1 gwei base + 2 gwei
+	// tip: the reserve paid what they burned and got the rest of its 65,000 x 4
+	// gwei back at each confirmSpend (EVM-FEE-1).
+	rwExpect(t, c.ct, "gr", "99874000000000000")
+	rwExpect(t, c.ct, "s-eth", "99874000000000000|0|0|0")
 }
 
 // M15-N5 on the bridge wasm: a second token under a registered symbol is

@@ -3971,6 +3971,11 @@ func runOnce(
 		drainIfQueued(ctx, gql, submitter, cfg)
 	}
 
+	// EVM-FEE-1: settle the real gas of mined withdrawals (refused while paused).
+	if !cfg.Paused {
+		refundWithdrawalGasIfOpen(ctx, rpc, gql, submitter, cfg)
+	}
+
 	// RP-9: store the headers deposits and confirmations wait on; tell the
 	// operator when a proof is needed.
 	handleHeaderNeeds(ctx, rpc, gql, submitter, cp, cfg)
