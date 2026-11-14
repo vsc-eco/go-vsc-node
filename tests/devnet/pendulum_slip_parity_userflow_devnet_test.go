@@ -55,7 +55,7 @@ func ufAltera(t *testing.T, req map[string]any) ufQuote {
 	dir := os.Getenv("ALTERA_DIR")
 	b, _ := json.Marshal(req)
 	res := filepath.Join(t.TempDir(), "quote.json")
-	cmd := exec.Command("pnpm", "exec", "vitest", "run", "src/lib/pools/zz-devnet-quote.test.ts")
+	cmd := exec.Command("pnpm", "exec", "vitest", "run", "src/lib/pools/devnetQuote.test.ts")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "QUOTE_REQ="+string(b), "QUOTE_RES="+res, "DEV_BEHIND_PROXY=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
