@@ -810,11 +810,6 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 		return
 	}
 
-	// Broadcast each signed version not yet sent; while none has mined, re-post
-	// them every rebroadcastInterval, as an unmined withdrawal (B8): a shallow
-	// reorg or a mempool that dropped the tx would otherwise leave the sweep
-	// waiting for a re-drive (32 L1 blocks and a new signature).
-	repost := len(ss.TxHashes) > 0 && time.Since(time.Unix(ss.LastBroadcastAt, 0)) >= rebroadcastInterval && !sweepMined(rpc, ss.TxHashes)
 	digests := make([]string, len(r.Versions))
 	for i, v := range r.Versions {
 		digests[i], _ = computeSighash(v.Unsigned)
@@ -823,6 +818,8 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 	if err != nil {
 		return
 	}
+	type signedVersion struct{ raw, hash string }
+	var versions []signedVersion
 	for i, v := range r.Versions {
 		sig, ok := sigs[digests[i]]
 		if !ok || len(sig.Bytes) == 0 {
@@ -837,21 +834,51 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			slog.Error("sweep signature does not recover to the retiring address", "sweep", key, "err", err)
 			continue
 		}
-		hash := strings.ToLower(ethCrypto.Keccak256Hash(hexToBytes(signed)).Hex())
-		if known := containsStr(ss.TxHashes, hash); !known || repost {
-			if _, err := rpc.broadcastTx(signed); err != nil && !strings.Contains(strings.ToLower(err.Error()), "known") {
+		versions = append(versions, signedVersion{raw: signed, hash: strings.ToLower(ethCrypto.Keccak256Hash(hexToBytes(signed)).Hex())})
+	}
+
+	// SWEEP-RESTART-1 (BTC bot parity: its sweeps come from the contract and an
+	// "already in block chain" broadcast counts as sent, BOT-BCAST-1). A version's
+	// hash follows from the contract's unsigned tx and the network's signature, not
+	// from this bot's checkpoint, so a version already on chain is recorded here
+	// and the confirm step below runs. Testnet 11-14: the bot was killed after
+	// broadcasting sweep 5-7 and before its checkpoint was written; restarted, it
+	// re-sent the mined tx every cycle ("nonce too low"), never recorded or
+	// confirmed it, and the asset's books stayed on the old generation with its
+	// withdrawals queued behind the open sweep. The receipt is cross-checked
+	// against the transaction object as a withdrawal's is (MED-50).
+	for _, v := range versions {
+		if containsStr(ss.TxHashes, v.hash) || !sweepVersionOnChain(rpc, v.hash) {
+			continue
+		}
+		ss.TxHashes = append(ss.TxHashes, v.hash)
+		if ss.SentAt == 0 {
+			ss.SentAt = time.Now().Unix()
+		}
+		save()
+		slog.Info("sweep already on chain; recorded without re-sending (SWEEP-RESTART-1)", "sweep", key, "asset", r.Asset, "tx", v.hash)
+	}
+
+	// Broadcast each signed version not yet sent; while none has mined, re-post
+	// them every rebroadcastInterval, as an unmined withdrawal (B8): a shallow
+	// reorg or a mempool that dropped the tx would otherwise leave the sweep
+	// waiting for a re-drive (32 L1 blocks and a new signature).
+	repost := len(ss.TxHashes) > 0 && time.Since(time.Unix(ss.LastBroadcastAt, 0)) >= rebroadcastInterval && !sweepMined(rpc, ss.TxHashes)
+	for _, v := range versions {
+		if known := containsStr(ss.TxHashes, v.hash); !known || repost {
+			if _, err := rpc.broadcastTx(v.raw); err != nil && !strings.Contains(strings.ToLower(err.Error()), "known") {
 				slog.Warn("sweep broadcast failed", "sweep", key, "err", err)
 				continue
 			}
 			if !known {
-				ss.TxHashes = append(ss.TxHashes, hash)
+				ss.TxHashes = append(ss.TxHashes, v.hash)
 			}
 			if ss.SentAt == 0 {
 				ss.SentAt = time.Now().Unix()
 			}
 			ss.LastBroadcastAt = time.Now().Unix()
 			save()
-			slog.Info("sweep broadcast", "sweep", key, "asset", r.Asset, "tx", hash, "repost", known)
+			slog.Info("sweep broadcast", "sweep", key, "asset", r.Asset, "tx", v.hash, "repost", known)
 		}
 	}
 
@@ -1022,6 +1049,38 @@ func stuckSweepAlarms() []string {
 		}
 	}
 	return out
+}
+
+// sweepVersionOnChain reports whether a sweep version the bot has no record of
+// is on chain: it has a receipt with a block number, AND the RPC returns the
+// transaction object for exactly this hash (MED-50: a receipt alone, which a
+// hostile RPC can fabricate, would make the bot record a phantom sweep and stop
+// broadcasting the real one). Any read that fails or disagrees counts as not on
+// chain, so the version is broadcast as before.
+func sweepVersionOnChain(rpc *ethRPC, hash string) bool {
+	rc, err := rpc.getReceipt(hash)
+	if err != nil || rc == nil || string(rc) == "null" {
+		return false
+	}
+	var receipt struct {
+		BlockNumber string `json:"blockNumber"`
+	}
+	if json.Unmarshal(rc, &receipt) != nil || receipt.BlockNumber == "" {
+		return false
+	}
+	txData, err := rpc.getTransactionByHash(hash)
+	if err != nil || txData == nil {
+		slog.Warn("MED-50: sweep receipt present but no matching transaction object; not recording it (possible hostile RPC)", "tx", hash)
+		return false
+	}
+	var tx struct {
+		Hash string `json:"hash"`
+	}
+	if json.Unmarshal(txData, &tx) != nil || !strings.EqualFold(tx.Hash, hash) {
+		slog.Warn("MED-50: sweep transaction object hash mismatch; not recording it (possible hostile RPC)", "tx", hash, "rpcHash", tx.Hash)
+		return false
+	}
+	return true
 }
 
 // sweepMined reports whether any of hashes has a receipt.

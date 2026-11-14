@@ -34,6 +34,14 @@ type fakeL1 struct {
 	freezeRaw map[string]string              // eth_call freeze views: token -> the raw 32-byte word it answers (a fallback, not a boolean)
 	logs      string                         // eth_getLogs: "" no logs, "error" a JSON-RPC error, "garbage" not a list
 	code      map[string]string              // eth_getCode by lowercase address ("error": a JSON-RPC error; absent: "0x")
+	// refuseMined: eth_sendRawTransaction of a tx already in a block answers
+	// geth's "nonce too low" error, as a real node does (SWEEP-RESTART-1). Off,
+	// the fake accepts every broadcast (old tests).
+	refuseMined bool
+	// txByHash overrides eth_getTransactionByHash for a hash (lowercase): the
+	// hash it reports, or "" for no transaction (a hostile RPC whose receipt has
+	// no matching transaction object, MED-50).
+	txByHash map[string]string
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -120,6 +128,12 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 						b, _ := tx.MarshalBinary()
 						result = hexutil.Encode(b)
 					case "eth_getTransactionByHash":
+						if h, ok := f.txByHash[strings.ToLower(arg0)]; ok {
+							if h != "" {
+								result = map[string]any{"hash": h}
+							}
+							break
+						}
 						result = map[string]any{"hash": tx.Hash().Hex()}
 					default:
 						rc := *c.receipts[i]
@@ -184,6 +198,17 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 			if err := tx.UnmarshalBinary(b); err != nil {
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000, "message": err.Error()}})
 				return
+			}
+			if f.refuseMined {
+				for _, c := range f.blocks {
+					for _, m := range c.txs {
+						if m.Hash() == tx.Hash() {
+							_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000,
+								"message": fmt.Sprintf("nonce too low: next nonce %d, tx nonce %d", tx.Nonce()+3, tx.Nonce())}})
+							return
+						}
+					}
+				}
 			}
 			result = tx.Hash().Hex()
 		default:
