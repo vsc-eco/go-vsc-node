@@ -26,6 +26,11 @@ const PausedKey = "paused"
 // confirmSpend settles it.
 const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 
+// RefundablePrefix ("rf-"+btc address) holds the sats a deposit swap refunded
+// to that Bitcoin address's Magi account, waiting for sendHome
+// (constants.RefundablePrefix). Decimal string; absent when nothing is waiting.
+const RefundablePrefix = "rf" + DirPathDelimiter
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

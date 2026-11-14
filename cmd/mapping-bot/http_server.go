@@ -17,7 +17,6 @@ import (
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -217,10 +216,9 @@ func requestHandler(
 
 		// Validate the instruction semantics before generating an address.
 		mainnet := bot.SystemConfig != nil && bot.SystemConfig.OnMainnet()
-		var chainParams *chaincfg.Params
-		if bot.Chain != nil {
-			chainParams = bot.Chain.ChainParams
-		}
+		// A refund to an address on this chain needs the contract's sendHome, which
+		// only the BTC contract has; the other chains take a hive: refund_to only.
+		chainParams := mapper.AddressRefundParams(bot.Chain)
 		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet, chainParams); err != nil {
 			writeResponse(w, http.StatusBadRequest, err.Error())
 			return
