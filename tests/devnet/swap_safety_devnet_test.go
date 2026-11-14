@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -138,7 +139,15 @@ func (x *dex3) ssWaitSats(account string, want int64, within time.Duration) bool
 }
 
 func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
-	x := newBothEnvDEX3(t, 230*time.Minute)
+	// SS_SLIP_PARITY=1 runs the pools on THORChain's fee rule from block 1
+	// (params.ConsensusParams.PendulumSlipParityHeight); unset, the rule stays
+	// inert and the old fee applies.
+	parity := os.Getenv("SS_SLIP_PARITY") == "1"
+	var opts []func(*Config)
+	if parity {
+		opts = append(opts, func(c *Config) { c.SysConfigOverrides.ConsensusParams.PendulumSlipParityHeight = 1 })
+	}
+	x := newBothEnvDEX3(t, 230*time.Minute, opts...)
 	x.setup()
 	b := x.b
 	d, ctx, cid, e := b.d, b.ctx, b.v.cid, b.e
@@ -159,6 +168,12 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 	// S1: a deposit swap pays HBD to a third party's Hive account. The pool holds
 	// 0.01 BTC : 50 HBD, so 0.001 BTC buys at most 50*0.001/0.011 = 4.545 HBD
 	// before fees; anything outside [4.50, 4.545] is an overcharge or a bug.
+	// Under THORChain's rule the fee is the full slip fee x²·Y/(x+X)² = 0.413 HBD
+	// (the protocol tier, ~0.007, is smaller), so the payout is 4.132.
+	lo, hi := int64(4_500), int64(4_545)
+	if parity {
+		lo, hi = 4_125, 4_140
+	}
 	l1Before := gwL1Hbd(t, d, strings.TrimPrefix(ssPayee, "hive:"))
 	ssDeposit(t, x, "swap_to=hive%3Amagi.test2&swap_asset_out=hbd&destination_chain=HIVE&min_amount_out=1&refund_to=hive%3Amagi.test3", 100_000)
 	paid := int64(0)
@@ -166,7 +181,7 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 		devnetSleep(10 * time.Second)
 		paid = gwL1Hbd(t, d, strings.TrimPrefix(ssPayee, "hive:")) - l1Before
 	}
-	check(paid >= 4_500 && paid <= 4_545, "S1 Hive payout %d milli-HBD for 0.001 BTC (pool math <= 4545)", paid)
+	check(paid >= lo && paid <= hi, "S1 Hive payout %d milli-HBD for 0.001 BTC (want [%d, %d], parity %v)", paid, lo, hi, parity)
 	check(x.sats(ssSender) == 0, "S1 nothing refunded when the swap completes (%d)", x.sats(ssSender))
 
 	// S2: the swap cannot meet its minimum: back to the sender's hive: account.
