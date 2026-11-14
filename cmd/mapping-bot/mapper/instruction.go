@@ -83,9 +83,11 @@ func ValidateInstruction(instruction string, mainnet bool, chainParams *chaincfg
 	return nil
 }
 
-// ValidRefundTo reports whether refund_to is usable, and whether it is a hive:
-// account (true) rather than an address on this chain (false). It accepts what
-// the mapping contract accepts (parseRefundTo).
+// ValidRefundTo reports, IN THIS ORDER, whether refund_to names a hive: account
+// (true) rather than an address on this chain (false), and whether it is usable
+// at all. Read it as `hiveRefund, ok := ValidRefundTo(...)`: the first result is
+// meaningless unless the second is true. It accepts what the mapping contract
+// accepts (parseRefundTo).
 func ValidRefundTo(refundTo string, mainnet bool, chainParams *chaincfg.Params) (bool, bool) {
 	refundTo = strings.TrimSpace(refundTo)
 	if strings.HasPrefix(refundTo, "hive:") {

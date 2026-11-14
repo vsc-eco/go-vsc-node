@@ -253,16 +253,27 @@ func (a *Applier) ApplySwapFees(
 	)
 
 	// 4. Fee legs. The protocol leg is the flat tier and carries the stabilizer
-	// multiplier m. The CLP (slip) leg is scaled by cfg.CLPScaleBps and is
-	// deliberately NOT multiplied by m.
+	// multiplier m. The CLP (slip) leg is deliberately NOT multiplied by m, and
+	// how much of the slip fee it charges depends on the rule in force below.
 	//
-	//   baseCLP = x²·Y/(x+X)² is the THORChain-style slip fee, which is
-	//   algebraically ≈ the swap's own price impact (CLP/impact = X/(X+x) ≈ 1).
-	//   The user already pays that impact through the curve, so charging the
-	//   full slip on top — and doubling it with m — overcharged large swaps
-	//   quadratically (≈2× price impact at the m cap; the 2026-06 incident).
-	//   cfg.CLPScaleBps (default 625 = 1/16) tames it to a small,
-	//   slip-proportional surcharge; CLPScaleBps == 0 drops the leg entirely.
+	//   baseCLP = x²·Y/(x+X)² is THORChain's liquidity fee. It is NOT an extra
+	//   charge stacked on the curve's price impact: grossOut - baseCLP is exactly
+	//   x·X·Y/(x+X)², THORChain's emitAssets (CalcSwapOutput). The slip fee IS
+	//   the gap between the constant-product output and what a slip-charging AMM
+	//   emits, so charging it in full is the correct, sustainable price of a
+	//   large swap — that is what slipParity restores below.
+	//
+	//   What the 2026-06 incident actually was: the slip leg ALSO carried m, so
+	//   a large swap paid up to 2× the slip fee. The fix that followed dropped m
+	//   from this leg (right) and additionally scaled the leg to
+	//   cfg.CLPScaleBps (default 625 = 1/16), which went too far the other way:
+	//   it made large swaps cheap to make and paid LPs almost nothing for the
+	//   slip they absorbed. CLPScaleBps == 0 drops the leg entirely.
+	//
+	//   So: pre-slipParity the leg is baseCLP·CLPScaleBps (the 2026-06 fix, kept
+	//   bit-for-bit for replay); at/after cfg.SlipParityHeight the total becomes
+	//   max(baseCLP, protocol tier) and this leg carries only what the full slip
+	//   fee adds above that tier.
 	//
 	// "Exacerbates" is derived from snapshot s and the swap direction — the
 	// SDK has all inputs, so accepting a contract-supplied hint would be a
