@@ -11,11 +11,13 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
 
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -215,9 +217,31 @@ func requestHandler(
 
 		// Validate the instruction semantics before generating an address.
 		mainnet := bot.SystemConfig != nil && bot.SystemConfig.OnMainnet()
-		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet); err != nil {
+		var chainParams *chaincfg.Params
+		if bot.Chain != nil {
+			chainParams = bot.Chain.ChainParams
+		}
+		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet, chainParams); err != nil {
 			writeResponse(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// A refund_to that is one of this bot's own deposit addresses would send a
+		// failed swap's refund straight back into the vault, round after round.
+		if q, err := url.ParseQuery(requestBody.Instruction); err == nil {
+			if refundAddr := mapper.RefundChainAddress(q.Get("refund_to"), chainParams); refundAddr != "" {
+				lookCtx, lookCancel := context.WithTimeout(globalCtx, 15*time.Second)
+				_, lookErr := bot.Db.Addresses.GetInstruction(lookCtx, refundAddr)
+				lookCancel()
+				if lookErr == nil {
+					writeResponse(w, http.StatusBadRequest, "refund_to is one of this bot's deposit addresses")
+					return
+				}
+				if !errors.Is(lookErr, database.ErrAddrNotFound) {
+					writeResponse(w, http.StatusInternalServerError, "could not check refund_to")
+					writeError(lookErr)
+					return
+				}
+			}
 		}
 
 		// fetch public keys from contract state
