@@ -133,9 +133,15 @@ func TestPendulumSlipParityDevnet(t *testing.T) {
 		t.Fatal("swap never recorded (feed/geometry?) or nodes diverged")
 	}
 
-	// The same result on every node.
+	// The same result on every node, once each node has processed the swap
+	// (a node a block or two behind reads no result yet; one that never
+	// shows it, or shows another, is a consensus break).
 	var first string
 	for n := 1; n <= cfg.Nodes; n++ {
+		if !waitStateKeyPresent(t, d, ctx, n, poolID, "result", 3*time.Minute) {
+			dumpDiagnostics(t, d, ctx)
+			t.Fatalf("magi-%d never recorded the swap result (consensus break or stalled node)", n)
+		}
 		st, err := d.GetStateByKeys(ctx, n, poolID, []string{"result"})
 		if err != nil {
 			t.Fatalf("magi-%d read result: %v", n, err)
