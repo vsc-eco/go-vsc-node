@@ -106,10 +106,10 @@ type Bot struct {
 	depositIdxOnce sync.Once
 	depositIndex   *depositIndex
 
-	// Bitcoin refund addresses to check for a refund to send home (send_home.go):
-	// address -> map passes left.
+	// Bitcoin refund addresses to check for a refund to send home (send_home.go).
 	refundWatchMu sync.Mutex
-	refundWatch   map[string]int
+	refundWatch   map[string]*refundWatchEntry
+	sendHomeMu    sync.Mutex // one keeper pass at a time
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.

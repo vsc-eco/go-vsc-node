@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
@@ -221,6 +222,13 @@ func requestHandler(
 		chainParams := mapper.AddressRefundParams(bot.Chain)
 		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet, chainParams); err != nil {
 			writeResponse(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// A deposit swap cannot pay out on the chain it is paid from: the contract
+		// would hold the deposit for a manual refund.
+		if q, err := url.ParseQuery(requestBody.Instruction); err == nil && q.Has("swap_to") && bot.Chain != nil &&
+			strings.EqualFold(strings.TrimSpace(q.Get("destination_chain")), bot.Chain.Name) {
+			writeResponse(w, http.StatusBadRequest, "a deposit swap cannot pay out on "+strings.ToUpper(bot.Chain.Name))
 			return
 		}
 		// A refund_to that is one of this bot's own deposit addresses would send a

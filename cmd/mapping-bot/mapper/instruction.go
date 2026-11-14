@@ -52,6 +52,11 @@ func ValidateInstruction(instruction string, mainnet bool, chainParams *chaincfg
 	if dids.VerifyAddress(addr, mainnet) == "unknown" {
 		return fmt.Errorf("invalid VSC address %q", addr)
 	}
+	// The contract pays a swap only to a user account and holds a deposit for any
+	// other swap_to (a contract, a system account) for a manual refund.
+	if hasSwap && !strings.HasPrefix(dids.VerifyAddress(addr, mainnet), "user:") {
+		return fmt.Errorf("'swap_to' %q is not a user account", addr)
+	}
 	// The node checks a Hive name by format only, looser than Hive itself: a name
 	// Hive refuses (ab.cde) can never own its Magi account, and a payout to it
 	// fails at the gateway (NEW-GW-2).

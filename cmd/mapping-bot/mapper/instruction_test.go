@@ -30,6 +30,10 @@ func TestValidateInstruction_RefundTo(t *testing.T) {
 		{"a bad hive name", base + "&refund_to=hive%3Aab.cde", false, "invalid refund_to"},
 		{"EVM payout with a bitcoin refund", "swap_to=hive%3Abob&swap_asset_out=eth&destination_chain=ETH&refund_to=" + btcMain, false, "needs a hive: refund_to"},
 		{"EVM payout with a hive refund", "swap_to=hive%3Abob&swap_asset_out=eth&destination_chain=ETH&refund_to=hive%3Abob", true, ""},
+		{"swap_to a contract", "swap_to=contract:vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d&swap_asset_out=hbd&refund_to=hive%3Aalice", false, "not a user account"},
+		{"swap_to a system account", "swap_to=system:refund-hold&swap_asset_out=hbd&refund_to=hive%3Aalice", false, "not a user account"},
+		{"swap_to a Bitcoin DID", "swap_to=" + did + "&swap_asset_out=hbd&refund_to=hive%3Aalice", true, ""},
+		{"deposit_to a contract stays allowed", "deposit_to=contract:vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d", true, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -89,7 +89,7 @@ func TestSendHome_RefundToABitcoinAddressGoesHome(t *testing.T) {
 func TestSendHome_TheRefundAddressDIDFormIsWatchedByItsAddress(t *testing.T) {
 	bot, _, _, _, _ := newSendHomeBot(t, "")
 	bot.watchRefunds([]string{swapInstrWithRefund("did:pkh:bip122:00000000da84f2bafbbc53dee25a72ae:" + shRefundAddr)})
-	assert.Equal(t, map[string]int{shRefundAddr: refundWatchPasses}, bot.refundWatch)
+	assert.Equal(t, map[string]*refundWatchEntry{shRefundAddr: {passes: refundWatchPasses}}, bot.refundWatch)
 }
 
 func TestSendHome_NothingRecordedNoCall_AndALaggingReadIsCaughtNextPass(t *testing.T) {
@@ -99,7 +99,7 @@ func TestSendHome_NothingRecordedNoCall_AndALaggingReadIsCaughtNextPass(t *testi
 	// The swap completed (or the node has not caught up): no record, no call.
 	bot.sendHomeRefunds(context.Background())
 	assert.Empty(t, caller.actions())
-	assert.Equal(t, refundWatchPasses-1, bot.refundWatch[shRefundAddr])
+	assert.Equal(t, refundWatchPasses-1, bot.refundWatch[shRefundAddr].passes)
 
 	// The record shows up on the next pass: it goes home then.
 	gql.refundable[shRefundAddr] = 10_000
@@ -249,4 +249,59 @@ func shGeneratedAddr(t *testing.T) string {
 	a, err := btcutil.NewAddressWitnessPubKeyHash(make([]byte, 20), &chaincfg.TestNet4Params)
 	require.NoError(t, err)
 	return a.EncodeAddress()
+}
+
+func TestSendHome_ACallThatWouldFailIsNotBroadcastAndTriedForADay(t *testing.T) {
+	bot, gql, caller, failed, _ := newSendHomeBot(t, "")
+	gql.refundable[shRefundAddr] = 10_000
+	// The dry run refuses (a fee spike: the refund does not cover the miner fee).
+	gql.sim = &SimulatedCall{Success: false, Err: "contract_error", ErrMsg: "send amount below dust"}
+	bot.watchRefunds([]string{swapInstrWithRefund(shRefundAddr)})
+
+	bot.sendHomeRefunds(context.Background())
+	assert.Empty(t, caller.actions(), "nothing broadcast: no RC spent, nothing left for /retry")
+	all, _ := failed.GetAll(context.Background())
+	assert.Empty(t, all)
+	require.Contains(t, bot.refundWatch, shRefundAddr)
+	assert.Equal(t, refundRetryPasses-1, bot.refundWatch[shRefundAddr].passes, "a refund on record gets a day of tries")
+
+	// Fees drop: the dry run passes and it goes home.
+	gql.sim = &SimulatedCall{Success: true, RcUsed: 12_000}
+	bot.sendHomeRefunds(context.Background())
+	assert.Equal(t, []string{"sendHome"}, caller.actions())
+	assert.Empty(t, bot.refundWatch)
+}
+
+func TestSendHome_ARefundThatNeverGoesOutIsLeftToAnOperatorAfterADay(t *testing.T) {
+	bot, gql, caller, _, _ := newSendHomeBot(t, "")
+	gql.refundable[shRefundAddr] = 10_000
+	gql.sim = &SimulatedCall{Success: false, Err: "contract_error", ErrMsg: "contract is paused"}
+	bot.watchRefunds([]string{swapInstrWithRefund(shRefundAddr)})
+	for i := 0; i < refundRetryPasses; i++ {
+		bot.sendHomeRefunds(context.Background())
+	}
+	assert.Empty(t, bot.refundWatch, "dropped (logged as an error for an operator)")
+	assert.Empty(t, caller.actions())
+}
+
+func TestSendHome_ARewatchKeepsTheBudgetItHas(t *testing.T) {
+	bot, gql, _, _, _ := newSendHomeBot(t, "")
+	gql.refundable[shRefundAddr] = 10_000
+	gql.sim = &SimulatedCall{Success: false, Err: "contract_error"}
+	bot.watchRefunds([]string{swapInstrWithRefund(shRefundAddr)})
+	bot.sendHomeRefunds(context.Background())
+	bot.watchRefunds([]string{swapInstrWithRefund(shRefundAddr)}) // another refund to the same address
+	assert.Equal(t, refundRetryPasses-1, bot.refundWatch[shRefundAddr].passes)
+	assert.True(t, bot.refundWatch[shRefundAddr].recorded)
+}
+
+func TestSendHome_OnePassAtATime(t *testing.T) {
+	bot, gql, caller, _, _ := newSendHomeBot(t, "")
+	gql.refundable[shRefundAddr] = 10_000
+	bot.watchRefunds([]string{swapInstrWithRefund(shRefundAddr)})
+	bot.sendHomeMu.Lock() // a pass is running (the block loop)
+	bot.sendHomeRefunds(context.Background())
+	bot.sendHomeMu.Unlock()
+	assert.Empty(t, caller.actions(), "a second pass does not send the same refund again")
+	assert.Contains(t, bot.refundWatch, shRefundAddr, "left for the running or the next pass")
 }

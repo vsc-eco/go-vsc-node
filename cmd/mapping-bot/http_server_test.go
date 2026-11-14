@@ -325,3 +325,51 @@ func mkTxID(label string) string {
 	copy(b, label)
 	return hex.EncodeToString(b)
 }
+
+// A deposit swap paid in BTC cannot pay out in BTC: the contract would hold it for
+// a manual refund, so no address is issued for one.
+func TestRequestHandler_RefusesAPayoutOnItsOwnChain(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
+	for _, dest := range []string{"BTC", "btc", " Btc "} {
+		instr := "swap_to=hive:alice&swap_asset_out=hbd&refund_to=hive:alice&destination_chain=" + dest
+		w := httptest.NewRecorder()
+		requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", requestBody{Instruction: instr}))
+		assert.Equal(t, http.StatusBadRequest, w.Code, dest)
+	}
+	w := httptest.NewRecorder()
+	ok := "swap_to=hive:alice&swap_asset_out=hbd&refund_to=hive:alice&destination_chain=HIVE"
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", requestBody{Instruction: ok}))
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+// A refund_to that is one of this bot's own deposit addresses would put a failed
+// swap's refund straight back into the vault: refused. A refund_to of the
+// sender's own address is issued.
+func TestRequestHandler_RefusesARefundToItsOwnDepositAddress(t *testing.T) {
+	db := setupTestDatabase(t)
+	bot := newTestBot(t, db)
+	deposit := "deposit_to=hive:refund-loop"
+	w := httptest.NewRecorder()
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", requestBody{Instruction: deposit}))
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	primaryKey, err := hex.DecodeString(testPrimaryKeyHex)
+	require.NoError(t, err)
+	backupKey, err := hex.DecodeString(testBackupKeyHex)
+	require.NoError(t, err)
+	tag := sha256.Sum256([]byte(deposit))
+	vaultAddr, _, err := createP2WSHAddressWithBackup(primaryKey, backupKey, tag[:], &chaincfg.TestNet4Params)
+	require.NoError(t, err)
+
+	loop := "swap_to=hive:alice&swap_asset_out=hbd&destination_chain=HIVE&refund_to=" + vaultAddr
+	w = httptest.NewRecorder()
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", requestBody{Instruction: loop}))
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "deposit addresses")
+
+	own := "swap_to=hive:alice&swap_asset_out=hbd&destination_chain=HIVE&refund_to=tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7"
+	w = httptest.NewRecorder()
+	requestHandler(t.Context(), bot).ServeHTTP(w, jsonRequest(t, http.MethodPost, "/", requestBody{Instruction: own}))
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
