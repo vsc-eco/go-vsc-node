@@ -440,6 +440,56 @@ func rotationRCAlarm(now time.Time) string {
 		rotationRCShort.action, rotationRCShort.have, rotationRCShort.need, rotationRCShort.at.Format(time.RFC3339))
 }
 
+// sweepStaleHeader: a rotation op was refused because the contract's pricing
+// header is older than MaxPricingHeaderAge (handlers.go pricingHeader, "header
+// feed catches up"). EVM-HDRFEED-2: migrateVault, redriveSweep and writeOffDust
+// all read that header, and none of them sits in the withdrawal queue, so
+// writeNeedsFile's queued/in-flight trigger never asks the operator for a fresh
+// proof and the rotation stalls through any window with no withdrawal activity
+// (gen-3 3-4, testnet 11-12). This latches the condition per op so
+// writeNeedsFile requests a proof; it is demand-driven (only while an op is
+// actually blocked), NOT a constant idle heartbeat, so it does not spend the
+// operator's PROVE budget when nothing is rotating.
+var sweepStaleHeader struct {
+	sync.Mutex
+	at map[string]time.Time // op (migrateVault, redrive-<sweep>, writeOffDust) -> last stale-header refusal
+}
+
+// noteSweepStaleHeader latches ONLY the contract's stale-pricing-header refusal
+// of op; ANY other outcome of that op clears its entry. Each op keeps its own
+// entry, so one op going through (a migrateVault noop "nothing to migrate",
+// which the contract returns before it reads the header) does not drop the
+// proof request of another op that is still blocked (writeOffDust). The driver
+// retries every op every vaultOpMinInterval, re-latching while it stays blocked.
+func noteSweepStaleHeader(op string, err error) {
+	sweepStaleHeader.Lock()
+	defer sweepStaleHeader.Unlock()
+	if sweepStaleHeader.at == nil {
+		sweepStaleHeader.at = map[string]time.Time{}
+	}
+	if err != nil && strings.Contains(err.Error(), "header feed catches up") {
+		sweepStaleHeader.at[op] = vaultOpNow()
+		return
+	}
+	delete(sweepStaleHeader.at, op)
+}
+
+// sweepStaleHeaderWants reports whether some rotation op is currently blocked
+// on a stale pricing header (refused within the retry window), so
+// writeNeedsFile asks the operator for a proof. Shares rotationRCAlarmFor: both
+// track "a rotation op refused this recently is still being retried"; an
+// older entry means the op stopped being retried (its sweep moved on).
+func sweepStaleHeaderWants(now time.Time) bool {
+	sweepStaleHeader.Lock()
+	defer sweepStaleHeader.Unlock()
+	for _, at := range sweepStaleHeader.at {
+		if now.Sub(at) <= rotationRCAlarmFor {
+			return true
+		}
+	}
+	return false
+}
+
 // errVaultOpNoop: the dry run succeeds but the op would change nothing, so
 // nothing is submitted (BTC bot BOT-RETIRE-1 and F8). A superseded generation
 // waits out the purge grace (216,000 L1 blocks on mainnet, about 30 days)
@@ -591,6 +641,7 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	noteVaultOp("migrate")
 	ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "migrateVault", json.RawMessage(`{}`))
 	noteRefusal(err)
+	noteSweepStaleHeader("migrateVault", err)
 	if err == nil {
 		logMigrate(ret)
 		if strings.Contains(ret, "dust") {
@@ -624,6 +675,7 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	payload, _ := json.Marshal(map[string]any{"eth_proof": proof})
 	ret, err = vaultOp(ctx, gql, sub, cfg.ContractID, "migrateVault", payload)
 	noteRefusal(err)
+	noteSweepStaleHeader("migrateVault", err)
 	if errors.Is(err, errVaultOpNoop) {
 		return
 	}
@@ -650,6 +702,7 @@ func logMigrate(ret string) {
 func writeOffDust(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, cfg EVMBotConfig) {
 	ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "writeOffDust", json.RawMessage(`{}`))
 	noteRefusal(err)
+	noteSweepStaleHeader("writeOffDust", err)
 	if err == nil {
 		slog.Info("dust write-off submitted", "dry_run", ret)
 	}
@@ -963,6 +1016,7 @@ func driveSweep(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submit
 			ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "redriveSweep", payload)
 			noteRefusal(err)
 			noteSweepRedrive(key, err)
+			noteSweepStaleHeader("redrive-"+key, err)
 			if err == nil {
 				slog.Info("sweep re-drive submitted", "sweep", key, "dry_run", ret)
 			}

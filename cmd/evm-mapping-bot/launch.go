@@ -1003,6 +1003,14 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 			reasons = append(reasons, fmt.Sprintf("withdrawals waiting (queued %d, in flight %d) on a %s-old tip header", t-h, np-n, age.Round(time.Minute)))
 		}
 	}
+	// EVM-HDRFEED-2: the rotation ops (migrateVault, redriveSweep, writeOffDust)
+	// also need a fresh pricing header, but they are not in the withdrawal queue,
+	// so the check above never covers them. noteSweepStaleHeader latched that one
+	// was just refused on a stale header; request a proof so the rotation can
+	// proceed (demand-driven, only while an op is actually blocked).
+	if sweepStaleHeaderWants(time.Now()) {
+		reasons = append(reasons, "a vault rotation op waits on a stale pricing header (EVM-HDRFEED-2)")
+	}
 	cp.mu.Lock()
 	if len(reasons) == 0 {
 		cp.WantProofSince, cp.WantBatchSince, cp.WantBatchTip = 0, 0, 0

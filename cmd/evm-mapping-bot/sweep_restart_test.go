@@ -22,9 +22,10 @@ import (
 // queued withdrawals were never issued.
 
 type sweepRestartWorld struct {
-	l1    *fakeL1
-	l2    *fakeL2
-	drive func(cp *Checkpoint)
+	l1           *fakeL1
+	l2           *fakeL2
+	drive        func(cp *Checkpoint)
+	driveRedrive func(cp *Checkpoint) // driveSweep with re-drives allowed
 }
 
 // newSweepRestartWorld is an open sweep 0-7 (one signed version) whose header
@@ -51,6 +52,8 @@ func newSweepRestartWorld(t *testing.T) *sweepRestartWorld {
 	cfg := EVMBotConfig{ContractID: "vsc1bridge"}
 	return &sweepRestartWorld{l1: l1, l2: l2, drive: func(cp *Checkpoint) {
 		driveSweep(context.Background(), rpc, gql, sub, cp, cfg, view, rec, false)
+	}, driveRedrive: func(cp *Checkpoint) {
+		driveSweep(context.Background(), rpc, gql, sub, cp, cfg, view, rec, true)
 	}}
 }
 
