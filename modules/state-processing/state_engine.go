@@ -3890,6 +3890,9 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	if sconf.OnMainnet() {
 		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
 	}
+	// THORChain-rule swap fee (full slip fee, protocol tier as the floor): inert
+	// (0) on every network until a height is pinned in the consensus params.
+	pendulumCfg.SlipParityHeight = sconf.ConsensusParams().PendulumSlipParityHeight
 	// The StableSwap listings (0.13.0): only these pools price on the stable
 	// curve, and only for their listed pair, amplification and decimals.
 	pendulumCfg.StablePoolAt = func(contractID string, h uint64) (pendulumwasm.StableListing, bool) {

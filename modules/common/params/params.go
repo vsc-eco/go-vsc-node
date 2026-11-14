@@ -558,6 +558,21 @@ type ConsensusParams struct {
 	// fail-stop + (m1) front-run hold-release DONE; (m2) S5 lock-release tracked.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
 
+	// PendulumSlipParityHeight (Hive L1 block) switches the pendulum swap fee to
+	// THORChain's rule: fee = max(slip fee, floor), the slip fee x²·Y/(x+X)²
+	// charged in full (THORChain x/thorchain/swap_current.go CalcLiquidityFee,
+	// GetSwapCalc) with our protocol tier (8 bps × stabilizer m) as the floor
+	// (THORChain's floor is L1SlipMinBps, 10 bps live), and no total-fee clamp.
+	// It replaces the 2026-06 fix's 1/16 slip leg and 1% clamp, which made large
+	// swaps cheap to make and paid LPs almost nothing for them. 0 = INERT (the
+	// current fee math) on every network until an operator pins a future height
+	// that every witness runs; compile-time consensus value, no version gate.
+	// DEPLOY ORDER: only after deposit swaps carry min_amount_out (the BTC
+	// mapping contract that refunds to refund_to, then Altera's
+	// DEPOSIT_SWAP_REFUNDS_ACTIVE), and with Altera's swapCalc switching to the
+	// same rule at the same height (its quotes set min_amount_out).
+	PendulumSlipParityHeight uint64 `json:"pendulumSlipParityHeight,omitempty"`
+
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
 	// the bond inclusion gate admits in a single election. The maturity window
