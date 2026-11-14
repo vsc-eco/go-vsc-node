@@ -30,6 +30,12 @@ import (
 // rwUSDC is the fixture token (erc20DepositFixture: Circle's Sepolia USDC).
 const rwUSDC = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"
 
+// rwBlacklisted stands in for an address Circle has blacklisted: a usdc transfer
+// to it reverts. The fake chain decides the revert, so any address but the ones
+// the bridge refuses at request (zero, the vault's own, and since TC04-1 the
+// token contract itself) will do.
+const rwBlacklisted = "0x00000000000000000000000000000000b1ac4115"
+
 // rwRegisterToken proposes registerToken and executes it once its timelock
 // has passed, returning the execute result.
 func rwRegisterToken(t *testing.T, c rwChain, addr, symbol string) (string, bool) {
@@ -217,15 +223,16 @@ func TestRealWasm_USDC_WithdrawalLifecycle(t *testing.T) {
 	rwExpect(t, c.ct, "s-eth", "99937000000000000|0|0|0")
 }
 
-// USDC-1: a usdc transfer to a Circle-blacklisted address reverts on L1 (USDC
-// blacklists its own contract address, so one always exists). confirmSpend
+// USDC-1: a usdc transfer to a Circle-blacklisted address reverts on L1 (one
+// always exists; the token's own address was one, until TC04-1 refused it at
+// request). confirmSpend
 // refunds the withdrawer in full, while the gas reserve paid the mined revert.
 // Nothing stops the withdrawer from doing it again: each round costs the
 // reserve one ERC-20 transfer's gas and the withdrawer nothing on L1.
 func TestRealWasm_USDC1_RevertedWithdrawalRefundsTheTokensAndTheReservePays(t *testing.T) {
 	c, user := rwUSDCBridge(t)
 	for round, n := range []uint64{103, 104} {
-		ps := rwUnmapUSDC(t, c, user, rwUSDC, "25000000", uint64(round))
+		ps := rwUnmapUSDC(t, c, user, rwBlacklisted, "25000000", uint64(round))
 		rwExpect(t, c.ct, "a-"+user+"-usdc", "0")
 		chain, tx := rwMine(t, c, ps, n, types.ReceiptStatusFailed)
 		rwConfirm(t, c, chain, tx, n, ps)

@@ -194,7 +194,7 @@ func TestRealWasm_USDC1B_RevertFeeIsKept(t *testing.T) {
 	ct.StateSet(rwBridge, "gr", "100000000000000000")
 	ct.StateSet(rwBridge, "s-eth", "100000000000000000|0|0|0")
 	ct.Deposit(user, 1_000_000, ledgerDb.AssetHbd)
-	ps := rwUnmapUSDC(t, c, user, rwUSDC, "25000000", 0)
+	ps := rwUnmapUSDC(t, c, user, rwBlacklisted, "25000000", 0)
 	mined, tx := rwMine(t, c, ps, 103, types.ReceiptStatusFailed)
 	rwConfirm(t, c, mined, tx, 103, ps)
 	rwExpect(t, ct, "a-"+user+"-usdc", "24750000")
