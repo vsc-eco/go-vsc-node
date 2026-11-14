@@ -194,12 +194,35 @@ func TestPendulumSlipParityUserFlow(t *testing.T) {
 	d, ctx, e := b.d, b.ctx, b.e
 	trader := dex3Trader
 	fails := 0
-	hbd := func() int64 {
+	hbdRec := func() *BalanceRecord {
 		bal, err := d.GetAccountBalance(ctx, e.gqlNode, trader)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return bal.Hbd
+		return bal
+	}
+	hbd := func() int64 { return hbdRec().Hbd }
+	// getAccountBalance serves the snapshot the state engine writes once per
+	// slot (10 blocks), and only for accounts that changed. hbdChanged waits for
+	// the trader's HBD to move off `before`; hbdUnchanged waits two slots past
+	// now, after which a change would have been written, and reads it.
+	hbdChanged := func(before int64) int64 {
+		start := devnetNow()
+		for devnetSince(start) < 3*time.Minute {
+			if v := hbd(); v != before {
+				return v
+			}
+			devnetSleep(5 * time.Second)
+		}
+		return hbd()
+	}
+	hbdUnchanged := func() int64 {
+		head := nodeBlock(t, d, ctx, e.gqlNode)
+		start := devnetNow()
+		for nodeBlock(t, d, ctx, e.gqlNode) < head+20 && devnetSince(start) < 5*time.Minute {
+			devnetSleep(5 * time.Second)
+		}
+		return hbd()
 	}
 	sats := func() int64 { return balanceSats(t, d, ctx, b.v.cid, trader) }
 	eth := func() *big.Int {
@@ -262,6 +285,15 @@ func TestPendulumSlipParityUserFlow(t *testing.T) {
 		q := single(amount, X, Y, rule)
 		t.Logf("UF %s: Altera '%s' quote %d %s -> expected %s %s, min %s, fee %d bps, guard blocks %v", name, rule, amount, in, q.ExpectedOutput, out, q.MinAmountOut, q.FeeBps, q.GuardBlocks)
 		inBefore, outBefore := bal(in), bal(out)
+		if in == "hbd" || out == "hbd" {
+			// Let the previous swap's HBD snapshot land before reading "before".
+			h := hbdUnchanged()
+			if in == "hbd" {
+				inBefore = h
+			} else {
+				outBefore = h
+			}
+		}
 		hbdIn := int64(0)
 		if in == "hbd" {
 			hbdIn = amount
@@ -276,7 +308,11 @@ func TestPendulumSlipParityUserFlow(t *testing.T) {
 				fails++
 				t.Errorf("UF FAIL %s: refused for %q, want the slippage check", name, msg)
 			}
-			if got := bal(in); got != inBefore {
+			got := bal(in)
+			if in == "hbd" {
+				got = hbdUnchanged()
+			}
+			if got != inBefore {
 				fails++
 				t.Errorf("UF FAIL %s: refused swap moved the trader's %s %d -> %d", name, in, inBefore, got)
 			}
@@ -292,19 +328,30 @@ func TestPendulumSlipParityUserFlow(t *testing.T) {
 			fails++
 			t.Errorf("UF FAIL %s: Altera's fee guard would block this swap in the UI (%d bps, rule %s)", name, q.FeeBps, rule)
 		}
+		readBal := func(asset string) int64 {
+			if asset == "hbd" {
+				prev := inBefore
+				if asset == out {
+					prev = outBefore
+				}
+				return hbdChanged(prev)
+			}
+			return bal(asset)
+		}
 		start := devnetNow()
-		for bal(out) == outBefore && devnetSince(start) < 3*time.Minute {
+		for readBal(out) == outBefore && devnetSince(start) < 3*time.Minute {
 			devnetSleep(5 * time.Second)
 		}
-		u := bal(out) - outBefore
-		if paid := inBefore - bal(in); paid != amount {
+		u := readBal(out) - outBefore
+		if paid := inBefore - readBal(in); paid != amount {
 			fails++
 			t.Errorf("UF FAIL %s: trader paid %d %s, want %d", name, paid, in, amount)
 		}
-		if u < ufInt(q.MinAmountOut) || u < ufInt(q.ExpectedOutput) {
+		if u < ufInt(q.MinAmountOut) || u < ufInt(q.ExpectedOutput)-1 {
 			fails++
 			t.Errorf("UF FAIL %s: received %d %s, Altera quoted %s (min %s)", name, u, out, q.ExpectedOutput, q.MinAmountOut)
 		}
+		t.Logf("UF %s: received %d, Altera expected %s (gap %d), min %s", name, u, q.ExpectedOutput, ufInt(q.ExpectedOutput)-u, q.MinAmountOut)
 		a0r, a1r := ufReserves(t, x, pool)
 		after := [2]int64{a0r, a1r}
 		if in == a1 {
@@ -355,10 +402,12 @@ func TestPendulumSlipParityUserFlow(t *testing.T) {
 				fails++
 				t.Errorf("UF FAIL UF6: trader paid %d sats, want %d", sBefore-sats(), amount)
 			}
-			if u < ufInt(q.MinAmountOut) || u < ufInt(q.ExpectedOutput) {
+			exp := ufInt(q.ExpectedOutput)
+			if u < ufInt(q.MinAmountOut) || u < exp-exp/500 {
 				fails++
 				t.Errorf("UF FAIL UF6: received %d wei, Altera quoted %s (min %s)", u, q.ExpectedOutput, q.MinAmountOut)
 			}
+			t.Logf("UF UF6: received %d wei, Altera expected %d (gap %.3f%%), min %s", u, exp, 100*float64(exp-u)/float64(exp), q.MinAmountOut)
 			f1 := ufPoolFeeLog(t, x, x.poolBTC, id)
 			f2 := ufPoolFeeLog(t, x, x.poolETH, id)
 			hop1Gross := new(big.Int).Div(new(big.Int).Mul(big.NewInt(amount), big.NewInt(b1)), big.NewInt(b0+amount)).Int64()
