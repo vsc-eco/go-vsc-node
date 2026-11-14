@@ -127,8 +127,8 @@ func (x *dex3) sats(account string) int64 {
 
 // ssWaitSats waits for account's BTC balance on the mapping contract to equal want.
 func (x *dex3) ssWaitSats(account string, want int64, within time.Duration) bool {
-	end := time.Now().Add(within)
-	for time.Now().Before(end) {
+	start := devnetNow()
+	for devnetSince(start) < within {
 		if x.sats(account) == want {
 			return true
 		}
@@ -180,7 +180,9 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 	ssDeposit(t, x, "swap_to=hive%3Amagi.test2&swap_asset_out=hbd&destination_chain=HIVE&min_amount_out="+impossible+"&refund_to="+refundAddr, 60_000)
 	check(x.btcState("rf-"+refundAddr) == "60000", "S3 refundable recorded for %s (%q)", refundAddr, x.btcState("rf-"+refundAddr))
 	before := txSpendIds(t, d, ctx, cid)
-	st := vstatus(t, d, ctx, 2, cid, "sendHome", refundAddr) // node 2: not the owner, not the sender
+	// node 2: not the owner, not the sender. The address goes as a JSON string, as
+	// the mapping bot's keeper sends it (cmd/mapping-bot/mapper/send_home.go).
+	st := vstatus(t, d, ctx, 2, cid, "sendHome", `"`+refundAddr+`"`)
 	check(isOK(st), "S3 sendHome by a third party: %s", st)
 	if isOK(st) {
 		x.btcCompletePending(before, b.btcKeyID(0))
