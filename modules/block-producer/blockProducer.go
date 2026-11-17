@@ -92,6 +92,10 @@ type BlockProducer struct {
 	// needed.
 	startupHead uint64
 
+	// strikes: pool transactions this node's unsigned proposals carried
+	// (LOAD-GOSSIP-1, proposal_strikes.go).
+	strikes proposalStrikes
+
 	// PendingGovOps is the witness-local pool that governance (the gateway
 	// multisig via an L1 vsc.safety_slash_reverse op) / RPC
 	// handlers populate with vsc.safety_slash_reverse payloads. Drained
@@ -163,6 +167,38 @@ func (bp *BlockProducer) liveProductionAllowed(bh uint64, headHeight uint64) boo
 		bp.startupHead = headHeight
 	}
 	return bp.startupHead != 0 && bh > bp.startupHead
+}
+
+// noteUnsignedProposal gives the pool transactions of this node's proposal for
+// slotHeight a strike (LOAD-GOSSIP-1) when the proposal was not signed while
+// the chain is producing.
+func (bp *BlockProducer) noteUnsignedProposal(slotHeight uint64, txIds []string) {
+	if len(txIds) == 0 || !bp.chainProducedRecently(slotHeight) {
+		return
+	}
+	bp.strikes.unsigned(txIds)
+	vlog.Warn("this node's proposal was not signed: its pool transactions get a strike (peers may not have them)",
+		"slotHeight", slotHeight, "transactions", len(txIds))
+}
+
+// chainProducedRecently reports whether a block was produced within
+// proposalStrikeRecentSlots slots before slotHeight: others' proposals are
+// being signed, so an unsigned one of ours says something about what it
+// carried. Unknown counts as no.
+func (bp *BlockProducer) chainProducedRecently(slotHeight uint64) bool {
+	if bp.VscBlocks == nil {
+		return false
+	}
+	prev, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
+	if err != nil || prev == nil || prev.SlotHeight < 0 {
+		return false
+	}
+	return slotWithin(uint64(prev.SlotHeight), slotHeight, proposalStrikeRecentSlots*common.CONSENSUS_SPECS.SlotLength)
+}
+
+// slotWithin reports whether last is at most span below slot (and not above).
+func slotWithin(last, slot, span uint64) bool {
+	return last <= slot && slot-last <= span
 }
 
 type generateBlockParams struct {
@@ -342,6 +378,13 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	//Get transactions here!
 
 	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+	// LOAD-GOSSIP-1: leave out what this node's last proposals carried without
+	// getting signed (proposal_strikes.go).
+	prefilteredTxs, leftOut := bp.strikes.leaveOut(prefilteredTxs)
+	if leftOut > 0 {
+		vlog.Warn("leaving out pool transactions that this node's proposals carried without getting them signed; each is proposed again after its wait",
+			"count", leftOut, "slotHeight", slotHeight)
+	}
 
 	vlog.Debug("generateTransactions", "prefilteredCount", len(prefilteredTxs), "slotHeight", slotHeight)
 	txRecords := make([]transactions.TransactionRecord, 0)
@@ -580,13 +623,16 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	if err != nil {
 		vlog.Error("Error waiting for signatures", "err", err)
+		bp.noteUnsignedProposal(bh, transactions)
 		return
 	}
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
 		vlog.Warn("not enough signatures", "signedW", signedWeight, "totalW", electionResult.TotalWeight*2/3)
+		bp.noteUnsignedProposal(bh, transactions)
 		return
 	}
+	bp.strikes.signed(transactions)
 
 	finalCircuit, _ := circuit.Finalize()
 
