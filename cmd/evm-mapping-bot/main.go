@@ -509,6 +509,18 @@ func (cp *Checkpoint) mapDone(depositTx string) {
 	cp.mu.Unlock()
 }
 
+// isDeadLettered reports whether depositTx is in the dead letters.
+func (cp *Checkpoint) isDeadLettered(depositTx string) bool {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, dl := range cp.DeadLetters {
+		if strings.EqualFold(dl.DepositTx, depositTx) {
+			return true
+		}
+	}
+	return false
+}
+
 // deadLetterKeep is how long a dead letter stays for an operator's retry
 // (PS-6, the BTC mapping bot prunes its failed-tx store after 30 days,
 // 25499491): without it the list, written into the checkpoint every tick, only
@@ -3485,6 +3497,7 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 
 	health := newBotHealth(cfg.PollInterval)
 	deadLetterRetryQueue = newDeadLetterRetries(os.Getenv("OPS_API_KEY"))
+	deadLetterRetryQueue.isDeadLetter = cp.isDeadLettered
 	if addr := os.Getenv("HEALTH_ADDR"); addr != "" {
 		go serveHealth(addr, health, deadLetterRetryQueue)
 	}

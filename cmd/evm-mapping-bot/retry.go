@@ -42,6 +42,10 @@ type deadLetterRetries struct {
 	lastGlobal time.Time
 	lastPer    map[string]time.Time
 	now        func() time.Time
+	// isDeadLetter reports whether a deposit tx is dead-lettered (the
+	// checkpoint's answer); nil in tests that have no checkpoint: every hash
+	// counts as one.
+	isDeadLetter func(depositTx string) bool
 }
 
 func newDeadLetterRetries(apiKey string) *deadLetterRetries {
@@ -50,16 +54,28 @@ func newDeadLetterRetries(apiKey string) *deadLetterRetries {
 
 // request queues txs for the next tick. It refuses the whole request inside the
 // global cooldown (consuming no per-deposit cooldown, as BTC's does), and skips a
-// deposit inside its own.
-func (r *deadLetterRetries) request(txs []string) (accepted, throttled []string, err error) {
+// deposit inside its own. A tx that is not dead-lettered is not queued and is
+// named in notDead (RETRY-MISLEAD-1: the reply said "queued" for it and the
+// tick then ignored it); it does not use up its cooldown.
+func (r *deadLetterRetries) request(txs []string) (accepted, throttled, notDead []string, err error) {
+	// The checkpoint is asked before r.mu is taken: the two locks are never
+	// held together (requeueDeadLetters does the same).
+	dead := make([]bool, len(txs))
+	for i, tx := range txs {
+		dead[i] = r.isDeadLetter == nil || r.isDeadLetter(tx)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
 	if !r.lastGlobal.IsZero() && now.Sub(r.lastGlobal) < retryGlobalThrottle {
-		return nil, nil, errRetryThrottled
+		return nil, nil, nil, errRetryThrottled
 	}
 	r.lastGlobal = now
-	for _, tx := range txs {
+	for i, tx := range txs {
+		if !dead[i] {
+			notDead = append(notDead, tx)
+			continue
+		}
 		k := strings.ToLower(tx)
 		if t, ok := r.lastPer[k]; ok && now.Sub(t) < retryTxThrottle {
 			throttled = append(throttled, tx)
@@ -69,7 +85,7 @@ func (r *deadLetterRetries) request(txs []string) (accepted, throttled []string,
 		r.queued[k] = true
 		accepted = append(accepted, tx)
 	}
-	return accepted, throttled, nil
+	return accepted, throttled, notDead, nil
 }
 
 func (r *deadLetterRetries) drain() []string {
@@ -125,12 +141,12 @@ func (r *deadLetterRetries) handler() http.HandlerFunc {
 				return
 			}
 		}
-		accepted, throttled, err := r.request(body.Deposits)
+		accepted, throttled, notDead, err := r.request(body.Deposits)
 		if err != nil {
 			writeJSON(http.StatusTooManyRequests, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(http.StatusAccepted, map[string]any{"queued": accepted, "throttled": throttled})
+		writeJSON(http.StatusAccepted, map[string]any{"queued": accepted, "throttled": throttled, "not_dead_lettered": notDead})
 	}
 }
 
