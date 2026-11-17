@@ -73,6 +73,9 @@ type ContractTest struct {
 	// (contract tests exercise the feature as it will run once activated on the
 	// network); set false to test the pre-activation legacy trap behaviour.
 	TryCatchActive bool
+	// TssKeyAllowlist is the contracts that may create a TSS key, as the node
+	// passes it from consensus 0.13.0 (KEY-SPAM-1). nil = unrestricted.
+	TssKeyAllowlist []string
 	// VaultRotationV2 makes TssGetKey append the BRK-2 check-signature flag as
 	// the node does from 0.8.0; KeyReshared adds the 0.11.0 fifth field (whether
 	// the key has been reshared since its keygen). Both default to false, the
@@ -321,6 +324,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		contract_execution_context.WithBigSwapAmounts(ct.BigSwapAmountsActive),
 		contract_execution_context.WithVaultRotationV2(ct.VaultRotationV2),
 		contract_execution_context.WithKeyReshared(ct.KeyReshared),
+		contract_execution_context.WithTssKeyAllowlist(ct.TssKeyAllowlist),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),

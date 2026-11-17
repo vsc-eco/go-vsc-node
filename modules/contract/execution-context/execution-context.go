@@ -200,6 +200,11 @@ func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
 }
 
+// TryCatchActive reports whether this execution honours ICCallOptions.Try.
+func (ctx *contractExecutionContext) TryCatchActive() bool {
+	return ctx.tryCatchActive
+}
+
 // WithVaultRotationV2 enables the BRK-2 SignatureVerified 4th field in
 // TssGetKey. The state engine sets this from the chain-active
 // VaultRotationV2Enabled flag so the new contract-execution output format

@@ -394,6 +394,7 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 		}
 		if da.localOnly {
 			log.Warn("databin: state not available locally", "cid", inputCid, "err", err)
+			da.noteMiss()
 			return LeafDir{
 				Dir:    uio.NewDirectory(da.DagServ),
 				leaves: make(map[string]*LeafDir),
@@ -475,6 +476,7 @@ func GetPathCid(da *DataLayer, root cid.Cid, path string) (*cid.Cid, error) {
 			return c, err
 		}
 		if da.localOnly {
+			da.noteMiss()
 			return nil, os.ErrNotExist
 		}
 		log.Error("databin: state key read failed; blocking until it succeeds", "cid", root, "key", path, "attempt", attempt, "err", err)

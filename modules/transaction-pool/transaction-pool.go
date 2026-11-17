@@ -54,6 +54,11 @@ type TransactionPool struct {
 	// netId is this node's network (vsc-mainnet, vsc-testnet, ...); "" skips
 	// the check (A18).
 	netId string
+
+	// announcer delivers the transactions this node takes on its API to the
+	// peers: in nonce order, paced, and again while pending (LOAD-GOSSIP-1,
+	// announce.go). nil in a pool built by hand: announced at once, as before.
+	announcer *announcer
 }
 
 type IngestOptions struct {
@@ -251,14 +256,30 @@ func (tp *TransactionPool) IngestTx(sTx SerializedVSCTransaction, options ...Ing
 	}
 
 	if len(options) == 0 || options[0].Broadcast {
-		err = tp.Broadcast(cidz.String(), sTx)
-		log.Verbose("broadcasting transaction", "cid", cidz.String(), "err", err)
-		if err != nil {
-			return nil, err
+		// LOAD-GOSSIP-1: through the announce queue (announce.go), which also
+		// announces it again while it is pending. The transaction is in this
+		// node's pool either way, so a publish that fails later is not an API
+		// error any more.
+		if tp.announcer == nil || !tp.announcer.add(cidz.String(), hashAuths, txShell.Headers.Nonce, sTx) {
+			err = tp.Broadcast(cidz.String(), sTx)
+			log.Verbose("broadcasting transaction", "cid", cidz.String(), "err", err)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	return &cidz, nil
+}
+
+// stillPending reports whether id is still unconfirmed in this node's pool, and
+// whether that could be read.
+func (tp *TransactionPool) stillPending(id string) (isPending bool, known bool) {
+	rec, err := tp.TxDb.GetTransactionErr(id)
+	if err != nil {
+		return false, false
+	}
+	return rec != nil && rec.Status == transactions.TransactionStatusUnconfirmed, true
 }
 
 func (tp *TransactionPool) Broadcast(id string, serializedTx SerializedVSCTransaction) error {
@@ -512,6 +533,9 @@ func (tp *TransactionPool) Start() *promise.Promise[any] {
 			reject(err)
 			return
 		}
+		if tp.announcer != nil {
+			go tp.announcer.run(tp.service.Context())
+		}
 
 		<-tp.service.Context().Done()
 		resolve(nil)
@@ -523,7 +547,7 @@ func (tp *TransactionPool) Stop() error {
 }
 
 func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.Nonces, electionDb elections.Elections, hiveBlocks hive_blocks.HiveBlocks, da *datalayer.DataLayer, conf common.IdentityConfig, rcSystem *rcSystem.RcSystem, gate TxProcessingGate, netId string) *TransactionPool {
-	return &TransactionPool{
+	tp := &TransactionPool{
 		TxDb:           txDb,
 		nonceDb:        nonceDb,
 		p2p:            p2p,
@@ -535,6 +559,8 @@ func New(p2p *libp2p.P2PServer, txDb transactions.Transactions, nonceDb nonces.N
 		processingGate: gate,
 		netId:          netId,
 	}
+	tp.announcer = newAnnouncer(tp.Broadcast, tp.stillPending)
+	return tp
 }
 
 // MakeDIDs parses the requiredAuths into DIDs.
