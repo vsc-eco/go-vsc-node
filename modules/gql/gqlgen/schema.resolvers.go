@@ -967,26 +967,16 @@ func (r *queryResolver) SimulateContractCalls(ctx context.Context, input Simulat
 			if applier := r.StateEngine.PendulumApplier(); applier != nil {
 				ctxOpts = append(ctxOpts, contract_execution_context.WithPendulumApplier(applier))
 			}
-			// BRK-2 (D1, simulate accuracy): reflect the chain-active
-			// vault-rotation-v2 flag so a simulated activateKey enforces the same
-			// check-signature gate (TssGetKey's 4th field) the real tx would —
-			// otherwise a preview would optimistically show activation succeeding
-			// before the new committee has proven signability. Read-only sim
-			// (reverted like the rest); non-consensus, so this only affects the
-			// preview's accuracy, never the state root.
-			// Same "in force" rules as the real call (transactions.go): the height pin
-			// OR the attested 0.8.0 floor. Keying on the pin alone left the preview on
-			// the 3-field TssGetKey once the floor, not a pin, turned the batch on. The
-			// 0.11.0 reshared field follows the same way (simulateTssKeyOpts).
+			// The same version- and config-gated rules the chain runs this call
+			// with (stateEngine.ContractCallGates: try/catch, the TssGetKey fields,
+			// SP1 pricing, big swap amounts, the TSS key allowlist), from the one
+			// list the real call uses. A preview that lacks one of them answers
+			// something the chain would not: without try/catch a deposit whose
+			// swap fails aborted in the dry run, where the real call catches the
+			// failure and credits the deposit (SIM-TRY-1). Read-only (reverted
+			// like the rest), never the state root.
 			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
-			if sc := r.StateEngine.SystemConfig(); sc != nil {
-				ctxOpts = append(ctxOpts, simulateTssKeyOpts(sc.ConsensusParams(), blockHeight, activeVersion)...)
-			}
-			// Mirror the 0.10.0 rules so a preview matches what the chain would do.
-			ctxOpts = append(ctxOpts,
-				contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
-				contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
-			)
+			ctxOpts = append(ctxOpts, stateEngine.ContractCallGates(r.StateEngine.SystemConfig(), blockHeight, activeVersion)...)
 		}
 		ctxValue := contract_execution_context.New(
 			contract_execution_context.Environment{

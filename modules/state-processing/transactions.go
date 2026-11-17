@@ -170,43 +170,8 @@ func (t TxVscCallContract) ExecuteTx(
 		Intents:              t.Intents,
 		PendulumOracle:       se.PendulumOracleEnv(),
 	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gasCycles, ledgerSession, callSession, 0,
-		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
-		// Gate try/catch inter-contract calls on the chain-active consensus version
-		// (deterministic, height-addressable) so the new semantics activate only at
-		// a coordinated version floor.
-		contract_execution_context.WithTryCatch(
-			activeVersion.MeetsConsensusMin(consensusversion.TryCatchICCVersion),
-		),
-		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on
-		// vault-rotation-v2 so the contract-execution output FORMAT changes only at a
-		// coordinated activation (fork-safe rolling deploy; byte-identical when off).
-		// This is the one v2 gate whose result feeds HASHED contract state, so the
-		// conditional-field-emission discipline matters here: when off, the field is
-		// ABSENT rather than present-and-empty.
-		//
-		// se is the StateEngine interface here, so the config is read through
-		// SystemConfig() rather than the concrete sconf field.
-		contract_execution_context.WithVaultRotationV2(
-			se.SystemConfig() != nil &&
-				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
-		),
-		// 0.11.0: TssGetKey reports whether a key has been reshared since its
-		// keygen, gated the same way so the output format changes at one height.
-		contract_execution_context.WithKeyReshared(
-			se.SystemConfig() != nil &&
-				KeyCustodyInForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
-		),
-		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
-		// coordinated height and history re-executes unchanged.
-		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
-		// 0.13.0 big swap amounts (SP-0d), same gating.
-		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
-		// KEY-SPAM-1 (18j): restrict tss.create_key to the contracts the network
-		// allows keys for, from 0.13.0. nil before activation, so create_key
-		// behaves byte-identically to today until the coordinated height.
-		contract_execution_context.WithTssKeyAllowlist(
-			tssKeyAllowlistFor(se.SystemConfig(), t.Self.BlockHeight, activeVersion),
-		),
+		append([]contract_execution_context.Option{contract_execution_context.WithPendulumApplier(se.PendulumApplier())},
+			ContractCallGates(se.SystemConfig(), t.Self.BlockHeight, activeVersion)...)...,
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
