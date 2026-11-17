@@ -396,6 +396,13 @@ type Checkpoint struct {
 	// MapVanishes: how many times a deposit's map vanished (the node no longer
 	// knew it), by deposit tx in lowercase (I-46).
 	MapVanishes map[string]int `json:"map_vanishes,omitempty"`
+	// MapRcFails: how many times a deposit's map ran out of its RC limit on
+	// chain ("cost limit exceeded"), by deposit tx in lowercase
+	// (BOT-RC-EXHAUST-1).
+	MapRcFails map[string]int `json:"map_rc_fails,omitempty"`
+	// rcShort: this tick the bot holds too little RC to send an RcWait
+	// dead letter again. Set every tick, never saved.
+	rcShort bool
 	// RP-9: blocks whose header the bot needs stored (first seen, unix), the
 	// EIP-2935 proofs fetched for them by root block, and since when the
 	// operator has been asked for a proof (NEEDS_FILE).
@@ -451,6 +458,10 @@ type DeadLetter struct {
 	// AutoRetry: the map vanished rather than failed, so the bot maps the
 	// deposit again itself (I-46); not one for the operator.
 	AutoRetry bool `json:"auto_retry,omitempty"`
+	// RcWait: the map failed because the bot was short of RC
+	// (BOT-RC-EXHAUST-1). An AutoRetry one that waits until the bot holds RC
+	// again, so the retries do not eat the RC that is coming back.
+	RcWait bool `json:"rc_wait,omitempty"`
 }
 
 // deadLetter records a deposit the bot will not map automatically. Caller
@@ -506,6 +517,79 @@ func (cp *Checkpoint) mapAgain(block uint64, depositTx, mapTxId, reason, what, l
 func (cp *Checkpoint) mapDone(depositTx string) {
 	cp.mu.Lock()
 	delete(cp.MapVanishes, strings.ToLower(depositTx))
+	delete(cp.MapRcFails, strings.ToLower(depositTx))
+	cp.mu.Unlock()
+}
+
+// The node's texts for a call that failed for RC (state-processing
+// transactions.go): the payer held under the 100 RC minimum when the call ran,
+// or the call used up its limit. A call runs with min(RC held, rc_limit), so an
+// ordinary map also ends "cost limit exceeded" when the bot is short of RC.
+const (
+	errRcNotMet  = "minimum RC requirement is not met"
+	errCostLimit = "cost limit exceeded"
+)
+
+// mapCostLimitRetries: how many times a deposit whose map ran out of its RC
+// limit is mapped again by the bot before it is left to the operator. Each of
+// those failures costs RC, so this stays small; a map that failed "RC
+// requirement not met" cost 100 RC and is not counted.
+const mapCostLimitRetries = 1
+
+// mapAgainForRC puts a deposit whose map failed on chain for the bot's RC back
+// on the bot's own retry path (BOT-RC-EXHAUST-1, testnet 11-17 16:18: the bot
+// ran out of RC during a header catch-up, two ordinary deposits' maps failed
+// "minimum RC requirement is not met. RCs available: 0" and were given up on,
+// "a map that fails on chain is final"). Nothing is wrong with such a deposit.
+// It is mapped again once the bot holds RC (RcWait). costLimit counts the
+// failure, at most mapCostLimitRetries per deposit, then the operator.
+func (cp *Checkpoint) mapAgainForRC(block uint64, depositTx, mapTxId, reason string, costLimit bool) {
+	key := strings.ToLower(depositTx)
+	if costLimit {
+		cp.mu.Lock()
+		if cp.MapRcFails == nil {
+			cp.MapRcFails = map[string]int{}
+		}
+		cp.MapRcFails[key]++
+		n := cp.MapRcFails[key]
+		cp.mu.Unlock()
+		if n > mapCostLimitRetries {
+			cp.deadLetter(block, depositTx, mapTxId, fmt.Sprintf("%s; its map ran out of its RC limit %d times", reason, n))
+			return
+		}
+	}
+	slog.Warn("BOT-RC-EXHAUST-1: the map failed for the bot's RC; mapping the deposit again once the bot holds RC",
+		"block", block, "tx", depositTx, "mapTx", mapTxId, "reason", reason)
+	cp.mu.Lock()
+	cp.DeadLetters = append(cp.DeadLetters, DeadLetter{Block: block, DepositTx: depositTx, MapTxId: mapTxId, Reason: reason, At: time.Now().Unix(), AutoRetry: true, RcWait: true})
+	cp.mu.Unlock()
+}
+
+// rcWaitFactor: an RcWait dead letter is sent again when the bot holds this
+// many times the configured map limit, so the retry does not run on the last
+// RC and fail the same way.
+const rcWaitFactor = 2
+
+// noteBotRC sets cp.rcShort for this tick: whether the RcWait dead letters
+// still wait. It reads the bot's RC only when there is one waiting; an
+// unreadable RC keeps them waiting.
+func (cp *Checkpoint) noteBotRC(ctx context.Context, gql *vscGraphQL, did string, rcLimit uint64) {
+	cp.mu.Lock()
+	waiting := false
+	for _, dl := range cp.DeadLetters {
+		if dl.AutoRetry && dl.RcWait {
+			waiting = true
+			break
+		}
+	}
+	cp.mu.Unlock()
+	short := false
+	if waiting {
+		available, known, err := gql.fetchAccountRC(ctx, did)
+		short = err != nil || !known || available < int64(rcWaitFactor*rcLimit)
+	}
+	cp.mu.Lock()
+	cp.rcShort = short
 	cp.mu.Unlock()
 }
 
@@ -1746,7 +1830,11 @@ func (s *l2Submitter) callContractL2(
 	} else {
 		// P6 (BTC bot parity, mapper/call_contract_l2.go sizeCallByDryRun): a
 		// call with no explicit limit is sized from its dry run.
-		rcLimit = s.sizeCallByDryRun(ctx, contractID, action, string(payload), rcLimit)
+		sized, serr := s.sizeCallByDryRun(ctx, contractID, action, string(payload), rcLimit)
+		if serr != nil {
+			return "", serr
+		}
+		rcLimit = sized
 	}
 	call := &transactionpool.VscContractCall{
 		ContractId: contractID,
@@ -1846,6 +1934,7 @@ func (s *l2Submitter) callContractL2(
 		"nonce", nonce,
 		"cbor_size", len(sTx.Tx),
 		"did", did.String(),
+		"rcLimit", rcLimit,
 	)
 	return txID, nil
 }
@@ -1878,6 +1967,11 @@ func (s *l2Submitter) callWithRetry(
 		// B-R1b: the bot is waiting for the chain to take its pending calls;
 		// retrying inside this tick cannot change that.
 		if errors.Is(err, errL2PipelineFull) {
+			return "", err
+		}
+		// BOT-RC-EXHAUST-1: a map over the dry-run cap is not sent; trying again
+		// in this tick gives the same dry run.
+		if errors.Is(err, errMapOverDryRunCap) {
 			return "", err
 		}
 		lastErr = err
@@ -2081,28 +2175,41 @@ func localTxID(tx []byte) string {
 // rc_used; a dry run that hit its own cap is sized from the RC the bot holds,
 // at most vaultOpRcLimit. Never lowers the configured limit; an unavailable or
 // refused dry run leaves it unchanged, and the node stays the judge of the call.
-func (s *l2Submitter) sizeCallByDryRun(ctx context.Context, contractID, action, payload string, configured uint64) uint64 {
+//
+// A map is the exception to "sized from the RC the bot holds": what a map costs
+// is the depositor's choice (its instruction), a call that uses up its limit is
+// charged all of it, and real maps cost a few thousand RC. One whose dry run
+// hits the cap (simulateRcCap) is not sent at all: errMapOverDryRunCap, and the
+// deposit goes to the operator at no cost (BOT-RC-EXHAUST-1).
+func (s *l2Submitter) sizeCallByDryRun(ctx context.Context, contractID, action, payload string, configured uint64) (uint64, error) {
 	sim, err := s.gql.simulateContractCall(ctx, s.did.String(), contractID, action, payload)
 	if err != nil {
-		return configured
+		return configured, nil
 	}
 	if !sim.Success {
 		if sim.Err == "gas_limit_hit" {
+			if action == "map" {
+				return 0, errMapOverDryRunCap
+			}
 			available, known, rerr := s.gql.fetchAccountRC(ctx, s.did.String())
 			switch {
 			case rerr != nil || !known:
-				return max(configured, vaultOpRcLimit)
+				return max(configured, vaultOpRcLimit), nil
 			case available > int64(simulateRcCap):
-				return max(configured, min(uint64(available), vaultOpRcLimit))
+				return max(configured, min(uint64(available), vaultOpRcLimit)), nil
 			}
 		}
-		return configured
+		return configured, nil
 	}
 	if need := uint64(sim.RcUsed) * 2; need > configured {
-		return need
+		return need, nil
 	}
-	return configured
+	return configured, nil
 }
+
+// errMapOverDryRunCap: a map's dry run used up the dry-run cap, so the map
+// needs more RC than the bot will declare for a depositor-priced call.
+var errMapOverDryRunCap = errors.New("the map's dry run hit the RC cap")
 
 // isNonceTooFastErr: the pool refused a nonce more than 100 above the
 // account nonce (transaction-pool.go "nonce incrementing too fast").
@@ -3930,6 +4037,7 @@ func runOnce(
 	// is retried every tick (it is not dead-lettered), and with no bound it and
 	// a slow RPC could hold the scan still instead.
 	if !cfg.Paused { // I-13: a paused bridge refuses maps; the found deposits stay parked
+		cp.noteBotRC(ctx, gql, submitter.did.String(), cfg.RcLimit)
 		requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
 		parkedCtx, parkedCancel := context.WithTimeout(depCtx, depositPhaseBudget/2)
 		mapWaitingDeposits(parkedCtx, rpc, gql, submitter, cp, cfg, 0)
@@ -4084,6 +4192,13 @@ func mapDeposits(ctx context.Context, rpc *ethRPC, submitter *l2Submitter, cp *C
 		}
 
 		txID, err := submitter.callWithRetry(ctx, cfg.ContractID, "map", payload, 3)
+		if errors.Is(err, errMapOverDryRunCap) {
+			// Not sent, nothing spent. Like B6 it must not hold the block:
+			// anyone can make such a deposit.
+			cp.deadLetter(h, dep.TxHash, "", fmt.Sprintf("the map needs more than %d RC (its dry run hit the cap): not sent, left to the operator", simulateRcCap))
+			markMapped(cp, h, dep)
+			continue
+		}
 		if err != nil {
 			slog.Error("map submission failed — block checkpoint will NOT advance",
 				"block", h, "tx", dep.TxHash, "err", err)
@@ -4844,6 +4959,14 @@ func resolvePendingMaps(ctx context.Context, gql *vscGraphQL, cp *Checkpoint) {
 				// the unpause, bounded as a vanished map is.
 				cp.mapAgain(pm.Block, pm.DepositTx, txID, reason, "its map ran while the bridge was paused",
 					"B-12: the map ran while the bridge was paused; mapping the deposit again once it is unpaused")
+				break
+			}
+			if strings.Contains(msg, errRcNotMet) {
+				cp.mapAgainForRC(pm.Block, pm.DepositTx, txID, reason, false)
+				break
+			}
+			if strings.Contains(msg, errCostLimit) {
+				cp.mapAgainForRC(pm.Block, pm.DepositTx, txID, reason, true)
 				break
 			}
 			cp.deadLetter(pm.Block, pm.DepositTx, txID, reason)

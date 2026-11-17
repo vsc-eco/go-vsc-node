@@ -161,6 +161,9 @@ func requeueDeadLetters(rpc *ethRPC, cp *Checkpoint, cfg EVMBotConfig, r *deadLe
 	seen := map[string]bool{}
 	cp.mu.Lock()
 	for _, dl := range cp.DeadLetters {
+		if dl.RcWait && cp.rcShort {
+			continue // BOT-RC-EXHAUST-1: waits for the bot's RC; an operator's request below still goes
+		}
 		if k := strings.ToLower(dl.DepositTx); dl.AutoRetry && !seen[k] {
 			seen[k] = true
 			txs = append(txs, dl.DepositTx)
