@@ -365,12 +365,25 @@ func rcFromDryRun(rcUsed int64, ceiling uint64) uint64 {
 // errDryRunRefused carries the contract's reason; nothing is submitted.
 var errDryRunRefused = errors.New("refused in dry run")
 
+// nodeStateNotReadable is the node's GraphQL error text for a read or dry run
+// it could not serve because the contract's state was not readable at that
+// moment (modules/gql, LOCALONLY-EMPTY-1). errDryRunUnreadable is a vault op
+// held for it; nothing is submitted.
+const nodeStateNotReadable = "state not readable right now"
+
+var errDryRunUnreadable = errors.New("dry run not served, the node could not read the state")
+
 // vaultOp dry-runs action as the bot and, if it would succeed, submits it with
 // an rc_limit sized from the dry run. It returns the contract's return value.
 func vaultOp(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, contract, action string, payload json.RawMessage) (string, error) {
 	sim, err := gql.simulateContractCall(ctx, sub.did.String(), contract, action, string(payload))
 	rc := vaultOpRcLimit
 	switch {
+	case err != nil && strings.Contains(err.Error(), nodeStateNotReadable):
+		// The node could not read the contract's state for this dry run (it
+		// says so instead of running on empty state). A moment later it can:
+		// wait for the next tick rather than send blind at the ceiling.
+		return "", fmt.Errorf("%w: %s: %v", errDryRunUnreadable, action, err)
 	case err != nil:
 		slog.Warn("vault op dry run unavailable; declaring the ceiling", "action", action, "err", err)
 	case !sim.Success:

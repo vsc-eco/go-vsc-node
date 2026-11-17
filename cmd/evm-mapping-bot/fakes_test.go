@@ -247,6 +247,9 @@ type fakeL2 struct {
 	// sim answers simulateContractCalls for an action (nil: the dry run is
 	// unavailable, a GraphQL error, and the bot keeps its configured rc_limit).
 	sim func(action string) map[string]any
+	// simErr: the GraphQL error text of an unavailable dry run (sim nil);
+	// empty: "dry run unavailable".
+	simErr string
 	// simCalls, when set, answers a whole simulateContractCalls request (every
 	// call's action in order), for a dry run whose later call depends on an
 	// earlier one's state (I-20 follow-up: attestHeaders after attestHistoryRoot).
@@ -443,7 +446,11 @@ func (f *fakeL2) gql(t *testing.T) *vscGraphQL {
 				break
 			}
 			if f.sim == nil {
-				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "dry run unavailable"}}})
+				msg := "dry run unavailable"
+				if f.simErr != "" {
+					msg = f.simErr
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": msg}}})
 				return
 			}
 			// one result per call, as the node answers (each from its own action)

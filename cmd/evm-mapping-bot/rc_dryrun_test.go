@@ -29,22 +29,26 @@ func submittedRcLimits(t *testing.T, l2 *fakeL2) []uint64 {
 // so it does not fail on chain (a map that fails on chain is final).
 func TestP6_CallsWithoutALimitAreSizedByDryRun(t *testing.T) {
 	cases := []struct {
-		name string
-		sim  func(string) map[string]any
-		rc   int64 // bot RC (gas_limit_hit case)
-		want uint64
+		name   string
+		action string
+		sim    func(string) map[string]any
+		rc     int64 // bot RC (gas_limit_hit case)
+		want   uint64
 	}{
-		{"needs more than the configured limit", func(string) map[string]any {
+		{"needs more than the configured limit", "map", func(string) map[string]any {
 			return map[string]any{"success": true, "rc_used": 9000}
 		}, 0, 18000},
-		{"never lowered", func(string) map[string]any {
+		{"never lowered", "map", func(string) map[string]any {
 			return map[string]any{"success": true, "rc_used": 100}
 		}, 0, 10000},
-		{"dry run unavailable", nil, 0, 10000},
-		{"refused in the dry run", func(string) map[string]any {
+		{"dry run unavailable", "map", nil, 0, 10000},
+		{"refused in the dry run", "map", func(string) map[string]any {
 			return map[string]any{"success": false, "err": "contract_error", "err_msg": "no"}
 		}, 0, 10000},
-		{"over the dry-run cap: what the bot holds", func(string) map[string]any {
+		// A map over the dry-run cap is no longer sent (BOT-RC-EXHAUST-1,
+		// TestBOTRCEXHAUST1_AMapOverTheDryRunCapIsNotSent); every other call
+		// keeps this sizing.
+		{"over the dry-run cap: what the bot holds", "drainWithdrawalQueue", func(string) map[string]any {
 			return map[string]any{"success": false, "err": "gas_limit_hit"}
 		}, 500_000, 500_000},
 	}
@@ -54,7 +58,7 @@ func TestP6_CallsWithoutALimitAreSizedByDryRun(t *testing.T) {
 		if c.rc > 0 {
 			l2.rc = map[string]int64{sub.did.String(): c.rc}
 		}
-		if _, err := sub.callContractL2(context.Background(), "vsc1bridge", "map", json.RawMessage(`{"d":1}`), 0); err != nil {
+		if _, err := sub.callContractL2(context.Background(), "vsc1bridge", c.action, json.RawMessage(`{"d":1}`), 0); err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		if got := submittedRcLimits(t, l2); len(got) != 1 || got[0] != c.want {
