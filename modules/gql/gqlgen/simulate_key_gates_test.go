@@ -109,12 +109,14 @@ func TestSimulateRunsWithTheChainsGates(t *testing.T) {
 // pendulum applier, which is not a gate.
 func TestContractContextBuildersTakeTheirGatesFromOneList(t *testing.T) {
 	direct := regexp.MustCompile(`contract_execution_context\.With([A-Za-z0-9]+)\(`)
-	for _, f := range []string{"schema.resolvers.go", "../../state-processing/transactions.go"} {
+	// the dry run's builder (state_read.go), the chain's (transactions.go), and
+	// the resolver file the dry run used to be built in
+	for f, builds := range map[string]bool{"state_read.go": true, "../../state-processing/transactions.go": true, "schema.resolvers.go": false} {
 		src, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(src), "ContractCallGates(") {
+		if builds && !strings.Contains(string(src), "ContractCallGates(") {
 			t.Errorf("%s does not call ContractCallGates", f)
 		}
 		for _, m := range direct.FindAllStringSubmatch(string(src), -1) {

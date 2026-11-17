@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/chebyrash/promise"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -52,6 +53,58 @@ type DataLayer struct {
 	local *DataLayer
 	// localOnly is set on that view.
 	localOnly bool
+	// missed, on a view from LocalOnlyTracking, records that a state read
+	// failed and was answered as "empty" or "absent". nil on every other view.
+	missed *atomic.Bool
+}
+
+// LocalOnlyTracking returns a NEW local-only view (the same local blockstore,
+// never the network) that remembers whether a state read through it failed:
+// Missed. It is for one GraphQL request.
+//
+// A local-only read of contract state that fails (a block of the state is not
+// in the local store at that moment) is answered as an empty directory or an
+// absent key, so that an API caller cannot park the node on the network. The
+// caller cannot tell that from state that really is empty: LOCALONLY-EMPTY-1
+// (testnet 11-16/17: getStateByKeys answered null for keys that exist, and dry
+// runs ran on empty contract state, for up to about a second after a block
+// changed that state). With this view the request can see that it happened and
+// read again or say so.
+//
+// The shared view from LocalOnly is not changed and records nothing: the TSS
+// and oracle readers that use it behave as before.
+func (dl *DataLayer) LocalOnlyTracking() *DataLayer {
+	if dl == nil || dl.LocalOnly() == nil {
+		return nil // before Init, as LocalOnly
+	}
+	base := dl.LocalOnly()
+	v := *base
+	v.missed = &atomic.Bool{}
+	v.local = &v
+	return &v
+}
+
+// NewOffline returns a data layer over dag that never uses a network, with its
+// local-only views in place: for tests and tools that read state from a DAG
+// they hold.
+func NewOffline(dag format.DAGService) *DataLayer {
+	dl := &DataLayer{DagServ: dag}
+	dl.local = &DataLayer{DagServ: dag, localOnly: true}
+	dl.local.local = dl.local
+	return dl
+}
+
+// Missed reports whether a state read through this view failed and was
+// answered as empty or absent. Always false on a view that does not track.
+func (dl *DataLayer) Missed() bool {
+	return dl != nil && dl.missed != nil && dl.missed.Load()
+}
+
+// noteMiss records a failed local-only state read on a tracking view.
+func (dl *DataLayer) noteMiss() {
+	if dl.missed != nil {
+		dl.missed.Store(true)
+	}
 }
 
 // LocalOnly returns a view of the data layer that reads only blocks already in
