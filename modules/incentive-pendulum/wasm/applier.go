@@ -78,6 +78,11 @@ type Config struct {
 	// after it the bounded fee is active. 0 = always active (no gate) — the
 	// testnet/devnet default. Mainnet sets params.PENDULUM_FEE_FIX_HEIGHT.
 	ActivationHeight uint64
+	// SlipParityHeight switches the fee to THORChain's rule from that Hive L1
+	// height: total fee = max(full slip fee, protocol tier), no MaxFeeBps clamp
+	// (params.ConsensusParams.PendulumSlipParityHeight). 0 = never: the
+	// CLPScaleBps/MaxFeeBps fee above stays bit-for-bit.
+	SlipParityHeight uint64
 	// StablePoolAt lists the pools that price on the StableSwap curve from
 	// consensus 0.13.0 (system-config StablePools). nil = none.
 	StablePoolAt StablePoolLookup
@@ -294,8 +299,20 @@ func (a *Applier) ApplySwapFees(
 	// consensus; at/after it the bounded fee takes effect for everyone atomically.
 	feeFixActive := a.cfg.ActivationHeight == 0 || blockHeight >= a.cfg.ActivationHeight
 
+	// slipParity: THORChain's liquidity fee (x/thorchain/swap_current.go
+	// GetSwapCalc): the slip fee x²·Y/(x+X)² in full, floored at a minimum
+	// (THORChain: L1SlipMinBps; here the protocol tier). The total is the
+	// larger of the two, so the CLP leg carries only what the slip fee adds
+	// above the protocol tier, m-independent as since the 2026-06 fix.
+	slipParity := a.cfg.SlipParityHeight > 0 && blockHeight >= a.cfg.SlipParityHeight
+
 	var totalCLP *big.Int
-	if feeFixActive {
+	if slipParity {
+		totalCLP = new(big.Int).Sub(baseCLP, totalProtocol)
+		if totalCLP.Sign() < 0 {
+			totalCLP = new(big.Int)
+		}
+	} else if feeFixActive {
 		// Fixed: CLP scaled by cfg.CLPScaleBps, m-independent, and no baseCLP
 		// floor (a floor here would defeat the k scaling).
 		totalCLP = pendulum.ApplyMultiplierBps(baseCLP, a.cfg.CLPScaleBps)
@@ -313,7 +330,9 @@ func (a *Applier) ApplySwapFees(
 	// every downstream share derives from the capped legs and conservation still
 	// holds. Skipped pre-activation to stay bit-identical to the deployed path.
 	// 0 disables the clamp.
-	if feeFixActive && a.cfg.MaxFeeBps > 0 {
+	// THORChain caps no fee: under slipParity the clamp is off (the contract's
+	// half-the-reserve limit and the caller's min_amount_out still bound a swap).
+	if !slipParity && feeFixActive && a.cfg.MaxFeeBps > 0 {
 		feeCap := intmath.MulDivFloor(grossOut, big.NewInt(a.cfg.MaxFeeBps), big.NewInt(pendulum.BpsScale))
 		if new(big.Int).Add(totalCLP, totalProtocol).Cmp(feeCap) > 0 {
 			maxCLP := new(big.Int).Sub(feeCap, totalProtocol)

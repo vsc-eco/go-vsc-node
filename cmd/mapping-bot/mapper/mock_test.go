@@ -27,6 +27,7 @@ type mockGraphQL struct {
 	pruneFloor string           // "" = not set
 	paused     bool             // the contract's pause flag
 	abandoned  map[string]bool  // txid -> the contract holds an "sa-" record
+	refundable map[string]int64 // btc address -> sats in its "rf-" record
 	readErr    map[string]error // method name -> error, a read the node could not answer
 	sim        *SimulatedCall   // nil = simulateContractCalls unavailable
 	simErr     error
@@ -112,6 +113,16 @@ func (m *mockGraphQL) FetchPaused(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return m.paused, nil
+}
+
+func (m *mockGraphQL) FetchRefundable(ctx context.Context, btcAddr string) (int64, error) {
+	m.recordCall("FetchRefundable", btcAddr)
+	if err := m.readErr["FetchRefundable"]; err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.refundable[btcAddr], nil
 }
 
 func (m *mockGraphQL) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error) {

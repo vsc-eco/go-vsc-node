@@ -22,6 +22,9 @@ type GraphQLFetcher interface {
 	// FetchAbandonedSweep reports whether the contract holds an abandoned-sweep
 	// record ("sa-<txid>") for txId: a sweep it wrote off that can still settle.
 	FetchAbandonedSweep(ctx context.Context, txId string) (bool, error)
+	// FetchRefundable returns the sats waiting in the contract's refund record
+	// ("rf-<address>") for a Bitcoin address; 0 when there is none.
+	FetchRefundable(ctx context.Context, btcAddr string) (int64, error)
 	FetchPublicKeys(ctx context.Context) (primaryKeyHex []byte, backupKeyHex []byte, err error)
 	FetchVaultKeySets(ctx context.Context) (DepositKeySets, error)
 	FetchObservedAtHeight(ctx context.Context, blockHeight uint64) (ObservedSet, error)

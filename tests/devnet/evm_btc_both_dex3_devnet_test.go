@@ -43,13 +43,13 @@ const dex3Trader = "hive:magi.test1" // node 1's account: holds the BTC vfSetup 
 
 // newBothEnvDEX3 is newBothEnv with the three pools and the router deployed and
 // whitelisted before the EVM side starts.
-func newBothEnvDEX3(t *testing.T, budget time.Duration) *dex3 {
+func newBothEnvDEX3(t *testing.T, budget time.Duration, opts ...func(*Config)) *dex3 {
 	t.Helper()
 	dexWasm, routerWasm := os.Getenv("DEX_WASM"), os.Getenv("DEX_ROUTER_WASM")
 	if dexWasm == "" || routerWasm == "" {
 		t.Skip("DEX_WASM and DEX_ROUTER_WASM (dex-contracts bin/) required")
 	}
-	ctx, e, v := bothDevnet(t, budget, true)
+	ctx, e, v := bothDevnet(t, budget, true, opts...)
 	e.d.includedPatience = 15 * time.Minute
 	d := e.d
 	x := &dex3{}

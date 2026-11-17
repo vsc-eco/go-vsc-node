@@ -120,6 +120,7 @@ func (b *Bot) HandleMap(
 		}
 		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err == nil {
 			b.recordDeposits(ctx, foundTxs[i].Instructions)
+			b.watchRefunds(foundTxs[i].Instructions)
 		} else {
 			b.L.Error("map call failed", "err", err)
 			switch {
@@ -150,6 +151,9 @@ func (b *Bot) HandleMap(
 	}
 
 	b.setLastBlock(blockHeight)
+	// After the cursor moved, on its own budget: a deposit swap refunded to a
+	// Bitcoin address goes back on Bitcoin (send_home.go).
+	b.sendHomeRefunds(context.Background())
 	return true
 }
 
@@ -238,9 +242,11 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 				b.L.Error("historical map call failed", "err", err)
 			} else {
 				b.recordDeposits(ctx, tx.Instructions)
+				b.watchRefunds(tx.Instructions)
 			}
 		}
 	}
+	b.sendHomeRefunds(context.Background())
 }
 
 func txIDFromRawTxHex(rawTxHex string) string {

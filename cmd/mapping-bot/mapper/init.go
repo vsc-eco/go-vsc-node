@@ -105,6 +105,11 @@ type Bot struct {
 	// Deposit addresses derived from instructions x vault generations (deposit_index.go).
 	depositIdxOnce sync.Once
 	depositIndex   *depositIndex
+
+	// Bitcoin refund addresses to check for a refund to send home (send_home.go).
+	refundWatchMu sync.Mutex
+	refundWatch   map[string]*refundWatchEntry
+	sendHomeMu    sync.Mutex // one keeper pass at a time
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.

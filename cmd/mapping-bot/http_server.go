@@ -11,7 +11,9 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 	"vsc-node/cmd/mapping-bot/database"
 	"vsc-node/cmd/mapping-bot/mapper"
@@ -215,9 +217,37 @@ func requestHandler(
 
 		// Validate the instruction semantics before generating an address.
 		mainnet := bot.SystemConfig != nil && bot.SystemConfig.OnMainnet()
-		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet); err != nil {
+		// A refund to an address on this chain needs the contract's sendHome, which
+		// only the BTC contract has; the other chains take a hive: refund_to only.
+		chainParams := mapper.AddressRefundParams(bot.Chain)
+		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet, chainParams); err != nil {
 			writeResponse(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		// A deposit swap cannot pay out on the chain it is paid from: the contract
+		// would hold the deposit for a manual refund.
+		if q, err := url.ParseQuery(requestBody.Instruction); err == nil && q.Has("swap_to") && bot.Chain != nil &&
+			strings.EqualFold(strings.TrimSpace(q.Get("destination_chain")), bot.Chain.Name) {
+			writeResponse(w, http.StatusBadRequest, "a deposit swap cannot pay out on "+strings.ToUpper(bot.Chain.Name))
+			return
+		}
+		// A refund_to that is one of this bot's own deposit addresses would send a
+		// failed swap's refund straight back into the vault, round after round.
+		if q, err := url.ParseQuery(requestBody.Instruction); err == nil {
+			if refundAddr := mapper.RefundChainAddress(q.Get("refund_to"), chainParams); refundAddr != "" {
+				lookCtx, lookCancel := context.WithTimeout(globalCtx, 15*time.Second)
+				_, lookErr := bot.Db.Addresses.GetInstruction(lookCtx, refundAddr)
+				lookCancel()
+				if lookErr == nil {
+					writeResponse(w, http.StatusBadRequest, "refund_to is one of this bot's deposit addresses")
+					return
+				}
+				if !errors.Is(lookErr, database.ErrAddrNotFound) {
+					writeResponse(w, http.StatusInternalServerError, "could not check refund_to")
+					writeError(lookErr)
+					return
+				}
+			}
 		}
 
 		// fetch public keys from contract state
