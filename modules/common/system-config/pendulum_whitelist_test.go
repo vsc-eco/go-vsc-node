@@ -238,3 +238,44 @@ func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 		}
 	}
 }
+
+// Mainnet: STARPRO trades from its own height, LASSECASH keeps trading, and the
+// collateral set stays exactly the two DAO pools at every height.
+func TestMainnetConfig_StarproIsSwapOnly(t *testing.T) {
+	c := MainnetConfig().(*config)
+	const (
+		starpro = "vsc1BirUSGK2jm1zDQgVmuUysJ8UFKnTrnGXQf"
+		lasse   = "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr"
+	)
+	h := params.PENDULUM_WHITELIST_V3_HEIGHT
+	if h == 0 {
+		t.Fatal("mainnet addition must be gated on an activation height")
+	}
+	if h <= params.PENDULUM_WHITELIST_V2_HEIGHT {
+		t.Fatalf("V3 height %d must come after V2 height %d", h, params.PENDULUM_WHITELIST_V2_HEIGHT)
+	}
+
+	if has(c.PendulumPoolWhitelistAt(h-1), starpro) {
+		t.Fatal("STARPRO must not swap before the activation height")
+	}
+	if !has(c.PendulumPoolWhitelistAt(h), starpro) {
+		t.Fatal("STARPRO must swap from the activation height")
+	}
+	for _, at := range []uint64{h - 1, h, 1 << 40} {
+		if !has(c.PendulumPoolWhitelistAt(at), lasse) {
+			t.Fatalf("height %d: LASSECASH must keep swapping", at)
+		}
+		coll := c.PendulumCollateralPoolsAt(at)
+		if has(coll, starpro) {
+			t.Fatalf("height %d: STARPRO must never count as collateral", at)
+		}
+		if len(coll) != 2 ||
+			!has(coll, "vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp") ||
+			!has(coll, "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM") {
+			t.Fatalf("height %d: collateral set must be exactly the two DAO pools, got %v", at, coll)
+		}
+	}
+	if got := len(c.PendulumPoolWhitelistAt(h)); got != 4 {
+		t.Fatalf("swap gate at the V3 height must hold the two DAO pools, LASSECASH and STARPRO, got %d", got)
+	}
+}

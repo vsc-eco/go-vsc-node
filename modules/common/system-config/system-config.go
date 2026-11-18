@@ -657,6 +657,19 @@ func MainnetConfig() SystemConfig {
 				FromHeight: params.PENDULUM_WHITELIST_V2_HEIGHT,
 				Collateral: false,
 			},
+			{
+				// HBD:STARPRO: deployed by hive:vsc.dao from dex-contracts
+				// e7033a7 (code bafkreiezp5u..., the same build as HBD:LASSECASH),
+				// ownership handed to hive:risingstargame through the
+				// contract-update timelock; token
+				// vsc1Bfaa2m3GHWL1baZ9AdDjgXQr2MHXMvoTgA issued by
+				// hive:risingstargame. Swap-only for the same reason as
+				// LASSECASH: its owner can ship a code update, so its r0 must
+				// not enter P.
+				ID:         "vsc1BirUSGK2jm1zDQgVmuUysJ8UFKnTrnGXQf",
+				FromHeight: params.PENDULUM_WHITELIST_V3_HEIGHT,
+				Collateral: false,
+			},
 		},
 	}
 	return conf

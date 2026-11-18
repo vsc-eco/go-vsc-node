@@ -284,6 +284,23 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
 var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
 
+// PENDULUM_WHITELIST_V3_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the third pendulum pool addition (adds HBD:STARPRO).
+//
+// Same rules as PENDULUM_WHITELIST_V2_HEIGHT: consensus input, swap-only
+// (Collateral: false, so P and the fee split do not move). Below the height every
+// node refuses a STARPRO swap, at/after it every node accepts one, so every
+// witness must run a build carrying it before the height.
+//
+// Pinned 2026-11-18 from head 111,773,503 + 86,497 blocks (~3 days at 3 s),
+// ~2026-11-21 15:10 UTC. It ships as a one-commit image on top of the running
+// mainnet build, which the witnesses pick up automatically. RE-PIN BEFORE RELEASE
+// if the window erodes: a height already in the past makes the addition live the
+// moment a node upgrades (fails open). Every build that carries this addition
+// must use the same height. Mainnet only; testnet and devnet apply their lists
+// immediately (height 0).
+var PENDULUM_WHITELIST_V3_HEIGHT uint64 = 111_860_000
+
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
 // ───── Contract update timelock ─────
