@@ -418,7 +418,11 @@ type Checkpoint struct {
 	// PurgeWantTip: an Inactive generation's purge waits only for the stored L1
 	// height to reach this (I-38); writeNeedsFile asks for a proof until it does.
 	PurgeWantTip uint64 `json:"purge_want_tip,omitempty"`
-	WantBatchTip uint64 `json:"want_batch_tip,omitempty"`
+	// DepositAttestWantTip: a generation's MagiDeposit waits to be attested
+	// until the stored L1 height reaches this finalized block, where its code
+	// already is (EVM-ATTEST-NEED-1); writeNeedsFile asks for a proof until then.
+	DepositAttestWantTip uint64 `json:"deposit_attest_want_tip,omitempty"`
+	WantBatchTip         uint64 `json:"want_batch_tip,omitempty"`
 	// AttestSentAt / LinkSentAt: when attestations from a root, and a run of
 	// linked headers, were last submitted. An L2 call executes a few blocks
 	// later; resending it every tick until then would burn RC.

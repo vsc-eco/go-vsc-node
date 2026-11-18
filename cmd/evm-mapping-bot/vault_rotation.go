@@ -608,7 +608,7 @@ func driveVaultRotation(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *
 	if !view.Registry || view.Active == nil {
 		return
 	}
-	attestDepositContracts(ctx, rpc, gql, sub, cfg, view) // I-28: depositAddress() names a MagiDeposit only once attested
+	attestDepositContracts(ctx, rpc, gql, sub, cp, cfg, view) // I-28: depositAddress() names a MagiDeposit only once attested
 	sweeps, err := fetchOpenSweeps(ctx, gql, cfg.ContractID)
 	if err != nil {
 		slog.Debug("open sweeps unreadable", "err", err)

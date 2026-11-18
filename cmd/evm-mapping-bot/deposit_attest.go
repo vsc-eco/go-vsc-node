@@ -80,9 +80,44 @@ func codeHashAt(ctx context.Context, rpc *ethRPC, addr string, height uint64) (s
 	return strings.ToLower(p.CodeHash), accountProof{BlockHeight: height, Proof: base64.StdEncoding.EncodeToString(nodes)}, nil
 }
 
+// EVM-ATTEST-NEED-1 (testnet 11-16 and 11-18): a new generation's MagiDeposit
+// is deployed shortly before its activation, above the bridge's stored L1
+// height, and can be attested only at a stored height at or above its deploy
+// block. The bot asked for a proof only for deposits, withdrawals, purges and
+// rotation ops on a stale pricing header, so on a quiet bridge the activation
+// waited for an unrelated deposit (both nights one was sent by hand). Like the
+// I-38 purge wait: once the MagiDeposit's code is at the FINALIZED block F (a
+// proof of the latest finalized checkpoint then covers it; at "latest" the
+// first proof could still land below the deploy block), cp.DepositAttestWantTip
+// = F and writeNeedsFile asks for a proof until the stored height reaches F:
+// one proof per deploy, never again once the height passed F (even if the
+// attestation then fails for another reason), and no proof while the stored
+// height is unreadable or the MagiDeposit is not deployed. Rebuilt on every
+// pass, so a generation attested elsewhere or no longer a candidate drops out;
+// a pass that could not read a candidate keeps the previous value.
+
+// finalizedCodeBlock returns the finalized block number when addr has code at
+// the finalized block, else 0 (code read first, so the number is at or above
+// the block the code was seen in).
+func finalizedCodeBlock(ctx context.Context, rpc *ethRPC, addr string) (uint64, error) {
+	res, err := callRetryNoAnswer(ctx, rpc, "eth_getCode", fmt.Sprintf(`"%s", "finalized"`, addr))
+	if err != nil {
+		return 0, err
+	}
+	var code string
+	if err := json.Unmarshal(res, &code); err != nil {
+		return 0, err
+	}
+	if strings.Trim(strings.TrimPrefix(strings.ToLower(code), "0x"), "0") == "" {
+		return 0, nil
+	}
+	return rpc.getFinalizedBlock()
+}
+
 // attestDepositContracts attests each candidate generation's MagiDeposit once
-// its code is at the stored L1 height (at most every depositAttestEvery).
-func attestDepositContracts(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submitter, cfg EVMBotConfig, view vaultView) {
+// its code is at the stored L1 height (at most every depositAttestEvery), and
+// sets cp.DepositAttestWantTip (EVM-ATTEST-NEED-1).
+func attestDepositContracts(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submitter, cp *Checkpoint, cfg EVMBotConfig, view vaultView) {
 	depositAttest.Lock()
 	if time.Since(depositAttest.at) < depositAttestEvery {
 		depositAttest.Unlock()
@@ -91,9 +126,22 @@ func attestDepositContracts(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, s
 	depositAttest.at = time.Now()
 	depositAttest.Unlock()
 
+	var want uint64
+	unread := false // a candidate could not be read: keep the previous want
+	defer func() {
+		cp.mu.Lock()
+		if !unread || want > cp.DepositAttestWantTip {
+			cp.DepositAttestWantTip = want
+		}
+		cp.mu.Unlock()
+	}()
 	for _, g := range depositAttestCandidates(ctx, gql, view) {
 		st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{depositAttestedKey(g.Gen)})
-		if err != nil || st[depositAttestedKey(g.Gen)] != "" {
+		if err != nil {
+			unread = true
+			continue
+		}
+		if st[depositAttestedKey(g.Gen)] != "" {
 			continue
 		}
 		dc := depositContractAddress(g.Address)
@@ -102,15 +150,28 @@ func attestDepositContracts(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, s
 		}
 		tip, err := fetchContractLastHeight(ctx, gql, cfg.ContractID)
 		if err != nil || tip == 0 {
+			unread = true
 			continue
 		}
 		codeHash, proof, err := codeHashAt(ctx, rpc, dc, tip)
 		if err != nil {
 			slog.Warn("I-28: cannot read the MagiDeposit's account at the stored height", "gen", g.Gen, "magideposit", dc, "height", tip, "err", err)
+			unread = true
 			continue
 		}
 		if codeHash == "" || codeHash == emptyCodeHashHex || codeHash == "0x0000000000000000000000000000000000000000000000000000000000000000" {
-			continue // not deployed at the stored height yet (the I-28 alarm says so while it is not deployed at all)
+			// Not deployed at the stored height yet (the I-28 alarm says so while
+			// it is not deployed at all); deployed and final above it: want a proof.
+			f, err := finalizedCodeBlock(ctx, rpc, dc)
+			if err != nil {
+				unread = true
+				continue
+			}
+			if f > tip && f > want {
+				want = f
+				slog.Info("I-28: the MagiDeposit is deployed above the stored L1 height; a proof to it is wanted so it can be attested (EVM-ATTEST-NEED-1)", "gen", g.Gen, "magideposit", dc, "stored", tip, "finalized", f)
+			}
+			continue
 		}
 		payload, _ := json.Marshal(map[string]any{"gen": g.Gen, "block_height": proof.BlockHeight, "account_proof": proof.Proof})
 		ret, err := vaultOp(ctx, gql, sub, cfg.ContractID, "attestDepositContract", payload)

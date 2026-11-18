@@ -12,7 +12,8 @@ import (
 	"vsc-node/lib/btcvault"
 )
 
-// codeRPC answers eth_getProof with codeHash (and a one-node proof).
+// codeRPC answers eth_getProof with codeHash (and a one-node proof), and
+// eth_getCode with no code.
 func codeRPC(t *testing.T, codeHash *atomic.Value) *ethRPC {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -20,6 +21,10 @@ func codeRPC(t *testing.T, codeHash *atomic.Value) *ethRPC {
 			Method string `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Method == "eth_getCode" { // EVM-ATTEST-NEED-1's finalized read: not deployed there either
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": "0x"})
+			return
+		}
 		if req.Method != "eth_getProof" {
 			t.Errorf("unexpected L1 call %s", req.Method)
 		}
@@ -54,7 +59,7 @@ func TestI28_BotAttestsADeployedMagiDeposit(t *testing.T) {
 		depositAttest.Lock()
 		depositAttest.at = time.Time{}
 		depositAttest.Unlock()
-		attestDepositContracts(t.Context(), rpc, sub.gql, sub, cfg, view)
+		attestDepositContracts(t.Context(), rpc, sub.gql, sub, &Checkpoint{}, cfg, view)
 	}
 
 	pass() // no code at the stored height
