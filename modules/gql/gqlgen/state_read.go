@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 	"vsc-node/lib/datalayer"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
@@ -254,6 +255,9 @@ func (r *queryResolver) simulateContractCallsOn(ctx context.Context, input Simul
 
 		var pendulumOracle map[string]interface{}
 		var ctxOpts []contract_execution_context.Option
+		// The chain-active consensus version at this height; zero without a
+		// state engine, which is every rule at its original setting.
+		var activeVersion consensusversion.Version
 		if r.StateEngine != nil {
 			pendulumOracle = r.StateEngine.PendulumOracleEnv()
 			// Wire the pendulum swap-fee applier so simulated swaps on
@@ -273,7 +277,7 @@ func (r *queryResolver) simulateContractCallsOn(ctx context.Context, input Simul
 			// swap fails aborted in the dry run, where the real call catches the
 			// failure and credits the deposit (SIM-TRY-1). Read-only (reverted
 			// like the rest), never the state root.
-			activeVersion := r.StateEngine.ActiveConsensusVersion(blockHeight)
+			activeVersion = r.StateEngine.ActiveConsensusVersion(blockHeight)
 			ctxOpts = append(ctxOpts, stateEngine.ContractCallGates(r.StateEngine.SystemConfig(), blockHeight, activeVersion)...)
 		}
 		ctxValue := contract_execution_context.New(
@@ -312,7 +316,9 @@ func (r *queryResolver) simulateContractCallsOn(ctx context.Context, input Simul
 		w := wasm_runtime_ipc.New()
 		w.Init()
 		res := w.Execute(wasmCtx, gasCycles, call.Action, payload, info.Runtime)
-		rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+		// The chain's own charge (a dry run is given its rc_limit to spend), so
+		// a preview of a call that runs out reports what the chain would freeze.
+		rcUsed := stateEngine.ContractCallRcCharge(res.Gas, rcLimit, activeVersion)
 
 		if res.Error != nil {
 			ledgerSession.Revert()

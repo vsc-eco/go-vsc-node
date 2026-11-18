@@ -70,23 +70,29 @@ func TestSimulateTssKeyOptsMatchTheChain(t *testing.T) {
 // gate of that list at the version it starts.
 func TestSimulateRunsWithTheChainsGates(t *testing.T) {
 	v := func(c uint64) consensusversion.Version { return consensusversion.Version{Consensus: c} }
-	type gates struct{ try, sp1, big, keyListed bool }
+	type gates struct {
+		try, sp1, big, keyListed bool
+		// write is the RC charged for each new stored byte.
+		write int
+	}
 	const listed, unlisted = "vsc1TheBridge", "vsc1SomeoneElse"
 	for _, tc := range []struct {
 		name   string
 		active consensusversion.Version
 		want   gates
 	}{
-		{"0.1.0: nothing yet", v(1), gates{}},
-		{"0.2.0: try/catch", v(2), gates{try: true}},
-		{"0.10.0: SP1 priced by work", v(10), gates{try: true, sp1: true}},
-		{"0.13.0: big swap amounts", v(13), gates{try: true, sp1: true, big: true}},
+		{"0.1.0: nothing yet", v(1), gates{write: 19}},
+		{"0.2.0: try/catch", v(2), gates{try: true, write: 19}},
+		{"0.10.0: SP1 priced by work", v(10), gates{try: true, sp1: true, write: 19}},
+		{"0.13.0: big swap amounts", v(13), gates{try: true, sp1: true, big: true, write: 19}},
+		{"0.14.0: a new byte still costs 19 RC", v(14), gates{try: true, sp1: true, big: true, write: 19}},
+		{"0.15.0: a new byte costs 1 RC", v(15), gates{try: true, sp1: true, big: true, write: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := stateEngine.ContractCallGatesFor(true, params.ConsensusParams{}, nil, 2000, tc.active)
 			ctx := contract_execution_context.New(contract_execution_context.Environment{ContractId: unlisted}, 1000, 100000, 100000, nil,
 				contract_session.NewCallSession(nil, nil, nil, &test_utils.MockTssKeysDb{Keys: map[string]tss_db.TssKey{}}, &test_utils.MockTssCommitmentsDb{}, 0, nil), 0, opts...)
-			got := gates{try: ctx.TryCatchActive(), sp1: ctx.Sp1WorkPricingActive(), big: ctx.BigSwapAmountsActive()}
+			got := gates{try: ctx.TryCatchActive(), sp1: ctx.Sp1WorkPricingActive(), big: ctx.BigSwapAmountsActive(), write: ctx.IoWriteRcCost()}
 			if got != tc.want {
 				t.Fatalf("gates %+v, want %+v", got, tc.want)
 			}

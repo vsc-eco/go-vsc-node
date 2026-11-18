@@ -20,10 +20,10 @@ func TestContractCallGates_AllowlistFromTheConfig(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatal("0.14.0 on mainnet: the allowlist is empty")
 	}
-	if n := len(ContractCallGates(main, 111_000_000, v(14))); n != 6 {
-		t.Fatalf("%d gate options, want 6: a new gate needs a line in TestSimulateRunsWithTheChainsGates (modules/gql/gqlgen)", n)
+	if n := len(ContractCallGates(main, 111_000_000, v(14))); n != 7 {
+		t.Fatalf("%d gate options, want 7: a new gate needs a line in TestSimulateRunsWithTheChainsGates (modules/gql/gqlgen)", n)
 	}
-	if n := len(ContractCallGates(nil, 1, v(14))); n != 6 {
-		t.Fatalf("nil system config: %d gate options, want 6", n)
+	if n := len(ContractCallGates(nil, 1, v(14))); n != 7 {
+		t.Fatalf("nil system config: %d gate options, want 7", n)
 	}
 }

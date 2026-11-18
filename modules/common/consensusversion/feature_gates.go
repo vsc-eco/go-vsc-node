@@ -1008,3 +1008,50 @@ func SettlementAttestationQuorumActive(active Version) bool {
 func SelfInjectionTrustedSelfActive(active Version) bool {
 	return Version0_14_0Active(active)
 }
+
+// V0_15_0 is the version line of what a contract call is charged: the storage
+// write price (WriteIoPriceCutActive) and the charge of a call that runs out
+// (RcChargeCappedAtLimitActive). A new line rather than an addition to 0.14.0,
+// because mainnet has run 0.14.0 since epoch 2245: changing what 0.14.0 charges
+// would make a node replaying that history charge a different RC than the chain
+// did, and split a fleet mid-upgrade. The testnet, active on 0.13, raises its
+// floor once and takes 0.14 and 0.15 together.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// the rules on it are inert until the chain floor reaches it.
+var V0_15_0 = Version{Major: 0, Consensus: 15, NonConsensus: 0}
+
+// Version0_15_0Active reports whether the 0.15.0 line is in force given the
+// chain-active consensus version.
+func Version0_15_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_15_0)
+}
+
+// WriteIoPriceCutActive (0.15.0) reports whether a contract's new stored bytes
+// are charged the 0.15.0 price (params.WRITE_IO_GAS_RC_COST_V0_15) instead of
+// the original 19 RC a byte.
+//
+// The price decides how much RC a call uses, and so whether it finishes inside
+// its rc_limit and how much of the payer's RC is frozen afterwards: two nodes
+// charging different prices end up with different results for the same call.
+// Below the line every node charges the original price, so settled history
+// re-executes unchanged. Resolve `active` at the transaction's own block
+// height; the value is read through params.WriteIoGasRcCost.
+func WriteIoPriceCutActive(active Version) bool {
+	return Version0_15_0Active(active)
+}
+
+// RcChargeCappedAtLimitActive (0.15.0) reports whether a contract call is never
+// charged more RC than it was given to spend: min(the payer's available RC,
+// the call's rc_limit).
+//
+// A storage operation is charged after it ran, so the one that takes a call
+// past its budget is billed in full. Below this line a call that ran out was
+// charged that whole amount: with rc_limit 1,000, one 1 MB log cost the payer
+// 1,000,036 RC. From 0.15.0 the charge stops at the budget, which is what
+// rc_limit says it is. Below the line the old charge is
+// kept, so settled history re-executes to the RC it froze. Resolve `active` at
+// the transaction's own block height.
+func RcChargeCappedAtLimitActive(active Version) bool {
+	return Version0_15_0Active(active)
+}

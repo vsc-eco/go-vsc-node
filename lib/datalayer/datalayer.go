@@ -45,6 +45,12 @@ type DataLayer struct {
 	blockServ  blockservice.BlockService
 	DagServ    format.DAGService
 	Datastore  *badger.Datastore
+	// providerStore holds the provider's queue of CIDs to announce, apart
+	// from the block store (see Init); provSys and asyncProv are the provider
+	// and the hand-off in front of it, closed by Stop.
+	providerStore *badger.Datastore
+	provSys       provider.System
+	asyncProv     *asyncProvider
 
 	dataDir []string
 
@@ -168,13 +174,33 @@ func (dl *DataLayer) Init() error {
 	// is usually the "contentRouter" which does both discovery and providing.
 	// "contentProvider" could be used directly without wrapping, but it is recommended
 	// to do so to provide more efficiently.
-	provider, err := provider.New(ds, provider.Online(dl.p2pService))
+	// The provider announces every block this node stores, through a queue it
+	// keeps in a datastore: one write when a CID is queued and one when it is
+	// announced, each its own transaction, and the block store's datastore
+	// flushes every transaction to disk. Every block write waited on that queue
+	// (its Enqueue hands over to one worker), so a slot that stored many blocks
+	// was slow in proportion to their number. The queue gets its own store,
+	// written without a flush per entry. A crash can lose the CIDs still queued;
+	// this node does not announce those again (other holders announce their
+	// own), and announcements never decide state.
+	provDs, err := openProviderStore(path + "-provider")
 	if err != nil {
 		panic(err)
 	}
+	dl.providerStore = provDs
+	provSys, err := provider.New(provDs, provider.Online(dl.p2pService))
+	if err != nil {
+		panic(err)
+	}
+	dl.provSys = provSys
+	// The provider kept its queue in the block store before; nothing reads
+	// those entries any more.
+	go dropOldProviderKeys(ds)
 
 	// A wrapped providing exchange using the previous exchange and the provider.
-	exchange := providing.New(bswap, provider)
+	// Announcing never holds up a block write (asyncProvider).
+	dl.asyncProv = newAsyncProvider(provSys)
+	exchange := providing.New(bswap, dl.asyncProv)
 
 	// Finally the blockservice
 	blockService := blockservice.New(bstore, exchange)
@@ -220,6 +246,15 @@ func (dl *DataLayer) Start() *promise.Promise[any] {
 }
 
 func (dl *DataLayer) Stop() error {
+	if dl.asyncProv != nil {
+		dl.asyncProv.Close()
+	}
+	if dl.provSys != nil {
+		dl.provSys.Close()
+	}
+	if dl.providerStore != nil {
+		dl.providerStore.Close()
+	}
 	if dl.Datastore != nil {
 		return dl.Datastore.Close()
 	}
@@ -247,6 +282,45 @@ func (dl *DataLayer) PutRaw(rawData []byte, options common_types.PutRawOptions) 
 	}
 
 	return &cid, nil
+}
+
+// PutRawMany stores raw blocks in one write and returns their CIDs, in order:
+// the same CIDs and the same stored blocks as one PutRaw each. (PutRaw names
+// every block with the raw codec; the block store keys blocks by multihash, so
+// a block is found under any codec's CID for its bytes.)
+func (dl *DataLayer) PutRawMany(values [][]byte) ([]cid.Cid, error) {
+	prefix := cid.Prefix{Version: 1, Codec: uint64(multicodec.Raw), MhType: mh.SHA2_256, MhLength: -1}
+	cids := make([]cid.Cid, len(values))
+	blks := make([]blocks.Block, 0, len(values))
+	for i, v := range values {
+		c, err := prefix.Sum(v)
+		if err != nil {
+			return nil, err
+		}
+		b, err := blocks.NewBlockWithCid(v, c)
+		if err != nil {
+			return nil, err
+		}
+		cids[i] = c
+		blks = append(blks, b)
+	}
+	if len(blks) == 0 {
+		return cids, nil
+	}
+	if err := dl.blockServ.AddBlocks(context.TODO(), blks); err != nil {
+		// The batch is not atomic: some blocks may be stored. Store them one
+		// at a time, as PutRaw did, so one failing block loses only itself.
+		var firstErr error
+		for _, b := range blks {
+			if e := dl.blockServ.AddBlock(context.TODO(), b); e != nil && firstErr == nil {
+				firstErr = e
+			}
+		}
+		if firstErr != nil {
+			return cids, fmt.Errorf("PutRawMany: batch of %d failed (%v), then one at a time: %w", len(blks), err, firstErr)
+		}
+	}
+	return cids, nil
 }
 
 func (dl *DataLayer) PutObject(data interface{}, options ...common_types.PutOptions) (*cid.Cid, error) {

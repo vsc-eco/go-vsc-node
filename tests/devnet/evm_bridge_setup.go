@@ -88,6 +88,28 @@ func ensureSharedDevnet() (*Devnet, error) {
 	return sharedDevnet, sharedDevnetErr
 }
 
+// versionAtLeast reports whether ver ("0.14.0") is on the want line ("0.13")
+// or a later one, comparing major and minor numerically. Mainnet runs a floor
+// above the line these tests pin (0.12/0.13), so an exact-line match would
+// time out in setup; this accepts the pinned line or later.
+func versionAtLeast(ver, want string) bool {
+	vp, wp := strings.Split(ver, "."), strings.Split(want, ".")
+	if len(vp) < 2 || len(wp) < 2 {
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		v, err1 := strconv.Atoi(vp[i])
+		w, err2 := strconv.Atoi(wp[i])
+		if err1 != nil || err2 != nil {
+			return false
+		}
+		if v != w {
+			return v > w
+		}
+	}
+	return true
+}
+
 // waitForConsensus waits until node 2 reports a chain-active version on the
 // want line ("0.12" matches 0.12.x).
 func waitForConsensus(ctx context.Context, d *Devnet, want string, within time.Duration) error {
@@ -102,9 +124,9 @@ func waitForConsensus(ctx context.Context, d *Devnet, want string, within time.D
 			return false
 		}
 		ver = out.LocalNodeInfo.V
-		return strings.HasPrefix(ver, want+".")
+		return versionAtLeast(ver, want)
 	}); err != nil {
-		return fmt.Errorf("chain-active version %q never reached %s.x: %w", ver, want, err)
+		return fmt.Errorf("chain-active version %q never reached %s.x or later: %w", ver, want, err)
 	}
 	log.Printf("[devnet] chain runs %s; starting the waves", ver)
 	return nil

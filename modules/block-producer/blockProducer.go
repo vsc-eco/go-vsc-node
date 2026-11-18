@@ -25,7 +25,6 @@ import (
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
-	"vsc-node/modules/common/common_types"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -1183,6 +1182,9 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			cacheKeys = append(cacheKeys, key)
 		}
 		sort.Strings(cacheKeys)
+		setKeys := make([]string, 0, len(cacheKeys))
+		setCids := make([]cid.Cid, 0, len(cacheKeys))
+		values := make([][]byte, 0, len(cacheKeys))
 		for _, key := range cacheKeys {
 			value := output.Cache[key]
 			if output.Deletions[key] {
@@ -1193,14 +1195,21 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				continue
 			}
 			session.Put(value, cidz)
-
-			//Required to prevent self blocking due to datalayer accessing the DS.
-			//Temp fix, long term create a "databin" session that uses the underlying datalayer session
-			bp.Datalayer.PutRaw(value, common_types.PutRawOptions{
-				Codec: multicodec.Raw,
-			})
-
-			if err := db.Set(key, cidz); err != nil {
+			setKeys = append(setKeys, key)
+			setCids = append(setCids, cidz)
+			values = append(values, value)
+		}
+		// Every value in one write, before the directory reads them back (Set
+		// loads each value's node). One PutRaw per value was one transaction
+		// each, and a contract that wrote many values held the slot for one
+		// disk flush per value. The same blocks either way.
+		//Required to prevent self blocking due to datalayer accessing the DS.
+		//Temp fix, long term create a "databin" session that uses the underlying datalayer session
+		if _, err := bp.Datalayer.PutRawMany(values); err != nil {
+			vlog.Error("MakeOutputs PutRawMany ERROR", "contract", contractId, "values", len(values), "err", err)
+		}
+		for i, key := range setKeys {
+			if err := db.Set(key, setCids[i]); err != nil {
 				vlog.Error("MakeOutputs SET ERROR", "key", key, "err", err)
 			}
 		}
