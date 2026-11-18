@@ -994,6 +994,12 @@ func writeNeedsFile(ctx context.Context, gql *vscGraphQL, cp *Checkpoint, cfg EV
 	if purgeAt > tip {
 		reasons = append(reasons, fmt.Sprintf("a purge waits for the stored L1 height to reach %d (I-38)", purgeAt))
 	}
+	cp.mu.Lock()
+	attestAt := cp.DepositAttestWantTip
+	cp.mu.Unlock()
+	if attestAt > tip {
+		reasons = append(reasons, fmt.Sprintf("a generation's MagiDeposit waits for the stored L1 height to reach %d to be attested (EVM-ATTEST-NEED-1)", attestAt))
+	}
 	if st, err := gql.fetchContractState(ctx, cfg.ContractID, []string{"wqh", "wqt", "n", "np"}); err == nil {
 		h, _ := strconv.ParseUint(st["wqh"], 10, 64)
 		t, _ := strconv.ParseUint(st["wqt"], 10, 64)
