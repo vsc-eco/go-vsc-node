@@ -80,6 +80,28 @@ func (lf *LeafDir) Compact(recursive bool) {
 type DataBin struct {
 	DataLayer *DataLayer
 	Leaf      LeafDir
+	// dag is what this bin's directories read and write through: the data
+	// layer's DAG service with the nodes they write held until Save, Cid or
+	// EnumerateAll writes them in one batch (batchDAG). nil on a DataBin built
+	// by hand, which then writes straight through.
+	dag *batchDAG
+}
+
+// dserv is the DAG service this bin's directories use.
+func (db *DataBin) dserv() ipld.DAGService {
+	if db.dag != nil {
+		return db.dag
+	}
+	return db.DataLayer.DagServ
+}
+
+// flushWrites writes the nodes this bin's directories added since the last
+// flush, in one batch.
+func (db *DataBin) flushWrites() error {
+	if db.dag == nil {
+		return nil
+	}
+	return db.dag.flush(context.Background())
 }
 
 func (db *DataBin) Has(path string) bool {
@@ -148,7 +170,7 @@ func (db *DataBin) List(prefix string) (*[]string, error) {
 }
 
 func (db *DataBin) Set(path string, link cid.Cid) error {
-	node, _ := db.DataLayer.DagServ.Get(context.Background(), link)
+	node, _ := db.dserv().Get(context.Background(), link)
 
 	var wrkDir uio.Directory
 	splitPath := strings.Split(path, "/")
@@ -163,7 +185,7 @@ func (db *DataBin) Set(path string, link cid.Cid) error {
 			nextLeaf := leaf.leaves[pathElement]
 			if nextLeaf == nil {
 				lf := &LeafDir{
-					Dir:    uio.NewDirectory(db.DataLayer.DagServ),
+					Dir:    uio.NewDirectory(db.dserv()),
 					leaves: make(map[string]*LeafDir),
 				}
 				leaf.leaves[pathElement] = lf
@@ -273,6 +295,10 @@ func (db *DataBin) resolveWrkDir(path string) (*LeafDir, error) {
 // This is used to rebuild state directories deterministically.
 func (db *DataBin) EnumerateAll() (map[string]cid.Cid, error) {
 	db.Leaf.Compact(true)
+	// A failed write panics, as Cid and Save do.
+	if err := db.flushWrites(); err != nil {
+		panic(err)
+	}
 	result := make(map[string]cid.Cid)
 	err := enumerateLeaf(&db.Leaf, "", result)
 	return result, err
@@ -307,6 +333,11 @@ func enumerateLeaf(lf *LeafDir, prefix string, result map[string]cid.Cid) error 
 func (db *DataBin) Cid() cid.Cid {
 	db.Leaf.Compact(true)
 	node, _ := materializeGetNode(db.Leaf.Dir)
+	// A failed write panicked here before the writes were batched (the
+	// serialization returned the error and node was nil); it still does.
+	if err := db.flushWrites(); err != nil {
+		panic(err)
+	}
 
 	return node.Cid()
 }
@@ -315,6 +346,11 @@ func (db *DataBin) Save() cid.Cid {
 	db.Leaf.Compact(true)
 	nodeDir, err := materializeGetNode(db.Leaf.Dir)
 	if err != nil {
+		panic(err)
+	}
+	// Every shard the serialization changed, in one write. A failed write
+	// panicked inside the serialization before; it still panics.
+	if err := db.flushWrites(); err != nil {
 		panic(err)
 	}
 
@@ -349,7 +385,8 @@ func (db *DataBin) Save() cid.Cid {
 
 func NewDataBin(da *DataLayer) DataBin {
 	uio.HAMTShardingSize = 256
-	dir := uio.NewDirectory(da.DagServ)
+	dag := newBatchDAG(da.DagServ)
+	dir := uio.NewDirectory(dag)
 
 	return DataBin{
 		DataLayer: da,
@@ -357,14 +394,17 @@ func NewDataBin(da *DataLayer) DataBin {
 			Dir:    dir,
 			leaves: make(map[string]*LeafDir),
 		},
+		dag: dag,
 	}
 }
 
 func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 	uio.HAMTShardingSize = 256
+	dag := newBatchDAG(da.DagServ)
 	return DataBin{
 		DataLayer: da,
-		Leaf:      newLeafFromCid(da, inputCid),
+		Leaf:      newLeafFromCid(da, dag, inputCid),
+		dag:       dag,
 	}
 }
 
@@ -378,14 +418,14 @@ func NewDataBinFromCid(da *DataLayer, inputCid cid.Cid) DataBin {
 // view keeps answering with an empty directory: API reads (where a CID the node
 // does not hold is expected) and the oracle relay and TSS gates, which run on
 // goroutines or under locks that must not block.
-func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
+func newLeafFromCid(da *DataLayer, dserv ipld.DAGService, inputCid cid.Cid) LeafDir {
 	const (
 		baseDelay = 100 * time.Millisecond
 		maxDelay  = 30 * time.Second
 	)
 	delay := baseDelay
 	for attempt := 1; ; attempt++ {
-		leaf, err := loadLeafFromCid(da, inputCid)
+		leaf, err := loadLeafFromCid(da, dserv, inputCid)
 		if err == nil {
 			if attempt > 1 {
 				log.Error("databin: state read recovered; resuming", "cid", inputCid, "attempts", attempt)
@@ -396,7 +436,7 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 			log.Warn("databin: state not available locally", "cid", inputCid, "err", err)
 			da.noteMiss()
 			return LeafDir{
-				Dir:    uio.NewDirectory(da.DagServ),
+				Dir:    uio.NewDirectory(dserv),
 				leaves: make(map[string]*LeafDir),
 			}
 		}
@@ -408,15 +448,15 @@ func newLeafFromCid(da *DataLayer, inputCid cid.Cid) LeafDir {
 	}
 }
 
-func loadLeafFromCid(da *DataLayer, inputCid cid.Cid) (LeafDir, error) {
+func loadLeafFromCid(da *DataLayer, dserv ipld.DAGService, inputCid cid.Cid) (LeafDir, error) {
 	ctx := context.Background()
 
-	node, err := da.DagServ.Get(ctx, inputCid)
+	node, err := dserv.Get(ctx, inputCid)
 	if err != nil {
 		return LeafDir{}, fmt.Errorf("loading node: %w", err)
 	}
 
-	dir, err := uio.NewDirectoryFromNode(da.DagServ, node)
+	dir, err := uio.NewDirectoryFromNode(dserv, node)
 	if err != nil {
 		return LeafDir{}, fmt.Errorf("directory from node: %w", err)
 	}
@@ -429,7 +469,7 @@ func loadLeafFromCid(da *DataLayer, inputCid cid.Cid) (LeafDir, error) {
 	leaves := make(map[string]*LeafDir)
 	for _, lnk := range links {
 		if lnk.Cid.Prefix().Codec == uint64(multicodec.Protobuf) {
-			lf := newLeafFromCid(da, lnk.Cid)
+			lf := newLeafFromCid(da, dserv, lnk.Cid)
 			leaves[lnk.Name] = &lf
 		}
 	}

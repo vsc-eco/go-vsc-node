@@ -194,13 +194,9 @@ func (t TxVscCallContract) ExecuteTx(
 
 	res := w.Execute(wasmCtx, gasCycles, t.Action, payload, info.Runtime)
 
-	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
-	// overflow for any realistic gas value (denom = 100_000). Floored at the
-	// minimum 100 RC charge.
-	rcUsed := int64((uint64(res.Gas) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC)
-	if rcUsed < 100 {
-		rcUsed = 100
-	}
+	// What the call is charged: the gas it used, in whole RC, at least 100, and
+	// from 0.15.0 never more than `gas`, the RC it was given to spend.
+	rcUsed := ContractCallRcCharge(res.Gas, gas, activeVersion)
 
 	if res.Error != nil {
 		return TxResult{

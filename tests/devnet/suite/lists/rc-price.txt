@@ -1,0 +1,13 @@
+# What a contract call is charged, before and after the floor reaches consensus
+# 0.15.0 (the storage write price 19 -> 1 RC a new byte, and the charge of a call
+# that runs out capped at its rc_limit). One test per line: the test name, then
+# the env settings it runs with. ${NAME} is filled in from the environment; a
+# test whose input is unset is recorded as NO-INPUT and skipped. Inputs:
+#   RC_PRICE_OLD_CODE_DIR  a go-vsc-node checkout on consensus 0.14, for the mixed-fleet test
+#   BTC_MAPPING_WASM       btc-mapping contract under test (utxo-mapping dev.wasm)
+#   DEX_WASM, DEX_ROUTER_WASM  dex-contracts bin/dex.wasm and bin/dex-router-v2.wasm
+#   (and the EVM artifacts the DEX3 environment brings up, see suite/evm-artifacts.sh)
+TestRcPrice_Activation
+TestRcPrice_WalletAccounts GOFLAGS=-tags=evm_devnet
+TestRcPrice_MixedFleet RC_PRICE_OLD_CODE_DIR=${RC_PRICE_OLD_CODE_DIR}
+TestRcPrice_UserPaths GOFLAGS=-tags=evm_devnet BTC_MAPPING_WASM_PATH=${BTC_MAPPING_WASM} DEX_WASM=${DEX_WASM} DEX_ROUTER_WASM=${DEX_ROUTER_WASM} DEVNET_FLOOR_CONSENSUS=14

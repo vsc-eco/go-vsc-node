@@ -173,9 +173,19 @@ import (
 //     V0_14_0 in feature_gates.go for what a mainnet floor rise past 0.13
 //     therefore also carries. Inert until 0.14.0 is chain-active, so settled
 //     history re-derives byte-identically.
+//   - 0.15.0 (consensusversion.V0_15_0): the storage write price. A contract's
+//     new stored bytes cost 1 RC a byte instead of 19 (WriteIoPriceCutActive,
+//     params.WriteIoGasRcCost); bytes read or rewritten stay at 1. At 19 a
+//     withdrawal to a Bitcoin address cost more than the 10,000 RC a Hive
+//     account gets for free, two thirds of it for the 400 bytes it stores.
+//     With it, a call is never charged more RC than it was given to spend
+//     (RcChargeCappedAtLimitActive): a call that ran out used to be charged
+//     the whole storage operation that took it past its rc_limit. A new line
+//     because mainnet runs 0.14.0. Inert until 0.15.0 is chain-active, so
+//     settled history re-executes at the price it was charged.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 14
+	currentConsensus    uint64 = 15
 	currentNonConsensus uint64 = 0
 )
 

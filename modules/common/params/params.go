@@ -18,8 +18,37 @@ const CYCLE_GAS_PER_RC = 100_000
 // Areweave does $10.5 per GB we can use less b/c we charge for reads and modifications as well
 // 19 RCs per new written byte ($4/GB)
 // 1 RC per read or modified byte ($0.21/GB)
+//
+// WRITE_IO_GAS_RC_COST is the price up to consensus 0.15.0. Do NOT read it on
+// a pricing path: read WriteIoGasRcCost(active), which returns the price in
+// force at the transaction's height.
 const WRITE_IO_GAS_RC_COST = 19
 const READ_IO_GAS_RC_COST = 1
+
+// WRITE_IO_GAS_RC_COST_V0_15 is the price of a new stored byte from consensus
+// 0.15.0 (consensusversion.WriteIoPriceCutActive): the same as a byte read or
+// rewritten, and the same as a byte of contract log, which is stored for good
+// as well.
+const WRITE_IO_GAS_RC_COST_V0_15 = 1
+
+// WriteIoGasRcCost is the RC charged for each new stored byte of contract
+// state under the chain-active consensus version. It is the one place the
+// price is chosen: the state engine and the dry run resolve `active` at the
+// transaction's block height and hand the result to the execution context
+// (contract_execution_context.WithIoWriteRcCost), which carries it into nested
+// contract calls.
+//
+// A later price is one more case here on a new version line. Only a lower
+// price is safe to add this way: callers size rc_limit from what a call cost
+// before the switch, so after a decrease their limits are merely generous,
+// while after an increase they would be too low and the call would fail for
+// its whole limit.
+func WriteIoGasRcCost(active consensusversion.Version) int {
+	if consensusversion.WriteIoPriceCutActive(active) {
+		return WRITE_IO_GAS_RC_COST_V0_15
+	}
+	return WRITE_IO_GAS_RC_COST
+}
 
 const EPHEM_IO_GAS = 100
 

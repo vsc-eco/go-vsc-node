@@ -49,6 +49,16 @@ type contractExecutionContext struct {
 	ioWriteGas int
 	ioSessions []*ioSession
 
+	// ioWriteRcCost is the RC charged for each new stored byte of state. The
+	// state engine sets it per tx from the chain-active consensus version
+	// (params.WriteIoGasRcCost, WithIoWriteRcCost) and it propagates into
+	// nested calls, exactly like sp1WorkPricing: the price decides whether a
+	// call finishes inside its rc_limit, so it must change at one coordinated
+	// height and history must re-execute at the price it was charged. New
+	// sets it to the original params.WRITE_IO_GAS_RC_COST, so a context built
+	// without the option charges what every node charged before 0.15.0.
+	ioWriteRcCost int
+
 	tokenLimits map[string]*int64
 
 	pendulumApplier wasm_context.PendulumApplier
@@ -176,6 +186,7 @@ func New(
 		callSession:     callSession,
 		recursion:       recursionDepth,
 		tokenLimits:     tokenLimits,
+		ioWriteRcCost:   params.WRITE_IO_GAS_RC_COST,
 	}
 	for _, opt := range opts {
 		opt(ctx)
@@ -253,8 +264,33 @@ func (ctx *contractExecutionContext) BigSwapAmountsActive() bool {
 	return ctx.bigSwapAmounts
 }
 
+// WithIoWriteRcCost sets the RC charged for each new stored byte of state
+// (params.WriteIoGasRcCost of the chain-active consensus version, which never
+// returns less than 1; params' tests pin that). A cost below 1 is refused and
+// the original price stays: the price is the only bound on how much one call
+// can store, so a zero that slipped through would make new state free.
+func WithIoWriteRcCost(cost int) Option {
+	return func(ctx *contractExecutionContext) {
+		if cost >= 1 {
+			ctx.ioWriteRcCost = cost
+		}
+	}
+}
+
+// IoWriteRcCost is the RC this execution charges for each new stored byte.
+func (ctx *contractExecutionContext) IoWriteRcCost() int {
+	return ctx.ioWriteRcCost
+}
+
+// ioGas prices counted I/O bytes: read (and rewritten) bytes at the read
+// price, new bytes at this execution's write price. The one formula, so the
+// running total (IOGas) and a host call's own share (IOSession) cannot drift.
+func (ctx *contractExecutionContext) ioGas(readBytes int, newBytes int) int {
+	return (readBytes*params.READ_IO_GAS_RC_COST + newBytes*ctx.ioWriteRcCost) * params.CYCLE_GAS_PER_RC
+}
+
 func (ctx *contractExecutionContext) IOGas() int {
-	return (ctx.ioReadGas*params.READ_IO_GAS_RC_COST + ctx.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
+	return ctx.ioGas(ctx.ioReadGas, ctx.ioWriteGas)
 }
 
 type ioSession struct {
@@ -268,7 +304,7 @@ func (ctx *contractExecutionContext) IOSession() wasm_context.IOSession {
 	session.end = func() int {
 		i := slices.Index(ctx.ioSessions, session)
 		ctx.ioSessions[i] = nil
-		return (session.ioReadGas*params.READ_IO_GAS_RC_COST + session.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
+		return ctx.ioGas(session.ioReadGas, session.ioWriteGas)
 	}
 
 	i := slices.Index(ctx.ioSessions, nil)
@@ -750,7 +786,12 @@ func (ctx *contractExecutionContext) ContractCall(
 				WithKeyReshared(ctx.keyResharedActive),
 				WithSp1WorkPricing(ctx.sp1WorkPricing),
 				// A pool reached through the router swaps in the nested context.
-				WithBigSwapAmounts(ctx.bigSwapAmounts))
+				WithBigSwapAmounts(ctx.bigSwapAmounts),
+				// A contract reached through contracts.call stores at the price
+				// of the transaction that called it (router -> pool -> mapping
+				// contract): without this its writes would stay at the original
+				// price while the caller's own were charged the new one.
+				WithIoWriteRcCost(ctx.ioWriteRcCost))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)

@@ -59,6 +59,12 @@ type ContractTest struct {
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
 	Tss           TssState
+	// ElectionDb and ContractStateDb are the mocks the StateEngine and the
+	// CallSession read. A test that drives the node's own call paths
+	// (TxVscCallContract.ExecuteTx, the dry-run resolver) sets the chain-active
+	// consensus version through ElectionDb.ElectionsByHeight.
+	ElectionDb      *MockElectionDb
+	ContractStateDb *MockContractStateDb
 	// PendulumApplier is the swap-fee applier wired into every Call. It
 	// defaults to the StateEngine's production applier (which gates swaps on
 	// the FeedTracker being warm, so swaps return ErrSnapshotUnavailable in a
@@ -82,6 +88,16 @@ type ContractTest struct {
 	// legacy three-field output.
 	VaultRotationV2 bool
 	KeyReshared     bool
+	// IoWriteRcCost is the RC charged for each new stored byte of state. Zero
+	// (the default) is the original price, 19, so a suite that asserts RC keeps
+	// its numbers; set it to params.WRITE_IO_GAS_RC_COST_V0_15 to run as the
+	// node does from consensus 0.15.0.
+	IoWriteRcCost int
+	// RcChargeCapped stops a call's RC charge at what it was given to spend
+	// (min of the payer's RC and rc_limit), as the node does from consensus
+	// 0.15.0. False (the default) is the original charge: a call that runs out
+	// is billed the whole storage operation that took it past its limit.
+	RcChargeCapped bool
 }
 
 // stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
@@ -175,6 +191,8 @@ func NewContractTest() ContractTest {
 		RcDb:            &rc,
 		CallSession:     contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, &tssCommitments, 0, nil),
 		DataLayer:       dl,
+		ElectionDb:      &elections,
+		ContractStateDb: &contractState,
 		StateEngine:     se,
 		PendulumApplier: se.PendulumApplier(),
 		TryCatchActive:  true,
@@ -214,6 +232,34 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 		// ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
 	}
 	ct.BlockHeight = newHeight
+}
+
+// ioWriteRcCost is the write price a Call runs at: IoWriteRcCost when set,
+// else the original price.
+func (ct *ContractTest) ioWriteRcCost() int {
+	if ct.IoWriteRcCost > 0 {
+		return ct.IoWriteRcCost
+	}
+	return params.WRITE_IO_GAS_RC_COST
+}
+
+// chainEngine is the harness's StateEngine reading blocks from the harness's
+// DataLayer (the engine itself is built without one).
+type chainEngine struct {
+	*stateEngine.StateEngine
+	dl *datalayer.DataLayer
+}
+
+func (e chainEngine) DataLayer() common_types.DataLayer { return e.dl }
+
+// ChainEngine returns the engine to hand to TxVscCallContract.ExecuteTx, the
+// call path the node runs for a transaction in a block. Call, the harness's own
+// path, takes its consensus rules from the ContractTest's fields; ExecuteTx
+// resolves them from the chain-active consensus version, which a test sets
+// through ElectionDb.ElectionsByHeight (the election keyed at a height is in
+// force from that height until the next key).
+func (ct *ContractTest) ChainEngine() common_types.StateEngine {
+	return chainEngine{StateEngine: ct.StateEngine, dl: ct.DataLayer}
 }
 
 // Register a contract from bytecode.
@@ -325,6 +371,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		contract_execution_context.WithVaultRotationV2(ct.VaultRotationV2),
 		contract_execution_context.WithKeyReshared(ct.KeyReshared),
 		contract_execution_context.WithTssKeyAllowlist(ct.TssKeyAllowlist),
+		contract_execution_context.WithIoWriteRcCost(ct.ioWriteRcCost()),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
@@ -333,6 +380,9 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 	)
 	res := w.Execute(ctx, gasCycles, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	if ct.RcChargeCapped && rcUsed > int64(gas) {
+		rcUsed = int64(math.Max(float64(gas), 100))
+	}
 	ct.RcSession.Consume(rcPayer, ct.BlockHeight, rcUsed)
 	ct.StateEngine.RcMap[rcPayer] = ct.StateEngine.RcMap[rcPayer] + rcUsed
 

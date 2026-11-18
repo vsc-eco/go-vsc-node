@@ -31,7 +31,11 @@ import (
 //   - 0.13.0: big swap amounts (SP-0d);
 //   - 0.14.0 KEY-SPAM-1 (18j, TssKeyAllowlistActive): tss.create_key only
 //     for the contracts the network lists; nil before, so create_key is
-//     byte-identical until then.
+//     byte-identical until then;
+//   - 0.15.0: the price of a new stored byte (params.WriteIoGasRcCost), 19 RC
+//     below the line and 1 RC from it. It decides how much RC a call uses, so
+//     a dry run on another price would size limits the chain then overruns or
+//     never needs.
 //
 // A nil sconf (a state engine without a system config) leaves the two
 // config-dependent gates off and the allowlist nil, as before.
@@ -53,5 +57,31 @@ func ContractCallGatesFor(haveConf bool, cp params.ConsensusParams, tssKeyAllowl
 		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
 		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
 		contract_execution_context.WithTssKeyAllowlist(tssKeyAllowlist),
+		contract_execution_context.WithIoWriteRcCost(params.WriteIoGasRcCost(activeVersion)),
 	}
+}
+
+// ContractCallRcCharge is the RC a contract call is charged: the gas it used,
+// rounded up to whole RC, never under the 100 RC minimum.
+//
+// budgetRc is what the call was given to spend, min(the payer's available RC,
+// the call's rc_limit). From 0.15.0 (RcChargeCappedAtLimitActive) the charge
+// never exceeds it. The gas a call reports can: a storage operation is charged
+// after it ran, so the one that takes the call past its budget is counted in
+// full before the call is stopped. Below 0.15.0 that whole amount is charged,
+// as it always was.
+//
+// The chain (TxVscCallContract.ExecuteTx) and the dry run both charge through
+// this one function.
+func ContractCallRcCharge(gasUsed uint, budgetRc uint64, activeVersion consensusversion.Version) int64 {
+	// Integer ceil-divide: (gas + denom - 1) / denom. uint64 stays well below
+	// overflow for any realistic gas value (denom = 100_000).
+	rc := (uint64(gasUsed) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC
+	if consensusversion.RcChargeCappedAtLimitActive(activeVersion) && rc > budgetRc {
+		rc = budgetRc
+	}
+	if rc < 100 {
+		rc = 100
+	}
+	return int64(rc)
 }

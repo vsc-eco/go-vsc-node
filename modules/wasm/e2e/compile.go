@@ -6,14 +6,20 @@ import (
 	"os/exec"
 )
 
-func Compile(wkdir string) (string, error) {
-	prefix := wkdir + "/modules/wasm/e2e/tmp/"
-	path := prefix + "main.wasm"
+// buildCmd is the tinygo command that builds the test contract into path.
+func buildCmd(wkdir string, path string) *exec.Cmd {
 	//-no-debug
 	cmd := exec.Command("bash", "-c", "tinygo build -no-debug -gc=custom -scheduler=none -panic=trap -target=wasm-unknown -o "+path+" .")
 	// The guest is its own Go module (modules/wasm/e2e/go_wasm/go.mod),
 	// so tinygo must resolve its imports from inside that directory.
 	cmd.Dir = wkdir + "/modules/wasm/e2e/go_wasm"
+	return cmd
+}
+
+func Compile(wkdir string) (string, error) {
+	prefix := wkdir + "/modules/wasm/e2e/tmp/"
+	path := prefix + "main.wasm"
+	cmd := buildCmd(wkdir, path)
 
 	// cmd.Env = append(cmd.Environ(), "GOOS=js")
 	// cmd.Env = append(cmd.Env, "GOARCH=wasm")

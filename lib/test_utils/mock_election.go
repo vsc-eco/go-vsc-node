@@ -69,9 +69,26 @@ func (m *MockElectionDb) GetElectionByHeight(height uint64) (elections.ElectionR
 	if r, ok := m.ElectionsByHeight[height]; ok {
 		return r, nil
 	}
-	// Fall back to returning any entry (needed for MaxInt64-1 queries)
-	for _, r := range m.ElectionsByHeight {
-		return r, nil
+	// A height that is not a key: the election at the greatest key below it, as
+	// the real lookup answers (the election in force at that height), which also
+	// serves the MaxInt64-1 "latest" queries. With no key below it, the lowest
+	// key, so a map with entries always answers. Never "any entry": map order
+	// would pick a different election from run to run.
+	var below, lowest uint64
+	haveBelow, haveLowest := false, false
+	for h := range m.ElectionsByHeight {
+		if h < height && (!haveBelow || h > below) {
+			below, haveBelow = h, true
+		}
+		if !haveLowest || h < lowest {
+			lowest, haveLowest = h, true
+		}
+	}
+	if haveBelow {
+		return m.ElectionsByHeight[below], nil
+	}
+	if haveLowest {
+		return m.ElectionsByHeight[lowest], nil
 	}
 	// Match the real elections DB contract: a not-found lookup returns
 	// mongo.ErrNoDocuments (wrapped for a readable message). Fail-stop
