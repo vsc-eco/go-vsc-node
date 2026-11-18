@@ -74,6 +74,10 @@ func TestSimulateRunsWithTheChainsGates(t *testing.T) {
 		try, sp1, big, keyListed bool
 		// write is the RC charged for each new stored byte.
 		write int
+		// size: one stored value and key are bounded.
+		size bool
+		// nested: contracts.call carries the TSS key allowlist.
+		nested bool
 	}
 	const listed, unlisted = "vsc1TheBridge", "vsc1SomeoneElse"
 	for _, tc := range []struct {
@@ -86,13 +90,14 @@ func TestSimulateRunsWithTheChainsGates(t *testing.T) {
 		{"0.10.0: SP1 priced by work", v(10), gates{try: true, sp1: true, write: 19}},
 		{"0.13.0: big swap amounts", v(13), gates{try: true, sp1: true, big: true, write: 19}},
 		{"0.14.0: a new byte still costs 19 RC", v(14), gates{try: true, sp1: true, big: true, write: 19}},
-		{"0.15.0: a new byte costs 1 RC", v(15), gates{try: true, sp1: true, big: true, write: 1}},
+		{"0.15.0: a new byte costs 1 RC; values and keys not yet bounded", v(15), gates{try: true, sp1: true, big: true, write: 1}},
+		{"0.16.0: values and keys are bounded, nested calls keep the allowlist", v(16), gates{try: true, sp1: true, big: true, write: 1, size: true, nested: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := stateEngine.ContractCallGatesFor(true, params.ConsensusParams{}, nil, 2000, tc.active)
 			ctx := contract_execution_context.New(contract_execution_context.Environment{ContractId: unlisted}, 1000, 100000, 100000, nil,
 				contract_session.NewCallSession(nil, nil, nil, &test_utils.MockTssKeysDb{Keys: map[string]tss_db.TssKey{}}, &test_utils.MockTssCommitmentsDb{}, 0, nil), 0, opts...)
-			got := gates{try: ctx.TryCatchActive(), sp1: ctx.Sp1WorkPricingActive(), big: ctx.BigSwapAmountsActive(), write: ctx.IoWriteRcCost()}
+			got := gates{try: ctx.TryCatchActive(), sp1: ctx.Sp1WorkPricingActive(), big: ctx.BigSwapAmountsActive(), write: ctx.IoWriteRcCost(), size: ctx.StateSizeBoundActive(), nested: ctx.TssKeyAllowlistNestedActive()}
 			if got != tc.want {
 				t.Fatalf("gates %+v, want %+v", got, tc.want)
 			}

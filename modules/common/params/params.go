@@ -31,6 +31,36 @@ const READ_IO_GAS_RC_COST = 1
 // as well.
 const WRITE_IO_GAS_RC_COST_V0_15 = 1
 
+// Size bounds of the objects a block hands to other nodes, from consensus
+// 0.16.0 (consensusversion.SlotObjectSizeBoundActive). A node that did not
+// build a block fetches each of these from a peer in one message, so each is
+// kept within the message limit. In normal use they are far below these
+// bounds.
+const (
+	// One contract's output for one block: its calls' return values, error
+	// messages and logs, plus MAX_OUTPUT_RESULT_OVERHEAD for each call.
+	MAX_CONTRACT_OUTPUT_BYTES = 1 << 20
+	// The block's ledger record, plus MAX_OPLOG_ENTRY_OVERHEAD for each entry.
+	MAX_BLOCK_OPLOG_BYTES = 1 << 20
+	// One stored contract value.
+	MAX_STATE_VALUE_BYTES = 1 << 20
+	// One stored contract key. A full directory shard holds 256 keys.
+	MAX_STATE_KEY_BYTES = 1 << 10
+	// The revert symbol of a failed call (contract-chosen text) as recorded in
+	// the output.
+	MAX_ERROR_SYMBOL_BYTES = 256
+	// Wallet (L2) transactions one block may carry. Each adds an entry to the
+	// block itself and to its ledger record, whatever it does; Hive
+	// transactions are bounded by Hive's block size already.
+	MAX_BLOCK_L2_TXS = 4096
+
+	// What a call's entry in an output costs beyond its strings (field names,
+	// encoding, its id in the output's inputs list), and an oplog entry beyond
+	// its strings and amount. Generous, so the estimate stays above the size.
+	MAX_OUTPUT_RESULT_OVERHEAD = 128
+	MAX_OPLOG_ENTRY_OVERHEAD   = 96
+)
+
 // WriteIoGasRcCost is the RC charged for each new stored byte of contract
 // state under the chain-active consensus version. It is the one place the
 // price is chosen: the state engine and the dry run resolve `active` at the

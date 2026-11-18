@@ -162,3 +162,39 @@ func TestSettlementAttestationQuorumActiveOnlyAtOrAboveTheLine(t *testing.T) {
 		}
 	}
 }
+
+// The 0.16.0 rules come with the 0.16.0 line and not before; the 0.15.0 price
+// and charge cap are on from 0.15.0 and stay on above it.
+func TestConsensusBoundsOnTheV0_16_0Line(t *testing.T) {
+	for _, tc := range []struct {
+		v              Version
+		want15, want16 bool
+	}{
+		{Version{}, false, false},
+		{Version{Consensus: 14}, false, false},
+		{Version{Consensus: 14, NonConsensus: 9}, false, false},
+		{V0_15_0, true, false},
+		{Version{Consensus: 15, NonConsensus: 9}, true, false},
+		{V0_16_0, true, true},
+		{Version{Consensus: 17}, true, true},
+	} {
+		for name, gate := range map[string]func(Version) bool{
+			"WriteIoPriceCutActive":       WriteIoPriceCutActive,
+			"RcChargeCappedAtLimitActive": RcChargeCappedAtLimitActive,
+		} {
+			if got := gate(tc.v); got != tc.want15 {
+				t.Fatalf("%s(%s) = %v, want %v", name, tc.v.Format(), got, tc.want15)
+			}
+		}
+		for name, gate := range map[string]func(Version) bool{
+			"SlotObjectSizeBoundActive":        SlotObjectSizeBoundActive,
+			"BlockL2TxCapActive":               BlockL2TxCapActive,
+			"FailedTxPublishesNoResultsActive": FailedTxPublishesNoResultsActive,
+			"TssKeyAllowlistNestedActive":      TssKeyAllowlistNestedActive,
+		} {
+			if got := gate(tc.v); got != tc.want16 {
+				t.Fatalf("%s(%s) = %v, want %v", name, tc.v.Format(), got, tc.want16)
+			}
+		}
+	}
+}

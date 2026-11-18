@@ -183,9 +183,17 @@ import (
 //     the whole storage operation that took it past its rc_limit. A new line
 //     because mainnet runs 0.14.0. Inert until 0.15.0 is chain-active, so
 //     settled history re-executes at the price it was charged.
+//   - 0.16.0 (consensusversion.V0_16_0): bounds on what a block hands to other
+//     nodes (SlotObjectSizeBoundActive, BlockL2TxCapActive), kept within the
+//     per-message fetch limit; a failed transaction publishes none of its
+//     calls' results (FailedTxPublishesNoResultsActive); a contract reached
+//     through contracts.call is held to the caller's TSS key allowlist
+//     (TssKeyAllowlistNestedActive). A line of its own after 0.15.0, so a
+//     network already on 0.15.0 switches these on at one agreed height. Inert
+//     until 0.16.0 is chain-active, so settled history re-executes identically.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 15
+	currentConsensus    uint64 = 16
 	currentNonConsensus uint64 = 0
 )
 

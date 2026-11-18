@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 	"vsc-node/lib/dids"
 	"vsc-node/lib/utils"
 
@@ -21,6 +22,26 @@ import (
 
 	codecJson "github.com/ipld/go-ipld-prime/codec/json"
 )
+
+// EncodedStringBytes is how many bytes the string s takes once EncodeDagCbor
+// has encoded it (through JSON, which turns each byte that is not valid UTF-8
+// into U+FFFD, 3 bytes), not counting the string's CBOR header.
+func EncodedStringBytes(s string) int {
+	if utf8.ValidString(s) {
+		return len(s)
+	}
+	n := 0
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			n += 3
+		} else {
+			n += size
+		}
+		i += size
+	}
+	return n
+}
 
 func EncodeDagCbor(obj interface{}) ([]byte, error) {
 	buf, _ := json.Marshal(obj)

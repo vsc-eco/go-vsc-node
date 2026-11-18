@@ -25,6 +25,8 @@ import (
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
+	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -457,8 +459,18 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	})
 	rcSession := bp.rcSystem.NewSession(ledgerSession)
 
+	// From consensus 0.16.0 a block carries at most params.MAX_BLOCK_L2_TXS
+	// wallet transactions; the rest wait for the next block.
+	txCap := 0
+	if consensusversion.BlockL2TxCapActive(bp.StateEngine.ActiveConsensusVersion(slotHeight)) {
+		txCap = params.MAX_BLOCK_L2_TXS
+	}
 	sequencedTxs := make([]transactions.TransactionRecord, 0)
 	for _, preRecord := range preOrder {
+		if txCap > 0 && len(sequencedTxs) >= txCap {
+			vlog.Debug("block transaction cap reached", "cap", txCap, "left_in_pool", len(preOrder)-len(sequencedTxs))
+			break
+		}
 		keyId := transactionpool.HashKeyAuths(preRecord.RequiredAuths)
 		payer := preRecord.RequiredAuths[0]
 
@@ -759,6 +771,15 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 			return "", errors.New("invalid transaction entry type")
 		}
 		txStrs = append(txStrs, s)
+	}
+
+	// From consensus 0.16.0 a block may carry at most params.MAX_BLOCK_L2_TXS
+	// wallet transactions: every one adds an entry to the block and to its
+	// ledger record, and a block too big to fetch stops every node that did
+	// not sign it. An honest producer takes no more
+	// (generateTransactions); a signer does not sign a block that has more.
+	if len(txStrs) > params.MAX_BLOCK_L2_TXS && consensusversion.BlockL2TxCapActive(bp.StateEngine.ActiveConsensusVersion(msg.SlotHeight)) {
+		return "", fmt.Errorf("block carries %d wallet transactions, over the %d limit", len(txStrs), params.MAX_BLOCK_L2_TXS)
 	}
 
 	blockTxs := []vscBlocks.VscBlockTx{}

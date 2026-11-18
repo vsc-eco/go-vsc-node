@@ -143,3 +143,45 @@ func TestWritePriceAppliesOnlyPastTheContractsLargestSize(t *testing.T) {
 		}
 	}
 }
+
+// the size bound: with the 0.16.0 bound one stored value over 1 MiB and one key
+// over 1 KiB are refused, with nothing written; at the bound they pass; without
+// the bound anything is stored, as before.
+func TestStateSizeBound(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bound      bool
+		key, value int
+		wantErr    string
+	}{
+		{"bound: value at the limit", true, 10, params.MAX_STATE_VALUE_BYTES, ""},
+		{"bound: value one byte over", true, 10, params.MAX_STATE_VALUE_BYTES + 1, "state value of"},
+		{"bound: key at the limit", true, params.MAX_STATE_KEY_BYTES, 10, ""},
+		{"bound: key one byte over", true, params.MAX_STATE_KEY_BYTES + 1, 10, "state key of"},
+		{"no bound: big value", false, 10, 2 * params.MAX_STATE_VALUE_BYTES, ""},
+		{"no bound: big key", false, 4 * params.MAX_STATE_KEY_BYTES, 10, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := ioCtx(t, "vscsize", contract_execution_context.WithIoWriteRcCost(1), contract_execution_context.WithStateSizeBound(tc.bound))
+			key, value := strings.Repeat("k", tc.key), strings.Repeat("v", tc.value)
+			session := ctx.IOSession()
+			res := ctx.SetState(key, value)
+			session.End()
+			if tc.wantErr == "" {
+				if res.IsErr() {
+					t.Fatalf("refused: %v", res.UnwrapErr())
+				}
+				return
+			}
+			if !res.IsErr() || !strings.Contains(res.UnwrapErr().Error(), tc.wantErr) {
+				t.Fatalf("want an error containing %q, got %v", tc.wantErr, res)
+			}
+			read := ctx.IOSession()
+			got := ctx.GetState(key)
+			read.End()
+			if got.IsOk() && got.Unwrap() != "" {
+				t.Fatalf("the refused write was stored anyway (%d bytes)", len(got.Unwrap()))
+			}
+		})
+	}
+}

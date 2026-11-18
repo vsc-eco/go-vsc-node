@@ -98,6 +98,18 @@ type ContractTest struct {
 	// 0.15.0. False (the default) is the original charge: a call that runs out
 	// is billed the whole storage operation that took it past its limit.
 	RcChargeCapped bool
+	// StateSizeBound applies consensus 0.16.0's size bounds:
+	// a stored value over params.MAX_STATE_VALUE_BYTES or a key over
+	// params.MAX_STATE_KEY_BYTES fails the call, and so does a call whose
+	// return value and logs alone would take a contract's output for a block
+	// over params.MAX_CONTRACT_OUTPUT_BYTES (the check the dry run makes; the
+	// chain also counts the block's other calls). False (the default) is no
+	// bound, as before 0.16.0.
+	StateSizeBound bool
+	// TssKeyAllowlistNested holds contracts reached through contracts.call to
+	// TssKeyAllowlist as well, as the node does from consensus 0.16.0. False
+	// (the default) is the original: a nested call runs with no allowlist.
+	TssKeyAllowlistNested bool
 }
 
 // stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
@@ -372,6 +384,8 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		contract_execution_context.WithKeyReshared(ct.KeyReshared),
 		contract_execution_context.WithTssKeyAllowlist(ct.TssKeyAllowlist),
 		contract_execution_context.WithIoWriteRcCost(ct.ioWriteRcCost()),
+		contract_execution_context.WithStateSizeBound(ct.StateSizeBound),
+		contract_execution_context.WithTssKeyAllowlistNested(ct.TssKeyAllowlistNested),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
@@ -399,6 +413,22 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		}
 	}
 	diff := ct.CallSession.GetStateDiff()
+	logs := ct.CallSession.PopLogs()
+	if ct.StateSizeBound {
+		outs := stateEngine.CallOutputs(stateEngine.MakeTxId(tx.Self.TxId, tx.Self.OpIndex), tx.ContractId, res.Result, true, stateEngine.WithCalledContract(logs, tx.ContractId))
+		if reason := stateEngine.DryRunOverBound(map[string]int{}, outs, ct.LedgerSession.PendingOpBytes()); reason != "" {
+			ct.LedgerSession.Revert()
+			ct.CallSession.Rollback()
+			return ContractTestCallResult{
+				Success: false,
+				Err:     contracts.OUTPUT_TOO_LARGE,
+				ErrMsg:  reason,
+				RcUsed:  rcUsed,
+				GasUsed: res.Gas,
+				Logs:    map[string]contract_session.LogOutput{},
+			}
+		}
+	}
 	ct.LedgerSession.Done()
 	ct.CallSession.Commit()
 
@@ -407,7 +437,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		Ret:       res.Result,
 		RcUsed:    rcUsed,
 		GasUsed:   res.Gas,
-		Logs:      ct.CallSession.PopLogs(),
+		Logs:      logs,
 		StateDiff: diff,
 	}
 }

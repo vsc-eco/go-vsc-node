@@ -59,6 +59,12 @@ type contractExecutionContext struct {
 	// without the option charges what every node charged before 0.15.0.
 	ioWriteRcCost int
 
+	// stateSizeBound is consensus 0.16.0's bound on one stored value and key
+	// (params.MAX_STATE_VALUE_BYTES, MAX_STATE_KEY_BYTES). Set
+	// per tx like ioWriteRcCost and carried into nested calls; off, a context
+	// stores values and keys of any size, as before.
+	stateSizeBound bool
+
 	tokenLimits map[string]*int64
 
 	pendulumApplier wasm_context.PendulumApplier
@@ -104,6 +110,10 @@ type contractExecutionContext struct {
 	// makes create_key behave byte-identically to today. nil or empty means
 	// unrestricted, so an un-gated or unconfigured network is unaffected.
 	tssKeyContractAllowlist []string
+	// tssKeyAllowlistNested (consensus 0.16.0) carries tssKeyContractAllowlist
+	// into contracts reached through contracts.call. Off, a nested context gets
+	// no allowlist, which is unrestricted, as before.
+	tssKeyAllowlistNested bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -241,6 +251,26 @@ func WithTssKeyAllowlist(contracts []string) Option {
 	return func(ctx *contractExecutionContext) { ctx.tssKeyContractAllowlist = contracts }
 }
 
+// WithTssKeyAllowlistNested holds a contract reached through contracts.call
+// to the caller's TSS key allowlist (consensusversion.TssKeyAllowlistNestedActive).
+func WithTssKeyAllowlistNested(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.tssKeyAllowlistNested = active }
+}
+
+// TssKeyAllowlistNestedActive reports whether nested calls carry this
+// execution's TSS key allowlist.
+func (ctx *contractExecutionContext) TssKeyAllowlistNestedActive() bool {
+	return ctx.tssKeyAllowlistNested
+}
+
+// nestedTssKeyAllowlist is the allowlist a nested call runs with.
+func (ctx *contractExecutionContext) nestedTssKeyAllowlist() []string {
+	if ctx.tssKeyAllowlistNested {
+		return ctx.tssKeyContractAllowlist
+	}
+	return nil
+}
+
 // WithSp1WorkPricing prices sp1_verify_groth16 by work
 // (consensusversion.Sp1WorkPricingActive).
 func WithSp1WorkPricing(active bool) Option {
@@ -275,6 +305,20 @@ func WithIoWriteRcCost(cost int) Option {
 			ctx.ioWriteRcCost = cost
 		}
 	}
+}
+
+// WithStateSizeBound turns on consensus 0.16.0's bound on one stored value
+// (params.MAX_STATE_VALUE_BYTES) and one key (params.MAX_STATE_KEY_BYTES):
+// a write over either fails. A stored value or a directory shard is one block,
+// which other nodes fetch from a peer in one message
+// (consensusversion.SlotObjectSizeBoundActive).
+func WithStateSizeBound(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.stateSizeBound = active }
+}
+
+// StateSizeBoundActive reports whether this execution bounds stored values and keys.
+func (ctx *contractExecutionContext) StateSizeBoundActive() bool {
+	return ctx.stateSizeBound
 }
 
 // IoWriteRcCost is the RC this execution charges for each new stored byte.
@@ -474,6 +518,14 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 }
 
 func (ctx *contractExecutionContext) SetState(key string, value string) result.Result[struct{}] {
+	if ctx.stateSizeBound {
+		if len(key) > params.MAX_STATE_KEY_BYTES {
+			return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("state key of %d bytes is over the %d-byte limit", len(key), params.MAX_STATE_KEY_BYTES)))
+		}
+		if len(value) > params.MAX_STATE_VALUE_BYTES {
+			return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("state value of %d bytes is over the %d-byte limit", len(value), params.MAX_STATE_VALUE_BYTES)))
+		}
+	}
 	newWriteToAdd := 0
 	result.MapOrElse(
 		ctx.GetState(key),
@@ -791,7 +843,13 @@ func (ctx *contractExecutionContext) ContractCall(
 				// of the transaction that called it (router -> pool -> mapping
 				// contract): without this its writes would stay at the original
 				// price while the caller's own were charged the new one.
-				WithIoWriteRcCost(ctx.ioWriteRcCost))
+				WithIoWriteRcCost(ctx.ioWriteRcCost),
+				// The nested contract's writes are bounded like the caller's.
+				WithStateSizeBound(ctx.stateSizeBound),
+				// From 0.16.0 the nested contract may create a TSS key only if
+				// it is on the caller's allowlist; before, it ran unrestricted.
+				WithTssKeyAllowlist(ctx.nestedTssKeyAllowlist()),
+				WithTssKeyAllowlistNested(ctx.tssKeyAllowlistNested))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
