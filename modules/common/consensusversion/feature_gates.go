@@ -996,3 +996,15 @@ func Version0_14_0Active(active Version) bool {
 func SettlementAttestationQuorumActive(active Version) bool {
 	return Version0_14_0Active(active)
 }
+
+// SelfInjectionTrustedSelfActive (0.14.0, SELF-INJECTION-1): after decoding any
+// transaction/op, the engine rebuilds its TxSelf (TxId, BlockHeight, Index,
+// RequiredAuths, ...) from the trusted block/envelope context, so an
+// attacker-controlled payload "Self" key can no longer overwrite the
+// Hive-enforced signer and spoof the auth check. Below the line the legacy
+// decode is preserved verbatim (the payload "Self" is honored exactly as a
+// pre-0.14 node did), so a replay of pre-activation history is byte-identical.
+// Resolve `active` at the op's own block height.
+func SelfInjectionTrustedSelfActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
