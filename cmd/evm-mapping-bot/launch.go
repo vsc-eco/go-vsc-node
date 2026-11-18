@@ -101,6 +101,12 @@ func pairedTransferIdx(logs []receiptLog, i int, sender, token, vault string, am
 // keys ("txhash#perReceiptIdx") of the token Transfers that paid them, which
 // are not plain ERC-20 deposits (the bridge refuses them on that path).
 func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detectedDeposit, map[string]bool, error) {
+	return scanContractDepositsCached(rpc, receiptCache{}, height, dc, vault)
+}
+
+// scanContractDepositsCached is scanContractDeposits reading receipts through
+// the block scan's cache (SCAN-AMPLIFY-1).
+func scanContractDepositsCached(rpc *ethRPC, rcache receiptCache, height uint64, dc, vault string) ([]detectedDeposit, map[string]bool, error) {
 	paid := map[string]bool{}
 	logsData, err := logsAtRetry(rpc, fmt.Sprintf(`{"fromBlock":"0x%x","toBlock":"0x%x","address":"%s","topics":["0x%s"]}`, height, height, dc, depositEventSig), height)
 	if err != nil {
@@ -119,7 +125,7 @@ func scanContractDeposits(rpc *ethRPC, height uint64, dc, vault string) ([]detec
 		if lg.LogIndex == "" {
 			return nil, nil, fmt.Errorf("eth_getLogs returned a log with no logIndex, tx %s", lg.TransactionHash)
 		}
-		rData, err := rpc.getReceipt(lg.TransactionHash)
+		rData, err := rcache.get(rpc, lg.TransactionHash)
 		if err != nil {
 			return nil, nil, fmt.Errorf("receipt %s: %w", lg.TransactionHash, err)
 		}

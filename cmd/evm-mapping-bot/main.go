@@ -69,8 +69,13 @@ type EVMBotConfig struct {
 	// addresses whose deposits the bridge credits (VaultAddress, the active
 	// one, among them); ActiveGen is the active generation (0 before any
 	// rotation). Refreshed every tick from the bridge's registry.
-	Vaults    []string
-	ActiveGen uint32
+	Vaults []string
+	// VaultsUnknown: set when the bot starts, cleared once Vaults is the
+	// bridge's current fund-holding set (a registry read succeeded, or the
+	// bridge has no registry and the configured address is its only vault).
+	// While set, no block is scanned for deposits. RESTART-VAULTS-1.
+	VaultsUnknown bool
+	ActiveGen     uint32
 	// VaultGens is every generation of the last registry read; a withdrawal is
 	// signed by the key of the generation it was issued from (ROT-HALT-1: a
 	// retiring generation finishes its own in-flight withdrawals).
@@ -418,6 +423,10 @@ type Checkpoint struct {
 	// PurgeWantTip: an Inactive generation's purge waits only for the stored L1
 	// height to reach this (I-38); writeNeedsFile asks for a proof until it does.
 	PurgeWantTip uint64 `json:"purge_want_tip,omitempty"`
+	// RegistrySeen: a read has shown this bridge has a vault registry, so a
+	// later "no registry" answer (a node behind its creation, or one that
+	// misses the key locally) is not taken as the vault set (RESTART-VAULTS-1).
+	RegistrySeen bool `json:"registry_seen,omitempty"`
 	// DepositAttestWantTip: a generation's MagiDeposit waits to be attested
 	// until the stored L1 height reaches this finalized block, where its code
 	// already is (EVM-ATTEST-NEED-1); writeNeedsFile asks for a proof until then.
@@ -2405,6 +2414,7 @@ func scanBlockSafe(rpc *ethRPC, height uint64, vaults []string, tokens map[strin
 // fetched once and each address is scanned (late deposits to a superseded
 // generation are credited and swept).
 func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]string) (*blockScanResult, error) {
+	rcache := receiptCache{} // SCAN-AMPLIFY-1: one receipt download per transaction in this block
 	blockHex := fmt.Sprintf("0x%x", height)
 	// P5: one refused or dropped call must not stop the scan at this block
 	// for the whole tick (the BTC bot retries every chain call: callWithRetry).
@@ -2438,6 +2448,13 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 	// its funds, not a deposit: the bridge refuses it.
 	for i, tx := range block.Transactions {
 		if isVault[strings.ToLower(tx.To)] && hexNonZero(tx.Value) && !isVault[strings.ToLower(tx.From)] {
+			// SCAN-AMPLIFY-1: a transfer below the bridge's minimum deposit is never
+			// credited (creditable drops it after the scan, DUST-1); skip it before
+			// its receipt is fetched, so a block of one-wei transfers to the vault
+			// costs no receipt download each.
+			if v, ok := new(big.Int).SetString(strings.TrimPrefix(tx.Value, "0x"), 16); ok && v.Cmp(minETHDeposit) < 0 {
+				continue
+			}
 			// FAILDEP-1: a reverted transfer is in the block but moved nothing
 			// (Glamsterdam reverts one that creates the vault's account at
 			// 21,000 gas); the bridge refuses it, so it is not a deposit.
@@ -2466,7 +2483,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 		if vaultAddr == "" {
 			continue
 		}
-		if err := scanVaultLogs(rpc, height, strings.ToLower(vaultAddr), isVault, tokens, result); err != nil {
+		if err := scanVaultLogs(rpc, rcache, height, strings.ToLower(vaultAddr), isVault, tokens, result); err != nil {
 			return nil, err
 		}
 	}
@@ -2475,7 +2492,7 @@ func scanBlock(rpc *ethRPC, height uint64, vaults []string, tokens map[string]st
 
 // scanVaultLogs adds the ERC-20 and MagiDeposit deposits of one vault address
 // in block height to result.
-func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[string]bool, tokens map[string]string, result *blockScanResult) error {
+func scanVaultLogs(rpc *ethRPC, rcache receiptCache, height uint64, vaultLower string, isVault map[string]bool, tokens map[string]string, result *blockScanResult) error {
 	// Detect ERC-20 deposits: Transfer events to vault
 	for tokenAddr := range tokens {
 		vaultPadded := "0x000000000000000000000000" + strings.TrimPrefix(vaultLower, "0x")
@@ -2520,7 +2537,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 			if log.LogIndex == "" {
 				return fmt.Errorf("eth_getLogs returned a log with no logIndex (non-standard RPC), tx %s token %s", log.TransactionHash, tokenAddr)
 			}
-			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
+			perReceiptIdx, lookupErr := lookupPerReceiptLogIndex(rpc, rcache, log.TransactionHash, tokenAddr, vaultPadded, hexToUint64(log.LogIndex))
 			if lookupErr != nil {
 				return fmt.Errorf("CRIT #14: per-receipt logIndex lookup, tx %s token %s: %w", log.TransactionHash, tokenAddr, lookupErr)
 			}
@@ -2540,7 +2557,7 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 	// RP-7: MagiDeposit deposits. The token Transfer that paid one is credited
 	// through its Deposit log; the bridge refuses it as a plain ERC-20 deposit.
 	if dc := depositContractAddress(vaultLower); dc != "" {
-		deps, paid, err := scanContractDeposits(rpc, height, dc, vaultLower)
+		deps, paid, err := scanContractDepositsCached(rpc, rcache, height, dc, vaultLower)
 		if err != nil {
 			return err
 		}
@@ -2556,6 +2573,49 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 	return nil
 }
 
+// vaultSetKnown reports whether the last registry read gives the deposit scan
+// its full vault set (RESTART-VAULTS-1): a registry with an active generation
+// (also recorded in cp.RegistrySeen), or no registry on a bridge where none
+// was ever seen (its configured address is its only vault). A read error, a
+// registry with no active generation, or "no registry" after one was seen
+// keep the scan on hold.
+func vaultSetKnown(v vaultView, vErr error, cp *Checkpoint) bool {
+	if vErr != nil {
+		return false
+	}
+	if v.Registry {
+		cp.mu.Lock()
+		cp.RegistrySeen = true
+		cp.mu.Unlock()
+		return v.Active != nil && v.Active.Address != ""
+	}
+	cp.mu.Lock()
+	seen := cp.RegistrySeen
+	cp.mu.Unlock()
+	return !seen
+}
+
+// receiptCache holds the receipts one block scan downloaded, by transaction
+// hash (SCAN-AMPLIFY-1, audit 11-18): every matching log looked its receipt up
+// again, so one transaction carrying 400 dust Transfer logs to the vault cost
+// 400 full receipt downloads (96 MB in the audit's run) per scan attempt, and
+// a single failed call restarted the block. Only successful answers are kept;
+// the cache lives for one scanBlock call.
+type receiptCache map[string]json.RawMessage
+
+func (c receiptCache) get(rpc *ethRPC, txHash string) (json.RawMessage, error) {
+	k := strings.ToLower(txHash)
+	if r, ok := c[k]; ok {
+		return r, nil
+	}
+	r, err := rpc.getReceipt(txHash)
+	if err != nil {
+		return nil, err
+	}
+	c[k] = r
+	return r, nil
+}
+
 // lookupPerReceiptLogIndex resolves the per-receipt logIndex (0..N-1 within
 // the receipt's own Logs list) for a specific log identified by its block-
 // level logIndex. eth_getLogs returns block-level indices; the contract
@@ -2563,8 +2623,8 @@ func scanVaultLogs(rpc *ethRPC, height uint64, vaultLower string, isVault map[st
 // tx would map every deposit to per-receipt position 0 (W4-A CRIT #14), or
 // to the first matching position if a naive scan is used (F2-bot variant
 // of the same bug).
-func lookupPerReceiptLogIndex(rpc *ethRPC, txHash, tokenAddr, vaultPaddedTopic string, blockLogIndex uint64) (int, error) {
-	receiptData, err := rpc.getReceipt(txHash)
+func lookupPerReceiptLogIndex(rpc *ethRPC, rcache receiptCache, txHash, tokenAddr, vaultPaddedTopic string, blockLogIndex uint64) (int, error) {
+	receiptData, err := rcache.get(rpc, txHash)
 	if err != nil {
 		return -1, fmt.Errorf("getReceipt %s: %w", txHash, err)
 	}
@@ -3571,6 +3631,7 @@ func buildMPTProof(keys, values [][]byte, targetIndex int) (root []byte, proof [
 // ---------------------------------------------------------------------------
 
 func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, did dids.EthDID) error {
+	cfg.VaultsUnknown = true // RESTART-VAULTS-1: no deposit scan until the vault set is read
 	rpc := newEthRPC(cfg.EthRPC)
 	gql := newVSCGraphQL(cfg.GraphQLURLs)
 	cp := loadCheckpoint(cfg.CheckpointFile)
@@ -3660,6 +3721,9 @@ func RunLoop(ctx context.Context, cfg EVMBotConfig, ethKey *ecdsa.PrivateKey, di
 		v, vErr := fetchVaultView(loopCtx, gql, cfg.ContractID)
 		if vErr != nil {
 			slog.Warn("A01: vault registry unreadable; rotation ops wait", "err", vErr)
+		}
+		if vaultSetKnown(v, vErr, cp) {
+			cfg.VaultsUnknown = false // RESTART-VAULTS-1
 		}
 		if vErr == nil && v.Registry && v.Active != nil && v.Active.Address != "" {
 			view = v
@@ -4049,13 +4113,28 @@ func runOnce(
 	// a slow RPC could hold the scan still instead.
 	if !cfg.Paused { // I-13: a paused bridge refuses maps; the found deposits stay parked
 		cp.noteBotRC(ctx, gql, submitter.did.String(), cfg.RcLimit)
-		requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
+		if !cfg.VaultsUnknown { // RESTART-VAULTS-1: its rescan watches cfg.scanVaults()
+			requeueDeadLetters(rpc, cp, cfg, deadLetterRetryQueue) // P7: operator retries
+		}
 		parkedCtx, parkedCancel := context.WithTimeout(depCtx, depositPhaseBudget/2)
 		mapWaitingDeposits(parkedCtx, rpc, gql, submitter, cp, cfg, 0)
 		parkedCancel()
 	}
 	scanFrom := cp.LastScannedBlock + 1
-	scanResults := scanBlocksParallel(depCtx, rpc, scanFrom, scanUpTo, cfg)
+	// RESTART-VAULTS-1 (audit 11-18): cfg.Vaults (every fund-holding
+	// generation's address) is filled only by a successful registry read. Until
+	// one after a start, scanVaults falls back to the configured active address,
+	// so a deposit to an older generation that still holds funds would be
+	// scanned past, never parked, and lost at that generation's purge. Scan
+	// nothing until the vault set is known; the blocks stay unscanned.
+	if cfg.VaultsUnknown {
+		slog.Warn("RESTART-VAULTS-1: the vault registry has not been read since the start; not scanning for deposits until it is", "next_block", scanFrom)
+		scanUpTo = cp.LastScannedBlock
+	}
+	var scanResults map[uint64]blockScanEntry
+	if scanUpTo >= scanFrom {
+		scanResults = scanBlocksParallel(depCtx, rpc, scanFrom, scanUpTo, cfg)
+	}
 
 	var tokenMins map[string]*big.Int
 	minsRead := false
