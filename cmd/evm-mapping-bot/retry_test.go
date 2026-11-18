@@ -75,7 +75,7 @@ func TestP7_RequeueMovesTheDeadLetterBackToWaiting(t *testing.T) {
 		}
 		switch req.Method {
 		case "eth_getBlockByNumber":
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x65","transactions":[{"hash":"` + dlTx + `","from":"0x00000000000000000000000000000000000000b0","to":"` + vault + `","value":"0x5","transactionIndex":"0x0"}]}}`))
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x65","transactions":[{"hash":"` + dlTx + `","from":"0x00000000000000000000000000000000000000b0","to":"` + vault + `","value":"0xde0b6b3a7640000","transactionIndex":"0x0"}]}}`))
 		case "eth_getTransactionReceipt":
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"status":"0x1"}}`))
 		case "eth_getLogs":

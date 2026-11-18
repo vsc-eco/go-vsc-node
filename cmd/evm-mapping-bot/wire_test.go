@@ -440,7 +440,9 @@ func TestScanBlock_DetectsETHDepositAtMultipleOf2To64Wei(t *testing.T) {
 	userKey, _ := ethCrypto.GenerateKey()
 	twoTo64 := new(big.Int).Lsh(big.NewInt(1), 64)
 	c := &fakeChain{}
-	for i, v := range []*big.Int{twoTo64, big.NewInt(1), big.NewInt(0)} {
+	// The minimum deposit is detected; 1 wei is dust the bridge never credits,
+	// skipped before its receipt is fetched (SCAN-AMPLIFY-1); 0 is no deposit.
+	for i, v := range []*big.Int{twoTo64, minETHDeposit, big.NewInt(1), big.NewInt(0)} {
 		c.addTx(t, userKey, &types.DynamicFeeTx{
 			Nonce: uint64(i), GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault, Value: v,
 		})
@@ -454,6 +456,6 @@ func TestScanBlock_DetectsETHDepositAtMultipleOf2To64Wei(t *testing.T) {
 		got = append(got, d.TxIndex)
 	}
 	if fmt.Sprint(got) != "[0 1]" {
-		t.Fatalf("deposits detected at tx %v, want [0 1] (2^64 wei and 1 wei; not the 0-value tx)", got)
+		t.Fatalf("deposits detected at tx %v, want [0 1] (2^64 wei and the minimum; not 1 wei, not the 0-value tx)", got)
 	}
 }
