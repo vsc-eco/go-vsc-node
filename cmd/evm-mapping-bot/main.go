@@ -428,6 +428,13 @@ type Checkpoint struct {
 	// later; resending it every tick until then would burn RC.
 	AttestSentAt map[uint64]int64 `json:"attest_sent_at,omitempty"`
 	LinkSentAt   int64            `json:"link_sent_at,omitempty"`
+	// ReceiptSettles: ETH withdrawals closed on their inclusion proof
+	// (CONFIRM-RECEIPT-CAP-1) that settleWithdrawalReceipt has not settled yet,
+	// by the bridge's record key (wic-{block}-{index}).
+	ReceiptSettles map[string]receiptSettle `json:"receipt_settles,omitempty"`
+	// ClosedChecks: withdrawals the bridge closed without this bot seeing its
+	// own confirm land, to check for an inclusion close by someone else.
+	ClosedChecks map[string]closedCheck `json:"closed_checks,omitempty"`
 	// ProofWindow: whether the L1 RPC served the last eth_getProof at a
 	// finalized block (1), refused it (-1), or was not asked yet (0).
 	ProofWindow int `json:"proof_window,omitempty"`
@@ -4129,6 +4136,11 @@ func runOnce(
 	if !cfg.Paused {
 		refundWithdrawalGasIfOpen(ctx, rpc, gql, submitter, cfg)
 	}
+	// CONFIRM-RECEIPT-CAP-1: settle the withdrawals closed on inclusion (a
+	// revert refund is refused while paused, A04).
+	if !cfg.Paused {
+		settleWithdrawalReceipts(ctx, rpc, gql, submitter, cp, cfg)
+	}
 
 	// RP-9: store the headers deposits and confirmations wait on; tell the
 	// operator when a proof is needed.
@@ -4336,6 +4348,8 @@ func handleWithdrawals(
 
 	// LOW 17: drop entries for nonces the contract has already closed (a
 	// withdrawal settled by another bot, or cleared by an admin).
+	// CONFIRM-RECEIPT-CAP-1: each is checked later for an inclusion close by
+	// someone else, which is then settled from its receipt.
 	cp.mu.Lock()
 	for k, stx := range cp.SentWithdrawals {
 		// A01: an entry of another vault generation than the one holding the
@@ -4344,6 +4358,7 @@ func handleWithdrawals(
 		otherVault := owner != "" && ((stx.Vault != "" && !strings.EqualFold(stx.Vault, owner)) || (stx.Vault == "" && cfg.ActiveGen > 0 && strings.EqualFold(owner, cfg.VaultAddress)))
 		if stx.Nonce < confirmedNonce || otherVault {
 			delete(cp.SentWithdrawals, k)
+			cp.noteClosedCheckLocked(stx)
 		}
 	}
 	cp.mu.Unlock()
@@ -4794,6 +4809,21 @@ func handleConfirmations(
 			slog.Error("build confirmSpend payload failed", "txHash", stx.TxHash, "err", err)
 			continue
 		}
+		// CONFIRM-RECEIPT-CAP-1: an ETH withdrawal whose receipt makes the
+		// confirm too large for the node (its recipient logged KBs) is closed on
+		// its inclusion proof alone, as the BTC bridge closes a payout;
+		// settleWithdrawalReceipts settles it from the receipt afterwards.
+		byInclusion := false
+		if n := nodePayloadSize(payload); n > params.MAX_CONTRACT_PAYLOAD_SIZE && ps.Asset == "eth" {
+			short, sErr := withoutReceiptProof(payload)
+			if sErr != nil {
+				slog.Error("build the inclusion-only confirmSpend failed", "txHash", stx.TxHash, "err", sErr)
+				continue
+			}
+			slog.Warn("CONFIRM-RECEIPT-CAP-1: the receipt does not fit the node's payload cap; closing the withdrawal on its inclusion proof",
+				"txHash", stx.TxHash, "nonce", stx.Nonce, "block", blockNum, "txIndex", txIndex, "payload_size", n)
+			payload, byInclusion = short, true
+		}
 
 		// Submit confirmSpend via L2 with retry.
 		confirmTxID, err := submitter.callWithRetry(ctx, cfg.ContractID, "confirmSpend", payload, 3)
@@ -4813,6 +4843,9 @@ func handleConfirmations(
 				}
 			}
 			continue
+		}
+		if byInclusion {
+			noteReceiptSettle(cp, blockNum, uint64(txIndex), stx.Nonce)
 		}
 
 		if confirmTxID == "" {
