@@ -89,6 +89,29 @@ func stagedConfig() *config {
 	}
 }
 
+// mainnetCollateralAt is the mainnet collateral set at a height: the two DAO
+// pools, plus the DAO-owned ETH:HBD and HBD:USDC pools from
+// EVM_MAINNET_HEIGHT (owner decision 2026-11-19). Community pools never.
+func mainnetCollateralAt(h uint64) []string {
+	s := []string{"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM"}
+	if h >= params.EVM_MAINNET_HEIGHT {
+		s = append(s, "vsc1BfKKwFx6uHWMyiaXyjcT8cvMRRfXTvXd6z", "vsc1Bo8BqNty9d4s1BuadHSJ1Lc3G4fAyzwHpr")
+	}
+	return s
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, x := range b {
+		if !has(a, x) {
+			return false
+		}
+	}
+	return true
+}
+
 func has(list []string, id string) bool {
 	for _, v := range list {
 		if v == id {
@@ -209,9 +232,10 @@ func TestPendulumPools_AccessorsReturnCopies(t *testing.T) {
 	}
 }
 
-// Mainnet: LASSECASH trades from the height but the collateral set stays
-// exactly the two DAO pools, so P — and therefore the fee split on HBD:HIVE
-// and BTC:HBD — does not move at activation.
+// Mainnet: LASSECASH trades from the height but never enters the collateral
+// set, so P — and therefore the fee split on HBD:HIVE and BTC:HBD — does not
+// move at its activation. The collateral set is the DAO pools only
+// (mainnetCollateralAt).
 func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 	c := MainnetConfig().(*config)
 	const lasse = "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr"
@@ -231,16 +255,14 @@ func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 			t.Fatalf("height %d: LASSECASH must never count as collateral", at)
 		}
 		coll := c.PendulumCollateralPoolsAt(at)
-		if len(coll) != 2 ||
-			!has(coll, "vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp") ||
-			!has(coll, "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM") {
-			t.Fatalf("height %d: collateral set must be exactly the two DAO pools, got %v", at, coll)
+		if want := mainnetCollateralAt(at); !sameStringSet(coll, want) {
+			t.Fatalf("height %d: collateral set must be %v, got %v", at, want, coll)
 		}
 	}
 }
 
-// Mainnet: STARPRO trades from its own height, LASSECASH keeps trading, and the
-// collateral set stays exactly the two DAO pools at every height.
+// Mainnet: STARPRO trades from its own height, LASSECASH keeps trading, and
+// neither ever enters the collateral set (the DAO pools only, mainnetCollateralAt).
 func TestMainnetConfig_StarproIsSwapOnly(t *testing.T) {
 	c := MainnetConfig().(*config)
 	const (
@@ -269,14 +291,12 @@ func TestMainnetConfig_StarproIsSwapOnly(t *testing.T) {
 		if has(coll, starpro) {
 			t.Fatalf("height %d: STARPRO must never count as collateral", at)
 		}
-		if len(coll) != 2 ||
-			!has(coll, "vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp") ||
-			!has(coll, "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM") {
-			t.Fatalf("height %d: collateral set must be exactly the two DAO pools, got %v", at, coll)
+		if want := mainnetCollateralAt(at); !sameStringSet(coll, want) {
+			t.Fatalf("height %d: collateral set must be %v, got %v", at, want, coll)
 		}
 	}
-	if got := len(c.PendulumPoolWhitelistAt(h)); got != 4 {
-		t.Fatalf("swap gate at the V3 height must hold the two DAO pools, LASSECASH and STARPRO, got %d", got)
+	if got := len(c.PendulumPoolWhitelistAt(h)); got != 6 {
+		t.Fatalf("swap gate at the V3 height must hold the two DAO pools, LASSECASH, ETH:HBD, HBD:USDC and STARPRO, got %d", got)
 	}
 }
 

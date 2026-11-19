@@ -504,8 +504,8 @@ func MainnetConfig() SystemConfig {
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
-		// A21: no EVM bridge yet; one ships here (oracleParams
-		// EvmBridgeContracts + EvmBridgeFromHeight), never per operator.
+		// A21: the EVM bridge ships here (oracleParams EvmBridgeContracts +
+		// EvmBridgeFromHeight), never per operator.
 		evmBridgesBaked: true,
 		// No stable pool listed yet: a listing names the deployed pool's
 		// contract id and ships in a node release with a FromHeight.
@@ -605,6 +605,19 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
+			// Ethereum headers come from the ZK header verifier (proofs submitted
+			// straight to it), never from the oracle's BLS relay. ETH has no
+			// ChainContracts entry, so the relay skips it anyway; listed as on
+			// testnet. zk-header-verifier main c9d720f, deployed 2026-11-19 by
+			// hive:vsc.dao (zk_header_verifier_mainnet).
+			ZKVerifierChains: map[string]string{
+				"ETH": "vsc1BhQyZEM73tdE9oafqkwzjD6uSoPLriN68z",
+			},
+			// The EVM bridge: account-mapping main 7a1ea97 (evm-mapping-contract,
+			// production build), deployed 2026-11-19 by hive:vsc.dao
+			// (evm_mapping_mainnet), inited chain 1 with the verifier above.
+			EvmBridgeContracts:  map[string]string{"ETH": "vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr"},
+			EvmBridgeFromHeight: map[string]uint64{"ETH": params.EVM_MAINNET_HEIGHT},
 			// Unused (params.OracleParams.BtcL1BaseURL): the N4 solvency watch
 			// reads each witness's own bitcoind, as the council asked.
 			BtcL1BaseURL: "https://mempool.space/api",
@@ -644,6 +657,10 @@ func MainnetConfig() SystemConfig {
 		tssKeyContractAllowlist: []string{
 			"vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d", // BTC mapping contract
 		},
+		// Append-only. The EVM bridge's vault is its "primary" TSS key.
+		tssKeyContractAllowlistAdditions: []TssKeyContractAddition{
+			{ID: "vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr", FromHeight: params.EVM_MAINNET_HEIGHT}, // EVM bridge (ETH)
+		},
 		// Append-only. Collateral stays false for community pools: they may
 		// trade, but their reserve must not enter P.
 		pendulumPoolAdditions: []PendulumPoolAddition{
@@ -669,6 +686,23 @@ func MainnetConfig() SystemConfig {
 				ID:         "vsc1BirUSGK2jm1zDQgVmuUysJ8UFKnTrnGXQf",
 				FromHeight: params.PENDULUM_WHITELIST_V3_HEIGHT,
 				Collateral: false,
+			},
+			{
+				// ETH:HBD (eth_hbd_lp): deployed 2026-11-19 by hive:vsc.dao from
+				// dex-contracts a5f184f (code bafkreicbojeey..., the testnet
+				// ETH:HBD pool's code), owner hive:vsc.dao. Collateral like the
+				// two DAO pools (owner decision 2026-11-19).
+				ID:         "vsc1BfKKwFx6uHWMyiaXyjcT8cvMRRfXTvXd6z",
+				FromHeight: params.EVM_MAINNET_HEIGHT,
+				Collateral: true,
+			},
+			{
+				// HBD:USDC (usdc_hbd_lp): same deploy, code and owner as ETH:HBD;
+				// a constant-product pool, not StableSwap. Collateral (owner
+				// decision 2026-11-19).
+				ID:         "vsc1Bo8BqNty9d4s1BuadHSJ1Lc3G4fAyzwHpr",
+				FromHeight: params.EVM_MAINNET_HEIGHT,
+				Collateral: true,
 			},
 		},
 	}

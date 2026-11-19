@@ -330,6 +330,24 @@ var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
 // immediately (height 0).
 var PENDULUM_WHITELIST_V3_HEIGHT uint64 = 111_860_000
 
+// EVM_MAINNET_HEIGHT is the mainnet activation height (Hive L1 block) of the
+// EVM bridge launch. From it, on every node:
+//   - the EVM bridge vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr is a consensus
+//     input (OracleParams.EvmBridgeFromHeight["ETH"]: custody, bond lock, the
+//     vault's signing rules);
+//   - it may create its TSS vault key (tssKeyContractAllowlistAdditions);
+//   - the ETH:HBD and HBD:USDC pools swap and count as collateral
+//     (pendulumPoolAdditions).
+//
+// Pinned 2026-11-19 from head 111,809,396 + 10,604 blocks (~9 h at 3 s),
+// ~2026-11-20 06:50 CET. Every witness must run a build carrying it before the
+// height: below it every node ignores the bridge and refuses a swap through
+// the two pools, at/after it every node takes both. RE-PIN BEFORE RELEASE if
+// the window erodes: a height already in the past makes these live the moment
+// a node upgrades (fails open). Every build that carries them must use the
+// same height. Mainnet only; testnet and devnet use their own lists.
+var EVM_MAINNET_HEIGHT uint64 = 111_820_000
+
 // TESTNET_PENDULUM_3POOL_HEIGHT is the testnet Hive L1 block from which the three
 // pools of the testnet 3-pool campaign (BTC/HBD, ETH/HBD and HBD/USDC on dex-contracts
 // main 2ae12d3, deployed 2026-11-12 by hive:magi.contracts) pass the pendulum swap gate.
