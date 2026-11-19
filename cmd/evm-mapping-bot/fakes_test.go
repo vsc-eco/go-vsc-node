@@ -46,6 +46,11 @@ type fakeL1 struct {
 	// logs429Until: eth_getLogs answers HTTP 429 until this time, like an RPC
 	// rate limit that outlasts logsAtRetry's pauses (EVM-CATCHUP-1).
 	logs429Until time.Time
+	// logs429Blocks: eth_getLogs for these blocks answers HTTP 429.
+	logs429Blocks map[uint64]bool
+	// fetched counts eth_getBlockByNumber calls with full transactions, by
+	// height (the scan's fetch of a block).
+	fetched map[uint64]int
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -88,6 +93,12 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 			if len(req.Params) > 1 {
 				_ = json.Unmarshal(req.Params[1], &full)
 			}
+			if full {
+				if f.fetched == nil {
+					f.fetched = map[uint64]int{}
+				}
+				f.fetched[n]++
+			}
 			if c == nil {
 				c = &fakeChain{}
 			}
@@ -115,6 +126,16 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 			if time.Now().Before(f.logs429Until) {
 				w.WriteHeader(http.StatusTooManyRequests)
 				return
+			}
+			if len(f.logs429Blocks) > 0 && len(req.Params) > 0 {
+				var q struct {
+					FromBlock string `json:"fromBlock"`
+				}
+				_ = json.Unmarshal(req.Params[0], &q)
+				if b, err := hexutil.DecodeUint64(q.FromBlock); err == nil && f.logs429Blocks[b] {
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
 			}
 			switch f.logs {
 			case "error":
