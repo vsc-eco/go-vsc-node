@@ -308,7 +308,7 @@ func TestPoa1_PartySetReadOncePerHeightAndElectionsOnce(t *testing.T) {
 	rawV := []byte("registry")
 
 	for i := 0; i < 50; i++ { // 50 unstakes in one block
-		parties, err := se.fundedVaultParties("vsc1BTC", rawV, vaults, 999)
+		parties, err := se.fundedVaultParties("vsc1BTC", btcvault.BtcVaultKeyBase, rawV, vaults, 999)
 		if err != nil || !parties["b"] || parties["a"] {
 			t.Fatalf("parties=%v err=%v", parties, err)
 		}
@@ -316,16 +316,16 @@ func TestPoa1_PartySetReadOncePerHeightAndElectionsOnce(t *testing.T) {
 	if commits.scans != 1 || elecs.reads != epochs {
 		t.Fatalf("one block: scans=%d election reads=%d, want 1 and %d", commits.scans, elecs.reads, epochs)
 	}
-	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000) // next block
+	se.fundedVaultParties("vsc1BTC", btcvault.BtcVaultKeyBase, rawV, vaults, 1000) // next block
 	if commits.scans != 2 || elecs.reads != epochs {
 		t.Fatalf("next block: scans=%d election reads=%d, want 2 and %d (elections cached)", commits.scans, elecs.reads, epochs)
 	}
 	se.tssCommitWrites.Add(1) // a commitment landed: rows may have changed
-	se.fundedVaultParties("vsc1BTC", rawV, vaults, 1000)
+	se.fundedVaultParties("vsc1BTC", btcvault.BtcVaultKeyBase, rawV, vaults, 1000)
 	if commits.scans != 3 {
 		t.Fatalf("after a stored commitment: scans=%d, want a rescan", commits.scans)
 	}
-	se.fundedVaultParties("vsc1BTC", []byte("registry2"), vaults, 1000)
+	se.fundedVaultParties("vsc1BTC", btcvault.BtcVaultKeyBase, []byte("registry2"), vaults, 1000)
 	if commits.scans != 4 {
 		t.Fatalf("after a registry change: scans=%d, want a rescan", commits.scans)
 	}

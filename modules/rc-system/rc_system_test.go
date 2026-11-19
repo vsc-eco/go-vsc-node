@@ -43,8 +43,9 @@ func (m *mockLedgerSession) ConsensusStake(c ledgerSystem.ConsensusParams) ledge
 func (m *mockLedgerSession) ConsensusUnstake(c ledgerSystem.ConsensusParams) ledgerSystem.LedgerResult {
 	return ledgerSystem.LedgerResult{}
 }
-func (m *mockLedgerSession) Done() []string { return nil }
-func (m *mockLedgerSession) Revert()        {}
+func (m *mockLedgerSession) Done() []string      { return nil }
+func (m *mockLedgerSession) Revert()             {}
+func (m *mockLedgerSession) PendingOpBytes() int { return 0 }
 
 // Savepoint/RestoreSavepoint are no-ops here: the RC-system tests don't exercise
 // nested ledger rollback (try/catch inter-contract calls); the mock only needs

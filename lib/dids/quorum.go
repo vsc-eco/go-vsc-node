@@ -105,3 +105,38 @@ func QuorumMet(memberKeys []string, weights []uint64, included []BlsDID) bool {
 	}
 	return TwoThirdsMet(signed, total)
 }
+
+// LeaderSigsComplete reports whether a collected signature weight has reached
+// the bar an L2 block leader waits for before it stops collecting and
+// broadcasts: 90% of the (duplicate-key folded) committee weight, AND strictly
+// more than 2/3 of the election's total weight — the bar the block itself must
+// clear in TxProposeBlock.ValidateDetailed. Below a folded total of 3, 90%
+// rounds down to 2/3 or less, so the 2/3 term is what keeps a 3-member
+// committee (MinMembers on testnet/devnet, and every POA flat-weight committee
+// of three) able to broadcast at all (L2-STALL-1).
+//
+// ⚠ CONSENSUS-RELEVANT. This began as a leader-local decision that no replaying
+// node had to reproduce, and lived unexported in modules/block-producer. It is
+// now also REPLAYED by pendulum settlement: reward-attestation scoring asks
+// whether a block closed AT this bar before it docks the members absent from it
+// (REWARD-ATTEST-1), so this arithmetic decides money that every node must
+// re-derive byte-identically. Two consequences:
+//
+//   - every caller resolves it from the same place, so the leader's bar and the
+//     scorer's bar cannot drift apart; and
+//   - a change to the numbers belongs behind a NEW consensusversion line, never
+//     in place — editing it would re-score settled history on reindex.
+//
+// The product form `electionTotal*2/3` is kept deliberately rather than
+// TwoThirdsMet's overflow-proof identity: it is byte-identical to the two checks
+// this function replays (the leader's own stop rule and ValidateDetailed's
+// `signingScore > total*2/3`), and the overflow domain it shares with them
+// starts above MaxUint64/2 of election weight, which no election reaches (POA
+// committees are flat weight 1 per seat). Switching forms here would be a
+// consensus change for no live benefit.
+func LeaderSigsComplete(signed, foldedTotal, electionTotal uint64) bool {
+	if foldedTotal == 0 {
+		return false
+	}
+	return signed >= foldedTotal*9/10 && signed > electionTotal*2/3
+}

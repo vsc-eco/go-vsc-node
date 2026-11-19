@@ -99,65 +99,84 @@ func (tssKeys *tssKeys) SetSignatureVerified(id string) error {
 	return dbErr
 }
 
+// collectKeys drains a TssKey cursor fail-CLOSED, and is the only way these
+// four finders should build their result.
+//
+// A23/18k: every one of them used to drain the cursor the same unsafe way.
+// The Decode error was discarded, so a row that failed to decode was appended
+// as a ZERO-VALUE TssKey -- an empty key id, silently entering key scheduling.
+// cursor.Err() was never checked, so a cursor dying mid-iteration returned a
+// SHORT list with a nil error. The cursor was never closed. And FindNewKeys and
+// FindEpochKeys additionally dropped the Find error with `_`, which left
+// findCursor nil on a query failure -- calling Next() on it panics -- and
+// otherwise made a failed read indistinguishable from "no keys".
+//
+// "No keys" is not a safe default here: it makes this node schedule no keygen
+// or reshare at a rotate block where its peers schedule them, so a momentary
+// Mongo blip turned into a node that quietly stopped doing its share of key
+// management. Every one of these paths must now report the failure instead.
+func collectKeys(ctx context.Context, cur *mongo.Cursor, where string) ([]TssKey, error) {
+	defer cur.Close(ctx)
+
+	keys := make([]TssKey, 0)
+	for cur.Next(ctx) {
+		var k TssKey
+		if err := cur.Decode(&k); err != nil {
+			return nil, fmt.Errorf("%s: decoding key row %d: %w", where, len(keys), err)
+		}
+		keys = append(keys, k)
+	}
+	if err := cur.Err(); err != nil {
+		return nil, fmt.Errorf("%s: cursor failed after %d rows: %w", where, len(keys), err)
+	}
+	return keys, nil
+}
+
 // FindDeprecatingKeys returns active keys whose ExpiryEpoch has been reached (and ExpiryEpoch > 0).
 func (tssKeys *tssKeys) FindDeprecatingKeys(epoch uint64) ([]TssKey, error) {
-	findCursor, err := tssKeys.Find(context.Background(), bson.M{
+	ctx := context.Background()
+	findCursor, err := tssKeys.Find(ctx, bson.M{
 		"status":       TssKeyActive,
 		"expiry_epoch": bson.M{"$gt": 0, "$lte": epoch},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("FindDeprecatingKeys query failed: %w", err)
 	}
-
-	keys := make([]TssKey, 0)
-	for findCursor.Next(context.Background()) {
-		var k TssKey
-		findCursor.Decode(&k)
-		keys = append(keys, k)
-	}
-	return keys, nil
+	return collectKeys(ctx, findCursor, "FindDeprecatingKeys")
 }
 
 // FindNewlyRetired returns deprecated keys whose grace period has elapsed at the given block height.
 // Returns keys where deprecated_height + KeyDeprecationGracePeriod == blockHeight, ensuring
 // cleanup runs exactly once per key.
 func (tssKeys *tssKeys) FindNewlyRetired(blockHeight uint64) ([]TssKey, error) {
-	findCursor, err := tssKeys.Find(context.Background(), bson.M{
+	ctx := context.Background()
+	// $lte, not ==, so a key whose exact grace-end block was skipped is still
+	// caught on a later block.
+	findCursor, err := tssKeys.Find(ctx, bson.M{
 		"status":            TssKeyDeprecated,
 		"deprecated_height": bson.M{"$gt": 0, "$lte": int64(blockHeight) - int64(KeyDeprecationGracePeriod)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("FindNewlyRetired query failed: %w", err)
 	}
-
-	keys := make([]TssKey, 0)
-	for findCursor.Next(context.Background()) {
-		var k TssKey
-		findCursor.Decode(&k)
-		// Only return keys whose grace period ends exactly at this block (or just became eligible).
-		// We use $lte so we catch any that were missed (e.g. if a block was skipped).
-		keys = append(keys, k)
-	}
-	return keys, nil
+	return collectKeys(ctx, findCursor, "FindNewlyRetired")
 }
 
 func (tssKeys *tssKeys) FindNewKeys(bh uint64) ([]TssKey, error) {
-	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+	ctx := context.Background()
+	findCursor, err := tssKeys.Find(ctx, bson.M{
 		"status": "created",
 	})
-
-	keys := make([]TssKey, 0)
-	for findCursor.Next(context.Background()) {
-		var k TssKey
-		findCursor.Decode(&k)
-		keys = append(keys, k)
+	if err != nil {
+		return nil, fmt.Errorf("FindNewKeys query failed: %w", err)
 	}
-	return keys, nil
+	return collectKeys(ctx, findCursor, "FindNewKeys")
 }
 
 // FindEpochKeys returns active keys from a lower epoch that have not yet expired.
 func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
-	findCursor, _ := tssKeys.Find(context.Background(), bson.M{
+	ctx := context.Background()
+	findCursor, err := tssKeys.Find(ctx, bson.M{
 		"status": "active",
 		"epoch":  bson.M{"$lt": epoch},
 		"$or": []bson.M{
@@ -166,14 +185,10 @@ func (tssKeys *tssKeys) FindEpochKeys(epoch uint64) ([]TssKey, error) {
 			{"expiry_epoch": bson.M{"$gt": epoch}},     // not yet expired
 		},
 	})
-
-	keys := make([]TssKey, 0)
-	for findCursor.Next(context.Background()) {
-		var k TssKey
-		findCursor.Decode(&k)
-		keys = append(keys, k)
+	if err != nil {
+		return nil, fmt.Errorf("FindEpochKeys query failed: %w", err)
 	}
-	return keys, nil
+	return collectKeys(ctx, findCursor, "FindEpochKeys")
 }
 
 // DeprecateLegacyKeys bulk-deprecates all active keys that have no expiry epoch set.

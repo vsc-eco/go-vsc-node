@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -313,27 +314,58 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("INVALID_ARGUMENT_JSON"), err),
 				)
 			}
-			x, ok := parseInt64(in.X)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			xRes, ok := parseInt64(in.XReserve)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			yRes, ok := parseInt64(in.YReserve)
-			if !ok {
-				return ErrInvalidArgument
-			}
-			session := eCtx.IOSession()
-			res := eCtx.PendulumApplySwapFees(wasm_context.PendulumSwapFeeArgs{
+			args := wasm_context.PendulumSwapFeeArgs{
 				AssetIn:  in.AssetIn,
 				AssetOut: in.AssetOut,
-				X:        x,
-				XReserve: xRes,
-				YReserve: yRes,
-			})
+				Curve:    string(in.Curve),
+				Amp:      string(in.Amp),
+				DecIn:    string(in.DecIn),
+				DecOut:   string(in.DecOut),
+			}
+			if eCtx.BigSwapAmountsActive() {
+				// SP-0d (0.13.0): big amounts, so an 18-decimal pool (ETH in wei)
+				// is not refused past ~9.22 of the asset.
+				var ok1, ok2, ok3 bool
+				args.XBig, ok1 = parseBigInt(in.X)
+				args.XReserveBig, ok2 = parseBigInt(in.XReserve)
+				args.YReserveBig, ok3 = parseBigInt(in.YReserve)
+				if !ok1 || !ok2 || !ok3 {
+					return ErrInvalidArgument
+				}
+			} else {
+				x, ok := parseInt64(in.X)
+				if !ok {
+					return ErrInvalidArgument
+				}
+				xRes, ok := parseInt64(in.XReserve)
+				if !ok {
+					return ErrInvalidArgument
+				}
+				yRes, ok := parseInt64(in.YReserve)
+				if !ok {
+					return ErrInvalidArgument
+				}
+				args.X, args.XReserve, args.YReserve = x, xRes, yRes
+			}
+			session := eCtx.IOSession()
+			res := eCtx.PendulumApplySwapFees(args)
 			return result.Map(res, func(r wasm_context.PendulumSwapFeeResult) SdkResultStruct {
+				if r.Big != nil {
+					out := pendulumSwapFeeOutput{
+						UserOutput:            r.Big.UserOutput.String(),
+						NewXReserve:           r.Big.NewXReserve.String(),
+						NewYReserve:           r.Big.NewYReserve.String(),
+						NodeBucketCreditedHBD: strconv.FormatInt(r.NodeBucketCreditedHBD, 10),
+						MultiplierBps:         strconv.FormatInt(r.MultiplierBps, 10),
+						SAfterBps:             strconv.FormatInt(r.SAfterBps, 10),
+						NetworkCreditOutput:   r.Big.NetworkCreditOutput.String(),
+						LpShareOutput:         r.Big.LpShareOutput.String(),
+						NodeShareOutput:       r.Big.NodeShareOutput.String(),
+						Curve:                 r.Curve,
+					}
+					js, _ := json.Marshal(out)
+					return SdkResultStruct{Result: string(js), Gas: session.End()}
+				}
 				out := pendulumSwapFeeOutput{
 					UserOutput:            strconv.FormatInt(r.UserOutput, 10),
 					NewXReserve:           strconv.FormatInt(r.NewXReserve, 10),
@@ -344,6 +376,7 @@ var SdkNamespaces = map[string]map[string]sdkFunc{
 					NetworkCreditOutput:   strconv.FormatInt(r.NetworkCreditOutput, 10),
 					LpShareOutput:         strconv.FormatInt(r.LpShareOutput, 10),
 					NodeShareOutput:       strconv.FormatInt(r.NodeShareOutput, 10),
+					Curve:                 r.Curve,
 				}
 				js, _ := json.Marshal(out)
 				return SdkResultStruct{Result: string(js), Gas: session.End()}
@@ -852,6 +885,15 @@ type pendulumSwapFeeInput struct {
 	X        string `json:"x"`
 	XReserve string `json:"x_reserve"`
 	YReserve string `json:"y_reserve"`
+	// A StableSwap pool's parameters (pendulum StableSwapActive, 0.13.0),
+	// kept RAW: any JSON value parses, as it does for a binary without these
+	// keys, so a contract that sends them early (or as numbers) cannot make
+	// this binary refuse a swap an older one accepts. The applier reads them
+	// only once the line is active.
+	Curve  json.RawMessage `json:"curve,omitempty"`
+	Amp    json.RawMessage `json:"amp,omitempty"`
+	DecIn  json.RawMessage `json:"dec_in,omitempty"`
+	DecOut json.RawMessage `json:"dec_out,omitempty"`
 }
 
 // pendulumSwapFeeOutput is the JSON shape returned to contracts.
@@ -868,6 +910,18 @@ type pendulumSwapFeeOutput struct {
 	NetworkCreditOutput   string `json:"network_credit_output"`
 	LpShareOutput         string `json:"lp_share_output"`
 	NodeShareOutput       string `json:"node_share_output"`
+	// "stable" when the StableSwap curve priced the swap; omitted otherwise,
+	// so a constant-product pool gets the same bytes as before 0.13.0.
+	Curve string `json:"curve,omitempty"`
+}
+
+// parseBigInt reads a base-10 integer of any size (as parseInt64, but big).
+func parseBigInt(s string) (*big.Int, bool) {
+	if s == "" {
+		return nil, false
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	return v, ok
 }
 
 func parseInt64(s string) (int64, bool) {

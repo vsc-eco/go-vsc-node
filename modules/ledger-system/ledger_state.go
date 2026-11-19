@@ -96,6 +96,10 @@ type LedgerState struct {
 	//List of finalized operations such as transfers, withdrawals.
 	//Expected to be identical when block is produced and used during block creation
 	Oplog []OpLogEvent
+	// OplogBytes is OpLogEventBytes summed over Oplog: an upper estimate of the
+	// size of the block's ledger record, which consensus 0.16.0 bounds
+	// (params.MAX_BLOCK_OPLOG_BYTES). Kept with Oplog and reset with it.
+	OplogBytes int
 	//Virtual ledger is a cache of all balance changes (virtual and non-virtual)
 	//Includes deposits, transfers (in-n-out), withdrawals, and stake/unstake operations (future)
 	VirtualLedger map[string][]LedgerUpdate
@@ -154,6 +158,7 @@ func (state *LedgerState) Flush() {
 	state.VirtualLedger = make(map[string][]LedgerUpdate)
 	state.vlMu.Unlock()
 	state.Oplog = make([]OpLogEvent, 0)
+	state.OplogBytes = 0
 
 	//qq: should this be cleared when flushing?
 	state.GatewayBalances = make(map[string]uint64)

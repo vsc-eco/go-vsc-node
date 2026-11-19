@@ -145,9 +145,55 @@ import (
 //     (TssAccuseStackActive), so testnet nodes take that build together: while
 //     an accusation is live the two builds can pick different parties, form
 //     different sessions and both fail until every node runs the same build.
+//   - 0.13.0 (consensusversion.V0_13_0): the EVM bridge batch. The key-custody
+//     rules cover the EVM bridge's vault key (OracleParams.EvmBridgeContracts,
+//     each bridge from its EvmBridgeFromHeight): its holders stay able to sign
+//     and reshare it after they leave the election, and their bond stays
+//     locked while it holds funds (EvmVaultCustodyActive). A keygen for a key
+//     an earlier keygen activated is dropped (KeygenOnceActive, TSS-KG-1). A
+//     new line because 0.12.0 ships first without the EVM bridge. Inert until
+//     0.13.0 is chain-active.
+//   - 0.14.0 (consensusversion.V0_14_0): the post-0.12 fix batch, three rules
+//     activated together.
+//     (a) the settlement-attestation fix (REWARD-ATTEST-1,
+//     SettlementAttestationQuorumActive): pendulum reward scoring stops docking
+//     a committee member for a block whose signers already met the bar the
+//     block leader waits for (dids.LeaderSigsComplete, 90% of the folded
+//     committee weight). The leader never waits for every member — at 16 seats
+//     it stops at 14 — so two seats were absent from every healthy block and
+//     were charged 25 bps each for it. Live on mainnet: in epoch 2221 all 16
+//     seats were docked, 3% to 66%, none at zero;
+//     (b) the TSS key allowlist (18j, TssKeyAllowlistActive) and
+//     (c) the per-key-family TSS ban score (18an, TssPerKeyFamilyBanActive),
+//     both first written against 0.13.0 and moved here.
+//     A new line rather than an addition to 0.13.0 because the TESTNET HAS
+//     ACTIVATED 0.13 (epoch 1500, develop head 3b4c95f6): amending an active
+//     line diverges a replay of that history, and a rule added to one has no
+//     rollout window — the first node to take the build enforces it alone. See
+//     V0_14_0 in feature_gates.go for what a mainnet floor rise past 0.13
+//     therefore also carries. Inert until 0.14.0 is chain-active, so settled
+//     history re-derives byte-identically.
+//   - 0.15.0 (consensusversion.V0_15_0): the storage write price. A contract's
+//     new stored bytes cost 1 RC a byte instead of 19 (WriteIoPriceCutActive,
+//     params.WriteIoGasRcCost); bytes read or rewritten stay at 1. At 19 a
+//     withdrawal to a Bitcoin address cost more than the 10,000 RC a Hive
+//     account gets for free, two thirds of it for the 400 bytes it stores.
+//     With it, a call is never charged more RC than it was given to spend
+//     (RcChargeCappedAtLimitActive): a call that ran out used to be charged
+//     the whole storage operation that took it past its rc_limit. A new line
+//     because mainnet runs 0.14.0. Inert until 0.15.0 is chain-active, so
+//     settled history re-executes at the price it was charged.
+//   - 0.16.0 (consensusversion.V0_16_0): bounds on what a block hands to other
+//     nodes (SlotObjectSizeBoundActive, BlockL2TxCapActive), kept within the
+//     per-message fetch limit; a failed transaction publishes none of its
+//     calls' results (FailedTxPublishesNoResultsActive); a contract reached
+//     through contracts.call is held to the caller's TSS key allowlist
+//     (TssKeyAllowlistNestedActive). A line of its own after 0.15.0, so a
+//     network already on 0.15.0 switches these on at one agreed height. Inert
+//     until 0.16.0 is chain-active, so settled history re-executes identically.
 const (
 	currentMajor        uint64 = 0
-	currentConsensus    uint64 = 12
+	currentConsensus    uint64 = 16
 	currentNonConsensus uint64 = 0
 )
 

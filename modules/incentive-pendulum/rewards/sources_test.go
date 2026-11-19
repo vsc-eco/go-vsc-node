@@ -52,6 +52,9 @@ func TestScoreBlockProduction_NonCommitteeProposerIgnored(t *testing.T) {
 	}
 }
 
+// Below the 0.14.0 line (quorum nil) the strict rule stands unchanged: every
+// produced block expects every committee member's signature. This pins the
+// behaviour a node replaying pre-activation history must reproduce.
 func TestScoreBlockAttestation_StrictlyEveryBlockCounts(t *testing.T) {
 	committee := []string{"alice", "bob"}
 	blocks := []vscBlocks.VscHeaderRecord{
@@ -59,7 +62,7 @@ func TestScoreBlockAttestation_StrictlyEveryBlockCounts(t *testing.T) {
 		{Signers: []string{"alice"}}, // bob missed
 		{Signers: []string{"alice", "bob"}},
 	}
-	got := ScoreBlockAttestation(blocks, committee)
+	got := ScoreBlockAttestation(blocks, committee, nil)
 	if got["alice"] != 0 {
 		t.Errorf("alice should have 0 misses, got %d", got["alice"])
 	}

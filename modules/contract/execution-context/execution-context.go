@@ -49,6 +49,22 @@ type contractExecutionContext struct {
 	ioWriteGas int
 	ioSessions []*ioSession
 
+	// ioWriteRcCost is the RC charged for each new stored byte of state. The
+	// state engine sets it per tx from the chain-active consensus version
+	// (params.WriteIoGasRcCost, WithIoWriteRcCost) and it propagates into
+	// nested calls, exactly like sp1WorkPricing: the price decides whether a
+	// call finishes inside its rc_limit, so it must change at one coordinated
+	// height and history must re-execute at the price it was charged. New
+	// sets it to the original params.WRITE_IO_GAS_RC_COST, so a context built
+	// without the option charges what every node charged before 0.15.0.
+	ioWriteRcCost int
+
+	// stateSizeBound is consensus 0.16.0's bound on one stored value and key
+	// (params.MAX_STATE_VALUE_BYTES, MAX_STATE_KEY_BYTES). Set
+	// per tx like ioWriteRcCost and carried into nested calls; off, a context
+	// stores values and keys of any size, as before.
+	stateSizeBound bool
+
 	tokenLimits map[string]*int64
 
 	pendulumApplier wasm_context.PendulumApplier
@@ -77,6 +93,8 @@ type contractExecutionContext struct {
 	// consensus version and it propagates into nested calls, so the new price
 	// starts at a coordinated height and history re-executes unchanged.
 	sp1WorkPricing bool
+	// bigSwapAmounts: pendulum_apply_swap_fees takes big amounts (0.13.0).
+	bigSwapAmounts bool
 
 	// keyResharedActive gates TssGetKey's fifth field (consensus 0.11.0): "1"
 	// once the key has been reshared since the keygen that created it. Like
@@ -84,6 +102,18 @@ type contractExecutionContext struct {
 	// state engine sets it per tx from the chain-active version and it propagates
 	// into nested calls; the field is appended only together with the fourth.
 	keyResharedActive bool
+
+	// tssKeyContractAllowlist restricts which contracts may create TSS keys
+	// (KEY-SPAM-1 / 18j). Set per tx by the state engine from the
+	// height-addressable sysconfig list, and only once
+	// consensusversion.TssKeyAllowlistActive -- nil before activation, which
+	// makes create_key behave byte-identically to today. nil or empty means
+	// unrestricted, so an un-gated or unconfigured network is unaffected.
+	tssKeyContractAllowlist []string
+	// tssKeyAllowlistNested (consensus 0.16.0) carries tssKeyContractAllowlist
+	// into contracts reached through contracts.call. Off, a nested context gets
+	// no allowlist, which is unrestricted, as before.
+	tssKeyAllowlistNested bool
 }
 
 type ContractExecutionContext = *contractExecutionContext
@@ -166,6 +196,7 @@ func New(
 		callSession:     callSession,
 		recursion:       recursionDepth,
 		tokenLimits:     tokenLimits,
+		ioWriteRcCost:   params.WRITE_IO_GAS_RC_COST,
 	}
 	for _, opt := range opts {
 		opt(ctx)
@@ -190,6 +221,11 @@ func WithTryCatch(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.tryCatchActive = active }
 }
 
+// TryCatchActive reports whether this execution honours ICCallOptions.Try.
+func (ctx *contractExecutionContext) TryCatchActive() bool {
+	return ctx.tryCatchActive
+}
+
 // WithVaultRotationV2 enables the BRK-2 SignatureVerified 4th field in
 // TssGetKey. The state engine sets this from the chain-active
 // VaultRotationV2Enabled flag so the new contract-execution output format
@@ -205,6 +241,36 @@ func WithKeyReshared(active bool) Option {
 	return func(ctx *contractExecutionContext) { ctx.keyResharedActive = active }
 }
 
+// WithTssKeyAllowlist restricts tss.create_key to the given contracts
+// (KEY-SPAM-1 / 18j). The state engine passes the sysconfig list only when
+// consensusversion.TssKeyAllowlistActive, and nil otherwise, so the
+// restriction starts at a coordinated height: an un-gated rollout would have
+// upgraded nodes rejecting a create_key that un-upgraded nodes accept, which
+// forks. nil or empty = unrestricted.
+func WithTssKeyAllowlist(contracts []string) Option {
+	return func(ctx *contractExecutionContext) { ctx.tssKeyContractAllowlist = contracts }
+}
+
+// WithTssKeyAllowlistNested holds a contract reached through contracts.call
+// to the caller's TSS key allowlist (consensusversion.TssKeyAllowlistNestedActive).
+func WithTssKeyAllowlistNested(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.tssKeyAllowlistNested = active }
+}
+
+// TssKeyAllowlistNestedActive reports whether nested calls carry this
+// execution's TSS key allowlist.
+func (ctx *contractExecutionContext) TssKeyAllowlistNestedActive() bool {
+	return ctx.tssKeyAllowlistNested
+}
+
+// nestedTssKeyAllowlist is the allowlist a nested call runs with.
+func (ctx *contractExecutionContext) nestedTssKeyAllowlist() []string {
+	if ctx.tssKeyAllowlistNested {
+		return ctx.tssKeyContractAllowlist
+	}
+	return nil
+}
+
 // WithSp1WorkPricing prices sp1_verify_groth16 by work
 // (consensusversion.Sp1WorkPricingActive).
 func WithSp1WorkPricing(active bool) Option {
@@ -217,8 +283,58 @@ func (ctx *contractExecutionContext) Sp1WorkPricingActive() bool {
 	return ctx.sp1WorkPricing
 }
 
+// WithBigSwapAmounts lets pendulum_apply_swap_fees take big amounts
+// (consensus 0.13.0, consensusversion.BigSwapAmountsActive).
+func WithBigSwapAmounts(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.bigSwapAmounts = active }
+}
+
+// BigSwapAmountsActive reports whether this execution takes big swap amounts.
+func (ctx *contractExecutionContext) BigSwapAmountsActive() bool {
+	return ctx.bigSwapAmounts
+}
+
+// WithIoWriteRcCost sets the RC charged for each new stored byte of state
+// (params.WriteIoGasRcCost of the chain-active consensus version, which never
+// returns less than 1; params' tests pin that). A cost below 1 is refused and
+// the original price stays: the price is the only bound on how much one call
+// can store, so a zero that slipped through would make new state free.
+func WithIoWriteRcCost(cost int) Option {
+	return func(ctx *contractExecutionContext) {
+		if cost >= 1 {
+			ctx.ioWriteRcCost = cost
+		}
+	}
+}
+
+// WithStateSizeBound turns on consensus 0.16.0's bound on one stored value
+// (params.MAX_STATE_VALUE_BYTES) and one key (params.MAX_STATE_KEY_BYTES):
+// a write over either fails. A stored value or a directory shard is one block,
+// which other nodes fetch from a peer in one message
+// (consensusversion.SlotObjectSizeBoundActive).
+func WithStateSizeBound(active bool) Option {
+	return func(ctx *contractExecutionContext) { ctx.stateSizeBound = active }
+}
+
+// StateSizeBoundActive reports whether this execution bounds stored values and keys.
+func (ctx *contractExecutionContext) StateSizeBoundActive() bool {
+	return ctx.stateSizeBound
+}
+
+// IoWriteRcCost is the RC this execution charges for each new stored byte.
+func (ctx *contractExecutionContext) IoWriteRcCost() int {
+	return ctx.ioWriteRcCost
+}
+
+// ioGas prices counted I/O bytes: read (and rewritten) bytes at the read
+// price, new bytes at this execution's write price. The one formula, so the
+// running total (IOGas) and a host call's own share (IOSession) cannot drift.
+func (ctx *contractExecutionContext) ioGas(readBytes int, newBytes int) int {
+	return (readBytes*params.READ_IO_GAS_RC_COST + newBytes*ctx.ioWriteRcCost) * params.CYCLE_GAS_PER_RC
+}
+
 func (ctx *contractExecutionContext) IOGas() int {
-	return (ctx.ioReadGas*params.READ_IO_GAS_RC_COST + ctx.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
+	return ctx.ioGas(ctx.ioReadGas, ctx.ioWriteGas)
 }
 
 type ioSession struct {
@@ -232,7 +348,7 @@ func (ctx *contractExecutionContext) IOSession() wasm_context.IOSession {
 	session.end = func() int {
 		i := slices.Index(ctx.ioSessions, session)
 		ctx.ioSessions[i] = nil
-		return (session.ioReadGas*params.READ_IO_GAS_RC_COST + session.ioWriteGas*params.WRITE_IO_GAS_RC_COST) * params.CYCLE_GAS_PER_RC
+		return ctx.ioGas(session.ioReadGas, session.ioWriteGas)
 	}
 
 	i := slices.Index(ctx.ioSessions, nil)
@@ -402,6 +518,14 @@ func (ctx *contractExecutionContext) GetEnv() result.Result[string] {
 }
 
 func (ctx *contractExecutionContext) SetState(key string, value string) result.Result[struct{}] {
+	if ctx.stateSizeBound {
+		if len(key) > params.MAX_STATE_KEY_BYTES {
+			return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("state key of %d bytes is over the %d-byte limit", len(key), params.MAX_STATE_KEY_BYTES)))
+		}
+		if len(value) > params.MAX_STATE_VALUE_BYTES {
+			return result.Err[struct{}](errors.Join(fmt.Errorf(contracts.SDK_ERROR), fmt.Errorf("state value of %d bytes is over the %d-byte limit", len(value), params.MAX_STATE_VALUE_BYTES)))
+		}
+	}
 	newWriteToAdd := 0
 	result.MapOrElse(
 		ctx.GetState(key),
@@ -712,7 +836,20 @@ func (ctx *contractExecutionContext) ContractCall(
 				// TssGetKey output format as the top-level tx (fork-safe at depth).
 				WithVaultRotationV2(ctx.vaultRotationV2Active),
 				WithKeyReshared(ctx.keyResharedActive),
-				WithSp1WorkPricing(ctx.sp1WorkPricing))
+				WithSp1WorkPricing(ctx.sp1WorkPricing),
+				// A pool reached through the router swaps in the nested context.
+				WithBigSwapAmounts(ctx.bigSwapAmounts),
+				// A contract reached through contracts.call stores at the price
+				// of the transaction that called it (router -> pool -> mapping
+				// contract): without this its writes would stay at the original
+				// price while the caller's own were charged the new one.
+				WithIoWriteRcCost(ctx.ioWriteRcCost),
+				// The nested contract's writes are bounded like the caller's.
+				WithStateSizeBound(ctx.stateSizeBound),
+				// From 0.16.0 the nested contract may create a TSS key only if
+				// it is on the caller's allowlist; before, it ran unrestricted.
+				WithTssKeyAllowlist(ctx.nestedTssKeyAllowlist()),
+				WithTssKeyAllowlistNested(ctx.tssKeyAllowlistNested))
 
 			callPayload := payload
 			json.Unmarshal([]byte(payloadJson), &callPayload)
@@ -764,7 +901,47 @@ func (ctx *contractExecutionContext) ContractCall(
 	))
 }
 
+// ContractMayCreateTssKey reports whether contractId may create a TSS key under
+// the given allowlist (KEY-SPAM-1 / 18j).
+//
+// A nil or empty allowlist is UNRESTRICTED: that is both the pre-activation
+// state (the state engine passes nil until consensus 0.13.0) and how test
+// networks are configured, so this must stay permissive or the gate would not
+// be fork-safe. Membership is an exact match, never a prefix.
+//
+// Exported and kept separate from TssCreateKey so the decision is testable on
+// its own: TssCreateKey's success path writes a session log, which needs a real
+// datalayer, and that scaffolding would obscure what is being asserted.
+func ContractMayCreateTssKey(allowlist []string, contractId string) bool {
+	if len(allowlist) == 0 {
+		return true
+	}
+	for _, id := range allowlist {
+		if id == contractId {
+			return true
+		}
+	}
+	return false
+}
+
 func (ctx *contractExecutionContext) TssCreateKey(keyId string, keyType string, epochs uint64) result.Result[string] {
+	// KEY-SPAM-1 (18j): the only checks before this were that the key name was
+	// alphanumeric and the type was eddsa/ecdsa, for 1,000,000 gas. Any contract
+	// could mint unlimited keys; every "created" key becomes a keygen at each
+	// rotate block with no cap and no expiry, and each keygen waits for
+	// pre-parameters holding tssMgr.lock, so N junk keys hold that lock for
+	// about N minutes while every reshare and sign tick in between is dropped.
+	//
+	// Enforced here rather than in the SDK functions because both the `tss` and
+	// `tss_v2` namespaces funnel through this one method, so neither namespace
+	// can be left behind.
+	//
+	// nil/empty allowlist = unrestricted, which is both the pre-activation state
+	// and the test-network configuration.
+	if !ContractMayCreateTssKey(ctx.tssKeyContractAllowlist, ctx.env.ContractId) {
+		return result.Err[string](errors.New("contract not permitted to create TSS keys"))
+	}
+
 	fullKey := ctx.env.ContractId + "-" + keyId
 	_, err := ctx.callSession.TssKeys.FindKey(fullKey)
 

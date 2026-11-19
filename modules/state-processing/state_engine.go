@@ -13,7 +13,6 @@ import (
 	"os"
 	"runtime/debug"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -138,6 +137,10 @@ type StateEngine struct {
 	//Temporary output state as things are being processed.
 	TempOutputs     map[string]*contract_session.TempOutput
 	ContractResults map[string][]ContractResult
+	// contractOutputBytes is contractResultBytes summed over ContractResults
+	// per contract (slot_object_bounds.go). Kept by AppendOutput, emptied
+	// with ContractResults by Flush.
+	contractOutputBytes map[string]int
 
 	//First Tx of batch
 	firstTxHeight uint64
@@ -336,15 +339,23 @@ func (se *StateEngine) vaultCheckSigDigest(keyId, pubKeyHex string, bh uint64) (
 	// version costs an election read, and the overwhelming majority of calls here
 	// are for keys that are not BTC vault keys at all.
 	btcContract := se.sconf.OracleParams().ContractId("BTC")
-	if btcContract == "" || !strings.HasPrefix(keyId, btcContract+"-") {
-		return nil, false
-	}
-	if !se.vaultRotationV2InForce(bh) {
-		return nil, false
-	}
-	gen, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
-	if !ok {
-		return nil, false
+	var gen uint32
+	if btcContract != "" && strings.HasPrefix(keyId, btcContract+"-") {
+		if !se.vaultRotationV2InForce(bh) {
+			return nil, false
+		}
+		g, ok := btcvault.VaultGenFromKeyId(btcContract, keyId)
+		if !ok {
+			return nil, false
+		}
+		gen = g
+	} else {
+		// A01: an EVM bridge's vault generation (0.13.0) proves its key the same way.
+		g, ok := se.evmVaultGenOfKey(keyId, bh)
+		if !ok {
+			return nil, false
+		}
+		gen = g
 	}
 	pub, err := hex.DecodeString(pubKeyHex)
 	if err != nil || len(pub) != 33 {
@@ -831,12 +842,33 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					se.btcKeysignHaltActive(blockInfo.BlockHeight) {
 					var h struct {
 						Active bool   `json:"active"`
-						KeyId  string `json:"keyId"` // reserved; currently BTC-global
+						KeyId  string `json:"keyId"` // "evm" from 0.13.0 (N2); otherwise BTC-global
 					}
 					if err := json.Unmarshal(cj.Json, &h); err != nil {
 						log.Warn("vsc.tss_halt: malformed payload; ignoring", "tx", tx.TransactionID, "err", err)
 					} else if se.consensusState == nil {
 						log.Warn("vsc.tss_halt: no consensus state; ignoring", "tx", tx.TransactionID)
+					} else if h.KeyId == "btc_solvency" && se.btcSolvencyWatchActive(blockInfo.BlockHeight) {
+						// N4 escape hatch (THORChain StopSolvencyCheck): active:false turns
+						// the BTC solvency watch off and lifts its halt; active:true turns it
+						// back on. Before 0.13.0 the op is the BTC halt below, as on 0.12.
+						se.setBtcSolvencyWatch(h.Active, tx.TransactionID)
+					} else if h.KeyId == "evm" && consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(blockInfo.BlockHeight)) {
+						// N2: the EVM bridges' vault keysign halt (modules/tss/evm_halt.go).
+						// Only from 0.13.0, the line whose sign gate reads it; before it
+						// the op keeps its old meaning (the BTC halt below), exactly as
+						// the 0.12 build applies it, so every node agrees on both flags.
+						height := uint64(0)
+						if h.Active {
+							height = blockInfo.BlockHeight
+						}
+						if err := se.consensusState.SetEvmKeysignHalt(context.Background(), h.Active, height); err != nil {
+							log.Error("vsc.tss_halt: SetEvmKeysignHalt FAILED — EVM halt NOT applied on this node; re-broadcast the op", "active", h.Active, "err", err)
+						} else {
+							se.refreshChainConsensusCache()
+							log.Info("vsc.tss_halt applied to the EVM bridges", "active", h.Active,
+								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
+						}
 					} else {
 						height := uint64(0)
 						if h.Active {
@@ -854,6 +886,14 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								"height", blockInfo.BlockHeight, "tx", tx.TransactionID)
 						}
 					}
+				}
+
+				// vsc.btc_solvency: a witness's BTC solvency vote (N4, from 0.13.0;
+				// btc_solvency.go). The voter is the account whose active authority
+				// signed the op; the tally checks it is a member of the election at
+				// the vote's checkpoint.
+				if Id == "vsc.btc_solvency" {
+					se.processBtcSolvencyVote(RequiredAuths[0], cj.Json, blockInfo.BlockHeight, tx.TransactionID)
 				}
 
 				// The witness-vote governance batch (vsc.slash_restore /
@@ -1055,7 +1095,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 								Signature:           dids.SerializedCircuit{},
 							},
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedBlock)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedBlock.Self = trustedSelf
+						} // SELF-INJECTION-1
 						// First-seen-wins: whichever block ref this replaying node
 						// observes first for (slot, account) becomes the reference;
 						// any later op from the same account with a different block
@@ -1175,7 +1219,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxCreateContract{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					if !se.sconf.OnMainnet() || txSelf.BlockHeight >= params.CONTRACT_DEPLOYMENT_FEE_START_HEIGHT {
 						hasFee, feeAmt, feePayer := hasFeePaymentOp(
@@ -1242,13 +1290,30 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						parsedTx := TxUpdateContract{
 							Self: txSelf,
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedTx)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedTx.Self = trustedSelf
+						} // SELF-INJECTION-1
 
 						hasFee, feeAmt, feePayer := hasFeePaymentOp(tx.Operations, params.CONTRACT_DEPLOYMENT_FEE, "hbd")
 						var txResult UpdateContractResult
 						runSystemOpSafely(cj.Id, txSelf, func() {
 							txResult = parsedTx.ExecuteTx(se, hasFee)
 						})
+						if !txResult.Success {
+							// A rejected contract update was silent, which made
+							// a refused update indistinguishable from one that
+							// was never seen -- both for an operator and for a
+							// test. Says WHY, which for the SC-08 guards is the
+							// only evidence that the malformed op reached the
+							// handler at all rather than being filtered earlier.
+							log.Warn("vsc.update_contract rejected",
+								"txId", tx.TransactionID,
+								"contractId", parsedTx.Id,
+								"hasFee", hasFee,
+								"reason", txResult.Err)
+						}
 
 						if hasFee {
 							if txResult.Success && txResult.CodeUpdated {
@@ -1299,7 +1364,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						parsedTx := TxCancelContractUpdate{
 							Self: txSelf,
 						}
+						trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 						json.Unmarshal(cj.Json, &parsedTx)
+						if se.trustedSelfActive(txSelf.BlockHeight) {
+							parsedTx.Self = trustedSelf
+						} // SELF-INJECTION-1
 						runSystemOpSafely(cj.Id, txSelf, func() {
 							parsedTx.ExecuteTx(se)
 						})
@@ -1317,7 +1386,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					// payload of `null` would set the inner pointer to nil
 					// and the subsequent ExecuteTx call would panic with a
 					// nil receiver.
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1327,7 +1400,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.propose_consensus_version" {
 					proposeConsensusVersionStart := time.Now()
 					parsedTx := &TxProposeConsensusVersion{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1337,7 +1414,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.recovery_suspend" {
 					recoverySuspendStart := time.Now()
 					parsedTx := &TxRecoverySuspend{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1347,7 +1428,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 				} else if cj.Id == "vsc.recovery_require_version" {
 					recoveryRequireVersionStart := time.Now()
 					parsedTx := &TxRecoveryRequireVersion{Self: txSelf}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 					runSystemOpSafely(cj.Id, txSelf, func() {
 						parsedTx.ExecuteTx(se)
 					})
@@ -1554,7 +1639,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxVSCWithdraw{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					// log.Debug("parsedTx vsc.withdraw", parsedTx)
 
@@ -1563,14 +1652,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxVscCallContract{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = parsedTx
 				} else if cj.Id == "vsc.transfer" {
 					parsedTx := TxVSCTransfer{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.stake_hbd" {
@@ -1578,7 +1675,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxStakeHbd{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.unstake_hbd" {
@@ -1586,7 +1687,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					parsedTx := TxUnstakeHbd{
 						Self: txSelf,
 					}
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.consensus_stake" {
@@ -1594,7 +1699,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Self: txSelf,
 					}
 
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.consensus_unstake" {
@@ -1602,7 +1711,11 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 						Self: txSelf,
 					}
 
+					trustedSelf := cloneTxSelf(txSelf) // SELF-INJECTION-1: pristine snapshot before decode
 					json.Unmarshal(cj.Json, &parsedTx)
+					if se.trustedSelfActive(txSelf.BlockHeight) {
+						parsedTx.Self = trustedSelf
+					} // SELF-INJECTION-1
 
 					vscTx = &parsedTx
 				} else if cj.Id == "vsc.tss_sign" {
@@ -1624,9 +1737,9 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					if err == nil {
 						for _, sigPack := range signedData.Packet {
 							if keyCache[sigPack.KeyId] == nil {
-								tssKey, err := se.tssKeys.FindKey(sigPack.KeyId)
-								if err != nil {
-									log.Debug("failed to find key", "keyId", sigPack.KeyId, "err", err)
+								tssKey, found := se.findKeyBlocking(sigPack.KeyId)
+								if !found {
+									log.Debug("failed to find key", "keyId", sigPack.KeyId)
 									continue
 								}
 								if tssKey.Status != tss_db.TssKeyActive {
@@ -1845,6 +1958,22 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							continue
 						}
 
+						// TSS-KG-1 (0.13.0): a keygen for a key an earlier keygen
+						// already activated is dropped before it is stored. Its row
+						// would become the key's newest keygen commitment, and
+						// reshares and signs would then use that keygen's shares
+						// for a key whose on-chain pubkey is the first keygen's.
+						// The status read decides consensus state, so a read that
+						// failed on this node alone (a Mongo blip) blocks and
+						// retries instead of deciding differently from its peers;
+						// only a key that does not exist falls through.
+						if commitment.Type == "keygen" && consensusversion.KeygenOnceActive(se.ActiveConsensusVersion(block.BlockNumber)) {
+							k, found := se.findKeyBlocking(commitment.KeyId)
+							if found && k.Status != tss_db.TssKeyCreated {
+								tssLog.Warn("dropping keygen commitment for a key already activated by an earlier keygen", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "epoch", commitment.Epoch, "keyEpoch", k.Epoch, "status", k.Status)
+								continue
+							}
+						}
 						se.tssLogSync(block.BlockNumber, "writing commitment to DB", "keyId", commitment.KeyId, "sessionId", commitment.SessionId, "type", commitment.Type, "epoch", commitment.Epoch, "txId", tx.TransactionID)
 						se.tssCommitments.SetCommitmentData(tss_db.TssCommitment{
 							Type:        commitment.Type,
@@ -1872,14 +2001,13 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 							}
 						}
 
-						var newKey bool
-						savedKeyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
-						if savedKeyInfo.Status == "created" {
-							newKey = true
-						}
+						// C-R6: one fail-stop read; a missing key reads as the zero
+						// key, as before.
+						savedKeyInfo, _ := se.findKeyBlocking(commitment.KeyId)
+						newKey := savedKeyInfo.Status == "created"
 
 						if commitment.Type == "keygen" || commitment.Type == "reshare" {
-							keyInfo, _ := se.tssKeys.FindKey(commitment.KeyId)
+							keyInfo := savedKeyInfo
 							if newKey && commitment.PublicKey != nil {
 								keyInfo.PublicKey = *commitment.PublicKey
 								keyInfo.CreatedHeight = int64(block.BlockNumber)
@@ -2082,6 +2210,10 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		se.pendulumFeed.TickIfDue(block.BlockNumber)
 	}
 
+	// CG-1: mirror each EVM bridge's theft and custody flags once this block's
+	// outputs are in, so the next block's TSS tick reads them from the cache.
+	se.refreshEvmBridgeHalts(block.BlockNumber)
+
 	// Emit the periodic indexing-performance summary for the window since
 	// the last emission (once per 1000 blocks live-synced / 100000 during
 	// catch-up), then reset. Runs last so every phase above is counted.
@@ -2267,6 +2399,81 @@ func tickSlotRange(fromBlock, tickHeight, slotLen uint64, closedOnly bool) (firs
 	return first, last
 }
 
+// attestationQuorumFor projects an election's weight onto ACCOUNT names, folded
+// the way dids.FoldSignedWeight folds it (a key seated twice counts once, the
+// first seat keeping the weight), because that is the shape a block header
+// records its signers in: TxProposeBlock.ValidateDetailed maps each included
+// BLS DID back to the member account that holds it. rewards then sums the map
+// over a header's Signers and asks dids.LeaderSigsComplete whether the block
+// had already closed.
+//
+// Pure function of the stored election, so every node building this tick reaches
+// the identical map — which it must, since the result decides settlement money.
+//
+// Returns nil when the weight cannot be folded, which leaves attestation
+// scoring on the pre-0.14.0 strict rule rather than silently treating every
+// block as closed: wrongly docking is recoverable, wrongly paying is not.
+func attestationQuorumFor(election elections.ElectionResult) *rewards.AttestationQuorum {
+	if len(election.Members) == 0 {
+		return nil
+	}
+	weights := election.Weights
+	if len(weights) != len(election.Members) {
+		if weights != nil {
+			// A weight vector that exists but does not line up with the members
+			// is corrupt, not legacy. Do not guess at it.
+			return nil
+		}
+		// Legacy elections carry no weights and every member counts one —
+		// the same reading elections.CalculateSigningScore and
+		// StoreElection's TotalWeight give them.
+		weights = make([]uint64, len(election.Members))
+		for i := range weights {
+			weights[i] = 1
+		}
+	}
+	memberKeys := make([]string, len(election.Members))
+	for i, m := range election.Members {
+		memberKeys[i] = m.Key
+	}
+	_, foldedTotal, ok := dids.FoldSignedWeight(memberKeys, weights, nil)
+	if !ok || foldedTotal == 0 {
+		return nil
+	}
+	byAccount := make(map[string]uint64, len(election.Members))
+	seenKey := make(map[string]struct{}, len(election.Members))
+	for i, m := range election.Members {
+		w := weights[i]
+		if _, dupKey := seenKey[m.Key]; dupKey {
+			// A seat whose BLS key another seat already holds cannot sign
+			// independently of it, so it carries no weight — the collapse
+			// FoldSignedWeight applies, for the same reason: left in, a
+			// duplicated key would make a block look closed when the distinct
+			// signers behind it never reached the bar.
+			w = 0
+		} else {
+			seenKey[m.Key] = struct{}{}
+		}
+		if _, exists := byAccount[m.Account]; exists {
+			// One account at two seats appears ONCE in a header's Signers list
+			// however many of its seats signed, so keep the first seat's weight
+			// and drop the rest. Undercounting signed weight can only make this
+			// scorer dock more, never less — the safe direction for a rule whose
+			// job is to decide when to STOP docking.
+			continue
+		}
+		byAccount[m.Account] = w
+	}
+	// ElectionTotal is the raw stored total, deliberately not defaulted: it is
+	// the same value the leader compares against (blockProducer.waitForSigs),
+	// and StoreElection always writes it as >= len(Members).
+	return &rewards.AttestationQuorum{
+		WeightByAccount: byAccount,
+		FoldedTotal:     foldedTotal,
+		ElectionTotal:   election.TotalWeight,
+	}
+}
+
 // buildTickInputs assembles the per-tick L2 evidence bundle the rewards
 // aggregator scores. Pure read on on-chain caches; deterministic across
 // nodes given identical chain state. Returns a zero-Committee TickInputs
@@ -2299,6 +2506,19 @@ func (se *StateEngine) buildTickInputs(tickHeight uint64) rewards.TickInputs {
 	}
 
 	in := rewards.TickInputs{Committee: committee}
+
+	// REWARD-ATTEST-1 (0.14.0): carry the signature bar the block leader
+	// actually waits for, so attestation scoring can skip the blocks that
+	// closed AT it — the leader never waits for every member (at 16 seats it
+	// stops at 14), so two seats are absent from every healthy block and were
+	// being docked 25 bps each for it. Nil below the line, which keeps the
+	// epochs already settled under the strict rule re-deriving to the same
+	// bytes. Resolved at the TICK height, exactly like the committee above, so
+	// the proposer, every signer and every later re-derivation read the same
+	// election and the same gate.
+	if consensusversion.SettlementAttestationQuorumActive(se.ActiveConsensusVersion(tickHeight)) {
+		in.AttestationQuorum = attestationQuorumFor(election)
+	}
 
 	// Block production + attestation: iterate slots in the tick window.
 	if se.vscBlocks != nil {
@@ -2522,6 +2742,18 @@ func (se *StateEngine) ExecuteBatch() {
 
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
+	// The chain-active version by the transaction's block height, read once
+	// per height in this batch (ActiveConsensusVersion reads the election).
+	versionByHeight := make(map[uint64]consensusversion.Version)
+	versionAt := func(h uint64) consensusversion.Version {
+		v, seen := versionByHeight[h]
+		if !seen {
+			v = se.ActiveConsensusVersion(h)
+			versionByHeight[h] = v
+		}
+		return v
+	}
+
 	for idx, tx := range se.TxBatch {
 		// Invalid tx (unknown op type / undecodable payload): execute NO op and
 		// mark it FAILED. This is the explicit second failure location for txs
@@ -2564,6 +2796,16 @@ func (se *StateEngine) ExecuteBatch() {
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
+		// The first call op of the transaction: the contract a size-bound
+		// failure is recorded under (slot_object_bounds.go), with the output
+		// it had before the transaction.
+		var boundCall struct {
+			set        bool
+			contractId string
+			txId       string
+			meta       contracts.ContractMetadata
+			stateCid   string
+		}
 		for idx, vscTx := range tx.Ops {
 			log.Verbose("executing tx", "bh", vscTx.TxSelf().BlockHeight)
 
@@ -2618,6 +2860,13 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
+			if vscTx.Type() == "call" && !boundCall.set {
+				boundCall.set = true
+				boundCall.contractId = contractId
+				boundCall.txId = MakeTxId(tx.TxId, idx)
+				boundCall.meta = lastContractMeta
+				boundCall.stateCid = lastStateCid
+			}
 			execOpStart := time.Now()
 			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
 			se.profiler.Record(PhaseExecuteBatchOp(vscTx.Type()), time.Since(execOpStart))
@@ -2654,51 +2903,9 @@ func (se *StateEngine) ExecuteBatch() {
 						},
 					}}
 					// Append previous output here if not already to make sure the error symbol and message is included in contract output
-					if _, exist := se.TempOutputs[contractId]; !exist {
-						se.TempOutputs[contractId] = &contract_session.TempOutput{
-							Metadata: lastContractMeta,
-							Cid:      lastStateCid,
-
-							Deletions: make(map[string]bool),
-							Cache:     make(map[string][]byte),
-						}
-					}
+					se.ensureTempOutput(contractId, lastContractMeta, lastStateCid)
 				} else {
-					logs := callSession.PopLogs()
-					// Sort log keys for deterministic output ordering across nodes.
-					// Cross-contract calls produce logs from multiple contracts;
-					// unsorted map iteration causes different output order → CID mismatch.
-					logIds := make([]string, 0, len(logs))
-					for id := range logs {
-						logIds = append(logIds, id)
-					}
-					sort.Strings(logIds)
-					for _, id := range logIds {
-						log := logs[id]
-						if id == contractId {
-							outputs = append(outputs, ContractIdResult{
-								ContractId: contractId,
-								Output: ContractResult{
-									TxId:    txId,
-									Ret:     result.Ret,
-									Success: result.Success,
-									Logs:    log.Logs,
-									TssOps:  log.TssOps,
-								},
-							})
-						} else {
-							outputs = append(outputs, ContractIdResult{
-								ContractId: id,
-								Output: ContractResult{
-									TxId:    txId,
-									Ret:     "",
-									Success: result.Success,
-									Logs:    log.Logs,
-									TssOps:  log.TssOps,
-								},
-							})
-						}
-					}
+					outputs = append(outputs, CallOutputs(txId, contractId, result.Ret, result.Success, callSession.PopLogs())...)
 				}
 			}
 			if !result.Success {
@@ -2711,8 +2918,39 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
+		bounded := false
+		if len(tx.Ops) > 0 {
+			active := versionAt(tx.Ops[0].TxSelf().BlockHeight)
+			// Consensus 0.16.0: a failed transaction publishes none of its
+			// calls' successful results. A call that ran before the operation
+			// that failed otherwise leaves its result here (only a failing call
+			// replaced the set), so a reverted transaction's output and side
+			// effects are all dropped together.
+			if !ok && consensusversion.FailedTxPublishesNoResultsActive(active) {
+				outputs = failedResultsOnly(outputs)
+			}
+			// Consensus 0.16.0: a transaction that would take a
+			// contract's output for this block, or the block's ledger record,
+			// over its bound fails like any failed call: state and ledger
+			// reverted, the RC it used still charged, the reason recorded under
+			// its first call. appendOutput keeps failed results inside the bound.
+			bounded = consensusversion.SlotObjectSizeBoundActive(active)
+			if bounded && ok {
+				if reason := se.slotObjectsOverBound(outputs, ledgerSession.PendingOpBytes()); reason != "" {
+					log.Debug("TRANSACTION REVERTING - size bound", "tx", tx.TxId, "reason", reason)
+					ok = false
+					ledgerSession.Revert()
+					outputs = outputs[:0]
+					if boundCall.set {
+						outputs = append(outputs, ContractIdResult{ContractId: boundCall.contractId, Output: outputTooLarge(boundCall.txId, reason)})
+						se.ensureTempOutput(boundCall.contractId, boundCall.meta, boundCall.stateCid)
+					}
+					se.recordTxFailure(tx.TxId, reason)
+				}
+			}
+		}
 		for _, out := range outputs {
-			se.AppendOutput(out.ContractId, out.Output)
+			se.appendOutput(out.ContractId, out.Output, bounded)
 		}
 		if ok && callSession != nil {
 			callSession.Commit()
@@ -3163,6 +3401,28 @@ func frSyncLedgerAmount(stakedAmount, unstakedAmount int64) (amt int64, ok bool)
 	return -unstakedAmount, true
 }
 
+// findKeyBlocking reads a TSS key row for a consensus decision (C-R6): a read
+// that failed on this node alone (a Mongo blip) blocks and retries, so the
+// node does not decide differently from its peers; found=false only when the
+// key does not exist. The vsc.tss_commitment and vsc.tss_sign handlers used
+// to treat any error as an absent key.
+func (se *StateEngine) findKeyBlocking(keyId string) (tss_db.TssKey, bool) {
+	var k tss_db.TssKey
+	found := false
+	blockingRetry("FindKey "+keyId, func() error {
+		got, err := se.tssKeys.FindKey(keyId)
+		if err != nil {
+			if isTransientReadErr(err) {
+				return err
+			}
+			return nil
+		}
+		k, found = got, true
+		return nil
+	})
+	return k, found
+}
+
 func blockingRetry(what string, read func() error, stallHook ...func(time.Duration)) {
 	const (
 		baseDelay = 100 * time.Millisecond
@@ -3308,16 +3568,53 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 
 // Append a contract output to the output map
 func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
+	se.appendOutput(contractId, out, false)
+}
+
+// appendOutput appends one result to its contract's output for the block.
+// With bounded (consensus 0.16.0) a failed result is kept
+// inside params.MAX_CONTRACT_OUTPUT_BYTES (boundFailedResult); one that no
+// longer fits at all is not added: the transaction's failure stays in the
+// block's ledger record and the node's transaction index. A successful result
+// was checked before its state was committed (slotObjectsOverBound).
+func (se *StateEngine) appendOutput(contractId string, out ContractResult, bounded bool) {
+	if se.contractOutputBytes == nil {
+		se.contractOutputBytes = make(map[string]int)
+	}
+	if bounded && !out.Success {
+		var fits bool
+		out, fits = boundFailedResult(out, se.contractOutputBytes[contractId])
+		if !fits {
+			return
+		}
+	}
 	if se.ContractResults[contractId] == nil {
 		se.ContractResults[contractId] = make([]ContractResult, 0)
 	}
 	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
+	se.contractOutputBytes[contractId] += contractResultBytes(out)
+}
+
+// ensureTempOutput gives contractId a temporary output when it has none in
+// this block yet, at the metadata and state it had before the transaction,
+// so MakeOutputs records a failed call's result for a contract whose state
+// did not change.
+func (se *StateEngine) ensureTempOutput(contractId string, meta contracts.ContractMetadata, stateCid string) {
+	if _, exist := se.TempOutputs[contractId]; !exist {
+		se.TempOutputs[contractId] = &contract_session.TempOutput{
+			Metadata:  meta,
+			Cid:       stateCid,
+			Deletions: make(map[string]bool),
+			Cache:     make(map[string][]byte),
+		}
+	}
 }
 
 func (se *StateEngine) Flush() {
 	stopFlush := se.profiler.Start(PhaseFlush)
 	defer stopFlush()
 	se.ContractResults = make(map[string][]ContractResult)
+	se.contractOutputBytes = make(map[string]int)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
 	se.TxOutIds = make([]string, 0)
@@ -3650,6 +3947,20 @@ func New(sconf systemconfig.SystemConfig, da *DataLayer.DataLayer,
 	pendulumCfg := pendulumwasm.DefaultConfig()
 	if sconf.OnMainnet() {
 		pendulumCfg.ActivationHeight = params.PENDULUM_FEE_FIX_HEIGHT
+	}
+	// THORChain-rule swap fee (full slip fee, protocol tier as the floor): inert
+	// (0) on every network until a height is pinned in the consensus params.
+	pendulumCfg.SlipParityHeight = sconf.ConsensusParams().PendulumSlipParityHeight
+	// The StableSwap listings (0.13.0): only these pools price on the stable
+	// curve, and only for their listed pair, amplification and decimals.
+	pendulumCfg.StablePoolAt = func(contractID string, h uint64) (pendulumwasm.StableListing, bool) {
+		p, ok := sconf.StablePoolAt(contractID, h)
+		if !ok {
+			return pendulumwasm.StableListing{}, false
+		}
+		return pendulumwasm.StableListing{
+			Amp: p.Amp, Asset0: p.Asset0, Decimals0: p.Decimals0, Asset1: p.Asset1, Decimals1: p.Decimals1,
+		}, true
 	}
 	se.pendulumApplier = pendulumwasm.New(
 		&liveGeometryReader{
@@ -4089,4 +4400,22 @@ func blamedAccountsFromBitSet(bitsetHex string, members []elections.ElectionMemb
 		out = append(out, acct)
 	}
 	return out
+}
+
+// evmVaultGenOfKey parses keyId as a rotating EVM vault's generation key at bh
+// ("<contract>-primary" or "-primaryv<N>"). The contract list is checked first
+// (local and cheap), the consensus version only for a matching key.
+func (se *StateEngine) evmVaultGenOfKey(keyId string, bh uint64) (uint32, bool) {
+	if se.sconf == nil {
+		return 0, false
+	}
+	for _, c := range se.sconf.OracleParams().EvmBridgeContractIds(bh) {
+		if g, ok := btcvault.VaultGenFromKeyIdFor(c, btcvault.EvmVaultKeyBase, keyId); ok {
+			if !consensusversion.EvmVaultRotationActive(se.ActiveConsensusVersion(bh)) {
+				return 0, false
+			}
+			return g, true
+		}
+	}
+	return 0, false
 }

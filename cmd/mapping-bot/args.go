@@ -15,6 +15,7 @@ type args struct {
 	dataDir       string
 	port          int
 	sysconfigPath string
+	chainAPI      string
 }
 
 func parseArgs() (args, error) {
@@ -31,6 +32,7 @@ func parseArgs() (args, error) {
 	dataDir := flag.String("data-dir", "data", "Data directory for config and storage")
 	port := flag.Int("port", 0, "HTTP port override (0 = use config file value)")
 	sysconfigPath := flag.String("sysconfig", "", "Path to JSON file with system config overrides")
+	chainAPI := flag.String("chain-api", "", "Comma-separated Esplora/mempool.space API base URLs, tried in order: one that does not answer (network error, HTTP 5xx, 429) fails over to the next (default: the chain's public mempool.space)")
 
 	flag.Parse()
 
@@ -43,5 +45,6 @@ func parseArgs() (args, error) {
 		dataDir:       *dataDir,
 		port:          *port,
 		sysconfigPath: *sysconfigPath,
+		chainAPI:      *chainAPI,
 	}, nil
 }

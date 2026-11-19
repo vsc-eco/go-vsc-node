@@ -1360,3 +1360,94 @@ func TestBtcKeysignHaltOpFollowsTheVersion(t *testing.T) {
 		assert.Equal(t, tc.want, cs.Snapshot().BtcKeysignHalted, "version 0.%d", tc.protocolVersion)
 	}
 }
+
+// N2: vsc.tss_halt {"keyId":"evm"} halts the EVM bridges from 0.13.0; before
+// it the op keeps its old meaning (the BTC halt), as the 0.12 build applies it.
+// Any other keyId stays the BTC halt, and active:false clears.
+func TestEvmKeysignHaltOpFollowsTheVersion(t *testing.T) {
+	for _, tc := range []struct {
+		protocolVersion uint64
+		ops             []string
+		wantBtc         bool
+		wantEvm         bool
+	}{
+		{12, []string{`{"active":true,"keyId":"evm"}`}, true, false},
+		{13, []string{`{"active":true,"keyId":"evm"}`}, false, true},
+		{13, []string{`{"active":true}`}, true, false},
+		{13, []string{`{"active":true,"keyId":"evm"}`, `{"active":false,"keyId":"evm"}`}, false, false},
+	} {
+		cs := test_utils.NewMockConsensusState()
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "witness1", Key: "bls-key-1"}},
+				ProtocolVersion: tc.protocolVersion,
+			},
+		}
+		for _, op := range tc.ops {
+			te.Creator.CustomJson(stateEngine.MockJson{
+				RequiredAuths: []string{te.SE.SystemConfig().GatewayWallet()},
+				Id:            "vsc.tss_halt",
+				Json:          op,
+			})
+			te.processAndWait()
+		}
+		snap := cs.Snapshot()
+		assert.Equal(t, tc.wantBtc, snap.BtcKeysignHalted, "BTC flag, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+		assert.Equal(t, tc.wantEvm, snap.EvmKeysignHalted, "EVM flag, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+		assert.Equal(t, tc.wantEvm, te.SE.EvmKeysignHalted(), "EVM cache, version 0.%d ops %v", tc.protocolVersion, tc.ops)
+	}
+}
+
+// N4 through the state engine: witness votes from 0.13.0 halt at 2/3 and
+// lift at 2/3 solvent; 0.12 ignores them; the governance switch turns the
+// watch off (lifting the halt) and on.
+func TestBtcSolvencyVotesFollowTheVersion(t *testing.T) {
+	run := func(protocolVersion uint64, ops []stateEngine.MockJson) consensus_state.ChainConsensusState {
+		cs := test_utils.NewMockConsensusState()
+		te := newTestEnvWithConsensus(cs, nil)
+		te.ElectionDb.ElectionsByHeight[1] = elections.ElectionResult{
+			ElectionCommonInfo: elections.ElectionCommonInfo{Epoch: 5},
+			ElectionDataInfo: elections.ElectionDataInfo{
+				Members:         []elections.ElectionMember{{Account: "w1", Key: "k1"}, {Account: "w2", Key: "k2"}, {Account: "w3", Key: "k3"}},
+				Weights:         []uint64{1, 1, 1},
+				ProtocolVersion: protocolVersion,
+			},
+		}
+		for _, op := range ops {
+			te.Creator.CustomJson(op)
+			te.processAndWait()
+		}
+		return cs.Snapshot()
+	}
+	vote := func(who string, insolvent bool) stateEngine.MockJson {
+		j := `{"c":0,"insolvent":false}`
+		if insolvent {
+			j = `{"c":0,"insolvent":true,"missing_sats":250000000,"missing":1}`
+		}
+		return stateEngine.MockJson{RequiredAuths: []string{who}, Id: "vsc.btc_solvency", Json: j}
+	}
+	gw := func(active string) stateEngine.MockJson {
+		return stateEngine.MockJson{RequiredAuths: []string{systemconfig.MocknetConfig().GatewayWallet()}, Id: "vsc.tss_halt", Json: `{"active":` + active + `,"keyId":"btc_solvency"}`}
+	}
+
+	if s := run(12, []stateEngine.MockJson{vote("w1", true), vote("w2", true)}); s.BtcSolvency.Halted || len(s.BtcSolvency.Votes.Insolvent) != 0 {
+		t.Fatalf("0.12: votes must be ignored: %+v", s.BtcSolvency)
+	}
+	if s := run(13, []stateEngine.MockJson{vote("w1", true)}); s.BtcSolvency.Halted {
+		t.Fatalf("0.13, one of three: %+v", s.BtcSolvency)
+	}
+	if s := run(13, []stateEngine.MockJson{vote("w1", true), vote("w2", true)}); !s.BtcSolvency.Halted {
+		t.Fatalf("0.13, two of three insolvent: %+v", s.BtcSolvency)
+	}
+	if s := run(13, []stateEngine.MockJson{vote("w1", true), vote("w2", true), gw("false")}); s.BtcSolvency.Halted || !s.BtcSolvency.WatchOff {
+		t.Fatalf("governance off must lift the halt and stop the watch: %+v", s.BtcSolvency)
+	}
+	if s := run(13, []stateEngine.MockJson{gw("false"), vote("w1", true), vote("w2", true)}); s.BtcSolvency.Halted {
+		t.Fatalf("votes while the watch is off halted: %+v", s.BtcSolvency)
+	}
+	if s := run(13, []stateEngine.MockJson{gw("false"), gw("true"), vote("w1", true), vote("w2", true)}); !s.BtcSolvency.Halted || s.BtcKeysignHalted {
+		t.Fatalf("watch back on: votes halt again, and the BTC governance flag is untouched: %+v %v", s.BtcSolvency, s.BtcKeysignHalted)
+	}
+}

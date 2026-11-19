@@ -19,6 +19,7 @@ import (
 
 	"vsc-node/lib/utils"
 	"vsc-node/modules/common/consensusversion"
+	tss_db "vsc-node/modules/db/vsc/tss"
 	tss_helpers "vsc-node/modules/tss/helpers"
 
 	"github.com/bnb-chain/tss-lib/v3/common"
@@ -104,6 +105,24 @@ type ReshareDispatcher struct {
 // verifyResharedKey checks that the reshared public key matches the original.
 // extractPub deserializes the stored key data and returns the original (X, Y).
 func (dispatcher *ReshareDispatcher) verifyResharedKey(newX, newY *big.Int, algo string, extractPub func([]byte) (*big.Int, *big.Int, error)) error {
+	// C-R5 (TSS-KG-1, 0.13.0): for a keygen-born epoch the reference is the
+	// key's on-chain public key, not this node's slot. A node in a late
+	// keygen's committee only holds that keygen's share in the slot; as a
+	// new-only party of the first reshare (which loads no old share, so
+	// loadKeyShare never repairs the slot) it refused the correctly reshared
+	// key and kept no share while the reshare commitment names it.
+	if dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen" {
+		if key, err := dispatcher.tssMgr.tssKeys.FindKey(dispatcher.keyId); err == nil && key.PublicKey != "" {
+			got, perr := pointPubHex(dispatcher.algo, newX, newY)
+			if perr == nil && got == key.PublicKey {
+				return nil
+			}
+			log.Error("RESHARE KEY MISMATCH - public key is not the key's on-chain key, aborting reshare",
+				"keyId", dispatcher.keyId, "sessionId", dispatcher.sessionId, "algo", algo,
+				"keyPubKey", key.PublicKey, "newPubKey", got)
+			return fmt.Errorf("reshare produced a public key other than key %s's on-chain key", dispatcher.keyId)
+		}
+	}
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
 	if err != nil {
 		return fmt.Errorf("keystore encryption key: %w", err)
@@ -231,17 +250,7 @@ func (dispatcher *ReshareDispatcher) Start() error {
 	var err error
 	var savedKeyData []byte
 	if myParty != nil {
-		encKey, encErr := dispatcher.tssMgr.keystoreEncryptionKey()
-		if encErr != nil {
-			log.Error("keystore encryption key error", "keyId", dispatcher.keyId, "err", encErr, "sessionId", dispatcher.sessionId)
-			return encErr
-		}
-		savedKeyData, err = keystoreGetDecrypted(
-			context.Background(),
-			dispatcher.keystore,
-			makeKey("key", dispatcher.keyId, int(dispatcher.epoch)),
-			encKey,
-		)
+		savedKeyData, err = dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 		log.Verbose("key retrieval result", "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "err", err, "dataLen", len(savedKeyData), "sessionId", dispatcher.sessionId)
 		if err != nil {
 			log.Error("failed to retrieve key data", "keyId", dispatcher.keyId, "epoch", dispatcher.epoch, "err", err, "sessionId", dispatcher.sessionId)
@@ -424,6 +433,17 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			// 18h: this goroutine reaches storeReshareResult -> setToCommitment,
+			// and had no recover() while four of its siblings in this file do.
+			// An unrecovered panic on a bare goroutine terminates the PROCESS,
+			// so one bad read here killed a witness outright.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic recovered in reshare result handler", "algo", "ECDSA", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "panic", r)
+					dispatcher.err = fmt.Errorf("panic in reshare result handler: %v", r)
+					dispatcher.signalDone()
+				}
+			}()
 			for {
 				var reshareResult *keyGenSecp256k1.LocalPartySaveData
 				select {
@@ -557,6 +577,14 @@ func (dispatcher *ReshareDispatcher) Start() error {
 			}
 		}()
 		go func() {
+			// 18h: see the ECDSA counterpart above -- same missing recover().
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("panic recovered in reshare result handler", "algo", "EdDSA", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "panic", r)
+					dispatcher.err = fmt.Errorf("panic in reshare result handler: %v", r)
+					dispatcher.signalDone()
+				}
+			}()
 			for {
 				var reshareResult *keyGenEddsa.LocalPartySaveData
 				select {
@@ -617,8 +645,20 @@ func (dispatcher *ReshareDispatcher) storeReshareResult(algo string, keydata []b
 		return
 	}
 
+	// 18h: fail CLOSED, exactly like the keystore-write failure above. The share
+	// is already persisted, but without a trustworthy election we cannot compute
+	// a correct commitment, and publishing a wrong one is worse than publishing
+	// none -- the session is retried, whereas a bad commitment is vouched for.
+	commitment, err := dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch)
+	if err != nil {
+		log.Error("reshare commitment NOT computed, not reporting success", "algo", algo, "keyId", dispatcher.keyId, "err", err, "sessionId", dispatcher.sessionId)
+		dispatcher.shareErr = fmt.Errorf("reshare commitment not computed: %w", err)
+		dispatcher.signalDone()
+		return
+	}
+
 	dispatcher.result = &ReshareResult{
-		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.newParticipants, dispatcher.newEpoch),
+		Commitment:  commitment,
 		KeyId:       dispatcher.keyId,
 		SessionId:   dispatcher.sessionId,
 		NewEpoch:    dispatcher.newEpoch,
@@ -1204,14 +1244,7 @@ func (dispatcher *SignDispatcher) Start() error {
 			return err
 		}
 		keydata := keyGenSecp256k1.LocalPartySaveData{}
-		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-
-		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-		if err != nil {
-			log.Trace("sign keystore encryption key error", "err", err)
-			return err
-		}
-		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
+		rawKey, err := dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 
 		if err != nil {
 			log.Trace("sign key retrieval error", "err", err)
@@ -1286,13 +1319,7 @@ func (dispatcher *SignDispatcher) Start() error {
 		}
 		keydata := keyGenEddsa.LocalPartySaveData{}
 
-		k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
-
-		encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-		if err != nil {
-			return err
-		}
-		rawKey, err := keystoreGetDecrypted(context.Background(), dispatcher.keystore, k, encKey)
+		rawKey, err := dispatcher.loadKeyShare(dispatcher.epoch, dispatcher.keygenShareCheck && dispatcher.prevCommitmentType == "keygen")
 
 		if err != nil {
 			return err
@@ -1460,8 +1487,12 @@ type BaseDispatcher struct {
 	// culprit is not the author of the bad data without that culprit. Set once
 	// from the session height, so every node decides the same way.
 	dropUnattributableCulprits bool
-	timeout                    bool
-	p2pMu                      sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
+	// keygenShareCheck (TSS-KG-1, 0.13.0): a share born of the key's keygen
+	// must be the key's on-chain public key's (loadKeyShare). Set once from the
+	// session height, so every node decides the same way.
+	keygenShareCheck bool
+	timeout          bool
+	p2pMu            sync.Mutex // protects tssErr, tssErrors, and lastMsg from concurrent HandleP2P goroutine writes
 	// partyType string
 
 	// shareErr is set when this node finished a keygen or reshare but could
@@ -2143,7 +2174,26 @@ func (dispatcher *KeyGenDispatcher) Start() error {
 func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	k := makeKey("key", dispatcher.keyId, int(dispatcher.epoch))
 	encKey, err := dispatcher.tssMgr.keystoreEncryptionKey()
-	if err == nil {
+	// TSS-KG-1 (0.13.0): keep this keygen's share under its public key, so the
+	// share of whichever keygen the chain activates can be found (loadKeyShare).
+	// Below the line nothing extra is written.
+	if err == nil && dispatcher.keygenShareCheck {
+		if cerr := keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, keygenShareKey(hex.EncodeToString(pubBytes)), saved, encKey); cerr != nil {
+			log.Warn("keygen share copy NOT saved", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", cerr)
+		}
+	}
+	// From 0.13.0 a keygen that finishes after another keygen activated the key
+	// leaves the slot alone: it holds, or will hold, the activated key's share.
+	// The activating keygen itself can finish here after its own commitment
+	// landed (on a node slower than the 2/3 that signed it); it writes the slot.
+	stale := false
+	if err == nil && dispatcher.keygenShareCheck {
+		if key, kerr := dispatcher.tssMgr.tssKeys.FindKey(dispatcher.keyId); kerr == nil && key.Status != tss_db.TssKeyCreated && key.PublicKey != hex.EncodeToString(pubBytes) {
+			stale = true
+			log.Warn("keygen finished after the key was activated; slot share kept", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "keyPubKey", key.PublicKey)
+		}
+	}
+	if err == nil && !stale {
 		err = keystorePutEncrypted(context.Background(), dispatcher.tssMgr.keyStore, k, saved, encKey)
 	}
 	if err != nil {
@@ -2154,9 +2204,18 @@ func (dispatcher *KeyGenDispatcher) storeKeygenResult(pubBytes, saved []byte) {
 	}
 	log.Info("keystore write OK", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId)
 
+	// 18h: fail CLOSED on an unavailable election, as in storeReshareResult.
+	commitment, cErr := dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch)
+	if cErr != nil {
+		log.Error("keygen commitment NOT computed, not reporting success", "sessionId", dispatcher.sessionId, "keyId", dispatcher.keyId, "err", cErr)
+		dispatcher.shareErr = fmt.Errorf("keygen commitment not computed: %w", cErr)
+		dispatcher.signalDone()
+		return
+	}
+
 	dispatcher.result = &KeyGenResult{
 		PublicKey:   pubBytes,
-		Commitment:  dispatcher.tssMgr.setToCommitment(dispatcher.participants, dispatcher.epoch),
+		Commitment:  commitment,
 		SavedSecret: saved,
 		SessionId:   dispatcher.sessionId,
 		KeyId:       dispatcher.keyId,
@@ -2261,7 +2320,18 @@ func (dispatcher *KeyGenDispatcher) Done() *promise.Promise[DispatcherResult] {
 
 type DispatcherResult interface {
 	Type() DispatcherType
-	Serialize() tss_helpers.BaseCommitment
+	// Serialize packs the result into the commitment the node will BLS-sign and
+	// publish.
+	//
+	// 18h: it returns an error because the two blame shapes compute their bitset
+	// with setToCommitment, which can fail when the epoch's election cannot be
+	// read -- and a commitment built from a missing election is silently wrong
+	// (an empty or under-populated bitset) rather than merely absent. Without an
+	// error channel those paths had to choose between killing the process and
+	// publishing garbage; now the caller can simply decline to publish.
+	// The three success shapes carry an already-computed commitment and never
+	// fail, so they return a nil error.
+	Serialize() (tss_helpers.BaseCommitment, error)
 }
 
 type DispatcherType string
@@ -2290,7 +2360,7 @@ func (KeyGenResult) Type() DispatcherType {
 	return KeyGenResultType
 }
 
-func (result KeyGenResult) Serialize() tss_helpers.BaseCommitment {
+func (result KeyGenResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	pubKey := hex.EncodeToString(result.PublicKey)
 
 	return tss_helpers.BaseCommitment{
@@ -2302,7 +2372,7 @@ func (result KeyGenResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 type KeySignResult struct {
@@ -2319,7 +2389,7 @@ func (KeySignResult) Type() DispatcherType {
 	return KeySignResultType
 }
 
-func (result KeySignResult) Serialize() tss_helpers.BaseCommitment {
+func (result KeySignResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	// result.tssMgr.electionDb.GetElectionByHeight()
 	return tss_helpers.BaseCommitment{
 		Type:        "sign_result",
@@ -2330,7 +2400,7 @@ func (result KeySignResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 type ReshareResult struct {
@@ -2347,7 +2417,7 @@ func (ReshareResult) Type() DispatcherType {
 	return ReshareResultType
 }
 
-func (result ReshareResult) Serialize() tss_helpers.BaseCommitment {
+func (result ReshareResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	return tss_helpers.BaseCommitment{
 		Type:        "reshare",
 		SessionId:   result.SessionId,
@@ -2357,7 +2427,7 @@ func (result ReshareResult) Serialize() tss_helpers.BaseCommitment {
 		Metadata:    nil,
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.NewEpoch,
-	}
+	}, nil
 }
 
 type ErrorResult struct {
@@ -2391,7 +2461,7 @@ func (ErrorResult) Type() DispatcherType {
 	return ErrorType
 }
 
-func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
+func (eres ErrorResult) Serialize() (tss_helpers.BaseCommitment, error) {
 	if eres.tssErr != nil {
 		blameNodes := eres.Culprits
 		if len(blameNodes) == 0 {
@@ -2413,11 +2483,19 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			err = eres.tssErr.Error()
 		}
 
-		commitment := eres.tssMgr.setToCommitment(utils.Map(blameNodes, func(arg string) Participant {
+		commitment, cErr := eres.tssMgr.setToCommitment(utils.Map(blameNodes, func(arg string) Participant {
 			return Participant{
 				Account: arg,
 			}
 		}), eres.Epoch)
+		if cErr != nil {
+			// 18h: decline to publish. Previously this degraded to an empty
+			// blame bitset because Serialize had no error channel -- safe in
+			// direction (it accuses nobody) but still a signed commitment
+			// asserting something the node could not actually compute. The
+			// caller skips the result instead; the session is retried.
+			return tss_helpers.BaseCommitment{}, fmt.Errorf("blame commitment for session %s: %w", eres.SessionId, cErr)
+		}
 
 		return tss_helpers.BaseCommitment{
 			Type:       "blame",
@@ -2429,7 +2507,7 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			},
 			BlockHeight: eres.BlockHeight,
 			Epoch:       eres.Epoch,
-		}
+		}, nil
 	} else {
 		err := eres.err.Error()
 		return tss_helpers.BaseCommitment{
@@ -2442,7 +2520,7 @@ func (eres ErrorResult) Serialize() tss_helpers.BaseCommitment {
 			},
 			BlockHeight: eres.BlockHeight,
 			Epoch:       eres.Epoch,
-		}
+		}, nil
 	}
 }
 
@@ -2465,12 +2543,16 @@ func (TimeoutResult) Type() DispatcherType {
 	return TimeoutType
 }
 
-func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
-	commitment := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
+func (result TimeoutResult) Serialize() (tss_helpers.BaseCommitment, error) {
+	commitment, cErr := result.tssMgr.setToCommitment(utils.Map(result.Culprits, func(arg string) Participant {
 		return Participant{
 			Account: arg,
 		}
 	}), result.Epoch)
+	if cErr != nil {
+		// 18h: decline to publish -- see ErrorResult.Serialize.
+		return tss_helpers.BaseCommitment{}, fmt.Errorf("timeout commitment for session %s: %w", result.SessionId, cErr)
+	}
 
 	// Mark timeout in metadata so we can distinguish from errors
 	timeoutErr := "timeout"
@@ -2488,7 +2570,7 @@ func (result TimeoutResult) Serialize() tss_helpers.BaseCommitment {
 		},
 		BlockHeight: result.BlockHeight,
 		Epoch:       result.Epoch,
-	}
+	}, nil
 }
 
 // applySessionNonce binds GG20 keygen/resharing rounds to a unique session ID so

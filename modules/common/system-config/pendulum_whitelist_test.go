@@ -89,6 +89,29 @@ func stagedConfig() *config {
 	}
 }
 
+// mainnetCollateralAt is the mainnet collateral set at a height: the two DAO
+// pools, plus the DAO-owned ETH:HBD and HBD:USDC pools from
+// EVM_MAINNET_HEIGHT (owner decision 2026-11-19). Community pools never.
+func mainnetCollateralAt(h uint64) []string {
+	s := []string{"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM"}
+	if h >= params.EVM_MAINNET_HEIGHT {
+		s = append(s, "vsc1BfKKwFx6uHWMyiaXyjcT8cvMRRfXTvXd6z", "vsc1Bo8BqNty9d4s1BuadHSJ1Lc3G4fAyzwHpr")
+	}
+	return s
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for _, x := range b {
+		if !has(a, x) {
+			return false
+		}
+	}
+	return true
+}
+
 func has(list []string, id string) bool {
 	for _, v := range list {
 		if v == id {
@@ -209,9 +232,10 @@ func TestPendulumPools_AccessorsReturnCopies(t *testing.T) {
 	}
 }
 
-// Mainnet: LASSECASH trades from the height but the collateral set stays
-// exactly the two DAO pools, so P — and therefore the fee split on HBD:HIVE
-// and BTC:HBD — does not move at activation.
+// Mainnet: LASSECASH trades from the height but never enters the collateral
+// set, so P — and therefore the fee split on HBD:HIVE and BTC:HBD — does not
+// move at its activation. The collateral set is the DAO pools only
+// (mainnetCollateralAt).
 func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 	c := MainnetConfig().(*config)
 	const lasse = "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr"
@@ -231,10 +255,80 @@ func TestMainnetConfig_LassecashIsSwapOnly(t *testing.T) {
 			t.Fatalf("height %d: LASSECASH must never count as collateral", at)
 		}
 		coll := c.PendulumCollateralPoolsAt(at)
-		if len(coll) != 2 ||
-			!has(coll, "vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp") ||
-			!has(coll, "vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM") {
-			t.Fatalf("height %d: collateral set must be exactly the two DAO pools, got %v", at, coll)
+		if want := mainnetCollateralAt(at); !sameStringSet(coll, want) {
+			t.Fatalf("height %d: collateral set must be %v, got %v", at, want, coll)
+		}
+	}
+}
+
+// Mainnet: STARPRO trades from its own height, LASSECASH keeps trading, and
+// neither ever enters the collateral set (the DAO pools only, mainnetCollateralAt).
+func TestMainnetConfig_StarproIsSwapOnly(t *testing.T) {
+	c := MainnetConfig().(*config)
+	const (
+		starpro = "vsc1BirUSGK2jm1zDQgVmuUysJ8UFKnTrnGXQf"
+		lasse   = "vsc1BrBFAwZ3Mr8L4ijRqT9RPEPvhK9FWDaYSr"
+	)
+	h := params.PENDULUM_WHITELIST_V3_HEIGHT
+	if h == 0 {
+		t.Fatal("mainnet addition must be gated on an activation height")
+	}
+	if h <= params.PENDULUM_WHITELIST_V2_HEIGHT {
+		t.Fatalf("V3 height %d must come after V2 height %d", h, params.PENDULUM_WHITELIST_V2_HEIGHT)
+	}
+
+	if has(c.PendulumPoolWhitelistAt(h-1), starpro) {
+		t.Fatal("STARPRO must not swap before the activation height")
+	}
+	if !has(c.PendulumPoolWhitelistAt(h), starpro) {
+		t.Fatal("STARPRO must swap from the activation height")
+	}
+	for _, at := range []uint64{h - 1, h, 1 << 40} {
+		if !has(c.PendulumPoolWhitelistAt(at), lasse) {
+			t.Fatalf("height %d: LASSECASH must keep swapping", at)
+		}
+		coll := c.PendulumCollateralPoolsAt(at)
+		if has(coll, starpro) {
+			t.Fatalf("height %d: STARPRO must never count as collateral", at)
+		}
+		if want := mainnetCollateralAt(at); !sameStringSet(coll, want) {
+			t.Fatalf("height %d: collateral set must be %v, got %v", at, want, coll)
+		}
+	}
+	if got := len(c.PendulumPoolWhitelistAt(h)); got != 6 {
+		t.Fatalf("swap gate at the V3 height must hold the two DAO pools, LASSECASH, ETH:HBD, HBD:USDC and STARPRO, got %d", got)
+	}
+}
+
+func TestTestnetConfig_ThreePoolsSwapFromTheirHeightAndNeverCount(t *testing.T) {
+	c := TestnetConfig().(*config)
+	h := params.TESTNET_PENDULUM_3POOL_HEIGHT
+	if h == 0 {
+		t.Fatal("the testnet 3-pool addition must be gated on a height")
+	}
+	pools := []string{
+		"vsc1Bmx2u1SiWvionujSpfhGxKffn9nkvwHLsG", // BTC:HBD
+		"vsc1Bh7AaQF7iti8PZz7wg3QMbaTM62eh1GCW8", // ETH:HBD
+		"vsc1BUoRhmA6px3mgfmdXbgd6nmU5NqL2shcDe", // HBD:USDC
+	}
+	base := []string{"vsc1BbGEc5XXqptJj7dC6AkToRZb4tJ6vi44Rn", "vsc1BYVWLFJRb13GuGZd721LoJ4suxnZZghLV7"}
+	for _, p := range pools {
+		if has(c.PendulumPoolWhitelistAt(h-1), p) {
+			t.Fatalf("%s must not swap before height %d", p, h)
+		}
+		if !has(c.PendulumPoolWhitelistAt(h), p) {
+			t.Fatalf("%s must swap from height %d", p, h)
+		}
+	}
+	for _, at := range []uint64{0, h - 1, h, 1 << 40} {
+		swap, coll := c.PendulumPoolWhitelistAt(at), c.PendulumCollateralPoolsAt(at)
+		for _, b := range base {
+			if !has(swap, b) || !has(coll, b) {
+				t.Fatalf("height %d: the base pool %s must keep both privileges (swap %v, collateral %v)", at, b, swap, coll)
+			}
+		}
+		if len(coll) != 2 {
+			t.Fatalf("height %d: collateral must stay exactly the two base pools, got %v", at, coll)
 		}
 	}
 }

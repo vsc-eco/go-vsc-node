@@ -41,6 +41,10 @@ services:
 
   db:
     image: ${MONGO_IMAGE}
+    # Devnet only: enableTestCommands unlocks the configureFailPoint admin command,
+    # which the read-fault tests use to fail one node's reads
+    # (evm_bridge_cg1_readfault_devnet_test.go).
+    command: ["--setParameter", "enableTestCommands=1"]
     ports:
       - "127.0.0.1:${MONGO_PORT}:27017"
     networks:

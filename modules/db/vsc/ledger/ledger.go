@@ -300,7 +300,7 @@ func (ledger *ledger) GetLedgersTsRange(
 		}})
 	}
 	if txId != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + regexp.QuoteMeta(*txId)}}})
 	}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
@@ -349,7 +349,7 @@ func (ledger *ledger) GetRawLedgerRange(
 		}})
 	}
 	if txId != nil {
-		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + (*txId)}}})
+		filters = append(filters, bson.E{Key: "id", Value: bson.D{{Key: "$regex", Value: "^" + regexp.QuoteMeta(*txId)}}})
 	}
 	if fromBlock != nil {
 		filters = append(filters, bson.E{Key: "block_height", Value: bson.D{{Key: "$gte", Value: *fromBlock}}})
@@ -828,7 +828,7 @@ func (actions *actionsDb) GetAccountPendingConsensusUnstake(account string) (int
 func (actions *actionsDb) GetActionsByTxId(txId string) ([]ActionRecord, error) {
 	cursor, err := actions.Find(context.Background(), bson.M{
 		"id": bson.M{
-			"$regex": "^" + txId,
+			"$regex": "^" + regexp.QuoteMeta(txId),
 		},
 	})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"math/big"
 
+	"vsc-node/lib/dids"
 	tss_db "vsc-node/modules/db/vsc/tss"
 	vscBlocks "vsc-node/modules/db/vsc/vsc_blocks"
 )
@@ -58,15 +59,87 @@ func ScoreBlockProduction(slots []SlotProposer, producedSlotHeights map[uint64]s
 	return out
 }
 
-// ScoreBlockAttestation returns per-witness Tier-2 (block attestation miss)
-// bps: BlockAttestationMissBps × (number of VSC blocks in the tick window
-// where this committee member is absent from the BLS Signers list).
+// AttestationQuorum carries the signature bar an L2 block leader actually waits
+// for, expressed as a weight over the committee being scored, so attestation
+// scoring can tell a block that CLOSED AT the bar from one broadcast below it.
+// A nil quorum means "score every absence" — the pre-0.14.0 rule, kept so a
+// replay of settled history re-derives byte-identically.
 //
-// Strict eligibility (D10): every produced block expects every committee
-// member's signature, regardless of whether the block reached its 2/3
-// threshold without them.
-func ScoreBlockAttestation(blocks []vscBlocks.VscHeaderRecord, committee []string) map[string]int {
+// REWARD-ATTEST-1 (live on mainnet until 0.14.0). The leader stops collecting
+// the moment dids.LeaderSigsComplete holds — 90% of the folded committee weight
+// — and broadcasts. On the live 16-seat committee (POA flat weight 1) that bar
+// is 14, so two seats are missing from the Signers list of every healthy block,
+// and WHICH two is decided by network latency rather than by anything a witness
+// did or failed to do. Charging 25 bps for each such absence billed honest
+// witnesses for signatures nobody waited for: in mainnet epoch 2221 all 16
+// seats were docked, from 3.00% (mahdiyari.vsc) to 66.25% (atexoras.vsc), and
+// no seat ever reached zero.
+//
+// So: a block at or above the bar says nothing about who was willing to sign
+// it, and scores nothing. A block BELOW the bar was broadcast on the collection
+// timeout — the leader waited the whole window and the signatures still did not
+// arrive — so there the absences are real evidence and are scored as before.
+//
+// Residual, deliberately accepted: a committee degraded by no more than the bar
+// already tolerates (2 seats of 16) escapes attestation scoring entirely. That
+// is not a hole in liveness scoring. A witness that is genuinely down also
+// misses its own slots, and ScoreBlockProduction charges BlockProductionMissBps
+// for each — ~8750 bps over a mainnet epoch after forgiveness, far past
+// anything attestation contributes — with the per-witness attribution that
+// attestation, reading only a final signer set, cannot provide.
+type AttestationQuorum struct {
+	// WeightByAccount is each committee account's folded election weight. A
+	// duplicate-key seat carries 0 and the first occurrence keeps the weight,
+	// exactly as dids.FoldSignedWeight counts them, so seating one key twice
+	// cannot make a block look closed that in fact was not.
+	WeightByAccount map[string]uint64
+
+	// FoldedTotal is the duplicate-collapsed committee weight and ElectionTotal
+	// the election's raw TotalWeight; the leader's bar needs both terms.
+	FoldedTotal   uint64
+	ElectionTotal uint64
+}
+
+// closedAtBar reports whether `signers` alone already met the bar the leader
+// waits for — i.e. whether the block would have been broadcast without waiting
+// for anybody else. A nil quorum, or an election whose weight could not be
+// folded, reports false: score every absence, as before the gate.
+func (q *AttestationQuorum) closedAtBar(signers map[string]struct{}) bool {
+	if q == nil || q.FoldedTotal == 0 {
+		return false
+	}
+	signed := uint64(0)
+	for s := range signers {
+		// A name that is not a seat, or a duplicate seat, weighs 0.
+		signed += q.WeightByAccount[s]
+	}
+	return dids.LeaderSigsComplete(signed, q.FoldedTotal, q.ElectionTotal)
+}
+
+// ScoreBlockAttestation returns per-witness Tier-2 (block attestation miss)
+// bps: BlockAttestationMissBps × (number of VSC blocks in the tick window that
+// were broadcast BELOW the leader's signature bar and that this committee
+// member is absent from the BLS Signers list of).
+//
+// `quorum` nil restores the pre-0.14.0 strict rule (D10): every produced block
+// expects every committee member's signature, regardless of whether the block
+// closed without them. See AttestationQuorum for why that was wrong.
+func ScoreBlockAttestation(blocks []vscBlocks.VscHeaderRecord, committee []string, quorum *AttestationQuorum) map[string]int {
 	if len(blocks) == 0 {
+		return nil
+	}
+	signerLists := make([][]string, 0, len(blocks))
+	for _, b := range blocks {
+		signerLists = append(signerLists, b.Signers)
+	}
+	return scoreAttestation(signerLists, committee, quorum)
+}
+
+// scoreAttestation is the one attestation scorer; both entry points project
+// their block shape to signer lists and call it, so the quorum rule cannot be
+// applied by one caller and skipped by the other.
+func scoreAttestation(signerLists [][]string, committee []string, quorum *AttestationQuorum) map[string]int {
+	if len(signerLists) == 0 {
 		return nil
 	}
 	cm := committeeFromMembers(committee)
@@ -74,10 +147,13 @@ func ScoreBlockAttestation(blocks []vscBlocks.VscHeaderRecord, committee []strin
 		return nil
 	}
 	out := make(map[string]int)
-	for _, b := range blocks {
-		signers := make(map[string]struct{}, len(b.Signers))
-		for _, s := range b.Signers {
+	for _, list := range signerLists {
+		signers := make(map[string]struct{}, len(list))
+		for _, s := range list {
 			signers[s] = struct{}{}
+		}
+		if quorum.closedAtBar(signers) {
+			continue
 		}
 		for member := range cm {
 			if _, signed := signers[member]; signed {

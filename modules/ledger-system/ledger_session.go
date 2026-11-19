@@ -27,6 +27,7 @@ func (session *ledgerSession) Done() []string {
 	}
 
 	session.state.Oplog = append(session.state.Oplog, session.oplog...)
+	session.state.OplogBytes += session.PendingOpBytes()
 	session.state.vlMu.Lock()
 	for _, op := range session.ledgerOps {
 		// lss.le.Ls.log.Debug("LedgerSession.Done adding LedgerResult", op)
@@ -38,6 +39,17 @@ func (session *ledgerSession) Done() []string {
 	session.ledgerOps = make([]LedgerUpdate, 0)
 
 	return ledgerIds
+}
+
+// PendingOpBytes is OpLogEventBytes summed over the operations this session
+// has not handed to the ledger state yet (Done): what the current transaction
+// would add to the block's ledger record.
+func (session *ledgerSession) PendingOpBytes() int {
+	n := 0
+	for _, op := range session.oplog {
+		n += OpLogEventBytes(op)
+	}
+	return n
 }
 
 func (lss *ledgerSession) Revert() {

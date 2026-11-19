@@ -120,4 +120,7 @@ const (
 	UNK_ERROR           ContractOutputError = "unknown_error"
 	TSS_KEY_NOT_FOUND   ContractOutputError = "tss_key_not_found"
 	TSS_KEY_DUPLICATE   ContractOutputError = "tss_key_duplicate"
+	// From consensus 0.16.0: the call would take its contract's output for the
+	// block, or the block's ledger record, over its size bound.
+	OUTPUT_TOO_LARGE ContractOutputError = "output_too_large"
 )

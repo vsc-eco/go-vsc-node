@@ -302,6 +302,27 @@ func vstatusTx(t *testing.T, d *Devnet, ctx context.Context, node int, cid, acti
 		case <-devnetAfter(3 * time.Second):
 		}
 	}
+	if strings.EqualFold(last, "INCLUDED") && d.includedPatience > 0 {
+		// An INCLUDED call always resolves once L2 produces a block for it;
+		// wait for that and say how long it took instead of reporting it as
+		// refused.
+		extra := devnetNow()
+		for end := extra.Add(d.includedPatience); devnetNow().Before(end); {
+			select {
+			case <-ctx.Done():
+				return strings.ToUpper(last), txid
+			case <-devnetAfter(5 * time.Second):
+			}
+			s, _ := d.FindTransactionStatus(ctx, node, txid)
+			if us := strings.ToUpper(s); us == "CONFIRMED" || us == "FAILED" || us == "REVERTED" {
+				t.Logf("CALL %s -> %s (tx=%s) after %s more INCLUDED past the 90 s wait", action, us, txid[:12], devnetSince(extra).Round(time.Second))
+				vfAwaitNode2(t, d, ctx, node, txid, us)
+				return us, txid
+			}
+		}
+		t.Logf("CALL %s -> still INCLUDED (tx=%s) after 90 s + %s", action, txid[:12], d.includedPatience)
+		return "INCLUDED", txid
+	}
 	t.Logf("CALL %s -> last=%s (tx=%s, no terminal)", action, last, txid[:12])
 	return strings.ToUpper(last), txid
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,8 +18,67 @@ const CYCLE_GAS_PER_RC = 100_000
 // Areweave does $10.5 per GB we can use less b/c we charge for reads and modifications as well
 // 19 RCs per new written byte ($4/GB)
 // 1 RC per read or modified byte ($0.21/GB)
+//
+// WRITE_IO_GAS_RC_COST is the price up to consensus 0.15.0. Do NOT read it on
+// a pricing path: read WriteIoGasRcCost(active), which returns the price in
+// force at the transaction's height.
 const WRITE_IO_GAS_RC_COST = 19
 const READ_IO_GAS_RC_COST = 1
+
+// WRITE_IO_GAS_RC_COST_V0_15 is the price of a new stored byte from consensus
+// 0.15.0 (consensusversion.WriteIoPriceCutActive): the same as a byte read or
+// rewritten, and the same as a byte of contract log, which is stored for good
+// as well.
+const WRITE_IO_GAS_RC_COST_V0_15 = 1
+
+// Size bounds of the objects a block hands to other nodes, from consensus
+// 0.16.0 (consensusversion.SlotObjectSizeBoundActive). A node that did not
+// build a block fetches each of these from a peer in one message, so each is
+// kept within the message limit. In normal use they are far below these
+// bounds.
+const (
+	// One contract's output for one block: its calls' return values, error
+	// messages and logs, plus MAX_OUTPUT_RESULT_OVERHEAD for each call.
+	MAX_CONTRACT_OUTPUT_BYTES = 1 << 20
+	// The block's ledger record, plus MAX_OPLOG_ENTRY_OVERHEAD for each entry.
+	MAX_BLOCK_OPLOG_BYTES = 1 << 20
+	// One stored contract value.
+	MAX_STATE_VALUE_BYTES = 1 << 20
+	// One stored contract key. A full directory shard holds 256 keys.
+	MAX_STATE_KEY_BYTES = 1 << 10
+	// The revert symbol of a failed call (contract-chosen text) as recorded in
+	// the output.
+	MAX_ERROR_SYMBOL_BYTES = 256
+	// Wallet (L2) transactions one block may carry. Each adds an entry to the
+	// block itself and to its ledger record, whatever it does; Hive
+	// transactions are bounded by Hive's block size already.
+	MAX_BLOCK_L2_TXS = 4096
+
+	// What a call's entry in an output costs beyond its strings (field names,
+	// encoding, its id in the output's inputs list), and an oplog entry beyond
+	// its strings and amount. Generous, so the estimate stays above the size.
+	MAX_OUTPUT_RESULT_OVERHEAD = 128
+	MAX_OPLOG_ENTRY_OVERHEAD   = 96
+)
+
+// WriteIoGasRcCost is the RC charged for each new stored byte of contract
+// state under the chain-active consensus version. It is the one place the
+// price is chosen: the state engine and the dry run resolve `active` at the
+// transaction's block height and hand the result to the execution context
+// (contract_execution_context.WithIoWriteRcCost), which carries it into nested
+// contract calls.
+//
+// A later price is one more case here on a new version line. Only a lower
+// price is safe to add this way: callers size rc_limit from what a call cost
+// before the switch, so after a decrease their limits are merely generous,
+// while after an increase they would be too low and the call would fail for
+// its whole limit.
+func WriteIoGasRcCost(active consensusversion.Version) int {
+	if consensusversion.WriteIoPriceCutActive(active) {
+		return WRITE_IO_GAS_RC_COST_V0_15
+	}
+	return WRITE_IO_GAS_RC_COST
+}
 
 const EPHEM_IO_GAS = 100
 
@@ -224,6 +284,12 @@ const MAX_TSS_COMMITMENTS_PER_TX = 256
 var RC_HIVE_FREE_AMOUNT int64 = 10_000
 var MINIMUM_RC_LIMIT uint64 = 50
 
+// BTC_SOLVENCY_CHECK_EVERY is the BTC solvency watch's checkpoint interval in
+// Hive blocks (N4, ~10 minutes, about one Bitcoin block): witnesses check at
+// each multiple of it and a vote counts only within the interval after its
+// checkpoint. Consensus-relevant (the state engine's tally), so a constant.
+const BTC_SOLVENCY_CHECK_EVERY uint64 = 200
+
 var CONTRACT_DEPLOYMENT_FEE int64 = 10_000 // 10 HBD per contract
 var CONTRACT_DEPLOYMENT_FEE_START_HEIGHT uint64 = 99410000
 var CONTRACT_UPDATE_HEIGHT uint64 = 102100000
@@ -276,6 +342,51 @@ var PENDULUM_FEE_FIX_HEIGHT uint64 = 107_396_400
 // rollout this exists to prevent — the gate fails open, and silently.
 // Mainnet only — testnet and devnet apply their lists immediately (height 0).
 var PENDULUM_WHITELIST_V2_HEIGHT uint64 = 110_741_000
+
+// PENDULUM_WHITELIST_V3_HEIGHT is the mainnet activation height (Hive L1 block)
+// for the third pendulum pool addition (adds HBD:STARPRO).
+//
+// Same rules as PENDULUM_WHITELIST_V2_HEIGHT: consensus input, swap-only
+// (Collateral: false, so P and the fee split do not move). Below the height every
+// node refuses a STARPRO swap, at/after it every node accepts one, so every
+// witness must run a build carrying it before the height.
+//
+// Pinned 2026-11-18 from head 111,773,503 + 86,497 blocks (~3 days at 3 s),
+// ~2026-11-21 15:10 UTC. It ships as a one-commit image on top of the running
+// mainnet build, which the witnesses pick up automatically. RE-PIN BEFORE RELEASE
+// if the window erodes: a height already in the past makes the addition live the
+// moment a node upgrades (fails open). Every build that carries this addition
+// must use the same height. Mainnet only; testnet and devnet apply their lists
+// immediately (height 0).
+var PENDULUM_WHITELIST_V3_HEIGHT uint64 = 111_860_000
+
+// EVM_MAINNET_HEIGHT is the mainnet activation height (Hive L1 block) of the
+// EVM bridge launch. From it, on every node:
+//   - the EVM bridge vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr is a consensus
+//     input (OracleParams.EvmBridgeFromHeight["ETH"]: custody, bond lock, the
+//     vault's signing rules);
+//   - it may create its TSS vault key (tssKeyContractAllowlistAdditions);
+//   - the ETH:HBD and HBD:USDC pools swap and count as collateral
+//     (pendulumPoolAdditions).
+//
+// Pinned 2026-11-19 from head 111,809,396 + 10,604 blocks (~9 h at 3 s),
+// ~2026-11-20 06:50 CET. Every witness must run a build carrying it before the
+// height: below it every node ignores the bridge and refuses a swap through
+// the two pools, at/after it every node takes both. RE-PIN BEFORE RELEASE if
+// the window erodes: a height already in the past makes these live the moment
+// a node upgrades (fails open). Every build that carries them must use the
+// same height. Mainnet only; testnet and devnet use their own lists.
+var EVM_MAINNET_HEIGHT uint64 = 111_820_000
+
+// TESTNET_PENDULUM_3POOL_HEIGHT is the testnet Hive L1 block from which the three
+// pools of the testnet 3-pool campaign (BTC/HBD, ETH/HBD and HBD/USDC on dex-contracts
+// main 2ae12d3, deployed 2026-11-12 by hive:magi.contracts) pass the pendulum swap gate.
+// Testnet only, and consensus input like PENDULUM_WHITELIST_V2_HEIGHT: below it every
+// node refuses a swap through them, at and after it every node accepts one, so every
+// testnet node must run a build carrying it before the height. Pinned 2026-11-12 from
+// testnet head 8,163,848 + 28,800 blocks (~24 h at 3 s). Re-pin if the rollout slips
+// past it: a height already passed makes the addition live the moment a node upgrades.
+var TESTNET_PENDULUM_3POOL_HEIGHT uint64 = 8_192_650
 
 var CONTRACT_CALL_MAX_RECURSION_DEPTH = 20
 
@@ -540,6 +651,21 @@ type ConsensusParams struct {
 	// (BRK-5/8 fleet deploy-order note); (l) tracked (V-1 dust + fee model); (m)
 	// fail-stop + (m1) front-run hold-release DONE; (m2) S5 lock-release tracked.
 	VaultRotationV2ActivationHeight uint64 `json:"vaultRotationV2ActivationHeight,omitempty"`
+
+	// PendulumSlipParityHeight (Hive L1 block) switches the pendulum swap fee to
+	// THORChain's rule: fee = max(slip fee, floor), the slip fee x²·Y/(x+X)²
+	// charged in full (THORChain x/thorchain/swap_current.go CalcLiquidityFee,
+	// GetSwapCalc) with our protocol tier (8 bps × stabilizer m) as the floor
+	// (THORChain's floor is L1SlipMinBps, 10 bps live), and no total-fee clamp.
+	// It replaces the 2026-06 fix's 1/16 slip leg and 1% clamp, which made large
+	// swaps cheap to make and paid LPs almost nothing for them. 0 = INERT (the
+	// current fee math) on every network until an operator pins a future height
+	// that every witness runs; compile-time consensus value, no version gate.
+	// DEPLOY ORDER: only after deposit swaps carry min_amount_out (the BTC
+	// mapping contract that refunds to refund_to, then Altera's
+	// DEPOSIT_SWAP_REFUNDS_ACTIVE), and with Altera's swapCalc switching to the
+	// same rule at the same height (its quotes set min_amount_out).
+	PendulumSlipParityHeight uint64 `json:"pendulumSlipParityHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
@@ -966,16 +1092,12 @@ type TssParams struct {
 	// Set higher (e.g. 10m) in test/CI environments where multiple nodes
 	// compete for CPU and prime generation takes longer.
 	PreParamsTimeout time.Duration `json:"preParamsTimeout,omitempty"`
-	// SolvencyGapSats is the tolerance (in satoshis) for the BTC keysign solvency
-	// observation (observeBtcSolvencyInsolvent, modules/tss/solvency_gate.go).
-	// STAGED FOR M1.1b — the observation is not yet wired to anything. When M1.1b
-	// wires it (to trip the FLAG, not to gate locally), it flags insolvency only
-	// when the vault's real L1 balance is BELOW the contract-claimed supply by
-	// MORE than this gap:
-	//   insolvent  iff  L1assets < Supply - SolvencyGapSats
-	// It absorbs benign transient discrepancies — in-flight deposits not yet
-	// credited, mempool/confirmation lag, dust rounding. The LIVE M1.1a freeze is
-	// the deterministic governance FLAG (vsc.tss_halt), NOT this tolerance.
+	// SolvencyGapSats is the BTC solvency watch's tolerance (N4, from 0.13.0;
+	// modules/oracle/chain/solvency_watch.go): a witness votes insolvent only
+	// when the confirmed, unreserved UTXOs of the BTC contract's book that its
+	// own bitcoind no longer has add up to MORE than this many satoshis. A
+	// witness's own threshold for its vote, not a consensus input: the halt is
+	// decided by 2/3 of the weight voting the same way.
 	// Handled by the reflection Marshal/Unmarshal above as a uint64 field.
 	SolvencyGapSats uint64 `json:"solvencyGapSats,omitempty"`
 }
@@ -1113,24 +1235,35 @@ type OracleParams struct {
 	// is in this map, the oracle skips BLS relay for it.
 	ZKVerifierChains map[string]string `json:"zkVerifierChains,omitempty"`
 
+	// EvmBridgeContracts maps EVM chain symbols (e.g. "ETH") to the bridge
+	// (account-mapping evm-mapping-contract) contract IDs. Each bridge's vault
+	// is its "primary" TSS key, which the key-custody rules cover from 0.13.0
+	// (consensusversion.EvmVaultCustodyActive). Consensus input: every node of a
+	// network must carry the same map, as with ChainContracts["BTC"].
+	EvmBridgeContracts map[string]string `json:"evmBridgeContracts,omitempty"`
+
+	// EvmBridgeFromHeight is, per symbol of EvmBridgeContracts, the Hive block
+	// height from which that bridge is a consensus input (C-R2). A bridge that
+	// a later build adds would otherwise change unstake results (C2) on the
+	// nodes that run that build from the moment they start it. Ship a bridge
+	// with a height the chain has not reached; nodes still on an older build
+	// at that height stop agreeing, as at any consensus upgrade. A bridge with
+	// no height is never a consensus input, and a node refuses to start with
+	// one (ValidateEvmBridges).
+	EvmBridgeFromHeight map[string]uint64 `json:"evmBridgeFromHeight,omitempty"`
+
 	// Deprecated: use ChainContracts["BTC"] instead.
 	BtcContractId string `json:"btcContractId,omitempty"`
 
-	// BtcL1BaseURL is the esplora/mempool.space REST base URL the BTC keysign
-	// solvency SIGNAL (modules/tss/solvency_gate.go) queries for the vault's
-	// REAL on-chain balance. Injected here (per-network config) rather than
-	// hardcoded in the client. Empty disables the L1 probe (SIGNAL fails open),
-	// leaving only the deterministic FLAG. e.g. "https://mempool.space/api".
+	// BtcL1BaseURL: UNUSED. It fed the staged M1.1b balance probe, which never
+	// shipped (it parsed the binary supply "s" as a decimal and summed a static
+	// address list). The N4 solvency watch reads each witness's own bitcoind
+	// (the oracle's chain RPC) instead. Kept so existing sysconfig files load.
 	BtcL1BaseURL string `json:"btcL1BaseURL,omitempty"`
 
-	// BtcVaultAddresses is the authoritative set of BTC vault addresses the
-	// solvency SIGNAL sums L1 balances over. Left empty by default: while empty
-	// the SIGNAL fails OPEN (never freezes) because it cannot make a trustworthy
-	// solvency determination from an empty/undercounted address set. The
-	// intended long-term source is the on-chain UTXO registry (contract state
-	// keys "r"/"u-"); decoding it in Go requires the mapping contract's msgp
-	// registry schema, which is not present in this tree — see the marked hook
-	// in solvency_gate.go. Populating this list makes the SIGNAL fully live.
+	// BtcVaultAddresses: UNUSED (see BtcL1BaseURL). The N4 watch reads the
+	// contract's UTXO registry ("r"/"u-", lib/btcvault/utxo.go) instead of an
+	// address list. Kept so existing sysconfig files load.
 	BtcVaultAddresses []string `json:"btcVaultAddresses,omitempty"`
 }
 
@@ -1142,6 +1275,46 @@ func (o OracleParams) HasZKVerifier(symbol string) bool {
 	}
 	_, ok := o.ZKVerifierChains[symbol]
 	return ok
+}
+
+// EvmBridgeContractIds returns the id of each EVM bridge contract that is a
+// consensus input at height (its EvmBridgeFromHeight is set and <= height),
+// sorted so every node iterates them in one order.
+func (o OracleParams) EvmBridgeContractIds(height uint64) []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for sym, c := range o.EvmBridgeContracts {
+		if from, ok := o.EvmBridgeFromHeight[sym]; c != "" && ok && from <= height {
+			ids = append(ids, c)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// EvmVaultKeyIds returns the TSS key id of each EVM bridge's vault
+// (<contract id>-primary) that is a consensus input at height (its
+// EvmBridgeFromHeight is set and <= height), sorted so every node iterates
+// them in one order.
+func (o OracleParams) EvmVaultKeyIds(height uint64) []string {
+	ids := make([]string, 0, len(o.EvmBridgeContracts))
+	for sym, c := range o.EvmBridgeContracts {
+		if from, ok := o.EvmBridgeFromHeight[sym]; c != "" && ok && from <= height {
+			ids = append(ids, c+"-primary")
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ValidateEvmBridges refuses an EVM bridge without an activation height
+// (EvmBridgeFromHeight), which would otherwise never be a consensus input.
+func (o OracleParams) ValidateEvmBridges() error {
+	for sym, c := range o.EvmBridgeContracts {
+		if _, ok := o.EvmBridgeFromHeight[sym]; c != "" && !ok {
+			return fmt.Errorf("EVM bridge %s (%s) has no evmBridgeFromHeight", sym, c)
+		}
+	}
+	return nil
 }
 
 // ContractId returns the relay contract ID for the given chain symbol.

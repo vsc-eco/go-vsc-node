@@ -34,7 +34,39 @@ type SystemConfig interface {
 	TssParams() params.TssParams
 	PendulumPoolWhitelistAt(blockHeight uint64) []string
 	PendulumCollateralPoolsAt(blockHeight uint64) []string
+	// TssKeyContractAllowlistAt returns the contracts permitted to create TSS
+	// keys at a Hive L1 height. EMPTY MEANS UNRESTRICTED -- see the accessor.
+	TssKeyContractAllowlistAt(blockHeight uint64) []string
+	// StablePoolAt returns the StableSwap listing of a pool contract in force
+	// at a Hive L1 height, if it has one.
+	StablePoolAt(contractID string, blockHeight uint64) (StablePool, bool)
 	LoadOverrides(path string) error
+}
+
+// StablePool lists one pool contract whose swaps price on the StableSwap
+// curve (pendulum StableSwapActive, 0.13.0) instead of the constant product.
+// It is how "only that pool" is enforced: the curve applies to a contract id
+// listed here, at or after FromHeight, for exactly this asset pair, and only
+// when the pool contract itself was initialized stable with the same
+// amplification and decimals. Consensus input: append-only, network-baked on
+// mainnet and testnet (an operator's -sysconfig cannot change it, like the
+// EVM bridge map, A21); devnet takes it from -sysconfig for tests.
+//
+// A stays fixed for the pool's life. Changing A on live reserves moves the
+// price at once (Curve ramps it over days); a different A is a new pool.
+type StablePool struct {
+	ID string `json:"id"`
+	// FromHeight is the Hive L1 block at which the listing takes effect. Zero
+	// means immediately (devnet).
+	FromHeight uint64 `json:"fromHeight"`
+	// Amp is the amplification coefficient A, 1..10000.
+	Amp int64 `json:"amp"`
+	// The pair, lowercase as the pool stores it, and each asset's decimals
+	// (HBD 3, USDC 6).
+	Asset0    string `json:"asset0"`
+	Decimals0 uint8  `json:"decimals0"`
+	Asset1    string `json:"asset1"`
+	Decimals1 uint8  `json:"decimals1"`
 }
 
 // PendulumPoolAddition stages one pool into the pendulum at a coordinated
@@ -66,6 +98,21 @@ type PendulumPoolAddition struct {
 	Collateral bool
 }
 
+// TssKeyContractAddition is an append-only, height-staged entry for the TSS key
+// allowlist (KEY-SPAM-1 / 18j). Widening the allowlist is a consensus change --
+// it decides which create_key transactions succeed -- so a new contract cannot
+// just be appended to the base list: nodes would start enforcing the wider list
+// as each one took the build, and two nodes disagreeing about whether a
+// create_key is valid is a fork. An addition carries the height at which every
+// node starts honouring it, so the widening happens at one agreed block.
+type TssKeyContractAddition struct {
+	ID string
+	// FromHeight is the Hive L1 block at which the addition takes effect.
+	// Zero means immediately (testnet/devnet, where the list is unrestricted
+	// anyway).
+	FromHeight uint64
+}
+
 type config struct {
 	network         string
 	bootstrapPeers  []string
@@ -82,6 +129,18 @@ type config struct {
 	// pendulumPoolWhitelist is the base list: pools that both swap AND count
 	// as collateral. Today that means the DAO-owned pools only.
 	pendulumPoolWhitelist []string
+
+	// tssKeyContractAllowlist is the set of contracts allowed to create TSS
+	// keys (KEY-SPAM-1 / 18j). Empty = unrestricted; see
+	// TssKeyContractAllowlistAt for why that is the default on test networks.
+	tssKeyContractAllowlist []string
+
+	// tssKeyContractAllowlistAdditions widens the list above at an agreed
+	// height. APPEND-ONLY: removing or re-dating an entry that has already
+	// activated changes what a replay of that history decides. Adding the EVM
+	// bridge's contract on mainnet goes here, with a FromHeight far enough out
+	// that every node is on the build before it binds -- not into the base list.
+	tssKeyContractAllowlistAdditions []TssKeyContractAddition
 	// pendulumPoolAdditions stages further pools in at a height, each choosing
 	// whether it also counts as collateral. Append-only.
 	pendulumPoolAdditions []PendulumPoolAddition
@@ -90,9 +149,21 @@ type config struct {
 	// staged rollout exists to keep default-configured nodes in step, not to
 	// second-guess an operator who set the value deliberately.
 	pendulumWhitelistOverridden bool
-  // Network-baked free-RC allowance for Hive accounts. Deliberately absent from
+	// Network-baked free-RC allowance for Hive accounts. Deliberately absent from
 	// SysConfigOverrides so it cannot be changed per-operator (VR2-17).
-  rcHiveFreeAmount      int64
+	rcHiveFreeAmount int64
+	// evmBridgesBaked: the EVM bridge map (OracleParams.EvmBridgeContracts and
+	// EvmBridgeFromHeight) is this network's, set here, and an operator's
+	// override of it is ignored (A21). It is a consensus input from 0.13.0
+	// (custody, bond lock, the rolling vault's signing rules), and a per-operator
+	// map gave nodes different answers. A bridge ships in a build, with a height
+	// the chain has not reached.
+	evmBridgesBaked bool
+	// stablePools: the StableSwap listings (StablePool). Append-only.
+	stablePools []StablePool
+	// stablePoolsBaked: the list is this network's and an override is ignored
+	// (mainnet, testnet), as evmBridgesBaked.
+	stablePoolsBaked bool
 }
 
 func (c *config) OnMainnet() bool {
@@ -213,6 +284,66 @@ func (c *config) PendulumPoolWhitelistAt(blockHeight uint64) []string {
 	return c.poolsAt(blockHeight, false)
 }
 
+// TssKeyContractAllowlistAt returns the contracts permitted to call
+// tss.create_key at a given Hive L1 height (KEY-SPAM-1 / 18j).
+//
+// THE PROBLEM. create_key validated only that the key name was alphanumeric and
+// the type was eddsa/ecdsa, for 1,000,000 gas. Any contract could mint
+// unlimited keys, every "created" key becomes a keygen at each rotate block
+// with no cap and no expiry, and each keygen waits for pre-parameters while
+// holding tssMgr.lock -- so N junk keys hold that lock for about N minutes and
+// every reshare and sign tick in the meantime is dropped. Cheap, permissionless,
+// and it degrades the custody layer rather than one contract.
+//
+// EMPTY MEANS UNRESTRICTED, deliberately. Mainnet lists the one contract that
+// actually owns keys; testnet and devnet run many contracts that legitimately
+// create keys (testnet alone has 24), and an allowlist there would be a
+// maintenance burden with no funds behind it. The cost of this default is that
+// forgetting to populate a new funded network leaves it open, so the mainnet
+// entry is set in code rather than left to an operator override.
+//
+// Height-parameterised for the same reason as PendulumPoolWhitelistAt: this is
+// consensus input, so there is deliberately no height-less accessor to reach
+// for. The base list is static per network and widened by
+// tssKeyContractAllowlistAdditions, each taking effect at its own FromHeight.
+//
+// The height was previously ACCEPTED AND IGNORED, which is worse than not
+// having it: it reads as staged at the call site while a wider list would in
+// fact bind the moment a node took the build, and nodes disagreeing about
+// whether a create_key is valid is a fork. Reported by lordbutterfly reviewing
+// #289, who needs the EVM bridge added to mainnet's list -- that is an addition
+// with a FromHeight, never an edit to the base list.
+func (c *config) TssKeyContractAllowlistAt(blockHeight uint64) []string {
+	out := make([]string, 0, len(c.tssKeyContractAllowlist)+len(c.tssKeyContractAllowlistAdditions))
+	seen := make(map[string]struct{}, cap(out))
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, id := range c.tssKeyContractAllowlist {
+		add(id)
+	}
+	for _, a := range c.tssKeyContractAllowlistAdditions {
+		if blockHeight < a.FromHeight {
+			continue
+		}
+		add(a.ID)
+	}
+	if len(out) == 0 {
+		// nil, not an empty slice: callers read "no entries" as UNRESTRICTED
+		// (filterScheduledKeys, TssCreateKey), and the two must not diverge on
+		// which empty they got.
+		return nil
+	}
+	return out
+}
+
 // PendulumCollateralPoolsAt returns the pools whose HBD reserve enters the
 // pendulum GEOMETRY at a given height — P, and thus V = 2P and s = V/E, which
 // set the LP/node fee split across every pool.
@@ -227,19 +358,38 @@ func (c *config) PendulumCollateralPoolsAt(blockHeight uint64) []string {
 	return c.poolsAt(blockHeight, true)
 }
 
+// StablePoolAt returns the newest StableSwap listing of contractID whose
+// FromHeight has been reached at blockHeight.
+func (c *config) StablePoolAt(contractID string, blockHeight uint64) (StablePool, bool) {
+	var found StablePool
+	ok := false
+	for _, p := range c.stablePools {
+		if p.ID == "" || p.ID != contractID {
+			continue
+		}
+		if p.FromHeight != 0 && blockHeight < p.FromHeight {
+			continue
+		}
+		found, ok = p, true
+	}
+	return found, ok
+}
+
 // SysConfigOverrides is the JSON shape for the -sysconfig override file.
 // Only fields present in the JSON are applied; the rest keep their
 // network defaults.
 type SysConfigOverrides struct {
-	BootstrapPeers        []string                `json:"bootstrapPeers,omitempty"`
-	NetId                 string                  `json:"netId,omitempty"`
-	HiveChainId           string                  `json:"hiveChainId,omitempty"`
-	GatewayWallet         string                  `json:"gatewayWallet,omitempty"`
-	StartHeight           *uint64                 `json:"startHeight,omitempty"`
-	ConsensusParams       *params.ConsensusParams `json:"consensusParams,omitempty"`
-	OracleParams          *params.OracleParams    `json:"oracleParams,omitempty"`
-	TssParams             *params.TssParams       `json:"tssParams,omitempty"`
-	PendulumPoolWhitelist *[]string               `json:"pendulumPoolWhitelist,omitempty"`
+	BootstrapPeers          []string                `json:"bootstrapPeers,omitempty"`
+	NetId                   string                  `json:"netId,omitempty"`
+	HiveChainId             string                  `json:"hiveChainId,omitempty"`
+	GatewayWallet           string                  `json:"gatewayWallet,omitempty"`
+	StartHeight             *uint64                 `json:"startHeight,omitempty"`
+	ConsensusParams         *params.ConsensusParams `json:"consensusParams,omitempty"`
+	OracleParams            *params.OracleParams    `json:"oracleParams,omitempty"`
+	TssParams               *params.TssParams       `json:"tssParams,omitempty"`
+	PendulumPoolWhitelist   *[]string               `json:"pendulumPoolWhitelist,omitempty"`
+	TssKeyContractAllowlist *[]string               `json:"tssKeyContractAllowlist,omitempty"`
+	StablePools             *[]StablePool           `json:"stablePools,omitempty"`
 }
 
 func (c *config) LoadOverrides(path string) error {
@@ -251,15 +401,17 @@ func (c *config) LoadOverrides(path string) error {
 	// directly onto the existing config, preserving defaults for
 	// fields not present in the JSON.
 	var raw struct {
-		BootstrapPeers        []string        `json:"bootstrapPeers,omitempty"`
-		NetId                 string          `json:"netId,omitempty"`
-		HiveChainId           string          `json:"hiveChainId,omitempty"`
-		GatewayWallet         string          `json:"gatewayWallet,omitempty"`
-		StartHeight           *uint64         `json:"startHeight,omitempty"`
-		ConsensusParams       json.RawMessage `json:"consensusParams,omitempty"`
-		OracleParams          json.RawMessage `json:"oracleParams,omitempty"`
-		TssParams             json.RawMessage `json:"tssParams,omitempty"`
-		PendulumPoolWhitelist *[]string       `json:"pendulumPoolWhitelist,omitempty"`
+		BootstrapPeers          []string        `json:"bootstrapPeers,omitempty"`
+		NetId                   string          `json:"netId,omitempty"`
+		HiveChainId             string          `json:"hiveChainId,omitempty"`
+		GatewayWallet           string          `json:"gatewayWallet,omitempty"`
+		StartHeight             *uint64         `json:"startHeight,omitempty"`
+		ConsensusParams         json.RawMessage `json:"consensusParams,omitempty"`
+		OracleParams            json.RawMessage `json:"oracleParams,omitempty"`
+		TssParams               json.RawMessage `json:"tssParams,omitempty"`
+		PendulumPoolWhitelist   *[]string       `json:"pendulumPoolWhitelist,omitempty"`
+		TssKeyContractAllowlist *[]string       `json:"tssKeyContractAllowlist,omitempty"`
+		StablePools             *[]StablePool   `json:"stablePools,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parsing sysconfig overrides: %w", err)
@@ -285,8 +437,14 @@ func (c *config) LoadOverrides(path string) error {
 		}
 	}
 	if raw.OracleParams != nil {
+		bridges, from := c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight
+		c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = copyMap(bridges), copyMap(from)
 		if err := json.Unmarshal(raw.OracleParams, &c.oracleParams); err != nil {
 			return fmt.Errorf("applying oracle overrides: %w", err)
+		}
+		if c.evmBridgesBaked && (!sameMap(bridges, c.oracleParams.EvmBridgeContracts) || !sameMap(from, c.oracleParams.EvmBridgeFromHeight)) {
+			fmt.Fprintf(os.Stderr, "sysconfig: the EVM bridge map is part of the %s build; the override of evmBridgeContracts/evmBridgeFromHeight is ignored (A21)\n", c.network)
+			c.oracleParams.EvmBridgeContracts, c.oracleParams.EvmBridgeFromHeight = bridges, from
 		}
 	}
 	if raw.TssParams != nil {
@@ -301,7 +459,40 @@ func (c *config) LoadOverrides(path string) error {
 		// once the activation height passes.
 		c.pendulumWhitelistOverridden = true
 	}
+	if raw.TssKeyContractAllowlist != nil {
+		c.tssKeyContractAllowlist = append([]string(nil), (*raw.TssKeyContractAllowlist)...)
+	}
+	if raw.StablePools != nil {
+		if c.stablePoolsBaked {
+			fmt.Fprintf(os.Stderr, "sysconfig: the stable pool list is part of the %s build; the override of stablePools is ignored\n", c.network)
+		} else {
+			c.stablePools = append([]StablePool(nil), (*raw.StablePools)...)
+		}
+	}
 	return nil
+}
+
+func copyMap[V comparable](m map[string]V) map[string]V {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func sameMap[V comparable](a, b map[string]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *config) StartHeight() uint64 {
@@ -313,9 +504,15 @@ func MainnetConfig() SystemConfig {
 		bootstrapPeers: MAINNET_BOOTSTRAP,
 		network:        "mainnet",
 		netId:          "vsc-mainnet",
-		hiveChainId:    "beeab0de00000000000000000000000000000000000000000000000000000000",
-		gatewayWallet:  "vsc.gateway",
-		startHeight:    94601000,
+		// A21: the EVM bridge ships here (oracleParams EvmBridgeContracts +
+		// EvmBridgeFromHeight), never per operator.
+		evmBridgesBaked: true,
+		// No stable pool listed yet: a listing names the deployed pool's
+		// contract id and ships in a node release with a FromHeight.
+		stablePoolsBaked: true,
+		hiveChainId:      "beeab0de00000000000000000000000000000000000000000000000000000000",
+		gatewayWallet:    "vsc.gateway",
+		startHeight:      94601000,
 		// 48h timelock on contract updates (see params.CONTRACT_UPDATE_TIMELOCK_BLOCKS).
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
@@ -408,12 +605,21 @@ func MainnetConfig() SystemConfig {
 				// "DASH": "vsc1...", // deploy dash-mapping-contract and add contract ID
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
-			// BTC keysign solvency observation endpoint — STAGED FOR M1.1b
-			// (observeBtcSolvencyInsolvent), not yet wired, so INERT today.
-			// BtcVaultAddresses is intentionally left empty. NOTE (council): when
-			// M1.1b activates the observation, use a per-node TRUSTED full node
-			// here, not this shared public API a thief could rate-limit into a
-			// fail-open. The live M1.1a freeze is the deterministic governance FLAG.
+			// Ethereum headers come from the ZK header verifier (proofs submitted
+			// straight to it), never from the oracle's BLS relay. ETH has no
+			// ChainContracts entry, so the relay skips it anyway; listed as on
+			// testnet. zk-header-verifier main c9d720f, deployed 2026-11-19 by
+			// hive:vsc.dao (zk_header_verifier_mainnet).
+			ZKVerifierChains: map[string]string{
+				"ETH": "vsc1BhQyZEM73tdE9oafqkwzjD6uSoPLriN68z",
+			},
+			// The EVM bridge: account-mapping main 7a1ea97 (evm-mapping-contract,
+			// production build), deployed 2026-11-19 by hive:vsc.dao
+			// (evm_mapping_mainnet), inited chain 1 with the verifier above.
+			EvmBridgeContracts:  map[string]string{"ETH": "vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr"},
+			EvmBridgeFromHeight: map[string]uint64{"ETH": params.EVM_MAINNET_HEIGHT},
+			// Unused (params.OracleParams.BtcL1BaseURL): the N4 solvency watch
+			// reads each witness's own bitcoind, as the council asked.
 			BtcL1BaseURL: "https://mempool.space/api",
 		},
 		tssParams: params.DefaultTssParams,
@@ -440,6 +646,21 @@ func MainnetConfig() SystemConfig {
 			"vsc1BoaniA5HW56GuQy6pVdoZfMcVaaDfnC8kp", // HBD:HIVE   (vsc.dao)
 			"vsc1BVb95YKRHAEy24XgRSaW4L6d9vB88AdwjM", // BTC:HBD    (vsc.dao)
 		},
+		// 18j: the ONLY contract that owns TSS keys on mainnet (the BTC mapping
+		// contract, updated in place for vault v2). Set in code, not left to an
+		// operator override, because an empty list means UNRESTRICTED and a
+		// funded network must not depend on remembering to populate it.
+		// Enforced only once consensus 0.14.0 is active
+		// (consensusversion.TssKeyAllowlistActive), so this is inert today.
+		// Widening it later is an append to tssKeyContractAllowlistAdditions
+		// with a FromHeight, never an edit here.
+		tssKeyContractAllowlist: []string{
+			"vsc1BdrQ6EtbQ64rq2PkPd21x4MaLnVRcJj85d", // BTC mapping contract
+		},
+		// Append-only. The EVM bridge's vault is its "primary" TSS key.
+		tssKeyContractAllowlistAdditions: []TssKeyContractAddition{
+			{ID: "vsc1BqoXD32CWWx9UBfh18TnN7Es85RBut2Uhr", FromHeight: params.EVM_MAINNET_HEIGHT}, // EVM bridge (ETH)
+		},
 		// Append-only. Collateral stays false for community pools: they may
 		// trade, but their reserve must not enter P.
 		pendulumPoolAdditions: []PendulumPoolAddition{
@@ -453,6 +674,36 @@ func MainnetConfig() SystemConfig {
 				FromHeight: params.PENDULUM_WHITELIST_V2_HEIGHT,
 				Collateral: false,
 			},
+			{
+				// HBD:STARPRO: deployed by hive:vsc.dao from dex-contracts
+				// e7033a7 (code bafkreiezp5u..., the same build as HBD:LASSECASH),
+				// ownership handed to hive:risingstargame through the
+				// contract-update timelock; token
+				// vsc1Bfaa2m3GHWL1baZ9AdDjgXQr2MHXMvoTgA issued by
+				// hive:risingstargame. Swap-only for the same reason as
+				// LASSECASH: its owner can ship a code update, so its r0 must
+				// not enter P.
+				ID:         "vsc1BirUSGK2jm1zDQgVmuUysJ8UFKnTrnGXQf",
+				FromHeight: params.PENDULUM_WHITELIST_V3_HEIGHT,
+				Collateral: false,
+			},
+			{
+				// ETH:HBD (eth_hbd_lp): deployed 2026-11-19 by hive:vsc.dao from
+				// dex-contracts a5f184f (code bafkreicbojeey..., the testnet
+				// ETH:HBD pool's code), owner hive:vsc.dao. Collateral like the
+				// two DAO pools (owner decision 2026-11-19).
+				ID:         "vsc1BfKKwFx6uHWMyiaXyjcT8cvMRRfXTvXd6z",
+				FromHeight: params.EVM_MAINNET_HEIGHT,
+				Collateral: true,
+			},
+			{
+				// HBD:USDC (usdc_hbd_lp): same deploy, code and owner as ETH:HBD;
+				// a constant-product pool, not StableSwap. Collateral (owner
+				// decision 2026-11-19).
+				ID:         "vsc1Bo8BqNty9d4s1BuadHSJ1Lc3G4fAyzwHpr",
+				FromHeight: params.EVM_MAINNET_HEIGHT,
+				Collateral: true,
+			},
 		},
 	}
 	return conf
@@ -463,9 +714,15 @@ func TestnetConfig() SystemConfig {
 		bootstrapPeers: TESTNET_BOOTSTRAP,
 		network:        "testnet",
 		netId:          "vsc-testnet",
-		hiveChainId:    "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
-		gatewayWallet:  "vsc.gateway",
-		startHeight:    2,
+		// A21: the EVM bridge ships here (oracleParams EvmBridgeContracts +
+		// EvmBridgeFromHeight), never per operator.
+		evmBridgesBaked: true,
+		// No stable pool listed yet: a listing names the deployed pool's
+		// contract id and ships in a node release with a FromHeight.
+		stablePoolsBaked: true,
+		hiveChainId:      "18dcf0a285365fc58b71f18b3d3fec954aa0c141c44e4e5cb4cf777b9eab274e",
+		gatewayWallet:    "vsc.gateway",
+		startHeight:      2,
 		// Short (~90s) timelock so the mechanism is testable on testnet.
 		contractUpdateTimelockBlocks: params.CONTRACT_UPDATE_TIMELOCK_BLOCKS_TESTNET,
 		rcHiveFreeAmount:             params.RC_HIVE_FREE_AMOUNT,
@@ -547,8 +804,14 @@ func TestnetConfig() SystemConfig {
 				// "LTC":  "vsc1...", // deploy ltc-mapping-contract and add contract ID
 			},
 			ZKVerifierChains: map[string]string{
-				"ETH": "vsc1BdjvsW9XtHZKKLXNscsiqBrPt2hhsbdZgp",
+				"ETH": "vsc1BUdUnJymESf3bBuZmunPQxZumfTMF4TDRW",
 			},
+			// The Sepolia bridge (account-mapping a68320d, deployed 2026-10-31
+			// at Hive block 7,817,502). Its rules apply only once 0.13.0 is
+			// chain-active (EvmVaultRotationActive), so the height can be the
+			// deploy height.
+			EvmBridgeContracts:  map[string]string{"ETH": "vsc1Bo8h3TMFAYX5rkgCeauXFywZGiMbUftQL2"},
+			EvmBridgeFromHeight: map[string]uint64{"ETH": 7_817_502},
 			// BTC keysign solvency SIGNAL: testnet esplora endpoint.
 			BtcL1BaseURL: "https://mempool.space/testnet/api",
 		},
@@ -559,6 +822,16 @@ func TestnetConfig() SystemConfig {
 		pendulumPoolWhitelist: []string{
 			"vsc1BbGEc5XXqptJj7dC6AkToRZb4tJ6vi44Rn",
 			"vsc1BYVWLFJRb13GuGZd721LoJ4suxnZZghLV7",
+		},
+		// The testnet 3-pool campaign (2026-11-12): swaps between BTC, ETH and USDC
+		// through HBD with both bridges live, on the pool and router code that goes to
+		// mainnet (dex-contracts main 2ae12d3; router vsc1BZMfSUB3tBAUf1vvvte5861EnSKR54jWmu).
+		// Owner hive:magi.contracts. Append-only and height-staged like mainnet's
+		// additions; swap-only, so the pendulum geometry (P) keeps the two pools above.
+		pendulumPoolAdditions: []PendulumPoolAddition{
+			{ID: "vsc1Bmx2u1SiWvionujSpfhGxKffn9nkvwHLsG", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // BTC:HBD
+			{ID: "vsc1Bh7AaQF7iti8PZz7wg3QMbaTM62eh1GCW8", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // ETH:HBD
+			{ID: "vsc1BUoRhmA6px3mgfmdXbgd6nmU5NqL2shcDe", FromHeight: params.TESTNET_PENDULUM_3POOL_HEIGHT}, // HBD:USDC
 		},
 	}
 	return conf

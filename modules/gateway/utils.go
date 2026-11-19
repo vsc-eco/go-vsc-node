@@ -90,6 +90,17 @@ func RecoverPublicKey(signature string, hash []byte) (string, error) {
 	if !IsLowS(sigBytes) {
 		return "", errors.New("signature has non-canonical high-S value")
 	}
+	// H3 (RV re-verify): reject a zero / out-of-range R BEFORE RecoverCompact.
+	// secp256k1/v2 v2.0.1 RecoverCompact does NOT validate R: for R == 0 it
+	// computes ModInverse(0, N) == nil and then panics inside big.Int.Mul(nil).
+	// `sign_response` is accepted from ANY peer (ValidateMessage only gates
+	// `sign_request`) and is recovered here inside the waitForSigs collector
+	// goroutine, so a single crafted message would nil-panic and crash the
+	// signing node. Require 1 <= R < N (S is already in [1, N/2] via IsLowS).
+	r := new(big.Int).SetBytes(sigBytes[1 : 1+32])
+	if r.Sign() <= 0 || r.Cmp(secp256k1.S256().Params().N) >= 0 {
+		return "", errors.New("signature R is zero or out of range")
+	}
 	pubKey, _, err := secp256k1.RecoverCompact(sigBytes, hash)
 
 	if err != nil {
