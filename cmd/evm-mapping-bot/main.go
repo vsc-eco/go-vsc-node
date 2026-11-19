@@ -3217,6 +3217,54 @@ func logsAtRetry(rpc *ethRPC, params string, toBlock uint64) (json.RawMessage, e
 // callRetryPauses: the pauses before callRetry's retries.
 var callRetryPauses = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
+// scanBlockRetryPauses: the pauses before rescanFailedBlock scans a failed
+// block again (EVM-CATCHUP-1).
+var scanBlockRetryPauses = []time.Duration{2 * time.Second, 5 * time.Second}
+
+// rescanFailedBlock scans block h again after each of scanBlockRetryPauses,
+// while ctx (the deposit phase) has time, and returns the first success or
+// the last failure. now: a failed block before it in this tick was just
+// scanned on a retry, so the first attempt goes without a pause (the blocks
+// the same throttled burst failed then cost no pause each).
+//
+// EVM-CATCHUP-1 (testnet 11-18): a scan stopped at its first failed block and
+// tried again only on the next ~60 s tick, dropping the blocks the workers had
+// already fetched after it. A rate limit that outlasted logsAtRetry's pauses
+// (1.75 s) failed about one block a tick, so the scan moved ~5 blocks a minute,
+// Ethereum's own pace: after a 3 h outage the bot stayed ~1,000 blocks behind
+// for hours. The BTC bot retries the block it failed on after a short sleep
+// and goes on (cmd/mapping-bot main loop, SleepInterval), and THORChain's
+// block scanner does the same after block_height_discover_back_off (5 s); this
+// is that, inside the tick. The block is retried alone, after the parallel
+// burst that the rate limit answered. Only a success is returned as a
+// success: a block that keeps failing still stops the scan (B-R2).
+func rescanFailedBlock(ctx context.Context, rpc *ethRPC, h uint64, cfg EVMBotConfig, sr blockScanEntry, now bool) blockScanEntry {
+	if len(scanBlockRetryPauses) == 0 {
+		return sr
+	}
+	if now {
+		res, err := scanBlockSafe(rpc, h, cfg.scanVaults(), cfg.Tokens)
+		if err == nil {
+			return blockScanEntry{result: res}
+		}
+		sr = blockScanEntry{result: res, err: err}
+	}
+	for i, pause := range scanBlockRetryPauses {
+		slog.Warn("EVM-CATCHUP-1: block scan failed, scanning it again", "block", h, "attempt", i+1, "pause", pause, "err", sr.err)
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			return sr
+		}
+		res, err := scanBlockSafe(rpc, h, cfg.scanVaults(), cfg.Tokens)
+		sr = blockScanEntry{result: res, err: err}
+		if err == nil {
+			return sr
+		}
+	}
+	return sr
+}
+
 // forEachParallel runs f(0..n-1) on up to workers goroutines and returns the
 // first error, or ctx's once it ends; no new f starts after either. A panic
 // in f (hostile RPC data) is that index's error: recover does not cross
@@ -4138,8 +4186,13 @@ func runOnce(
 
 	var tokenMins map[string]*big.Int
 	minsRead := false
+	rescued := false // a failed block of this tick scanned on a retry: the rate limit has passed
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
 		sr, ok := scanResults[h]
+		if ok && sr.err != nil {
+			sr = rescanFailedBlock(depCtx, rpc, h, cfg, sr, rescued)
+			rescued = sr.err == nil
+		}
 		if !ok || sr.err != nil {
 			if ok && sr.err != nil {
 				slog.Error("scan block failed", "block", h, "err", sr.err)
