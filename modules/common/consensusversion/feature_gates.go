@@ -1055,3 +1055,72 @@ func WriteIoPriceCutActive(active Version) bool {
 func RcChargeCappedAtLimitActive(active Version) bool {
 	return Version0_15_0Active(active)
 }
+
+// V0_16_0 is the version line of the consensus bounds on what a block hands to
+// other nodes and on what a failed or nested call can start: the slot object
+// size bounds (SlotObjectSizeBoundActive), the wallet-transaction cap per block
+// (BlockL2TxCapActive), a failed transaction publishing no results
+// (FailedTxPublishesNoResultsActive) and the nested TSS key allowlist
+// (TssKeyAllowlistNestedActive). A line of its own, after 0.15.0, so a network
+// that already runs 0.15.0 switches these on at one agreed height when its
+// floor reaches 0.16.0; a network below 0.15 raises its floor once and takes
+// both lines together.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// the rules on it are inert until the chain floor reaches it.
+var V0_16_0 = Version{Major: 0, Consensus: 16, NonConsensus: 0}
+
+// Version0_16_0Active reports whether the 0.16.0 line is in force given the
+// chain-active consensus version.
+func Version0_16_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_16_0)
+}
+
+// SlotObjectSizeBoundActive (0.16.0) reports whether the objects a block hands
+// to other nodes are kept well under the size a node can fetch from a peer in
+// one message (go-libp2p's limit):
+//   - a contract's output for a block (its calls' return values, error
+//     messages and logs) at most params.MAX_CONTRACT_OUTPUT_BYTES: a call that
+//     would take it over fails, and a failed call's error message is cut to
+//     what still fits;
+//   - the block's ledger record (oplog) at most params.MAX_BLOCK_OPLOG_BYTES;
+//   - one stored contract value at most params.MAX_STATE_VALUE_BYTES and one
+//     key at most params.MAX_STATE_KEY_BYTES (a full directory shard holds 256
+//     keys).
+//
+// A node that did not build a block fetches these objects from its peers, so
+// keeping each within the message limit keeps every node able to fetch it.
+// Each bound changes which calls succeed, so it is consensus. Resolve `active`
+// at the transaction's own block height.
+func SlotObjectSizeBoundActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// BlockL2TxCapActive (0.16.0) caps the wallet (L2) transactions one block
+// carries at params.MAX_BLOCK_L2_TXS: a producer takes no more, and a signer
+// refuses a block with more. Each transaction adds a fixed entry to the block
+// and to its ledger record, so the cap keeps those objects within the fetch
+// limit. Resolve `active` at the block's slot height.
+func BlockL2TxCapActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// FailedTxPublishesNoResultsActive (0.16.0) reports whether a transaction that
+// fails publishes none of its calls' successful results, and whether applying
+// a block starts no TSS operation from a failed result. The invariant: a
+// reverted transaction's side effects (state, ledger, and the output its calls
+// produced) are all dropped together, so none of them outlives the revert.
+// Below the line the prior behaviour is kept, so settled history re-executes
+// identically. Resolve `active` at the transaction's block height
+// (ExecuteBatch) and at the block's height (ingesting its outputs).
+func FailedTxPublishesNoResultsActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// TssKeyAllowlistNestedActive (0.16.0) reports whether a contract reached
+// through contracts.call is held to the TSS key-creation allowlist of the
+// transaction that called it, the same allowlist the top-level call is held
+// to. Below this line the nested context carried no allowlist.
+func TssKeyAllowlistNestedActive(active Version) bool {
+	return Version0_16_0Active(active)
+}

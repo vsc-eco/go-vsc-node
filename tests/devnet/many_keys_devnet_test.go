@@ -17,7 +17,7 @@ import (
 	systemconfig "vsc-node/modules/common/system-config"
 )
 
-// hardeningDevnet is a 5-node devnet on consensus 0.15 with the probe contract
+// hardeningDevnet is a 5-node devnet on consensus 0.16 with the probe contract
 // deployed and every witness holding 1,080 HBD on the ledger (1,090,000 RC).
 func hardeningDevnet(t *testing.T, budget time.Duration) (*Devnet, context.Context, string) {
 	t.Helper()
@@ -32,7 +32,7 @@ func hardeningDevnet(t *testing.T, budget time.Duration) (*Devnet, context.Conte
 			ElectionInterval:               20,
 			ConsensusVersionFloorEpoch:     1,
 			ConsensusVersionFloorMajor:     0,
-			ConsensusVersionFloorConsensus: 15,
+			ConsensusVersionFloorConsensus: 16,
 		},
 	}
 	d, ctx := startDevnetNoKey(t, cfg, vfTestBudget(budget))

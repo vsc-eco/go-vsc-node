@@ -175,6 +175,8 @@ func (r *queryResolver) simulateContractCallsOn(ctx context.Context, input Simul
 	callSession := contract_session.NewCallSession(local, r.Contracts, r.ContractsState, r.TssKeys, r.TssCommitments, blockHeight, nil)
 
 	results := make([]SimulateContractCallResult, 0, len(input.Calls))
+	// What the simulated calls added to each contract's output (DryRunOverBound).
+	boundUsed := make(map[string]int)
 
 	for opIndex, call := range input.Calls {
 		rcLimit := uint64(call.RcLimit)
@@ -337,6 +339,25 @@ func (r *queryResolver) simulateContractCallsOn(ctx context.Context, input Simul
 
 		diff := callSession.GetStateDiff()
 		logs := callSession.PopLogs()
+
+		// The chain's size bound on what a block hands to other nodes
+		// (consensus 0.16.0), for what these calls add.
+		if consensusversion.SlotObjectSizeBoundActive(activeVersion) {
+			outs := stateEngine.CallOutputs(stateEngine.MakeTxId(input.TxID, opIndex), call.ContractID, res.Result, true, stateEngine.WithCalledContract(logs, call.ContractID))
+			if reason := stateEngine.DryRunOverBound(boundUsed, outs, ledgerSession.PendingOpBytes()); reason != "" {
+				ledgerSession.Revert()
+				callSession.Rollback()
+				errCode := string(contracts.OUTPUT_TOO_LARGE)
+				results = append(results, SimulateContractCallResult{
+					Success: false,
+					Err:     &errCode,
+					ErrMsg:  &reason,
+					RcUsed:  model.Int64(rcUsed),
+					GasUsed: model.Uint64(res.Gas),
+				})
+				return results, nil
+			}
+		}
 
 		// Convert logs to map[string]interface{}
 		logsMap := make(model.Map)

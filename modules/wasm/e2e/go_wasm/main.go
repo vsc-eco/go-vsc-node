@@ -350,6 +350,35 @@ func DrawHbd(a *string) *string {
 	return nil
 }
 
+// manyTransfers draws count milli-HBD from the caller (the call's
+// transfer.allow intent) and sends it back one milli-HBD at a time, count
+// ledger operations: the payload is "count".
+//
+//go:wasmexport manyTransfers
+func ManyTransfers(a *string) *string {
+	count, err := strconv.Atoi(*a)
+	if err != nil || count <= 0 {
+		sdk.Abort("invalid count")
+	}
+	sdk.HiveDraw(int64(count), sdk.AssetHbd)
+	to := sdk.GetEnv().Sender.Address
+	for i := 0; i < count; i++ {
+		sdk.HiveTransfer(to, 1, sdk.AssetHbd)
+	}
+	return nil
+}
+
+// relayCall calls another contract: the payload is "contractId,action,payload".
+//
+//go:wasmexport relayCall
+func RelayCall(a *string) *string {
+	params := strings.SplitN((*a), ",", 3)
+	if len(params) < 3 {
+		sdk.Abort("invalid payload")
+	}
+	return sdk.ContractCall(params[0], params[1], params[2], nil)
+}
+
 //go:wasmexport transferHive
 func TransferHive(a *string) *string {
 	params := strings.Split((*a), ",")

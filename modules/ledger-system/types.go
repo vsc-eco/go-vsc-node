@@ -1,5 +1,12 @@
 package ledgerSystem
 
+import (
+	"encoding/json"
+
+	"vsc-node/modules/common"
+	"vsc-node/modules/common/params"
+)
+
 type LedgerUpdate struct {
 	Id string
 	//Block Index
@@ -34,6 +41,26 @@ type OpLogEvent struct {
 	//Fee for instant stake unstake
 	// Fee int64 `json:"fee,omitempty"`
 	Params map[string]interface{} `json:"params,omitempty"`
+}
+
+// OpLogEventBytes is an upper estimate of what one operation adds to the
+// block's ledger record (the "ledger" list of the oplog object): its strings,
+// its amount, its parameters as JSON, and params.MAX_OPLOG_ENTRY_OVERHEAD for
+// the field names, encoding and its index in the outputs list. Deterministic:
+// json.Marshal sorts map keys.
+func OpLogEventBytes(op OpLogEvent) int {
+	n := 20 // the amount
+	for _, f := range []string{op.To, op.From, op.Asset, op.Memo, op.Type, op.Id} {
+		n += common.EncodedStringBytes(f)
+	}
+	if len(op.Params) > 0 {
+		if b, err := json.Marshal(op.Params); err == nil {
+			n += len(b)
+		} else {
+			n += params.MAX_OPLOG_ENTRY_OVERHEAD
+		}
+	}
+	return n + params.MAX_OPLOG_ENTRY_OVERHEAD
 }
 
 type WithdrawParams struct {
@@ -234,6 +261,9 @@ type LedgerSession interface {
 	ConsensusUnstake(ConsensusParams) LedgerResult
 	Done() []string
 	Revert()
+	// PendingOpBytes is the estimated size the operations not yet handed over
+	// by Done add to the block's ledger record (OpLogEventBytes).
+	PendingOpBytes() int
 	// Savepoint/RestoreSavepoint support nested rollback for try/catch
 	// inter-contract calls: capture a point, then unwind to it on a caught failure.
 	Savepoint() LedgerSavepoint

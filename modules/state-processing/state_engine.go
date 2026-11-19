@@ -13,7 +13,6 @@ import (
 	"os"
 	"runtime/debug"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -138,6 +137,10 @@ type StateEngine struct {
 	//Temporary output state as things are being processed.
 	TempOutputs     map[string]*contract_session.TempOutput
 	ContractResults map[string][]ContractResult
+	// contractOutputBytes is contractResultBytes summed over ContractResults
+	// per contract (slot_object_bounds.go). Kept by AppendOutput, emptied
+	// with ContractResults by Flush.
+	contractOutputBytes map[string]int
 
 	//First Tx of batch
 	firstTxHeight uint64
@@ -2739,6 +2742,18 @@ func (se *StateEngine) ExecuteBatch() {
 
 	ledgerSession := ledgerSystem.NewSession(se.LedgerState)
 
+	// The chain-active version by the transaction's block height, read once
+	// per height in this batch (ActiveConsensusVersion reads the election).
+	versionByHeight := make(map[uint64]consensusversion.Version)
+	versionAt := func(h uint64) consensusversion.Version {
+		v, seen := versionByHeight[h]
+		if !seen {
+			v = se.ActiveConsensusVersion(h)
+			versionByHeight[h] = v
+		}
+		return v
+	}
+
 	for idx, tx := range se.TxBatch {
 		// Invalid tx (unknown op type / undecodable payload): execute NO op and
 		// mark it FAILED. This is the explicit second failure location for txs
@@ -2781,6 +2796,16 @@ func (se *StateEngine) ExecuteBatch() {
 
 		outputs := make([]ContractIdResult, 0)
 		ok := true
+		// The first call op of the transaction: the contract a size-bound
+		// failure is recorded under (slot_object_bounds.go), with the output
+		// it had before the transaction.
+		var boundCall struct {
+			set        bool
+			contractId string
+			txId       string
+			meta       contracts.ContractMetadata
+			stateCid   string
+		}
 		for idx, vscTx := range tx.Ops {
 			log.Verbose("executing tx", "bh", vscTx.TxSelf().BlockHeight)
 
@@ -2835,6 +2860,13 @@ func (se *StateEngine) ExecuteBatch() {
 					}
 				}
 			}
+			if vscTx.Type() == "call" && !boundCall.set {
+				boundCall.set = true
+				boundCall.contractId = contractId
+				boundCall.txId = MakeTxId(tx.TxId, idx)
+				boundCall.meta = lastContractMeta
+				boundCall.stateCid = lastStateCid
+			}
 			execOpStart := time.Now()
 			result := executeTxSafely(vscTx, se, ledgerSession, rcSession, callSession, payer)
 			se.profiler.Record(PhaseExecuteBatchOp(vscTx.Type()), time.Since(execOpStart))
@@ -2871,51 +2903,9 @@ func (se *StateEngine) ExecuteBatch() {
 						},
 					}}
 					// Append previous output here if not already to make sure the error symbol and message is included in contract output
-					if _, exist := se.TempOutputs[contractId]; !exist {
-						se.TempOutputs[contractId] = &contract_session.TempOutput{
-							Metadata: lastContractMeta,
-							Cid:      lastStateCid,
-
-							Deletions: make(map[string]bool),
-							Cache:     make(map[string][]byte),
-						}
-					}
+					se.ensureTempOutput(contractId, lastContractMeta, lastStateCid)
 				} else {
-					logs := callSession.PopLogs()
-					// Sort log keys for deterministic output ordering across nodes.
-					// Cross-contract calls produce logs from multiple contracts;
-					// unsorted map iteration causes different output order → CID mismatch.
-					logIds := make([]string, 0, len(logs))
-					for id := range logs {
-						logIds = append(logIds, id)
-					}
-					sort.Strings(logIds)
-					for _, id := range logIds {
-						log := logs[id]
-						if id == contractId {
-							outputs = append(outputs, ContractIdResult{
-								ContractId: contractId,
-								Output: ContractResult{
-									TxId:    txId,
-									Ret:     result.Ret,
-									Success: result.Success,
-									Logs:    log.Logs,
-									TssOps:  log.TssOps,
-								},
-							})
-						} else {
-							outputs = append(outputs, ContractIdResult{
-								ContractId: id,
-								Output: ContractResult{
-									TxId:    txId,
-									Ret:     "",
-									Success: result.Success,
-									Logs:    log.Logs,
-									TssOps:  log.TssOps,
-								},
-							})
-						}
-					}
+					outputs = append(outputs, CallOutputs(txId, contractId, result.Ret, result.Success, callSession.PopLogs())...)
 				}
 			}
 			if !result.Success {
@@ -2928,8 +2918,39 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
+		bounded := false
+		if len(tx.Ops) > 0 {
+			active := versionAt(tx.Ops[0].TxSelf().BlockHeight)
+			// Consensus 0.16.0: a failed transaction publishes none of its
+			// calls' successful results. A call that ran before the operation
+			// that failed otherwise leaves its result here (only a failing call
+			// replaced the set), so a reverted transaction's output and side
+			// effects are all dropped together.
+			if !ok && consensusversion.FailedTxPublishesNoResultsActive(active) {
+				outputs = failedResultsOnly(outputs)
+			}
+			// Consensus 0.16.0: a transaction that would take a
+			// contract's output for this block, or the block's ledger record,
+			// over its bound fails like any failed call: state and ledger
+			// reverted, the RC it used still charged, the reason recorded under
+			// its first call. appendOutput keeps failed results inside the bound.
+			bounded = consensusversion.SlotObjectSizeBoundActive(active)
+			if bounded && ok {
+				if reason := se.slotObjectsOverBound(outputs, ledgerSession.PendingOpBytes()); reason != "" {
+					log.Debug("TRANSACTION REVERTING - size bound", "tx", tx.TxId, "reason", reason)
+					ok = false
+					ledgerSession.Revert()
+					outputs = outputs[:0]
+					if boundCall.set {
+						outputs = append(outputs, ContractIdResult{ContractId: boundCall.contractId, Output: outputTooLarge(boundCall.txId, reason)})
+						se.ensureTempOutput(boundCall.contractId, boundCall.meta, boundCall.stateCid)
+					}
+					se.recordTxFailure(tx.TxId, reason)
+				}
+			}
+		}
 		for _, out := range outputs {
-			se.AppendOutput(out.ContractId, out.Output)
+			se.appendOutput(out.ContractId, out.Output, bounded)
 		}
 		if ok && callSession != nil {
 			callSession.Commit()
@@ -3547,16 +3568,53 @@ func (se *StateEngine) UpdateRcMap(blockHeight uint64) {
 
 // Append a contract output to the output map
 func (se *StateEngine) AppendOutput(contractId string, out ContractResult) {
+	se.appendOutput(contractId, out, false)
+}
+
+// appendOutput appends one result to its contract's output for the block.
+// With bounded (consensus 0.16.0) a failed result is kept
+// inside params.MAX_CONTRACT_OUTPUT_BYTES (boundFailedResult); one that no
+// longer fits at all is not added: the transaction's failure stays in the
+// block's ledger record and the node's transaction index. A successful result
+// was checked before its state was committed (slotObjectsOverBound).
+func (se *StateEngine) appendOutput(contractId string, out ContractResult, bounded bool) {
+	if se.contractOutputBytes == nil {
+		se.contractOutputBytes = make(map[string]int)
+	}
+	if bounded && !out.Success {
+		var fits bool
+		out, fits = boundFailedResult(out, se.contractOutputBytes[contractId])
+		if !fits {
+			return
+		}
+	}
 	if se.ContractResults[contractId] == nil {
 		se.ContractResults[contractId] = make([]ContractResult, 0)
 	}
 	se.ContractResults[contractId] = append(se.ContractResults[contractId], out)
+	se.contractOutputBytes[contractId] += contractResultBytes(out)
+}
+
+// ensureTempOutput gives contractId a temporary output when it has none in
+// this block yet, at the metadata and state it had before the transaction,
+// so MakeOutputs records a failed call's result for a contract whose state
+// did not change.
+func (se *StateEngine) ensureTempOutput(contractId string, meta contracts.ContractMetadata, stateCid string) {
+	if _, exist := se.TempOutputs[contractId]; !exist {
+		se.TempOutputs[contractId] = &contract_session.TempOutput{
+			Metadata:  meta,
+			Cid:       stateCid,
+			Deletions: make(map[string]bool),
+			Cache:     make(map[string][]byte),
+		}
+	}
 }
 
 func (se *StateEngine) Flush() {
 	stopFlush := se.profiler.Start(PhaseFlush)
 	defer stopFlush()
 	se.ContractResults = make(map[string][]ContractResult)
+	se.contractOutputBytes = make(map[string]int)
 	se.TempOutputs = make(map[string]*contract_session.TempOutput)
 	se.TxOutput = make(map[string]TxOutput)
 	se.TxOutIds = make([]string, 0)

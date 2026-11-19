@@ -65,7 +65,13 @@ func (output *ContractOutput) Ingest(se *StateEngine, txSelf TxSelf, slotHeight 
 	if se.sconf.OnMainnet() || se.sconf.ConsensusParams().TssIndexed(txSelf.BlockHeight) {
 		// for testnet, index only above tss index height
 		tssOps := output.TssOps
+		// Consensus 0.16.0: a failed result's TSS operations ran in a call the
+		// transaction reverted, so they start nothing.
+		skipFailed := consensusversion.FailedTxPublishesNoResultsActive(se.ActiveConsensusVersion(txSelf.BlockHeight))
 		for _, res := range output.Results {
+			if skipFailed && !res.Ok {
+				continue
+			}
 			tssOps = append(tssOps, res.TssOps...)
 		}
 

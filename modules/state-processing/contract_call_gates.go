@@ -35,7 +35,12 @@ import (
 //   - 0.15.0: the price of a new stored byte (params.WriteIoGasRcCost), 19 RC
 //     below the line and 1 RC from it. It decides how much RC a call uses, so
 //     a dry run on another price would size limits the chain then overruns or
-//     never needs.
+//     never needs;
+//   - 0.16.0: one stored value and key are bounded
+//     (params.MAX_STATE_VALUE_BYTES, MAX_STATE_KEY_BYTES), so the dry run
+//     fails a write the chain refuses;
+//   - 0.16.0: a contract reached through contracts.call is held to the
+//     caller's TSS key allowlist (TssKeyAllowlistNestedActive).
 //
 // A nil sconf (a state engine without a system config) leaves the two
 // config-dependent gates off and the allowlist nil, as before.
@@ -58,6 +63,8 @@ func ContractCallGatesFor(haveConf bool, cp params.ConsensusParams, tssKeyAllowl
 		contract_execution_context.WithBigSwapAmounts(consensusversion.BigSwapAmountsActive(activeVersion)),
 		contract_execution_context.WithTssKeyAllowlist(tssKeyAllowlist),
 		contract_execution_context.WithIoWriteRcCost(params.WriteIoGasRcCost(activeVersion)),
+		contract_execution_context.WithStateSizeBound(consensusversion.SlotObjectSizeBoundActive(activeVersion)),
+		contract_execution_context.WithTssKeyAllowlistNested(consensusversion.TssKeyAllowlistNestedActive(activeVersion)),
 	}
 }
 
