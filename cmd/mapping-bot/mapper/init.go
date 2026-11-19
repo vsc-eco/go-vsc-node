@@ -79,6 +79,11 @@ type Bot struct {
 	// The first entry is tried first; subsequent entries are fallbacks.
 	gqlURLs    []string
 	gqlClients []*graphql.Client
+	// gqlRank is the I-39 walk order (indices into gqlURLs / gqlClients, ranked
+	// by freshness in RankGqlByHead); nil = as configured.
+	gqlRank     atomic.Pointer[[]int]
+	gqlRankMu   sync.Mutex
+	gqlRankedAt time.Time
 
 	lastBlockHeight atomic.Uint64
 	lastBlockAt     atomic.Int64 // Unix nanoseconds; 0 means not yet set
@@ -100,6 +105,11 @@ type Bot struct {
 	// Deposit addresses derived from instructions x vault generations (deposit_index.go).
 	depositIdxOnce sync.Once
 	depositIndex   *depositIndex
+
+	// Bitcoin refund addresses to check for a refund to send home (send_home.go).
+	refundWatchMu sync.Mutex
+	refundWatch   map[string]*refundWatchEntry
+	sendHomeMu    sync.Mutex // one keeper pass at a time
 }
 
 // failedTxDB returns the FailedTxStore to use — the override if set, otherwise Db.FailedTxs.

@@ -140,3 +140,61 @@ func TestV0_5_0Gates(t *testing.T) {
 			RunningVersion().Format(), V0_5_0.Format())
 	}
 }
+
+// TestSettlementAttestationQuorumActiveOnlyAtOrAboveTheLine: below 0.14.0 the
+// strict rule stands, so a node replaying the epochs mainnet settled under it
+// re-derives the same reward reductions; at and above it, a block that closed
+// at the leader's bar stops docking its absentees (REWARD-ATTEST-1).
+func TestSettlementAttestationQuorumActiveOnlyAtOrAboveTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		active Version
+		want   bool
+	}{
+		{Version{Major: 0, Consensus: 0}, false},
+		{Version{Major: 0, Consensus: 12}, false}, // the line mainnet is on today
+		{Version{Major: 0, Consensus: 13}, false}, // the EVM bridge line
+		{Version{Major: 0, Consensus: 14}, true},
+		{Version{Major: 0, Consensus: 15}, true},
+		{Version{Major: 1, Consensus: 14}, true},
+	} {
+		if got := SettlementAttestationQuorumActive(tc.active); got != tc.want {
+			t.Errorf("SettlementAttestationQuorumActive(%s) = %v, want %v", tc.active.Format(), got, tc.want)
+		}
+	}
+}
+
+// The 0.16.0 rules come with the 0.16.0 line and not before; the 0.15.0 price
+// and charge cap are on from 0.15.0 and stay on above it.
+func TestConsensusBoundsOnTheV0_16_0Line(t *testing.T) {
+	for _, tc := range []struct {
+		v              Version
+		want15, want16 bool
+	}{
+		{Version{}, false, false},
+		{Version{Consensus: 14}, false, false},
+		{Version{Consensus: 14, NonConsensus: 9}, false, false},
+		{V0_15_0, true, false},
+		{Version{Consensus: 15, NonConsensus: 9}, true, false},
+		{V0_16_0, true, true},
+		{Version{Consensus: 17}, true, true},
+	} {
+		for name, gate := range map[string]func(Version) bool{
+			"WriteIoPriceCutActive":       WriteIoPriceCutActive,
+			"RcChargeCappedAtLimitActive": RcChargeCappedAtLimitActive,
+		} {
+			if got := gate(tc.v); got != tc.want15 {
+				t.Fatalf("%s(%s) = %v, want %v", name, tc.v.Format(), got, tc.want15)
+			}
+		}
+		for name, gate := range map[string]func(Version) bool{
+			"SlotObjectSizeBoundActive":        SlotObjectSizeBoundActive,
+			"BlockL2TxCapActive":               BlockL2TxCapActive,
+			"FailedTxPublishesNoResultsActive": FailedTxPublishesNoResultsActive,
+			"TssKeyAllowlistNestedActive":      TssKeyAllowlistNestedActive,
+		} {
+			if got := gate(tc.v); got != tc.want16 {
+				t.Fatalf("%s(%s) = %v, want %v", name, tc.v.Format(), got, tc.want16)
+			}
+		}
+	}
+}

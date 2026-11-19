@@ -1,0 +1,4 @@
+# Saving a contract's state after a call that writes many keys keeps block
+# processing at its pace (the datalayer's batched block writes). Independent of
+# the write price.
+TestHardening_ManyKeysInOneCallKeepBlockPace

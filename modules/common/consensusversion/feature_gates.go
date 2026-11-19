@@ -746,6 +746,50 @@ func TssAccuseStackActive(active Version) bool {
 	return Version0_12_0Active(active)
 }
 
+// TssKeyAllowlistActive reports whether tss.create_key is restricted to the
+// contracts on the network's TSS key allowlist (KEY-SPAM-1 / 18j).
+//
+// Gated because it changes which transactions succeed: an un-gated rollout
+// would have upgraded nodes rejecting a create_key that un-upgraded nodes
+// accept, which forks.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against. The
+// testnet has ACTIVATED 0.13 (epoch 1500, running develop head 3b4c95f6), so a
+// rule newly added to that line is in force the instant one node takes the
+// build while its peers have not. There is no coordination window left on 0.13,
+// and that window is the whole reason this is version-gated. It stays paired
+// with TssPerKeyFamilyBanActive on one line so a mixed fleet cannot disagree
+// about one and not the other. Inert on mainnet (0.12) and on the testnet until
+// the floor reaches 0.14.
+func TssKeyAllowlistActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
+// TssPerKeyFamilyBanActive reports whether the TSS ban score is computed PER KEY
+// FAMILY rather than across every key at once (18an).
+//
+// Without it, BlameScore sums the blames of every key in an epoch and the
+// resulting ban excludes a witness from keygen, signing AND reshare of EVERY
+// key. Once the EVM bridge holds keys, a witness with an EVM-only fault is
+// blamed in every EVM session, can cross the ban threshold, and is then removed
+// from the BTC vault's committee too -- though its BTC shares are perfectly
+// good. The reverse holds as well.
+//
+// Gated because it changes a TSS party-list input: two nodes disagreeing about
+// who is banned build different party lists and the session fails on an SSID
+// mismatch.
+//
+// Pinned to 0.14.0, NOT the 0.13.0 EVM line it was first written against, and
+// this is the sharper of the pair: unlike the key allowlist it has no config
+// escape, so nothing makes it inert on a network whose floor is at or above its
+// line. The testnet is AT 0.13 (epoch 1500, develop head 3b4c95f6), so on 0.13
+// the first node to take this build would score bans per family while its peers
+// still scored them globally -- exactly the SSID mismatch above. 0.14 restores
+// the coordination window on both chains.
+func TssPerKeyFamilyBanActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
 // PeerIdPoPActive reports whether a witness announcement that carries a peer_id
 // must prove possession of that peer's libp2p key (lib/peerpop) to be stored (B1).
 // Without it any account could announce another member's peer id and make TSS
@@ -798,6 +842,89 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 	return Version0_11_0Active(active)
 }
 
+// V0_13_0 is the EVM bridge line: the key-custody rules extended to the EVM
+// bridge's vault key (C1, C2) and the keygen-once rule (TSS-KG-1). A new line
+// because the TSS-PARTY batch ships 0.12.0 first, without the EVM bridge; a
+// behaviour tied to an active line would switch per node during a rolling
+// upgrade. Binaries announce it from this batch on (version.go
+// currentConsensus); every rule on it is inert until the chain floor reaches it.
+var V0_13_0 = Version{Major: 0, Consensus: 13, NonConsensus: 0}
+
+// Version0_13_0Active reports whether the 0.13.0 line is in force given the
+// chain-active consensus version.
+func Version0_13_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_13_0)
+}
+
+// EvmVaultCustodyActive reports whether the EVM bridge's vault key (the
+// "primary" TSS key of each OracleParams.EvmBridgeContracts contract, from its
+// EvmBridgeFromHeight) gets the
+// key-custody rules of the active BTC vault key: the holders named by its
+// newest keygen/reshare commitment stay readiness/signing-eligible after leaving
+// the election (C1, as ActiveKeyHoldersBoundActive), and while the key exists
+// those holders, the current committee and every electable or recently active
+// witness cannot unstake their bond (C2, as POA-1). Resolve `active` at the
+// decision height.
+func EvmVaultCustodyActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// EvmVaultRotationActive (0.13.0, A01): the EVM bridge's vault rolls keys like
+// the BTC vault. Each EVM bridge contract's vault registry ("v", the BTC layout,
+// keys "primary"/"primaryv<N>") drives the same rules as the BTC registry: a
+// superseded generation is not reshared and signs only sweeps that pay the
+// active generation (output scoping), the parties of every keygen/reshare of a
+// funded generation keep their bonds locked (POA-1), and a pending
+// generation's check signature is enqueued and marked (BRK-2). Resolve `active`
+// at the decision height.
+func EvmVaultRotationActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// BtcSolvencyWatchActive (0.13.0, N4): witnesses check that every confirmed,
+// unreserved UTXO the BTC mapping contract has registered is still unspent on
+// their own bitcoind and vote "vsc.btc_solvency" when they see otherwise; 2/3
+// of the election's weight voting insolvent at a checkpoint halts BTC vault
+// keysigns (BtcSolvencyHalted) until 2/3 vote solvent, as THORChain's
+// solvency checker halts a chain. Below the line the vote op is ignored and the
+// flag is never set. Resolve `active` from the version active at the block
+// being processed.
+func BtcSolvencyWatchActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// StableSwapActive (0.13.0): a pool system-config lists in StablePools prices
+// its swaps on the StableSwap invariant (two assets, Curve's integer form)
+// instead of the constant product, with the slip fee measured on that curve.
+// Every other pool is unchanged. Below the line a listed pool's swap is
+// refused: its contract only accepts the stable curve. Resolve `active` at the
+// swap's block.
+func StableSwapActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// BigSwapAmountsActive (0.13.0): system.pendulum_apply_swap_fees reads the
+// swap amounts and reserves as big integers and answers in them (SP-0d).
+// Before it they had to fit int64, so a pool of an 18-decimal asset (ETH in
+// wei) refused every swap once a reserve passed ~9.22 of it. The node-share
+// HBD credit is still an int64 ledger amount. Resolve `active` at the swap's
+// block.
+func BigSwapAmountsActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
+// KeygenOnceActive (0.13.0): a keygen commitment for a key that an earlier
+// keygen already activated is neither stored nor applied (TSS-KG-1), and a
+// node signs and reshares with the share of the keygen the chain activated.
+// Keygen re-runs while a key is still "created", so several keygens can
+// succeed before the first commitment lands; storing the later rows let a
+// later keygen's shares take over a key whose on-chain pubkey is the first's,
+// which can then never sign. Resolve `active` at the commitment's block (A)
+// and at the session height (B).
+func KeygenOnceActive(active Version) bool {
+	return Version0_13_0Active(active)
+}
+
 // (OneBlockPerSlotActive removed: re-applying a produce_block is consensus-safe
 // without it. A same-CID re-post in a FRESH Hive envelope is in fact admitted by
 // ValidateDetailed within the slot window - only a byte-identical Hive tx is
@@ -813,3 +940,187 @@ func ActiveKeyHoldersBoundActive(active Version) bool {
 // never demonstrated to cost a slot; if a devnet A/B ever demonstrates it, re-add a
 // 0.11-gated skip here keyed on the stored header's BlockContent (same CID) with a
 // different Hive tx Id, so own-block restart-reprocess still runs.)
+
+// V0_14_0 is the version line of THIS batch: the settlement-attestation fix
+// (REWARD-ATTEST-1, SettlementAttestationQuorumActive), the TSS key allowlist
+// (18j, TssKeyAllowlistActive) and the per-key-family ban score (18an,
+// TssPerKeyFamilyBanActive).
+//
+// A new line rather than an addition to 0.13.0, and not because 0.13 *may* be
+// adopted somewhere: the testnet is ALREADY RUNNING IT — epoch 1500, develop
+// head 3b4c95f6, active_consensus_line 0.13. Amending a line a chain has
+// activated makes a node replaying that history diverge from the chain it
+// joins, and leaves a newly added rule with no rollout window at all: the first
+// node to take the build enforces it while its peers do not. 0.13 is therefore
+// frozen as the EVM bridge line exactly as the testnet has been running it, and
+// everything this batch adds lands here instead. 18j and 18an were written
+// against 0.13 before that activation and were moved here for the same reason.
+//
+// Mainnet, active on 0.12, raises its floor once and takes 0.13 and 0.14
+// together. That bundling is not avoidable — floors are monotone and no unused
+// line is left below 0.13 — but 0.13 is not unproven code: it has carried
+// testnet chain history since epoch 1500. The 0.13 rules a mainnet rise would
+// also switch on are BtcSolvencyWatchActive, StableSwapActive,
+// BigSwapAmountsActive and KeygenOnceActive; the EVM-vault ones need
+// OracleParams.EvmBridgeContracts and StableSwapActive needs a pool in
+// StablePools, so those stay inert there.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// every rule on it is inert until the chain floor reaches it.
+var V0_14_0 = Version{Major: 0, Consensus: 14, NonConsensus: 0}
+
+// Version0_14_0Active reports whether the 0.14.0 line is in force given the
+// chain-active consensus version.
+func Version0_14_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_14_0)
+}
+
+// SettlementAttestationQuorumActive (0.14.0, REWARD-ATTEST-1) reports whether
+// pendulum reward-attestation scoring skips a block whose recorded signers
+// already met the bar the leader waits for (dids.LeaderSigsComplete: 90% of the
+// folded committee weight, and more than 2/3 of the election weight).
+//
+// Below the line every committee member is expected to sign every block. The
+// leader never waits for every member: on the 16-seat mainnet committee it
+// stops at 14, so two seats are absent from every healthy block and which two
+// is a matter of network latency. The result was live on mainnet — in epoch
+// 2221 all 16 seats were docked, 3% to 66%, none of them at zero — so honest
+// witnesses were paying for signatures nobody waited for. Above the line only a
+// block broadcast BELOW the bar (the leader's collection window timed out)
+// scores its absentees.
+//
+// Resolve `active` at the TICK height, the same height buildTickInputs resolves
+// the committee at: the election proposer, every signer and every node
+// re-deriving the settlement later read the same election and the same gate
+// there, so the re-derived record byte-matches.
+func SettlementAttestationQuorumActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
+// SelfInjectionTrustedSelfActive (0.14.0, SELF-INJECTION-1): after decoding any
+// transaction/op, the engine rebuilds its TxSelf (TxId, BlockHeight, Index,
+// RequiredAuths, ...) from the trusted block/envelope context, so an
+// attacker-controlled payload "Self" key can no longer overwrite the
+// Hive-enforced signer and spoof the auth check. Below the line the legacy
+// decode is preserved verbatim (the payload "Self" is honored exactly as a
+// pre-0.14 node did), so a replay of pre-activation history is byte-identical.
+// Resolve `active` at the op's own block height.
+func SelfInjectionTrustedSelfActive(active Version) bool {
+	return Version0_14_0Active(active)
+}
+
+// V0_15_0 is the version line of what a contract call is charged: the storage
+// write price (WriteIoPriceCutActive) and the charge of a call that runs out
+// (RcChargeCappedAtLimitActive). A new line rather than an addition to 0.14.0,
+// because mainnet has run 0.14.0 since epoch 2245: changing what 0.14.0 charges
+// would make a node replaying that history charge a different RC than the chain
+// did, and split a fleet mid-upgrade. The testnet, active on 0.13, raises its
+// floor once and takes 0.14 and 0.15 together.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// the rules on it are inert until the chain floor reaches it.
+var V0_15_0 = Version{Major: 0, Consensus: 15, NonConsensus: 0}
+
+// Version0_15_0Active reports whether the 0.15.0 line is in force given the
+// chain-active consensus version.
+func Version0_15_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_15_0)
+}
+
+// WriteIoPriceCutActive (0.15.0) reports whether a contract's new stored bytes
+// are charged the 0.15.0 price (params.WRITE_IO_GAS_RC_COST_V0_15) instead of
+// the original 19 RC a byte.
+//
+// The price decides how much RC a call uses, and so whether it finishes inside
+// its rc_limit and how much of the payer's RC is frozen afterwards: two nodes
+// charging different prices end up with different results for the same call.
+// Below the line every node charges the original price, so settled history
+// re-executes unchanged. Resolve `active` at the transaction's own block
+// height; the value is read through params.WriteIoGasRcCost.
+func WriteIoPriceCutActive(active Version) bool {
+	return Version0_15_0Active(active)
+}
+
+// RcChargeCappedAtLimitActive (0.15.0) reports whether a contract call is never
+// charged more RC than it was given to spend: min(the payer's available RC,
+// the call's rc_limit).
+//
+// A storage operation is charged after it ran, so the one that takes a call
+// past its budget is billed in full. Below this line a call that ran out was
+// charged that whole amount: with rc_limit 1,000, one 1 MB log cost the payer
+// 1,000,036 RC. From 0.15.0 the charge stops at the budget, which is what
+// rc_limit says it is. Below the line the old charge is
+// kept, so settled history re-executes to the RC it froze. Resolve `active` at
+// the transaction's own block height.
+func RcChargeCappedAtLimitActive(active Version) bool {
+	return Version0_15_0Active(active)
+}
+
+// V0_16_0 is the version line of the consensus bounds on what a block hands to
+// other nodes and on what a failed or nested call can start: the slot object
+// size bounds (SlotObjectSizeBoundActive), the wallet-transaction cap per block
+// (BlockL2TxCapActive), a failed transaction publishing no results
+// (FailedTxPublishesNoResultsActive) and the nested TSS key allowlist
+// (TssKeyAllowlistNestedActive). A line of its own, after 0.15.0, so a network
+// that already runs 0.15.0 switches these on at one agreed height when its
+// floor reaches 0.16.0; a network below 0.15 raises its floor once and takes
+// both lines together.
+//
+// Binaries announce this line from this batch on (version.go currentConsensus);
+// the rules on it are inert until the chain floor reaches it.
+var V0_16_0 = Version{Major: 0, Consensus: 16, NonConsensus: 0}
+
+// Version0_16_0Active reports whether the 0.16.0 line is in force given the
+// chain-active consensus version.
+func Version0_16_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_16_0)
+}
+
+// SlotObjectSizeBoundActive (0.16.0) reports whether the objects a block hands
+// to other nodes are kept well under the size a node can fetch from a peer in
+// one message (go-libp2p's limit):
+//   - a contract's output for a block (its calls' return values, error
+//     messages and logs) at most params.MAX_CONTRACT_OUTPUT_BYTES: a call that
+//     would take it over fails, and a failed call's error message is cut to
+//     what still fits;
+//   - the block's ledger record (oplog) at most params.MAX_BLOCK_OPLOG_BYTES;
+//   - one stored contract value at most params.MAX_STATE_VALUE_BYTES and one
+//     key at most params.MAX_STATE_KEY_BYTES (a full directory shard holds 256
+//     keys).
+//
+// A node that did not build a block fetches these objects from its peers, so
+// keeping each within the message limit keeps every node able to fetch it.
+// Each bound changes which calls succeed, so it is consensus. Resolve `active`
+// at the transaction's own block height.
+func SlotObjectSizeBoundActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// BlockL2TxCapActive (0.16.0) caps the wallet (L2) transactions one block
+// carries at params.MAX_BLOCK_L2_TXS: a producer takes no more, and a signer
+// refuses a block with more. Each transaction adds a fixed entry to the block
+// and to its ledger record, so the cap keeps those objects within the fetch
+// limit. Resolve `active` at the block's slot height.
+func BlockL2TxCapActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// FailedTxPublishesNoResultsActive (0.16.0) reports whether a transaction that
+// fails publishes none of its calls' successful results, and whether applying
+// a block starts no TSS operation from a failed result. The invariant: a
+// reverted transaction's side effects (state, ledger, and the output its calls
+// produced) are all dropped together, so none of them outlives the revert.
+// Below the line the prior behaviour is kept, so settled history re-executes
+// identically. Resolve `active` at the transaction's block height
+// (ExecuteBatch) and at the block's height (ingesting its outputs).
+func FailedTxPublishesNoResultsActive(active Version) bool {
+	return Version0_16_0Active(active)
+}
+
+// TssKeyAllowlistNestedActive (0.16.0) reports whether a contract reached
+// through contracts.call is held to the TSS key-creation allowlist of the
+// transaction that called it, the same allowlist the top-level call is held
+// to. Below this line the nested context carried no allowlist.
+func TssKeyAllowlistNestedActive(active Version) bool {
+	return Version0_16_0Active(active)
+}

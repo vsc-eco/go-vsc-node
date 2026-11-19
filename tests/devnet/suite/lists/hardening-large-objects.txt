@@ -1,0 +1,6 @@
+# What a network must keep whatever a contract stores (independent of the
+# write price), from consensus 0.16.0: the objects a block hands to other nodes
+# stay within the size one peer message carries, so every node can fetch them.
+TestHardening_OfflineNodeCatchesUpAfterALargeSlotOutput
+TestHardening_LargeOutputReachesOtherNodes
+TestHardening_SizeBoundHolds

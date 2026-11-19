@@ -38,6 +38,12 @@ type Devnet struct {
 
 	// Block pacemaker (Config.FastBlocks); see pacemaker.go.
 	pm *pacemaker
+
+	// includedPatience (0 = off): how long vstatusTx keeps waiting past its
+	// 90 s for a call still INCLUDED (on Hive, no L2 block has run it yet:
+	// L2 cannot produce while a third of the weight is out). The BOTH suite
+	// sets it; its faults halt L2 for minutes by design.
+	includedPatience time.Duration
 	// pmBlockLog is the pacemaker's per-block log (DEVNET_LOG_DIR), closed after it halts.
 	pmBlockLog *os.File
 	// netFaults holds the pacemaker at real cadence while a network fault is in
@@ -625,7 +631,9 @@ RUN . /home/app/.wasmedge/env && \
     go build -buildvcs=false -ldflags "-X vsc-node/modules/announcements.GitCommit=$(git rev-parse HEAD 2>/dev/null || echo devnet)" -o magid vsc-node/cmd/vsc-node
 
 FROM rockylinux:9.3-minimal
-RUN microdnf install -y iptables && microdnf clean all
+# Rocky 9.3 is EOL: its mirrorlist returns no mirrors and microdnf hangs
+# forever on "Downloading metadata". Point the repos at the vault.
+RUN sed -i -e 's|^mirrorlist=|#mirrorlist=|' -e 's|^#baseurl=http://dl.rockylinux.org/$contentdir/$releasever/|baseurl=https://dl.rockylinux.org/vault/rocky/9.3/|' /etc/yum.repos.d/*.repo && microdnf install -y iptables && microdnf clean all
 RUN useradd -m app
 RUN mkdir -p /data/mapping-bot /data/devnet && chown app:app /data/mapping-bot /data/devnet
 USER app

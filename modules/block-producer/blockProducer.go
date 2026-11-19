@@ -25,7 +25,8 @@ import (
 	"vsc-node/lib/vsclog"
 	a "vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
-	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
+	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	"vsc-node/modules/db/vsc/contracts"
 	"vsc-node/modules/db/vsc/elections"
@@ -91,6 +92,10 @@ type BlockProducer struct {
 	// only: re-derived every start, and BlockTick is synchronous so no lock is
 	// needed.
 	startupHead uint64
+
+	// strikes: pool transactions this node's unsigned proposals carried
+	// (LOAD-GOSSIP-1, proposal_strikes.go).
+	strikes proposalStrikes
 
 	// PendingGovOps is the witness-local pool that governance (the gateway
 	// multisig via an L1 vsc.safety_slash_reverse op) / RPC
@@ -163,6 +168,38 @@ func (bp *BlockProducer) liveProductionAllowed(bh uint64, headHeight uint64) boo
 		bp.startupHead = headHeight
 	}
 	return bp.startupHead != 0 && bh > bp.startupHead
+}
+
+// noteUnsignedProposal gives the pool transactions of this node's proposal for
+// slotHeight a strike (LOAD-GOSSIP-1) when the proposal was not signed while
+// the chain is producing.
+func (bp *BlockProducer) noteUnsignedProposal(slotHeight uint64, txIds []string) {
+	if len(txIds) == 0 || !bp.chainProducedRecently(slotHeight) {
+		return
+	}
+	bp.strikes.unsigned(txIds)
+	vlog.Warn("this node's proposal was not signed: its pool transactions get a strike (peers may not have them)",
+		"slotHeight", slotHeight, "transactions", len(txIds))
+}
+
+// chainProducedRecently reports whether a block was produced within
+// proposalStrikeRecentSlots slots before slotHeight: others' proposals are
+// being signed, so an unsigned one of ours says something about what it
+// carried. Unknown counts as no.
+func (bp *BlockProducer) chainProducedRecently(slotHeight uint64) bool {
+	if bp.VscBlocks == nil {
+		return false
+	}
+	prev, err := bp.VscBlocks.GetBlockByHeight(slotHeight)
+	if err != nil || prev == nil || prev.SlotHeight < 0 {
+		return false
+	}
+	return slotWithin(uint64(prev.SlotHeight), slotHeight, proposalStrikeRecentSlots*common.CONSENSUS_SPECS.SlotLength)
+}
+
+// slotWithin reports whether last is at most span below slot (and not above).
+func slotWithin(last, slot, span uint64) bool {
+	return last <= slot && slot-last <= span
 }
 
 type generateBlockParams struct {
@@ -342,6 +379,13 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	//Get transactions here!
 
 	prefilteredTxs, _ := bp.TxDb.FindUnconfirmedTransactions(slotHeight)
+	// LOAD-GOSSIP-1: leave out what this node's last proposals carried without
+	// getting signed (proposal_strikes.go).
+	prefilteredTxs, leftOut := bp.strikes.leaveOut(prefilteredTxs)
+	if leftOut > 0 {
+		vlog.Warn("leaving out pool transactions that this node's proposals carried without getting them signed; each is proposed again after its wait",
+			"count", leftOut, "slotHeight", slotHeight)
+	}
 
 	vlog.Debug("generateTransactions", "prefilteredCount", len(prefilteredTxs), "slotHeight", slotHeight)
 	txRecords := make([]transactions.TransactionRecord, 0)
@@ -415,8 +459,18 @@ func (bp *BlockProducer) generateTransactions(slotHeight uint64) []vscBlocks.Vsc
 	})
 	rcSession := bp.rcSystem.NewSession(ledgerSession)
 
+	// From consensus 0.16.0 a block carries at most params.MAX_BLOCK_L2_TXS
+	// wallet transactions; the rest wait for the next block.
+	txCap := 0
+	if consensusversion.BlockL2TxCapActive(bp.StateEngine.ActiveConsensusVersion(slotHeight)) {
+		txCap = params.MAX_BLOCK_L2_TXS
+	}
 	sequencedTxs := make([]transactions.TransactionRecord, 0)
 	for _, preRecord := range preOrder {
+		if txCap > 0 && len(sequencedTxs) >= txCap {
+			vlog.Debug("block transaction cap reached", "cap", txCap, "left_in_pool", len(preOrder)-len(sequencedTxs))
+			break
+		}
 		keyId := transactionpool.HashKeyAuths(preRecord.RequiredAuths)
 		payer := preRecord.RequiredAuths[0]
 
@@ -580,13 +634,16 @@ func (bp *BlockProducer) ProduceBlock(bh uint64) {
 
 	if err != nil {
 		vlog.Error("Error waiting for signatures", "err", err)
+		bp.noteUnsignedProposal(bh, transactions)
 		return
 	}
 
 	if !(signedWeight > (electionResult.TotalWeight * 2 / 3)) {
 		vlog.Warn("not enough signatures", "signedW", signedWeight, "totalW", electionResult.TotalWeight*2/3)
+		bp.noteUnsignedProposal(bh, transactions)
 		return
 	}
+	bp.strikes.signed(transactions)
 
 	finalCircuit, _ := circuit.Finalize()
 
@@ -714,6 +771,15 @@ func (bp *BlockProducer) HandleBlockMsg(msg p2pMessage) (string, error) {
 			return "", errors.New("invalid transaction entry type")
 		}
 		txStrs = append(txStrs, s)
+	}
+
+	// From consensus 0.16.0 a block may carry at most params.MAX_BLOCK_L2_TXS
+	// wallet transactions: every one adds an entry to the block and to its
+	// ledger record, and a block too big to fetch stops every node that did
+	// not sign it. An honest producer takes no more
+	// (generateTransactions); a signer does not sign a block that has more.
+	if len(txStrs) > params.MAX_BLOCK_L2_TXS && consensusversion.BlockL2TxCapActive(bp.StateEngine.ActiveConsensusVersion(msg.SlotHeight)) {
+		return "", fmt.Errorf("block carries %d wallet transactions, over the %d limit", len(txStrs), params.MAX_BLOCK_L2_TXS)
 	}
 
 	blockTxs := []vscBlocks.VscBlockTx{}
@@ -941,15 +1007,14 @@ func (bp *BlockProducer) waitForSigs(ctx context.Context, election *elections.El
 }
 
 // leaderSigsComplete reports whether the leader can stop collecting block
-// signatures: 90% of the (duplicate-key folded) weight has signed, AND the
-// signed weight clears the strict 2/3 bar the block must pass (the check after
-// waitForSigs, and TxProposeBlock's validation). For a total weight of 3 or
-// less, 90% rounds down to 2/3 or below, so stopping there alone left a
-// 3-member committee (MinMembers on testnet/devnet, and every POA flat-weight
-// committee of three) unable to broadcast any block even with every member
-// online (L2-STALL-1). A leader-local decision, not a replayed rule.
+// signatures. The rule itself now lives in dids.LeaderSigsComplete, because it
+// is no longer leader-local: pendulum settlement replays the same bar to decide
+// whether a block's absentees are evidence of anything (REWARD-ATTEST-1), so
+// the leader and the scorer have to read it from one place or they drift and
+// settlement stops matching the blocks it scores. Kept as a named wrapper so
+// the stop condition still reads by intent at its call site in waitForSigs.
 func leaderSigsComplete(signed, foldedTotal, electionTotal uint64) bool {
-	return signed >= foldedTotal*9/10 && signed > electionTotal*2/3
+	return dids.LeaderSigsComplete(signed, foldedTotal, electionTotal)
 }
 
 func (bp *BlockProducer) canProduce(height uint64) bool {
@@ -1138,6 +1203,9 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 			cacheKeys = append(cacheKeys, key)
 		}
 		sort.Strings(cacheKeys)
+		setKeys := make([]string, 0, len(cacheKeys))
+		setCids := make([]cid.Cid, 0, len(cacheKeys))
+		values := make([][]byte, 0, len(cacheKeys))
 		for _, key := range cacheKeys {
 			value := output.Cache[key]
 			if output.Deletions[key] {
@@ -1148,14 +1216,21 @@ func (bp *BlockProducer) MakeOutputs(session *datalayer.Session) []vscBlocks.Vsc
 				continue
 			}
 			session.Put(value, cidz)
-
-			//Required to prevent self blocking due to datalayer accessing the DS.
-			//Temp fix, long term create a "databin" session that uses the underlying datalayer session
-			bp.Datalayer.PutRaw(value, common_types.PutRawOptions{
-				Codec: multicodec.Raw,
-			})
-
-			if err := db.Set(key, cidz); err != nil {
+			setKeys = append(setKeys, key)
+			setCids = append(setCids, cidz)
+			values = append(values, value)
+		}
+		// Every value in one write, before the directory reads them back (Set
+		// loads each value's node). One PutRaw per value was one transaction
+		// each, and a contract that wrote many values held the slot for one
+		// disk flush per value. The same blocks either way.
+		//Required to prevent self blocking due to datalayer accessing the DS.
+		//Temp fix, long term create a "databin" session that uses the underlying datalayer session
+		if _, err := bp.Datalayer.PutRawMany(values); err != nil {
+			vlog.Error("MakeOutputs PutRawMany ERROR", "contract", contractId, "values", len(values), "err", err)
+		}
+		for i, key := range setKeys {
+			if err := db.Set(key, setCids[i]); err != nil {
 				vlog.Error("MakeOutputs SET ERROR", "key", key, "err", err)
 			}
 		}

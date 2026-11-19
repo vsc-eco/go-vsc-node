@@ -17,6 +17,7 @@ import (
 	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/delegationmode"
 	"vsc-node/modules/common/params"
+	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
 	contract_session "vsc-node/modules/contract/session"
 	wasm_runtime_ipc "vsc-node/modules/wasm/runtime_ipc"
@@ -169,35 +170,8 @@ func (t TxVscCallContract) ExecuteTx(
 		Intents:              t.Intents,
 		PendulumOracle:       se.PendulumOracleEnv(),
 	}, int64(gas), rcSystem.FreeRcRemaining(rcSession, rcPayer, t.Self.BlockHeight), gasCycles, ledgerSession, callSession, 0,
-		contract_execution_context.WithPendulumApplier(se.PendulumApplier()),
-		// Gate try/catch inter-contract calls on the chain-active consensus version
-		// (deterministic, height-addressable) so the new semantics activate only at
-		// a coordinated version floor.
-		contract_execution_context.WithTryCatch(
-			activeVersion.MeetsConsensusMin(consensusversion.TryCatchICCVersion),
-		),
-		// BRK-2 (D1): gate the TssGetKey SignatureVerified 4th field on
-		// vault-rotation-v2 so the contract-execution output FORMAT changes only at a
-		// coordinated activation (fork-safe rolling deploy; byte-identical when off).
-		// This is the one v2 gate whose result feeds HASHED contract state, so the
-		// conditional-field-emission discipline matters here: when off, the field is
-		// ABSENT rather than present-and-empty.
-		//
-		// se is the StateEngine interface here, so the config is read through
-		// SystemConfig() rather than the concrete sconf field.
-		contract_execution_context.WithVaultRotationV2(
-			se.SystemConfig() != nil &&
-				VaultRotationV2InForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
-		),
-		// 0.11.0: TssGetKey reports whether a key has been reshared since its
-		// keygen, gated the same way so the output format changes at one height.
-		contract_execution_context.WithKeyReshared(
-			se.SystemConfig() != nil &&
-				KeyCustodyInForce(se.SystemConfig().ConsensusParams(), t.Self.BlockHeight, activeVersion),
-		),
-		// 0.10.0 SP1 work-based pricing, gated like try/catch so it starts at a
-		// coordinated height and history re-executes unchanged.
-		contract_execution_context.WithSp1WorkPricing(consensusversion.Sp1WorkPricingActive(activeVersion)),
+		append([]contract_execution_context.Option{contract_execution_context.WithPendulumApplier(se.PendulumApplier())},
+			ContractCallGates(se.SystemConfig(), t.Self.BlockHeight, activeVersion)...)...,
 	)
 
 	validUtf8 := utf8.Valid(t.Payload)
@@ -220,13 +194,9 @@ func (t TxVscCallContract) ExecuteTx(
 
 	res := w.Execute(wasmCtx, gasCycles, t.Action, payload, info.Runtime)
 
-	// Integer ceil-divide: (gas + denom − 1) / denom. uint64 stays well below
-	// overflow for any realistic gas value (denom = 100_000). Floored at the
-	// minimum 100 RC charge.
-	rcUsed := int64((uint64(res.Gas) + params.CYCLE_GAS_PER_RC - 1) / params.CYCLE_GAS_PER_RC)
-	if rcUsed < 100 {
-		rcUsed = 100
-	}
+	// What the call is charged: the gas it used, in whole RC, at least 100, and
+	// from 0.15.0 never more than `gas`, the RC it was given to spend.
+	rcUsed := ContractCallRcCharge(res.Gas, gas, activeVersion)
 
 	if res.Error != nil {
 		return TxResult{
@@ -1405,13 +1375,13 @@ func (tx *OffchainTransaction) Cid() cid.Cid {
 // at the anchored height (same height used for execution in ExecuteBatch and by
 // the caller) so the indexed op types match what actually executes (e.g. F14
 // unstake_hbd direction).
-func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf) ([]VSCTransaction, error) {
+func (tx *OffchainTransaction) Ingest(se *StateEngine, vscBlockTxId string, txSelf TxSelf, trustedSelfActive bool) ([]VSCTransaction, error) {
 	anchoredHeight := txSelf.BlockHeight
 	anchoredIndex := int64(txSelf.Index)
 	// anchoredOpIdx := int64(txSelf.OpIndex)
 
 	// data := make(map[string]interface{})
-	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight))
+	txs, resolveErr := tx.ToTransaction(se.ActiveConsensusVersion(anchoredHeight), trustedSelfActive)
 	if txs == nil {
 		txs = make([]VSCTransaction, 0)
 	}
@@ -1474,9 +1444,14 @@ func (tx *OffchainTransaction) TxSelf() TxSelf {
 // Determinism: invalidity is a pure function of the content-addressed tx bytes
 // (op.Type string match + CBOR decodability), so every node either resolves the
 // identical op list or fails the identical tx, producing the same block CID.
-func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error) {
+func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Version, trustedSelfActive bool) ([]VSCTransaction, error) {
 	self := tx.TxSelf()
 	self.RequiredAuths = tx.Headers.RequiredAuths
+	// SELF-INJECTION-1: pristine snapshot of the trusted base Self before the op
+	// loop. Each op is decoded via DecodeTxCbor, which (below the gate) may inject
+	// a payload "Self"; above the gate we restore each op's Self from this clone.
+	// tx.Self was already restored to the trusted anchor upstream (AsTransaction).
+	selfPristine := cloneTxSelf(self)
 
 	output := make([]VSCTransaction, 0)
 	for idx, op := range tx.Tx {
@@ -1491,6 +1466,10 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &callTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				callTx.Self = selfPristine
+				callTx.Self.OpIndex = idx
+			} // SELF-INJECTION-1
 
 			vtx = callTx
 		case "transfer":
@@ -1501,6 +1480,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &transferTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				transferTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = transferTx
 		case "withdraw":
@@ -1511,6 +1493,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &withdrawTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				withdrawTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &withdrawTx
 		case "stake_hbd":
@@ -1523,6 +1508,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				stakeTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &stakeTx
 		case "unstake_hbd":
@@ -1547,6 +1535,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 				if err := transactionpool.DecodeTxCbor(op, &unstakeTx); err != nil {
 					return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 				}
+				if trustedSelfActive {
+					unstakeTx.Self = selfPristine
+				} // SELF-INJECTION-1
 
 				vtx = &unstakeTx
 				break
@@ -1560,6 +1551,9 @@ func (tx *OffchainTransaction) ToTransaction(activeVersion consensusversion.Vers
 			if err := transactionpool.DecodeTxCbor(op, &stakeTx); err != nil {
 				return nil, fmt.Errorf("op %d (%q): %w", idx, op.Type, err)
 			}
+			if trustedSelfActive {
+				stakeTx.Self = selfPristine
+			} // SELF-INJECTION-1
 
 			vtx = &stakeTx
 		default:
@@ -1607,5 +1601,22 @@ type VscTxContainer interface {
 	// activeVersion is the chain-active consensus version at the tx's anchored
 	// height (StateEngine.ActiveConsensusVersion), threaded in so version-gated op
 	// builds (e.g. F14 unstake_hbd direction) resolve deterministically on-chain.
-	ToTransaction(activeVersion consensusversion.Version) ([]VSCTransaction, error)
+	// trustedSelfActive (SELF-INJECTION-1) is resolved from the TRUSTED L1 landing
+	// height, not the producer-supplied block range, and gates the per-op Self
+	// rebuild; it is separate from activeVersion so the fix cannot be dodged for a
+	// window at the 0.14 boundary by a low Br[1].
+	ToTransaction(activeVersion consensusversion.Version, trustedSelfActive bool) ([]VSCTransaction, error)
+}
+
+// tssKeyAllowlistFor resolves the TSS key-creation allowlist for a transaction
+// (KEY-SPAM-1 / 18j), or nil when the restriction is not yet in force.
+//
+// Returning nil before activation is what keeps the change fork-safe: an empty
+// allowlist means unrestricted in TssCreateKey, so a node running this binary
+// before 0.13.0 accepts exactly the same create_key calls as one that is not.
+func tssKeyAllowlistFor(sconf systemconfig.SystemConfig, blockHeight uint64, activeVersion consensusversion.Version) []string {
+	if sconf == nil || !consensusversion.TssKeyAllowlistActive(activeVersion) {
+		return nil
+	}
+	return sconf.TssKeyContractAllowlistAt(blockHeight)
 }

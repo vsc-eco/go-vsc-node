@@ -1,3 +1,25 @@
+# Local runtime data (bind-mounted by compose; never needed to build)
 .devnet
 .btc-data
 data
+
+# Local build outputs. `build/` holds ~320 MB of host-built binaries and the
+# root binaries are ~70 MB each; copying them into the build context bloats the
+# multi-arch build and can exhaust the builder's disk.
+build
+vsc-node
+contract-deployer
+feed-publisher
+evm-mapping-bot
+test-results
+logs
+
+# Editor/agent state and local secrets
+.claude
+.vscode
+.DS_Store
+.env
+.env.*
+
+# Node deps for the optional Ledger signer
+node_modules

@@ -120,6 +120,21 @@ func (b *Bot) FetchAbandonedSweep(ctx context.Context, txId string) (bool, error
 	return len(st[key]) > 0, nil
 }
 
+// FetchRefundable reads the contract's refund record for a Bitcoin address
+// ("rf-<address>", decimal sats). Absent or unreadable as a number is 0.
+func (b *Bot) FetchRefundable(ctx context.Context, btcAddr string) (int64, error) {
+	key := contractinterface.RefundablePrefix + btcAddr
+	st, err := b.fetchStateHex(ctx, []string{key})
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(string(st[key]), 10, 64)
+	if err != nil || n < 0 {
+		return 0, nil
+	}
+	return n, nil
+}
+
 // FetchVaultRegistry reads the vault-generation registry ("v"). An absent or
 // empty registry is NOT an error: a non-vault mapping contract (dash/ltc/...) and
 // a pre-rotation BTC deploy both legitimately have none, and the rotation driver

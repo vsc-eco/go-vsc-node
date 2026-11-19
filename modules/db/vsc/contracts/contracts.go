@@ -355,7 +355,10 @@ func (ch *contractState) GetLastOutput(contractId string, height uint64) (Contra
 // swallowing it (see the interface doc): the #11 bond-lock consensus path fail-STOPS
 // on a transient error and treats only mongo.ErrNoDocuments as deterministic absence.
 // Kept as a separate function (not a refactor of GetLastOutput) so the existing
-// callers' exact swallow-FindOne / surface-decode behaviour is untouched.
+// callers' exact swallow-FindOne / surface-decode behaviour is untouched. A
+// decode error is wrapped in db.ErrDecode, as GetLastOutput wraps it, so a
+// caller can tell a stored output that does not decode (the same document on
+// every node) from a failed query (this node's database).
 func (ch *contractState) GetLastOutputStrict(contractId string, height uint64) (ContractOutput, error) {
 	opts := options.FindOne().SetSort(bson.M{"block_height": -1})
 	findResult := ch.FindOne(context.Background(), bson.M{"contract_id": contractId, "block_height": bson.M{
@@ -367,8 +370,10 @@ func (ch *contractState) GetLastOutputStrict(contractId string, height uint64) (
 	contractOutput := ContractOutput{
 		Metadata: ContractMetadata{},
 	}
-	err := findResult.Decode(&contractOutput)
-	return contractOutput, err
+	if err := findResult.Decode(&contractOutput); err != nil {
+		return contractOutput, fmt.Errorf("%w: %w", db.ErrDecode, err)
+	}
+	return contractOutput, nil
 }
 
 func (ch *contractState) GetOutput(outputId string) *ContractOutput {

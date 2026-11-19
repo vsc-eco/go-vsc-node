@@ -120,10 +120,24 @@ func UnmarshalTxSpendsRegistry(data []byte) ([]string, error) {
 // runtime rejects non-alphanumeric key names). This is the KEY NAME only; the
 // full node keyId is "<contractId>-" + VaultKeyName(gen).
 func VaultKeyName(gen uint32) string {
+	return VaultKeyNameFor(BtcVaultKeyBase, gen)
+}
+
+// Key name bases of the rotating vaults: generation 0 is the base name,
+// generation N is base + "v" + N. The EVM bridge (A01) rotates its vault the
+// same way and writes the same registry layout under its own "v", with its
+// original key "primary" as generation 0.
+const (
+	BtcVaultKeyBase = "main"
+	EvmVaultKeyBase = "primary"
+)
+
+// VaultKeyNameFor is VaultKeyName for a vault whose generation 0 key is base.
+func VaultKeyNameFor(base string, gen uint32) string {
 	if gen == 0 {
-		return "main"
+		return base
 	}
-	return "main" + "v" + strconv.FormatUint(uint64(gen), 10)
+	return base + "v" + strconv.FormatUint(uint64(gen), 10)
 }
 
 // IsFundHoldingStatus mirrors contract/mapping/vault_lifecycle.go

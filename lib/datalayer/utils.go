@@ -1,10 +1,7 @@
 package datalayer
 
 import (
-	"vsc-node/modules/common/common_types"
-
 	"github.com/ipfs/go-cid"
-	"github.com/multiformats/go-multicodec"
 )
 
 type Session struct {
@@ -13,13 +10,16 @@ type Session struct {
 }
 
 func (s *Session) Commit() []cid.Cid {
-	out := make([]cid.Cid, 0)
+	out := make([]cid.Cid, 0, len(s.blocks))
+	values := make([][]byte, 0, len(s.blocks))
 	for _, block := range s.blocks {
-
-		s.da.PutRaw(block.bytes, common_types.PutRawOptions{
-			Codec: multicodec.Code(block.cid.Prefix().Codec),
-		})
+		values = append(values, block.bytes)
 		out = append(out, block.cid)
+	}
+	// One write for all of them; the same blocks as one PutRaw each. A failed
+	// batch is retried one block at a time inside PutRawMany.
+	if _, err := s.da.PutRawMany(values); err != nil {
+		log.Error("datalayer session: storing blocks failed", "blocks", len(values), "err", err)
 	}
 	return out
 }

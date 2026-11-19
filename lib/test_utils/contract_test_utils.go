@@ -11,6 +11,7 @@ import (
 	"vsc-node/modules/aggregate"
 	"vsc-node/modules/common"
 	"vsc-node/modules/common/common_types"
+	"vsc-node/modules/common/consensusversion"
 	"vsc-node/modules/common/params"
 	systemconfig "vsc-node/modules/common/system-config"
 	contract_execution_context "vsc-node/modules/contract/execution-context"
@@ -58,22 +59,57 @@ type ContractTest struct {
 	StateEngine   *stateEngine.StateEngine
 	DataLayer     *datalayer.DataLayer
 	Tss           TssState
+	// ElectionDb and ContractStateDb are the mocks the StateEngine and the
+	// CallSession read. A test that drives the node's own call paths
+	// (TxVscCallContract.ExecuteTx, the dry-run resolver) sets the chain-active
+	// consensus version through ElectionDb.ElectionsByHeight.
+	ElectionDb      *MockElectionDb
+	ContractStateDb *MockContractStateDb
 	// PendulumApplier is the swap-fee applier wired into every Call. It
 	// defaults to the StateEngine's production applier (which gates swaps on
 	// the FeedTracker being warm, so swaps return ErrSnapshotUnavailable in a
 	// fresh test). Use SetPendulumGeometry to inject deterministic geometry
 	// for manual swap-fee testing.
 	PendulumApplier wasm_context.PendulumApplier
+	// BigSwapAmountsActive: pendulum_apply_swap_fees takes big amounts
+	// (consensus 0.13.0). SetPendulumStablePools turns it on with the rest of
+	// the 0.13.0 chain.
+	BigSwapAmountsActive bool
 	// TryCatchActive gates ICCallOptions.Try in this harness. Defaults to true
 	// (contract tests exercise the feature as it will run once activated on the
 	// network); set false to test the pre-activation legacy trap behaviour.
 	TryCatchActive bool
+	// TssKeyAllowlist is the contracts that may create a TSS key, as the node
+	// passes it from consensus 0.13.0 (KEY-SPAM-1). nil = unrestricted.
+	TssKeyAllowlist []string
 	// VaultRotationV2 makes TssGetKey append the BRK-2 check-signature flag as
 	// the node does from 0.8.0; KeyReshared adds the 0.11.0 fifth field (whether
 	// the key has been reshared since its keygen). Both default to false, the
 	// legacy three-field output.
 	VaultRotationV2 bool
 	KeyReshared     bool
+	// IoWriteRcCost is the RC charged for each new stored byte of state. Zero
+	// (the default) is the original price, 19, so a suite that asserts RC keeps
+	// its numbers; set it to params.WRITE_IO_GAS_RC_COST_V0_15 to run as the
+	// node does from consensus 0.15.0.
+	IoWriteRcCost int
+	// RcChargeCapped stops a call's RC charge at what it was given to spend
+	// (min of the payer's RC and rc_limit), as the node does from consensus
+	// 0.15.0. False (the default) is the original charge: a call that runs out
+	// is billed the whole storage operation that took it past its limit.
+	RcChargeCapped bool
+	// StateSizeBound applies consensus 0.16.0's size bounds:
+	// a stored value over params.MAX_STATE_VALUE_BYTES or a key over
+	// params.MAX_STATE_KEY_BYTES fails the call, and so does a call whose
+	// return value and logs alone would take a contract's output for a block
+	// over params.MAX_CONTRACT_OUTPUT_BYTES (the check the dry run makes; the
+	// chain also counts the block's other calls). False (the default) is no
+	// bound, as before 0.16.0.
+	StateSizeBound bool
+	// TssKeyAllowlistNested holds contracts reached through contracts.call to
+	// TssKeyAllowlist as well, as the node does from consensus 0.16.0. False
+	// (the default) is the original: a nested call runs with no allowlist.
+	TssKeyAllowlistNested bool
 }
 
 // stubGeometryReader is a deterministic pendulumwasm.GeometryReader for manual
@@ -167,6 +203,8 @@ func NewContractTest() ContractTest {
 		RcDb:            &rc,
 		CallSession:     contract_session.NewCallSession(dl, &contractDb, &contractState, &tssKeys, &tssCommitments, 0, nil),
 		DataLayer:       dl,
+		ElectionDb:      &elections,
+		ContractStateDb: &contractState,
 		StateEngine:     se,
 		PendulumApplier: se.PendulumApplier(),
 		TryCatchActive:  true,
@@ -206,6 +244,34 @@ func (ct *ContractTest) IncrementBlocks(count uint64) {
 		// ct.LedgerSession = ct.StateEngine.LedgerExecutor.NewSession(newSlot)
 	}
 	ct.BlockHeight = newHeight
+}
+
+// ioWriteRcCost is the write price a Call runs at: IoWriteRcCost when set,
+// else the original price.
+func (ct *ContractTest) ioWriteRcCost() int {
+	if ct.IoWriteRcCost > 0 {
+		return ct.IoWriteRcCost
+	}
+	return params.WRITE_IO_GAS_RC_COST
+}
+
+// chainEngine is the harness's StateEngine reading blocks from the harness's
+// DataLayer (the engine itself is built without one).
+type chainEngine struct {
+	*stateEngine.StateEngine
+	dl *datalayer.DataLayer
+}
+
+func (e chainEngine) DataLayer() common_types.DataLayer { return e.dl }
+
+// ChainEngine returns the engine to hand to TxVscCallContract.ExecuteTx, the
+// call path the node runs for a transaction in a block. Call, the harness's own
+// path, takes its consensus rules from the ContractTest's fields; ExecuteTx
+// resolves them from the chain-active consensus version, which a test sets
+// through ElectionDb.ElectionsByHeight (the election keyed at a height is in
+// force from that height until the next key).
+func (ct *ContractTest) ChainEngine() common_types.StateEngine {
+	return chainEngine{StateEngine: ct.StateEngine, dl: ct.DataLayer}
 }
 
 // Register a contract from bytecode.
@@ -313,8 +379,13 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		int64(gas), rc_system.FreeRcRemaining(ct.RcSession, rcPayer, ct.BlockHeight), gasCycles, ct.LedgerSession, ct.CallSession, 0,
 		contract_execution_context.WithPendulumApplier(ct.PendulumApplier),
 		contract_execution_context.WithTryCatch(ct.TryCatchActive),
+		contract_execution_context.WithBigSwapAmounts(ct.BigSwapAmountsActive),
 		contract_execution_context.WithVaultRotationV2(ct.VaultRotationV2),
 		contract_execution_context.WithKeyReshared(ct.KeyReshared),
+		contract_execution_context.WithTssKeyAllowlist(ct.TssKeyAllowlist),
+		contract_execution_context.WithIoWriteRcCost(ct.ioWriteRcCost()),
+		contract_execution_context.WithStateSizeBound(ct.StateSizeBound),
+		contract_execution_context.WithTssKeyAllowlistNested(ct.TssKeyAllowlistNested),
 	)
 	ctx := context.WithValue(
 		context.WithValue(context.Background(), wasm_context.WasmExecCtxKey, ctxValue),
@@ -323,6 +394,9 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 	)
 	res := w.Execute(ctx, gasCycles, tx.Action, string(tx.Payload), wasm_runtime.Go)
 	rcUsed := int64(math.Max(math.Ceil(float64(res.Gas)/params.CYCLE_GAS_PER_RC), 100))
+	if ct.RcChargeCapped && rcUsed > int64(gas) {
+		rcUsed = int64(math.Max(float64(gas), 100))
+	}
 	ct.RcSession.Consume(rcPayer, ct.BlockHeight, rcUsed)
 	ct.StateEngine.RcMap[rcPayer] = ct.StateEngine.RcMap[rcPayer] + rcUsed
 
@@ -339,6 +413,22 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		}
 	}
 	diff := ct.CallSession.GetStateDiff()
+	logs := ct.CallSession.PopLogs()
+	if ct.StateSizeBound {
+		outs := stateEngine.CallOutputs(stateEngine.MakeTxId(tx.Self.TxId, tx.Self.OpIndex), tx.ContractId, res.Result, true, stateEngine.WithCalledContract(logs, tx.ContractId))
+		if reason := stateEngine.DryRunOverBound(map[string]int{}, outs, ct.LedgerSession.PendingOpBytes()); reason != "" {
+			ct.LedgerSession.Revert()
+			ct.CallSession.Rollback()
+			return ContractTestCallResult{
+				Success: false,
+				Err:     contracts.OUTPUT_TOO_LARGE,
+				ErrMsg:  reason,
+				RcUsed:  rcUsed,
+				GasUsed: res.Gas,
+				Logs:    map[string]contract_session.LogOutput{},
+			}
+		}
+	}
 	ct.LedgerSession.Done()
 	ct.CallSession.Commit()
 
@@ -347,7 +437,7 @@ func (ct *ContractTest) Call(tx stateEngine.TxVscCallContract) ContractTestCallR
 		Ret:       res.Result,
 		RcUsed:    rcUsed,
 		GasUsed:   res.Gas,
-		Logs:      ct.CallSession.PopLogs(),
+		Logs:      logs,
 		StateDiff: diff,
 	}
 }
@@ -365,6 +455,25 @@ func (ct *ContractTest) SetPendulumGeometry(out pendulumoracle.GeometryOutputs, 
 		nil, // no consensus-version reader → LP floor inert in contract tests
 		pendulumwasm.DefaultConfig(),
 	)
+}
+
+// SetPendulumStablePools is SetPendulumGeometry with StableSwap listings and
+// the chain at consensus 0.13.0 (StableSwapActive), so a stable pool contract
+// can be tested end to end. The 0.13.0 floor also turns on the LP
+// minimum-floor (0.2.0), as on a real 0.13.0 chain.
+func (ct *ContractTest) SetPendulumStablePools(out pendulumoracle.GeometryOutputs, whitelist []string, stable map[string]pendulumwasm.StableListing) {
+	cfg := pendulumwasm.DefaultConfig()
+	cfg.StablePoolAt = func(id string, _ uint64) (pendulumwasm.StableListing, bool) {
+		l, ok := stable[id]
+		return l, ok
+	}
+	ct.PendulumApplier = pendulumwasm.New(
+		stubGeometryReader{out: out},
+		func(uint64) []string { return whitelist },
+		func(uint64) consensusversion.Version { return consensusversion.V0_13_0 },
+		cfg,
+	)
+	ct.BigSwapAmountsActive = true
 }
 
 // Add funds to an account in the ledger.

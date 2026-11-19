@@ -172,6 +172,92 @@ func SetString(a *string) *string {
 	return a
 }
 
+// setBlob stores a value of a given size: the payload is "key:size" and the
+// value is that many bytes. It has no comma, so it can be the payload of
+// contractCall (which splits on commas) to store from a nested call.
+//
+//go:wasmexport setBlob
+func SetBlob(a *string) *string {
+	params := strings.Split((*a), ":")
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	size, err := strconv.Atoi(params[1])
+	if err != nil || size < 0 {
+		sdk.Abort("invalid size")
+	}
+	sdk.StateSetObject(params[0], strings.Repeat("x", size))
+	return a
+}
+
+// relayBlob calls setBlob on another contract: the payload is
+// "contractId:key:size". Called through contractCall it stores from a contract
+// two calls deep.
+//
+//go:wasmexport relayBlob
+func RelayBlob(a *string) *string {
+	params := strings.SplitN((*a), ":", 2)
+	if len(params) < 2 {
+		sdk.Abort("invalid payload")
+	}
+	return sdk.ContractCall(params[0], "setBlob", params[1], nil)
+}
+
+// logBlob writes one log line of the given size: the payload is the size.
+//
+//go:wasmexport logBlob
+func LogBlob(a *string) *string {
+	size, err := strconv.Atoi(*a)
+	if err != nil || size < 0 {
+		sdk.Abort("invalid size")
+	}
+	sdk.Log(strings.Repeat("L", size))
+	return a
+}
+
+// retBlob returns a value of the given size: the payload is the size.
+//
+//go:wasmexport retBlob
+func RetBlob(a *string) *string {
+	size, err := strconv.Atoi(*a)
+	if err != nil || size < 0 {
+		sdk.Abort("invalid size")
+	}
+	out := strings.Repeat("R", size)
+	return &out
+}
+
+// manyKeys stores count keys, each with a value of the given size: the payload
+// is "prefix:count:size". The keys are prefix0, prefix1, ...
+//
+//go:wasmexport manyKeys
+func ManyKeys(a *string) *string {
+	params := strings.Split((*a), ":")
+	if len(params) < 3 {
+		sdk.Abort("invalid payload")
+	}
+	count, err := strconv.Atoi(params[1])
+	if err != nil || count < 0 {
+		sdk.Abort("invalid count")
+	}
+	size, err := strconv.Atoi(params[2])
+	if err != nil || size < 0 {
+		sdk.Abort("invalid size")
+	}
+	value := strings.Repeat("x", size)
+	for i := 0; i < count; i++ {
+		sdk.StateSetObject(params[0]+strconv.Itoa(i), value)
+	}
+	return a
+}
+
+// noop does nothing and returns its payload.
+//
+//go:wasmexport noop
+func Noop(a *string) *string {
+	return a
+}
+
 //go:wasmexport getString
 func GetString(a *string) *string {
 	return sdk.StateGetObject(*a)
@@ -262,6 +348,35 @@ func DrawHbd(a *string) *string {
 	}
 	sdk.HiveDraw(amt, sdk.AssetHbd)
 	return nil
+}
+
+// manyTransfers draws count milli-HBD from the caller (the call's
+// transfer.allow intent) and sends it back one milli-HBD at a time, count
+// ledger operations: the payload is "count".
+//
+//go:wasmexport manyTransfers
+func ManyTransfers(a *string) *string {
+	count, err := strconv.Atoi(*a)
+	if err != nil || count <= 0 {
+		sdk.Abort("invalid count")
+	}
+	sdk.HiveDraw(int64(count), sdk.AssetHbd)
+	to := sdk.GetEnv().Sender.Address
+	for i := 0; i < count; i++ {
+		sdk.HiveTransfer(to, 1, sdk.AssetHbd)
+	}
+	return nil
+}
+
+// relayCall calls another contract: the payload is "contractId,action,payload".
+//
+//go:wasmexport relayCall
+func RelayCall(a *string) *string {
+	params := strings.SplitN((*a), ",", 3)
+	if len(params) < 3 {
+		sdk.Abort("invalid payload")
+	}
+	return sdk.ContractCall(params[0], params[1], params[2], nil)
 }
 
 //go:wasmexport transferHive

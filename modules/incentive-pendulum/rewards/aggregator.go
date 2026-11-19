@@ -43,6 +43,12 @@ type TickInputs struct {
 	ProducedSlotHeights map[uint64]struct{}
 	BlocksInWindow      []TickBlockHeader // narrow shape — only Signers needed
 
+	// AttestationQuorum is the leader's signature bar over this tick's
+	// committee. Set from 0.14.0 on (SettlementAttestationQuorumActive); nil
+	// below the gate, which keeps attestation scoring byte-identical to the
+	// history already settled under the strict rule. See AttestationQuorum.
+	AttestationQuorum *AttestationQuorum
+
 	Reshares []ReshareWithCommittee
 	Keygens  []KeygenWithCommittee
 	Blames   []BlameWithCommittee
@@ -73,7 +79,7 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 	}
 
 	prod := ScoreBlockProduction(in.Slots, in.ProducedSlotHeights, in.Committee)
-	att := scoreAttestationFromHeaders(in.BlocksInWindow, in.Committee)
+	att := scoreAttestationFromHeaders(in.BlocksInWindow, in.Committee, in.AttestationQuorum)
 	tssA := ScoreTssReshareExclusion(in.Reshares)
 	tssKeygen := ScoreTssKeygenExclusion(in.Keygens)
 	tssB := ScoreTssBlame(in.Blames)
@@ -117,32 +123,19 @@ func AggregateTick(in TickInputs) []WitnessRewardReductionRecord {
 	return out
 }
 
-// scoreAttestationFromHeaders adapts the public ScoreBlockAttestation
-// (which takes vsc_blocks.VscHeaderRecord) to the narrow TickBlockHeader the
-// aggregator carries. Inlined as a thin loop — avoids the rewards/ package
-// pulling vsc_blocks just to project Signers.
-func scoreAttestationFromHeaders(blocks []TickBlockHeader, committee []string) map[string]int {
+// scoreAttestationFromHeaders adapts the narrow TickBlockHeader the aggregator
+// carries to the shared scoreAttestation core, so the aggregator and the
+// public ScoreBlockAttestation apply the identical rule (including the
+// AttestationQuorum skip) rather than two copies of the same loop.
+func scoreAttestationFromHeaders(blocks []TickBlockHeader, committee []string, quorum *AttestationQuorum) map[string]int {
 	if len(blocks) == 0 {
 		return nil
 	}
-	cm := committeeFromMembers(committee)
-	if len(cm) == 0 {
-		return nil
-	}
-	out := make(map[string]int)
+	signerLists := make([][]string, 0, len(blocks))
 	for _, b := range blocks {
-		signers := make(map[string]struct{}, len(b.Signers))
-		for _, s := range b.Signers {
-			signers[s] = struct{}{}
-		}
-		for member := range cm {
-			if _, signed := signers[member]; signed {
-				continue
-			}
-			out[member] += BlockAttestationMissBps
-		}
+		signerLists = append(signerLists, b.Signers)
 	}
-	return out
+	return scoreAttestation(signerLists, committee, quorum)
 }
 
 // SortedReductionAccounts returns the keys of an accumulated reduction map
