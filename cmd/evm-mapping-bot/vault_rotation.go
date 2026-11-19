@@ -512,14 +512,42 @@ func sweepStaleHeaderWants(now time.Time) bool {
 // rotation), far past what a bot regenerates, so its real calls would starve.
 var errVaultOpNoop = errors.New("the vault op would change nothing yet")
 
+// migrateWaitStatus reports whether a migrateVault answer is one of the wait
+// statuses HandleMigrateVault (account-mapping mapping/migration.go) returns
+// before writing any state. Like the BTC bot's F8 rule (mapper/call_contract_l2.go,
+// migrateNothingPrefix) it names the no-op answers, so an answer it does not know
+// is still sent: a new contract answer can cost RC, never stall a rotation.
+func migrateWaitStatus(ret string) bool {
+	switch {
+	case ret == "nothing to migrate",
+		strings.HasPrefix(ret, "sweep in flight for generation "),
+		strings.HasPrefix(ret, "gas reserve below the sweeps' gas"):
+		return true
+	case strings.HasPrefix(ret, "generation "):
+		return strings.Contains(ret, " holds too little ETH for its token sweeps' gas") ||
+			strings.Contains(ret, " whose transfers reverted ") ||
+			strings.HasSuffix(ret, "dust, for writeOffDust")
+	}
+	return false
+}
+
 // vaultOpNoop reports a dry-run result that changes nothing (the bridge's own
 // return strings: vault_retire.go, migration.go).
+
 func vaultOpNoop(action, ret string) bool {
 	switch action {
 	case "retireVault":
 		return ret == "retire: no generation transitions"
 	case "migrateVault":
-		return ret == "nothing to migrate"
+		// MIGRATE-NOOP-RC-1: besides "nothing to migrate", the contract answers
+		// a drain wait with a status and no state write ("sweep in flight for
+		// generation N", "gas reserve below the sweeps' gas", "... holds too
+		// little ETH for its token sweeps' gas", "... holds SYM whose transfers
+		// reverted", "... dust, for writeOffDust"). Sending those cost the bot an
+		// L2 call each tick for nothing: testnet 11-19, 50 confirmed no-op
+		// migrateVault calls in 3 h while a sweep was in flight and then while
+		// the old generation waited for gas.
+		return migrateWaitStatus(ret)
 	case "writeOffDust":
 		return ret == "no dust to write off"
 	case "attestDepositContract":
@@ -657,12 +685,10 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	noteSweepStaleHeader("migrateVault", err)
 	if err == nil {
 		logMigrate(ret)
-		if strings.Contains(ret, "dust") {
-			writeOffDust(ctx, gql, sub, cfg)
-		}
 		return
 	}
 	if errors.Is(err, errVaultOpNoop) {
+		migrateStatus(ctx, gql, sub, cfg, ret)
 		return
 	}
 	if !strings.Contains(err.Error(), "eth_proof") {
@@ -690,6 +716,7 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 	noteRefusal(err)
 	noteSweepStaleHeader("migrateVault", err)
 	if errors.Is(err, errVaultOpNoop) {
+		migrateStatus(ctx, gql, sub, cfg, ret)
 		return
 	}
 	if err != nil {
@@ -697,6 +724,16 @@ func migrateNext(ctx context.Context, rpc *ethRPC, gql *vscGraphQL, sub *l2Submi
 		return
 	}
 	logMigrate(ret)
+}
+
+// migrateStatus handles a migrateVault dry run that builds nothing (not sent,
+// MIGRATE-NOOP-RC-1): it logs why, and a generation left with only dust is
+// written off, as before.
+func migrateStatus(ctx context.Context, gql *vscGraphQL, sub *l2Submitter, cfg EVMBotConfig, ret string) {
+	if ret == "nothing to migrate" {
+		return
+	}
+	slog.Info("migrateVault: nothing to build, not sent", "dry_run", ret)
 	if strings.Contains(ret, "dust") {
 		writeOffDust(ctx, gql, sub, cfg)
 	}
