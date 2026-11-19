@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"vsc-node/modules/common"
 	transactionpool "vsc-node/modules/transaction-pool"
@@ -42,6 +43,9 @@ type fakeL1 struct {
 	// hash it reports, or "" for no transaction (a hostile RPC whose receipt has
 	// no matching transaction object, MED-50).
 	txByHash map[string]string
+	// logs429Until: eth_getLogs answers HTTP 429 until this time, like an RPC
+	// rate limit that outlasts logsAtRetry's pauses (EVM-CATCHUP-1).
+	logs429Until time.Time
 }
 
 func newFakeL1() *fakeL1 { return &fakeL1{blocks: map[uint64]*fakeChain{}} }
@@ -108,6 +112,10 @@ func (f *fakeL1) rpc(t *testing.T) *ethRPC {
 			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32601, "message": "the method eth_getBlockReceipts does not exist"}})
 			return
 		case "eth_getLogs":
+			if time.Now().Before(f.logs429Until) {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
 			switch f.logs {
 			case "error":
 				_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -32000, "message": "query timeout"}})
