@@ -458,6 +458,17 @@ type Checkpoint struct {
 	// depositWork: a deposit was submitted or dead-lettered earlier in this
 	// tick (not saved). A block that then runs out of time is not blamed.
 	depositWork bool
+	// scanned (EVM-CATCHUP-1, not saved): the deposits of blocks past
+	// LastScannedBlock that the scan has already fetched, kept across ticks so
+	// a fetch is never thrown away because a block before it failed or the
+	// tick ran out of time. scannedFor is the vault and token set they were
+	// scanned for (scanSetKey); another set clears them.
+	scanned    map[uint64][]detectedDeposit
+	scannedFor string
+	// scanWorkers: the prefetch's concurrency for the next tick (0: the
+	// maximum); halved after a tick in which a block failed, doubled after a
+	// clean one (EVM-CATCHUP-1).
+	scanWorkers int
 }
 
 // PendingMap is a submitted map call awaiting its on-chain result.
@@ -2339,15 +2350,33 @@ type blockScanEntry struct {
 // the first error/gap, preserving the original checkpoint-advancement semantics
 // (advance only through the highest contiguous successfully-scanned block).
 func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg EVMBotConfig) map[uint64]blockScanEntry {
-	out := make(map[uint64]blockScanEntry)
 	if to < from {
+		return make(map[uint64]blockScanEntry)
+	}
+	heights := make([]uint64, 0, to-from+1)
+	for h := from; h <= to; h++ {
+		heights = append(heights, h)
+	}
+	return scanHeightsParallel(ctx, rpc, heights, cfg, maxScanWorkers)
+}
+
+// maxScanWorkers bounds the prefetch's concurrency so a wide window cannot
+// open thousands of sockets.
+const maxScanWorkers = 8
+
+// scanHeightsParallel is scanBlocksParallel for a list of heights, fed to the
+// workers in the order given (EVM-CATCHUP-1: only the blocks not already
+// fetched on an earlier tick).
+func scanHeightsParallel(ctx context.Context, rpc *ethRPC, list []uint64, cfg EVMBotConfig, workers int) map[uint64]blockScanEntry {
+	out := make(map[uint64]blockScanEntry)
+	if len(list) == 0 {
 		return out
 	}
 
-	// Bounded concurrency so a wide window cannot open thousands of sockets.
-	const maxScanWorkers = 8
-	workers := maxScanWorkers
-	if span := int(to - from + 1); span < workers {
+	if workers < 1 || workers > maxScanWorkers {
+		workers = maxScanWorkers
+	}
+	if span := len(list); span < workers {
 		workers = span
 	}
 
@@ -2383,7 +2412,7 @@ func scanBlocksParallel(ctx context.Context, rpc *ethRPC, from, to uint64, cfg E
 	}
 
 feed:
-	for h := from; h <= to; h++ {
+	for _, h := range list {
 		select {
 		case <-ctx.Done():
 			break feed
@@ -3221,6 +3250,40 @@ var callRetryPauses = []time.Duration{250 * time.Millisecond, 500 * time.Millise
 // block again (EVM-CATCHUP-1).
 var scanBlockRetryPauses = []time.Duration{2 * time.Second, 5 * time.Second}
 
+// scanWalkReserve: the part of the deposit phase the parallel prefetch leaves
+// to the in-order walk, which scans a block the prefetch did not get, or got
+// a failure for, itself (EVM-CATCHUP-1). It covers scanBlockRetryPauses.
+var scanWalkReserve = 8 * time.Second
+
+// errNotFetched: the prefetch ran out of time before this block.
+var errNotFetched = errors.New("block not fetched this tick")
+
+// withReserve is ctx ending reserve before ctx's own deadline (ctx itself
+// when it has none, or when less than reserve is left).
+func withReserve(ctx context.Context, reserve time.Duration) (context.Context, context.CancelFunc) {
+	if dl, ok := ctx.Deadline(); ok && time.Until(dl) > reserve {
+		return context.WithDeadline(ctx, dl.Add(-reserve))
+	}
+	return context.WithCancel(ctx)
+}
+
+// scanSetKey identifies what a block scan looked for: the vault addresses and
+// the tokens. A kept scan result is used only under the same key, so a vault
+// generation or token added since is never missed in a block fetched before.
+func scanSetKey(cfg EVMBotConfig) string {
+	v := make([]string, 0, len(cfg.scanVaults()))
+	for _, a := range cfg.scanVaults() {
+		v = append(v, strings.ToLower(a))
+	}
+	sort.Strings(v)
+	t := make([]string, 0, len(cfg.Tokens))
+	for a, sym := range cfg.Tokens {
+		t = append(t, strings.ToLower(a)+"="+sym)
+	}
+	sort.Strings(t)
+	return strings.Join(v, ",") + "|" + strings.Join(t, ",")
+}
+
 // rescanFailedBlock scans block h again after each of scanBlockRetryPauses,
 // while ctx (the deposit phase) has time, and returns the first success or
 // the last failure. now: a failed block before it in this tick was just
@@ -3239,7 +3302,7 @@ var scanBlockRetryPauses = []time.Duration{2 * time.Second, 5 * time.Second}
 // burst that the rate limit answered. Only a success is returned as a
 // success: a block that keeps failing still stops the scan (B-R2).
 func rescanFailedBlock(ctx context.Context, rpc *ethRPC, h uint64, cfg EVMBotConfig, sr blockScanEntry, now bool) blockScanEntry {
-	if len(scanBlockRetryPauses) == 0 {
+	if len(scanBlockRetryPauses) == 0 || ctx.Err() != nil {
 		return sr
 	}
 	if now {
@@ -4179,27 +4242,89 @@ func runOnce(
 		slog.Warn("RESTART-VAULTS-1: the vault registry has not been read since the start; not scanning for deposits until it is", "next_block", scanFrom)
 		scanUpTo = cp.LastScannedBlock
 	}
+	// EVM-CATCHUP-1: blocks fetched on an earlier tick are kept (cp.scanned),
+	// so the prefetch asks only for the rest, and it stops feeding blocks
+	// scanWalkReserve before the phase ends so the walk below has time to scan
+	// a block itself.
+	scanKey := scanSetKey(cfg)
+	cp.mu.Lock()
+	if cp.scanned == nil || cp.scannedFor != scanKey {
+		cp.scanned, cp.scannedFor = map[uint64][]detectedDeposit{}, scanKey
+	}
+	for h := range cp.scanned {
+		if h <= cp.LastScannedBlock || h > scanUpTo {
+			delete(cp.scanned, h)
+		}
+	}
+	var need []uint64
+	for h := scanFrom; h <= scanUpTo; h++ {
+		if _, ok := cp.scanned[h]; !ok {
+			need = append(need, h)
+		}
+	}
+	cp.mu.Unlock()
 	var scanResults map[uint64]blockScanEntry
-	if scanUpTo >= scanFrom {
-		scanResults = scanBlocksParallel(depCtx, rpc, scanFrom, scanUpTo, cfg)
+	if len(need) > 0 {
+		// While the RPC refuses calls the prefetch backs off to fewer workers,
+		// down to one block at a time in order, as the BTC bot and THORChain's
+		// Ethereum scanner always scan: parallel workers would only take the
+		// scarce calls from the block the walk needs next. A failed block
+		// halves the workers for the next tick, a clean tick doubles them, up
+		// to maxScanWorkers.
+		workers := cp.scanWorkers
+		if workers < 1 || workers > maxScanWorkers {
+			workers = maxScanWorkers
+		}
+		pctx, pcancel := withReserve(depCtx, scanWalkReserve)
+		scanResults = scanHeightsParallel(pctx, rpc, need, cfg, workers)
+		pcancel()
+		failed := 0
+		cp.mu.Lock()
+		for h, e := range scanResults {
+			if e.err == nil && e.result != nil {
+				cp.scanned[h] = e.result.Deposits
+			} else {
+				failed++
+			}
+		}
+		switch {
+		case failed > 0:
+			cp.scanWorkers = max(1, workers/2)
+		case workers < maxScanWorkers:
+			cp.scanWorkers = min(maxScanWorkers, 2*workers)
+		}
+		cp.mu.Unlock()
+		if failed > 0 && workers > 1 {
+			slog.Warn("EVM-CATCHUP-1: blocks failed while scanning in parallel; fewer scan workers next tick", "failed", failed, "workers", workers, "next", max(1, workers/2))
+		}
 	}
 
 	var tokenMins map[string]*big.Int
 	minsRead := false
 	rescued := false // a failed block of this tick scanned on a retry: the rate limit has passed
 	for h := cp.LastScannedBlock + 1; h <= scanUpTo; h++ {
-		sr, ok := scanResults[h]
-		if ok && sr.err != nil {
-			sr = rescanFailedBlock(depCtx, rpc, h, cfg, sr, rescued)
-			rescued = sr.err == nil
-		}
-		if !ok || sr.err != nil {
-			if ok && sr.err != nil {
-				slog.Error("scan block failed", "block", h, "err", sr.err)
+		cp.mu.Lock()
+		deps, have := cp.scanned[h]
+		cp.mu.Unlock()
+		if !have {
+			// Not fetched yet (the prefetch ran out of time) or failed: scan it
+			// here, in order, as the BTC bot does with the block it is on.
+			sr, tried := scanResults[h]
+			if !tried {
+				sr = blockScanEntry{err: errNotFetched}
 			}
-			break // stop scanning at the first gap/failure; retry next tick
+			sr = rescanFailedBlock(depCtx, rpc, h, cfg, sr, rescued || !tried)
+			if sr.err != nil {
+				if tried {
+					slog.Error("scan block failed", "block", h, "err", sr.err)
+				}
+				break // stop scanning at the first gap/failure; retry next tick
+			}
+			if tried {
+				rescued = true
+			}
+			deps = sr.result.Deposits
 		}
-		deps := sr.result.Deposits
 		if len(deps) > 0 {
 			if !minsRead {
 				tokenMins, minsRead = tokenDepositMins(depCtx, gql, cfg), true
@@ -4217,6 +4342,7 @@ func runOnce(
 			cp.WaitingDeposits[h] = deps
 		}
 		cp.LastScannedBlock = h
+		delete(cp.scanned, h)
 		cp.mu.Unlock()
 	}
 
