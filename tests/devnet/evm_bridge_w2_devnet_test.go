@@ -54,8 +54,8 @@ func TestEVMBridge_W2_WithdrawalCloseout(t *testing.T) {
 	// Fund the vault on anvil so it can broadcast the withdrawal.
 	_ = anvil.SetBalance(ctx, vaultAddr, new(big.Int).Mul(big.NewInt(100), big.NewInt(1e18)))
 
-	// Deposit 6 ETH for depositor K — the 1% gas tax (60M gwei) exceeds
-	// MinGasReserve (50M gwei) so unmapETH's gas-reserve gate passes.
+	// Deposit 6 ETH for depositor K, credited in full (DEPOSIT-FREE-1). An ETH
+	// withdrawal pays its own gas and needs no gas reserve (RP-4).
 	depKey, _ := ethCrypto.GenerateKey()
 	depHex := hex.EncodeToString(ethCrypto.FromECDSA(depKey))
 	sixEth := new(big.Int).Mul(big.NewInt(6), big.NewInt(1e18))

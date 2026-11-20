@@ -240,10 +240,10 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 	t.Logf("(1) block %d: %d txs (240 fillers, 3 ETH deposits, 2 dust ETH, 1 USDC deposit, 1 dust USDC)", busy, len(txs))
 	want := map[string]string{}
 	for i, k := range deps {
-		credit := new(big.Int).Div(new(big.Int).Mul(depAmounts[i], big.NewInt(99)), big.NewInt(100)) // 1% to the gas reserve
-		want["a-"+evmDID(cryptoPubkeyAddr(k))+"-eth"] = credit.Sub(credit, ethFee).String()
+		// DEPOSIT-FREE-1: credited in full, no reserve share and no proving fee.
+		want["a-"+evmDID(cryptoPubkeyAddr(k))+"-eth"] = depAmounts[i].String()
 	}
-	want["a-"+evmDID(cryptoPubkeyAddr(usdcHolder))+"-usdc"] = new(big.Int).Sub(big.NewInt(5_000_000), usdcFee).String()
+	want["a-"+evmDID(cryptoPubkeyAddr(usdcHolder))+"-usdc"] = "5000000"
 	feeAcct := func(asset string) string { return e.stateStr("a-hive:altera.app-" + asset) }
 	credited := func() bool {
 		for k, v := range want {
@@ -269,10 +269,10 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 	if got := e.stateStr("a-" + evmDID(cryptoPubkeyAddr(usdcDust)) + "-usdc"); got != "" {
 		t.Fatalf("DUST-1: a USDC deposit below the floor was credited: %s", got)
 	}
-	if got, wantEth := feeAcct("eth"), new(big.Int).Mul(ethFee, big.NewInt(3)).String(); got != wantEth || feeAcct("usdc") != usdcFee.String() {
-		t.Fatalf("proving fees after the busy block: eth %q usdc %q; want %s and %s (dust pays none)", got, feeAcct("usdc"), wantEth, usdcFee)
+	if feeAcct("eth") != "" || feeAcct("usdc") != "" {
+		t.Fatalf("proving fees after the busy block: eth %q usdc %q; want none (deposits are free)", feeAcct("eth"), feeAcct("usdc"))
 	}
-	t.Logf("(1) PASS: every deposit in the busy block credited once less the proving fee, dust not credited (RPCs so far: %s | %s)", rpcA, rpcB)
+	t.Logf("(1) PASS: every deposit in the busy block credited once in full, dust not credited (RPCs so far: %s | %s)", rpcA, rpcB)
 
 	// (2) Two withdrawals while the L1 base fee spikes above their fee cap; the
 	// bot is killed and restarted meanwhile.
@@ -460,9 +460,9 @@ func TestEVMBridge_W9_MainnetWeather(t *testing.T) {
 			t.Fatalf("the bot met too little weather to show anything: %s=%d (want >= %d)", k, sum(k), min)
 		}
 	}
-	// 3 ETH deposits and 3 withdrawals paid the ETH fee; the USDC deposit the USDC one.
-	if got, wantEth := feeAcct("eth"), new(big.Int).Mul(ethFee, big.NewInt(6)).String(); got != wantEth || feeAcct("usdc") != usdcFee.String() {
-		t.Fatalf("proving fees at the end: eth %q usdc %q; want %s and %s", got, feeAcct("usdc"), wantEth, usdcFee)
+	// The 3 withdrawals paid the ETH fee; deposits pay none (DEPOSIT-FREE-1).
+	if got, wantEth := feeAcct("eth"), new(big.Int).Mul(ethFee, big.NewInt(3)).String(); got != wantEth || feeAcct("usdc") != "" {
+		t.Fatalf("proving fees at the end: eth %q usdc %q; want %s and none", got, feeAcct("usdc"), wantEth)
 	}
-	t.Logf("(4) PASS: every deposit credited once less the proving fee, dust not, every withdrawal paid once and confirmed, altera.app holds exactly the fees, queue empty, no custody alarm, no dead letter")
+	t.Logf("(4) PASS: every deposit credited once in full, dust not, every withdrawal paid once and confirmed, altera.app holds exactly the fees, queue empty, no custody alarm, no dead letter")
 }

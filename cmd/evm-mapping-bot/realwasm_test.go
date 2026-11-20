@@ -236,8 +236,8 @@ func TestRealWasm_ETHDepositIsCredited(t *testing.T) {
 		t.Fatalf("map failed: %s: %s", r.Err, r.ErrMsg)
 	}
 	user := ethCrypto.PubkeyToAddress(userKey.PublicKey)
-	if got := ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth"); got != "990000000000000000" {
-		t.Fatalf("depositor balance %q, want 990000000000000000 (1 ETH less the 1%% reserve tax)", got)
+	if got := ct.StateGet(rwBridge, "a-"+rwDID(user)+"-eth"); got != "1000000000000000000" {
+		t.Fatalf("depositor balance %q, want 1000000000000000000 (credited in full, DEPOSIT-FREE-1)", got)
 	}
 }
 

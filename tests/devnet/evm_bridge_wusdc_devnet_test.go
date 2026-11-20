@@ -171,7 +171,8 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 		return last, err
 	}
 
-	// (2) Deposits: 6 ETH (1% to the gas reserve, as in W5) and 25 USDC.
+	// (2) Deposits: 6 ETH, a 0.06 ETH to_reserve top-up (DEPOSIT-FREE-1: deposits
+	// are free, so the reserve the USDC withdrawal's gas needs is topped up) and 25 USDC.
 	depKey := mustKey(t)
 	depAddr := ethCrypto.PubkeyToAddress(depKey.PublicKey)
 	user := evmDID(depAddr)
@@ -185,8 +186,17 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 	if err := e.plantFinalized(anvil, ethBlock); err != nil {
 		t.Fatal(err)
 	}
-	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr("gr") == "60000000000000000" }); err != nil {
-		t.Fatalf("the ETH deposit never seeded the reserve: gr=%q\nbot:\n%s", e.stateStr("gr"), botLogs())
+	_, resBlock, err := anvil.SendToReserve(ctx, depKey, vault, new(big.Int).Div(eth(6), big.NewInt(100)))
+	if err != nil {
+		t.Fatalf("to_reserve top-up: %v", err)
+	}
+	if err := e.plantFinalized(anvil, resBlock); err != nil {
+		t.Fatal(err)
+	}
+	if err := pollUntil(ctx, 6*time.Minute, func() bool {
+		return e.stateStr("gr") == "60000000000000000" && e.stateStr("a-"+user+"-eth") == "6000000000000000000"
+	}); err != nil {
+		t.Fatalf("the ETH deposit and the to_reserve top-up were not both mapped: gr=%q eth=%q\nbot:\n%s", e.stateStr("gr"), e.stateStr("a-"+user+"-eth"), botLogs())
 	}
 	if rc, err := anvil.SendTx(ctx, ownerKey, &usdc, usdcCall("mint(address,uint256)", depAddr, usd(30)), 100_000); err != nil || rc.Status != 1 {
 		t.Fatalf("mint: %v %+v", err, rc)
@@ -209,7 +219,7 @@ func TestEVMBridge_WUSDC_BotEndToEnd(t *testing.T) {
 	if h, err := freshHealth(mapped, func(h BotHealth) bool { return true }); err != nil || len(c4(h)) != 0 {
 		t.Fatalf("/health after the deposits: %v %+v", err, h)
 	}
-	t.Logf("(2) PASS: the bot mapped 25 USDC (and the 6 ETH that seeds the reserve); /health has no custody alarm")
+	t.Logf("(2) PASS: the bot mapped 25 USDC, the 6 ETH in full and the 0.06 ETH reserve top-up; /health has no custody alarm")
 
 	// (3) An L2 transfer of usdc (the E1 asset rule on the deployed bridge).
 	if err := e.fundDID(user, "10000.000"); err != nil {

@@ -53,8 +53,8 @@ func TestBothBridges_EP1_LargeETHDeposit(t *testing.T) {
 	if rc, err := b.anvil.waitReceipt(b.ctx, tx.Hash(), 30*time.Second); err != nil || rc.Status != 1 {
 		t.Fatalf("the large deposit did not mine: %v", err)
 	}
-	// 1 ETH less the 1% reserve share.
-	want := new(big.Int).Sub(bbEth(1), new(big.Int).Div(bbEth(1), big.NewInt(100))).String()
+	// The whole 1 ETH (DEPOSIT-FREE-1: deposits are free).
+	want := bbEth(1).String()
 	if err := b.botPoll(30*time.Minute, func() bool { return strings.SplitN(b.e.stateStr("a-"+dest+"-eth"), "|", 2)[0] == want }); err != nil {
 		t.Fatalf("the large ETH deposit was never credited to %s (a-%s-eth %q, want %s)\nbot:\n%s", dest, dest, b.e.stateStr("a-"+dest+"-eth"), want, b.botLogs())
 	}

@@ -88,7 +88,7 @@ func TestB11_HealthAlarms(t *testing.T) {
 	}
 	// BB-1 (11-06): the alarm level and the contract's floor are two numbers,
 	// and ETH withdrawals do not use the reserve (queue.go, issueQueued).
-	if !hasIssue(r, "is below the 100000000000000000 wei alarm level: ERC-20 withdrawals wait below 0.05 ETH") || hasIssue(r, "refused") {
+	if !hasIssue(r, "is below the 100000000000000000 wei alarm level: ERC-20 withdrawals wait below the bridge's MinGasReserve floor") || hasIssue(r, "refused") {
 		t.Fatalf("the alarm misstates what the reserve holds up: %+v", r)
 	}
 	_, l2, gql, rpc = healthWorld(t, 10)

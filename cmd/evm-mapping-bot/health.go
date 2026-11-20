@@ -28,8 +28,9 @@ import (
 //	HEALTH_ADDR            listen address, e.g. 127.0.0.1:8091 (unset: no endpoint)
 //	RC_ALARM               warn below this many RC on the bot's L2 identity (default 20000)
 //	HEALTH_CHECK_EVERY     how often the alarms are checked (Go duration, default 5m)
-//	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH: twice the
-//	                       contract's MinGasReserve, below which every unmap is refused)
+//	GAS_RESERVE_ALARM_WEI  warn below this gas reserve "gr" (default 0.1 ETH; under the
+//	                       contract's MinGasReserve floor ERC-20 withdrawals wait: 0.05 ETH
+//	                       before account-mapping FLOOR-1, 0.01 ETH after)
 //	SCAN_STALE_AFTER       warn when the deposit scan has not advanced for this long
 //	                       (Go duration, default 20m)
 
@@ -195,7 +196,7 @@ func (h *botHealth) check(ctx context.Context, now time.Time, gql *vscGraphQL, r
 			reserve = new(big.Int)
 		}
 		if reserve.Cmp(h.reserveWarn) < 0 {
-			warn(fmt.Sprintf("B12: gas reserve %s wei is below the %s wei alarm level: ERC-20 withdrawals wait below 0.05 ETH, and migration sweeps when it cannot cover their gas (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
+			warn(fmt.Sprintf("B12: gas reserve %s wei is below the %s wei alarm level: ERC-20 withdrawals wait below the bridge's MinGasReserve floor, and migration sweeps when it cannot cover their gas (seed it with a to_reserve=1 deposit)", reserve, h.reserveWarn))
 		}
 		// The bridge lowers custody when it queues a withdrawal, before the L1
 		// transfer, and credits a reverted one back only after it mined, so

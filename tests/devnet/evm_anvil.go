@@ -160,6 +160,37 @@ func (a *Anvil) SendETH(ctx context.Context, key *ecdsa.PrivateKey, to ethcommon
 	return signed.Hash(), rcpt.BlockNumber.Uint64(), nil
 }
 
+// SendToReserve sends valueWei to the vault with the to_reserve instruction as
+// calldata: the whole amount funds the bridge's gas reserve and credits nobody.
+// DEPOSIT-FREE-1: with deposits free this is the reserve's only funding (as the
+// BTC bridge's topUpFeeReserve), so a test that withdraws a token or sweeps a
+// rotation tops the reserve up first. Returns the tx hash and its block.
+func (a *Anvil) SendToReserve(ctx context.Context, key *ecdsa.PrivateKey, vault ethcommon.Address, valueWei *big.Int) (ethcommon.Hash, uint64, error) {
+	from := cryptoPubkeyAddr(key)
+	nonce, err := a.cli.PendingNonceAt(ctx, from)
+	if err != nil {
+		return ethcommon.Hash{}, 0, fmt.Errorf("nonce: %w", err)
+	}
+	signed, err := ethtypes.SignTx(ethtypes.NewTx(&ethtypes.DynamicFeeTx{
+		ChainID: a.ChainID, Nonce: nonce, GasTipCap: big.NewInt(1_000_000_000), GasFeeCap: big.NewInt(20_000_000_000),
+		Gas: 60_000, To: &vault, Value: valueWei, Data: []byte("to_reserve=1"),
+	}), ethtypes.LatestSignerForChainID(a.ChainID), key)
+	if err != nil {
+		return ethcommon.Hash{}, 0, fmt.Errorf("sign: %w", err)
+	}
+	if err := a.cli.SendTransaction(ctx, signed); err != nil {
+		return ethcommon.Hash{}, 0, fmt.Errorf("send: %w", err)
+	}
+	rcpt, err := a.waitReceipt(ctx, signed.Hash(), 30*time.Second)
+	if err != nil {
+		return ethcommon.Hash{}, 0, err
+	}
+	if rcpt.Status != 1 {
+		return ethcommon.Hash{}, 0, fmt.Errorf("to_reserve top-up reverted")
+	}
+	return signed.Hash(), rcpt.BlockNumber.Uint64(), nil
+}
+
 // SendRawTx broadcasts a raw signed tx (e.g. the bot's vault withdrawal),
 // returns the tx hash + mined block.
 func (a *Anvil) SendRawTx(ctx context.Context, raw []byte) (ethcommon.Hash, uint64, error) {
