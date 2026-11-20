@@ -88,7 +88,7 @@ func TestEVMBridge_W5_BotEndToEnd(t *testing.T) {
 	t.Logf("(0) PASS: the bot drove the vault check (E23); vault %s live", vault.Hex())
 
 	// (1) Deposit 6 ETH on anvil; the prover stand-in plants its header; the
-	// bot detects and maps it. 1% goes to the gas reserve.
+	// bot detects and maps it, credited in full (DEPOSIT-FREE-1: no reserve share).
 	depKey, _ := ethCrypto.GenerateKey()
 	depAddr := ethCrypto.PubkeyToAddress(depKey.PublicKey)
 	if err := anvil.SetBalance(ctx, depAddr, eth(7)); err != nil {
@@ -103,14 +103,14 @@ func TestEVMBridge_W5_BotEndToEnd(t *testing.T) {
 	}
 	user := evmDID(depAddr)
 	balKey := "a-" + user + "-eth"
-	const credited = "5940000000000000000" // 6 ETH less the 1% reserve tax
+	const credited = "6000000000000000000" // the whole 6 ETH (DEPOSIT-FREE-1)
 	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr(balKey) == credited }); err != nil {
 		t.Fatalf("bot never mapped the deposit: %s=%q, want %s\nbot:\n%s", balKey, e.stateStr(balKey), credited, botLogs())
 	}
-	if gr := e.stateStr("gr"); gr != "60000000000000000" {
-		t.Fatalf("gas reserve gr=%q after the deposit, want 60000000000000000", gr)
+	if gr := e.stateStr("gr"); gr != "" && gr != "0" {
+		t.Fatalf("gas reserve gr=%q after the deposit, want none (deposits are free)", gr)
 	}
-	t.Logf("(1) PASS: the bot mapped the anvil deposit; %s credited %s wei, reserve 0.06 ETH", user, credited)
+	t.Logf("(1) PASS: the bot mapped the anvil deposit; %s credited %s wei, the reserve untouched", user, credited)
 
 	// (2) The user withdraws 1 ETH. The TSS committee signs the queued tx, the
 	// bot broadcasts it, and once its header lands the bot confirms it.

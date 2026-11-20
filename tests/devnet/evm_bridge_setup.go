@@ -550,7 +550,7 @@ func (e *evmBridgeEnv) fundDID(did, hbdAmount string) error {
 
 // depositETH performs a full ETH deposit (L1 anvil -> mock-planted header -> map)
 // and returns the credited L2 DID. The relayer (ownerAcct) must be registered.
-// amountWei is the deposit value; the credited gwei = amountWei/1e9 minus 1% gas tax.
+// amountWei is the deposit value, credited in full (DEPOSIT-FREE-1).
 func (e *evmBridgeEnv) depositETH(anvil *Anvil, depKey *ecdsa.PrivateKey, vaultAddr ethcommon.Address, amountWei *big.Int) (string, error) {
 	ctx := e.ctx
 	depAddr := ethCrypto.PubkeyToAddress(depKey.PublicKey)

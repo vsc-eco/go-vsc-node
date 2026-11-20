@@ -142,7 +142,7 @@ func TestEVMBridge_W8_LaunchFixes(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := evmDID(depAddr)
-	if err := pollUntil(ctx, 8*time.Minute, func() bool { return e.stateStr("a-"+user+"-eth") == "5940000000000000000" }); err != nil {
+	if err := pollUntil(ctx, 8*time.Minute, func() bool { return e.stateStr("a-"+user+"-eth") == "6000000000000000000" }); err != nil {
 		t.Fatalf("RP-8: the unregistered bot never mapped the ETH deposit: %q\nbot:\n%s", e.stateStr("a-"+user+"-eth"), botLogs())
 	}
 	t.Logf("(1) PASS RP-8: an unregistered bot mapped the ETH deposit (%s credited 5.94 ETH)", user)

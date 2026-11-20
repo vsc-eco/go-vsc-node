@@ -24,7 +24,7 @@ import (
 // USDC-1 B (a token's revert fee), GLAM-1 (an ETH withdrawal's own gas limit)
 // and RP-7 (MagiDeposit deposits for an explicit recipient).
 
-// rwETHUser maps a proven 1 ETH deposit (1% to the reserve) from a fresh key
+// rwETHUser maps a proven 1 ETH deposit (credited in full, DEPOSIT-FREE-1) from a fresh key
 // in L1 block 102 and gives its identity RC; it returns the identity.
 func rwETHUser(t *testing.T, c rwChain) string {
 	t.Helper()
@@ -40,7 +40,7 @@ func rwETHUser(t *testing.T, c rwChain) string {
 		t.Fatalf("map ETH deposit: %s: %s", r.Err, r.ErrMsg)
 	}
 	ethUser := rwDID(ethCrypto.PubkeyToAddress(ethKey.PublicKey))
-	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "990000000000000000")
+	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "1000000000000000000")
 	c.ct.Deposit(ethUser, 1_000_000, ledgerDb.AssetHbd) // RC for an EVM identity
 	return ethUser
 }
@@ -77,17 +77,17 @@ func rwTxGas(t *testing.T, ps *PendingSpend) uint64 {
 }
 
 // RP-4: a USDC withdrawal takes its gas from the reserve and leaves it below
-// the 0.05 ETH floor; an ETH withdrawal, paid by its owner, still goes through
+// the 0.01 ETH floor (FLOOR-1); an ETH withdrawal, paid by its owner, still goes through
 // and does not touch the reserve. Old code: refused "insufficient gas reserve".
 func TestRealWasm_RP4_ETHWithdrawalNeedsNoReserveFloor(t *testing.T) {
 	c, usdcUser := rwUSDCBridge(t)
 	ethUser := rwETHUser(t, c)
-	floor := "50000000000000000" // MinGasReserve
+	floor := "10000000000000000" // MinGasReserve (FLOOR-1: 0.01 ETH)
 	c.ct.StateSet(rwBridge, "gr", floor)
-	c.ct.StateSet(rwBridge, "s-eth", "1050000000000000000|990000000000000000|0|0") // 1 ETH deposit (0.99 user) + 0.06 reserve
+	c.ct.StateSet(rwBridge, "s-eth", "1010000000000000000|1000000000000000000|0|0") // 1 ETH deposit (all user) + 0.01 reserve
 	ps := rwUnmapUSDC(t, c, usdcUser, "0x00000000000000000000000000000000000000e2", "1000000", 0)
 	below := c.ct.StateGet(rwBridge, "gr")
-	if b, _ := new(big.Int).SetString(below, 10); b == nil || b.Cmp(big.NewInt(50_000_000_000_000_000)) >= 0 {
+	if b, _ := new(big.Int).SetString(below, 10); b == nil || b.Cmp(big.NewInt(10_000_000_000_000_000)) >= 0 {
 		t.Fatalf("reserve %s after the USDC withdrawal, want below the floor", below)
 	}
 	r := rwCall(c.ct, ethUser, "unmapETH", []byte(`{"to":"0x00000000000000000000000000000000000000e3","amount":"10000000000000000","asset":"eth"}`))
@@ -154,12 +154,12 @@ func TestRealWasm_RP11_QueueCancelAndDrain(t *testing.T) {
 		t.Logf("queued unmapETH: %d RC", r.RcUsed)
 	}
 	rwExpect(t, c.ct, "np", "")
-	// 0.99 - 2 x (0.01 + default cap 21,000 x 20 gwei = 0.00042)
-	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "969160000000000000")
+	// 1 - 2 x (0.01 + default cap 21,000 x 20 gwei = 0.00042)
+	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "979160000000000000")
 	if r := rwCall(c.ct, ethUser, "cancelQueuedWithdrawal", []byte(`{"seq":0}`)); !r.Success {
 		t.Fatalf("cancel: %s: %s", r.Err, r.ErrMsg)
 	}
-	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "979580000000000000")
+	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "989580000000000000")
 	rwHeaderAt(c.ct, 104, &fakeChain{}, rwBlockTime)
 	c.ct.Deposit(rwRelayer, 1_000_000, ledgerDb.AssetHbd) // RC past a Hive account's free 10k
 	r := rwCallLimit(c.ct, rwRelayer, "drainWithdrawalQueue", []byte(`{}`), 30_000)
@@ -173,7 +173,7 @@ func TestRealWasm_RP11_QueueCancelAndDrain(t *testing.T) {
 	}
 	// Issued at 1 gwei base: fee 21,000 x 4 gwei = 0.000084; the rest of the
 	// 0.00042 cap came back.
-	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "979916000000000000")
+	rwExpect(t, c.ct, "a-"+ethUser+"-eth", "989916000000000000")
 }
 
 // USDC-1 B: a reverted token withdrawal refunds the amount less the token's
@@ -216,8 +216,8 @@ func TestRealWasm_GLAM1_ETHWithdrawalCarriesItsGasLimit(t *testing.T) {
 	if g := rwTxGas(t, ps); g != 207_391 {
 		t.Fatalf("signed gas %d, want 207391", g)
 	}
-	// Charged 207,391 x 4 gwei.
-	rwExpect(t, c.ct, "a-"+ethUser+"-eth", new(big.Int).Sub(big.NewInt(980_000_000_000_000_000), big.NewInt(207_391*4_000_000_000)).String())
+	// Charged 207,391 x 4 gwei (1 ETH credited in full, less the 0.01 withdrawn).
+	rwExpect(t, c.ct, "a-"+ethUser+"-eth", new(big.Int).Sub(big.NewInt(990_000_000_000_000_000), big.NewInt(207_391*4_000_000_000)).String())
 	chain, tx := rwMine(t, c, ps, 103, types.ReceiptStatusSuccessful)
 	rwConfirm(t, c, chain, tx, 103, ps)
 	rwExpect(t, c.ct, "n", "1")
@@ -275,7 +275,7 @@ func TestRealWasm_RP7_MagiDepositCreditsTheRecipient(t *testing.T) {
 	if ok, msg := mapLog(2); !ok {
 		t.Fatalf("USDC contract deposit: %s", msg)
 	}
-	rwExpect(t, c.ct, "a-hive:bob-eth", "990000000000000000")
+	rwExpect(t, c.ct, "a-hive:bob-eth", "1000000000000000000")
 	rwExpect(t, c.ct, "a-hive:bob-usdc", "7000000")
 	if ok, _ := mapLog(2); ok {
 		t.Fatal("the same contract deposit was credited twice")

@@ -433,10 +433,10 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	wallet := cryptoPubkeyAddr(walletKey)
 	usdcAddr := ethcommon.HexToAddress(wrealUSDC)
 	milliEth := func(n int64) *big.Int { return new(big.Int).Mul(big.NewInt(n), big.NewInt(1e15)) }
-	// The user deposit's 1% tax tops the reserve deposit up to exactly the
-	// 0.05 ETH floor (MinGasReserve) that every withdrawal needs.
+	// The reserve deposit is exactly the 0.01 ETH floor (MinGasReserve, FLOOR-1)
+	// a token withdrawal needs; deposits are credited in full (DEPOSIT-FREE-1).
 	userDep := milliEth(25)
-	reserveDep := new(big.Int).Sub(milliEth(50), new(big.Int).Div(userDep, big.NewInt(100)))
+	reserveDep := milliEth(10)
 	smallDep := milliEth(1) // F15 (twice) and F16
 	mdDep := milliEth(5)    // RP-7: through MagiDeposit
 
@@ -965,11 +965,9 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	// linked down from the proven block when the RPC serves no recent state
 	// proofs) and maps all four deposits.
 	user := evmDID(wallet)
-	tax := new(big.Int).Div(userDep, big.NewInt(100))
-	wantUser, wantGr := new(big.Int).Sub(userDep, tax), new(big.Int).Add(reserveDep, tax) // gr = exactly 0.05
-	mdTax := new(big.Int).Div(mdDep, big.NewInt(100))
-	wantMd := new(big.Int).Sub(mdDep, mdTax)
-	wantGr.Add(wantGr, mdTax)
+	// DEPOSIT-FREE-1: every deposit is credited in full; the reserve holds only
+	// the to_reserve deposit (exactly the 0.01 ETH floor).
+	wantUser, wantGr, wantMd := new(big.Int).Set(userDep), new(big.Int).Set(reserveDep), new(big.Int).Set(mdDep)
 	if err := pollUntil(ctx, 45*time.Minute, func() bool {
 		return e.stateStr("a-"+user+"-eth") == wantUser.String() && e.stateStr("a-"+user+"-usdc") == "2000000" &&
 			e.stateStr("a-"+mdRecipient+"-eth") == wantMd.String() && e.stateStr("gr") == wantGr.String()
@@ -1349,8 +1347,8 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	}
 
 	// GLAM-1 refund (d-1's value back, its fee kept) and the F15 credits
-	// (type 0 and type 1 deposits, each 0.001 less 1%), mapped by the new bot.
-	f15 := new(big.Int).Mul(new(big.Int).Sub(smallDep, new(big.Int).Div(smallDep, big.NewInt(100))), big.NewInt(2))
+	// (type 0 and type 1 deposits, each 0.001 in full), mapped by the new bot.
+	f15 := new(big.Int).Mul(smallDep, big.NewInt(2))
 	wantEth := new(big.Int).Add(afterIssue, qG.Value)
 	wantEth.Add(wantEth, f15)
 	if err := pollUntil(ctx, 30*time.Minute, func() bool { return e.stateStr("a-"+user+"-eth") == wantEth.String() }); err != nil {
@@ -1369,7 +1367,7 @@ func TestEVMBridge_WReal_SepoliaProofs(t *testing.T) {
 	if st, msg := userCall("unmapETH", fmt.Sprintf(`{"to":"%s","amount":"%s","asset":"eth","gas_limit":%d}`, recipR.Hex(), milliEth(10), ethGas)); st != "CONFIRMED" {
 		t.Errorf("RP-4 FAIL: an ETH withdrawal with the reserve at %s was %s (%q)", e.stateStr("gr"), st, msg)
 	} else {
-		t.Logf("RP-4 PASS on real data: reserve %s (floor 0.05); the user's ETH withdrawal was issued (np=%s)", e.stateStr("gr"), e.stateStr("np"))
+		t.Logf("RP-4 PASS on real data: reserve %s (floor 0.01, FLOOR-1); the user's ETH withdrawal was issued (np=%s)", e.stateStr("gr"), e.stateStr("np"))
 	}
 	lastL1 := lastT2
 

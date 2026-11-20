@@ -176,9 +176,21 @@ func TestEVMBridge_A01_VaultRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := pollUntil(ctx, 8*time.Minute, func() bool {
-		return state("a-"+user+"-eth") == "5940000000000000000" && state("a-"+user+"-usdc") == "25000000"
+		return state("a-"+user+"-eth") == "6000000000000000000" && state("a-"+user+"-usdc") == "25000000"
 	}); err != nil {
 		t.Fatalf("deposits not mapped: eth %q usdc %q\nbot:\n%s", state("a-"+user+"-eth"), state("a-"+user+"-usdc"), botLogs())
+	}
+	// DEPOSIT-FREE-1: deposits are free, so the gas the rotation's sweeps need is
+	// a to_reserve top-up (as the BTC bridge's topUpFeeReserve), not the old 1%.
+	_, resBlock, err := anvil.SendToReserve(ctx, depKey, vault0, new(big.Int).Div(eth(6), big.NewInt(100)))
+	if err != nil {
+		t.Fatalf("to_reserve top-up: %v", err)
+	}
+	if err := e.plantFinalized(anvil, resBlock); err != nil {
+		t.Fatal(err)
+	}
+	if err := pollUntil(ctx, 8*time.Minute, func() bool { return state("gr") == "60000000000000000" }); err != nil {
+		t.Fatalf("the to_reserve top-up was not mapped: gr %q\nbot:\n%s", state("gr"), botLogs())
 	}
 	if err := e.fundDID(user, "10000.000"); err != nil {
 		t.Fatal(err)

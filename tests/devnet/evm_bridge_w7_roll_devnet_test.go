@@ -54,7 +54,7 @@ func TestEVMBridge_W7_StuckWithdrawalRolledBack(t *testing.T) {
 		t.Fatalf("fund vault gas: %v", err)
 	}
 
-	// Depositor K: 6 ETH in (the 1% tax funds the gas reserve), 1 ETH out.
+	// Depositor K: 6 ETH in (credited in full, DEPOSIT-FREE-1), 1 ETH out.
 	depKey, _ := ethCrypto.GenerateKey()
 	did, err := e.depositETH(anvil, depKey, vault, eth(6))
 	if err != nil {

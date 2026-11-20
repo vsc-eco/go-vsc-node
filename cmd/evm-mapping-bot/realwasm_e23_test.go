@@ -65,7 +65,7 @@ func TestRealWasm_E23_DepositsWaitForTheKeysCheckSignature(t *testing.T) {
 	if r := rwCall(ct, rwRelayer, "map", payload); !r.Success {
 		t.Fatalf("map after the check signature: %s: %s", r.Err, r.ErrMsg)
 	}
-	if got := ct.StateGet(rwBridge, "a-"+rwDID(ethCrypto.PubkeyToAddress(userKey.PublicKey))+"-eth"); got != "990000000000000000" {
+	if got := ct.StateGet(rwBridge, "a-"+rwDID(ethCrypto.PubkeyToAddress(userKey.PublicKey))+"-eth"); got != "1000000000000000000" {
 		t.Fatalf("depositor balance %q after the vault went live", got)
 	}
 }

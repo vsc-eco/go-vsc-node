@@ -90,7 +90,7 @@ func TestEVMBridge_RCAP1_OversizedReceiptDoesNotFreezeTheQueue(t *testing.T) {
 	}
 	user := evmDID(depAddr)
 	balKey := "a-" + user + "-eth"
-	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr(balKey) == "5940000000000000000" }); err != nil {
+	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr(balKey) == "6000000000000000000" }); err != nil {
 		t.Fatalf("bot never mapped the deposit: %s=%q\nbot:\n%s", balKey, e.stateStr(balKey), botLogs())
 	}
 	t.Logf("(1) PASS: deposit mapped")

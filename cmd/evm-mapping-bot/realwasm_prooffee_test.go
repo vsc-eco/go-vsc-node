@@ -41,10 +41,11 @@ func rwSetProofFee(t *testing.T, c rwChain, asset, amount string) (string, bool)
 }
 
 // The proving fee on the bridge wasm, with the bot's own payloads: set through
-// propose/execute, a plain ETH deposit and an ERC-20 deposit each pay it out of
-// their credit, an ETH and a USDC withdrawal each pay it on top, all to
-// hive:altera.app; a fee above half the minimum deposit is refused.
-func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
+// propose/execute, a plain ETH deposit and an ERC-20 deposit pay nothing and are
+// credited in full (DEPOSIT-FREE-1, as on the BTC bridge), an ETH and a USDC
+// withdrawal each pay it on top, to hive:altera.app; a fee above half the
+// minimum deposit is refused.
+func TestRealWasm_PROOFFEE_WithdrawalsPayAlteraDepositsAreFree(t *testing.T) {
 	c, holder := rwUSDCBridge(t) // holder has 25 USDC, mapped before any fee
 	if msg, ok := rwSetProofFee(t, c, "eth", "100000000000000"); !ok {
 		t.Fatalf("setProofFee eth: %s", msg)
@@ -74,7 +75,7 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 	altera := func(asset string) string { return c.ct.StateGet(rwBridge, "a-hive:altera.app-"+asset) }
 	ctx := context.Background()
 
-	// A plain ETH deposit of 6 ETH: 1% to the reserve, the fee to altera.app.
+	// A plain ETH deposit of 6 ETH: credited in full, no fee (DEPOSIT-FREE-1).
 	userKey, _ := ethCrypto.GenerateKey()
 	chain := &fakeChain{}
 	six := new(big.Int).Mul(big.NewInt(6), big.NewInt(1e18))
@@ -85,8 +86,8 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 		t.Fatalf("ETH map: %s: %s", r.Err, r.ErrMsg)
 	}
 	ethUser := rwDID(ethCrypto.PubkeyToAddress(userKey.PublicKey))
-	if got := c.ct.StateGet(rwBridge, "a-"+ethUser+"-eth"); got != "5939900000000000000" || altera("eth") != "100000000000000" {
-		t.Fatalf("ETH deposit: user %q, altera %q; want 5.94 ETH less 1e14, and 1e14", got, altera("eth"))
+	if got := c.ct.StateGet(rwBridge, "a-"+ethUser+"-eth"); got != "6000000000000000000" || altera("eth") != "" {
+		t.Fatalf("ETH deposit: user %q, altera %q; want 6 ETH and nothing", got, altera("eth"))
 	}
 
 	// An ERC-20 deposit of 5 USDC.
@@ -96,8 +97,8 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 		t.Fatalf("ERC-20 map: %s: %s", r.Err, r.ErrMsg)
 	}
 	tokenUser := rwDID(common.BytesToAddress(chain2.receipts[dep2.TxIndex].Logs[0].Topics[1].Bytes()))
-	if got := c.ct.StateGet(rwBridge, "a-"+tokenUser+"-usdc"); got != "4960000" || altera("usdc") != "40000" {
-		t.Fatalf("USDC deposit: user %q, altera %q; want 4960000 and 40000", got, altera("usdc"))
+	if got := c.ct.StateGet(rwBridge, "a-"+tokenUser+"-usdc"); got != "5000000" || altera("usdc") != "" {
+		t.Fatalf("USDC deposit: user %q, altera %q; want 5000000 and nothing", got, altera("usdc"))
 	}
 
 	// Withdrawals, priced from a fresh header.
@@ -110,15 +111,15 @@ func TestRealWasm_PROOFFEE_EveryProvenOperationPaysAltera(t *testing.T) {
 	}
 	t.Logf("unmapETH with the proving fee: %d RC", r.RcUsed)
 	after, _ := new(big.Int).SetString(c.ct.StateGet(rwBridge, "a-"+ethUser+"-eth"), 10)
-	if paid := new(big.Int).Sub(before, after); paid.Cmp(big.NewInt(1e18+1e14)) <= 0 || altera("eth") != "200000000000000" {
-		t.Fatalf("unmapETH: user paid %s (want 1 ETH + its L1 fee + 1e14), altera %q (want 2e14)", paid, altera("eth"))
+	if paid := new(big.Int).Sub(before, after); paid.Cmp(big.NewInt(1e18+1e14)) <= 0 || altera("eth") != "100000000000000" {
+		t.Fatalf("unmapETH: user paid %s (want 1 ETH + its L1 fee + 1e14), altera %q (want 1e14)", paid, altera("eth"))
 	}
 	r = rwCallLimit(c.ct, holder, "unmapERC20", []byte(`{"to":"0x00000000000000000000000000000000000000e3","amount":"2000000","token_address":"`+rwUSDC+`"}`), 20_000)
 	if !r.Success {
 		t.Fatalf("unmapERC20: %s: %s", r.Err, r.ErrMsg)
 	}
-	if got := c.ct.StateGet(rwBridge, "a-"+holder+"-usdc"); got != "22960000" || altera("usdc") != "80000" {
-		t.Fatalf("unmapERC20: holder %q, altera %q; want 22960000 and 80000", got, altera("usdc"))
+	if got := c.ct.StateGet(rwBridge, "a-"+holder+"-usdc"); got != "22960000" || altera("usdc") != "40000" {
+		t.Fatalf("unmapERC20: holder %q, altera %q; want 22960000 and 40000", got, altera("usdc"))
 	}
 	t.Logf("unmapERC20 with the proving fee: %d RC", r.RcUsed)
 }

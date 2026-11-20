@@ -227,8 +227,17 @@ func TestRealWasm_A01_RotationEndToEnd(t *testing.T) {
 	b104 := &fakeChain{}
 	half := big.NewInt(5e17)
 	lateTx := b104.addTx(t, userKey, &types.DynamicFeeTx{Nonce: 1, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 21000, To: &vault0, Value: half})
+	// DEPOSIT-FREE-1: no deposit tax funds the gas reserve any more, so the
+	// owner tops it up before the rotation's sweeps (a to_reserve deposit to the
+	// active vault, in the same block), as the BTC bridge's fee reserve is
+	// topped up (topUpFeeReserve).
+	topUp := b104.addTx(t, userKey, &types.DynamicFeeTx{Nonce: 2, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(30e9), Gas: 30000, To: &vault1, Value: big.NewInt(1e16), Data: []byte("to_reserve=1")})
 	rwHeaderAt(ct, 104, b104, rwBlockTime)
 	rc.call(rwRelayer, "map", buildMapPayloadFromRPC(context.Background(), b104.rpc(t), detectedDeposit{BlockHeight: 104, TxIndex: 0, LogIndex: -1, TxHash: lateTx.Hash().Hex(), DepositType: "eth"}, 104))
+	if r := rc.call(rwRelayer, "map", buildMapPayloadFromRPC(context.Background(), b104.rpc(t), detectedDeposit{BlockHeight: 104, TxIndex: 1, LogIndex: -1, TxHash: topUp.Hash().Hex(), DepositType: "eth"}, 104)); !r.Success {
+		t.Fatalf("to_reserve top-up: %s", r.ErrMsg)
+	}
+	rwExpect(t, ct, "gr", "10000000000000000")
 
 	// The batch: the bot proves generation 0's balance (nonce 1, after its
 	// withdrawal) at block 105 and migrateVault builds ETH then USDC.

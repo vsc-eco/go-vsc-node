@@ -160,7 +160,7 @@ func TestEVMBridge_CG1_OneNodeReadFault(t *testing.T) {
 	}
 	user := evmDID(depAddr)
 	balKey := "a-" + user + "-eth"
-	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr(balKey) == "5940000000000000000" }); err != nil {
+	if err := pollUntil(ctx, 6*time.Minute, func() bool { return e.stateStr(balKey) == "6000000000000000000" }); err != nil {
 		t.Fatalf("deposit never mapped: %s=%q\nbot:\n%s", balKey, e.stateStr(balKey), botLogs())
 	}
 	if err := e.fundDID(user, "10000.000"); err != nil {
