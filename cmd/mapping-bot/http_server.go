@@ -220,7 +220,7 @@ func requestHandler(
 		// A refund to an address on this chain needs the contract's sendHome, which
 		// only the BTC contract has; the other chains take a hive: refund_to only.
 		chainParams := mapper.AddressRefundParams(bot.Chain)
-		if err := mapper.ValidateInstruction(requestBody.Instruction, mainnet, chainParams); err != nil {
+		if err := mapper.ValidateInstructionFor(requestBody.Instruction, mainnet, chainParams, bot.ProvesSenders()); err != nil {
 			writeResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}

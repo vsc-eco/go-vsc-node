@@ -957,6 +957,20 @@ func readBodyCapped(r io.Reader) ([]byte, error) {
 // scanned again on the next start.
 var shutdownCtx = context.Background()
 
+// estimateTransferGas is eth_estimateGas for a 1-wei ETH transfer from `from`
+// to `to` (what the recipient's code needs to accept ETH).
+func (e *ethRPC) estimateTransferGas(ctx context.Context, from, to string) (uint64, error) {
+	res, err := e.callCtx(ctx, "eth_estimateGas", fmt.Sprintf(`{"from":%q,"to":%q,"value":"0x1"}`, from, to))
+	if err != nil {
+		return 0, err
+	}
+	var hexGas string
+	if err := json.Unmarshal(res, &hexGas); err != nil {
+		return 0, err
+	}
+	return strconv.ParseUint(strings.TrimPrefix(hexGas, "0x"), 16, 64)
+}
+
 func (e *ethRPC) call(method string, params string) (json.RawMessage, error) {
 	return e.callCtx(shutdownCtx, method, params)
 }
@@ -4399,6 +4413,16 @@ func runOnce(
 	if !cfg.Paused {
 		settleWithdrawalReceipts(ctx, rpc, gql, submitter, cp, cfg)
 	}
+
+	// PAYOUT-1: send a failed swap's refund home on Ethereum (send_home.go).
+	var owedGas owedGasEstimator
+	if rpc != nil && cfg.VaultAddress != "" {
+		owedGas = func(ctx context.Context, to string) (uint64, error) {
+			return rpc.estimateTransferGas(ctx, cfg.VaultAddress, to)
+		}
+	}
+	sendHomeOwed(ctx, gql, submitter, cfg, owedGas)
+	retryHeldReturns(ctx, gql, submitter, cfg)
 
 	// RP-9: store the headers deposits and confirmations wait on; tell the
 	// operator when a proof is needed.

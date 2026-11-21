@@ -24,6 +24,16 @@ import (
 //
 // mainnet controls which Bitcoin network is accepted by dids.VerifyAddress.
 func ValidateInstruction(instruction string, mainnet bool, chainParams *chaincfg.Params) error {
+	return ValidateInstructionFor(instruction, mainnet, chainParams, false)
+}
+
+// ValidateInstructionFor is ValidateInstruction for a contract that does or does
+// not prove deposit senders. SENDER-REFUND-1 (the BTC mapping contract): a swap
+// that does not complete goes back to the address that sent it, which the
+// contract proves itself (proveSender, which this bot sends before the map), so
+// refund_to is optional, and a payout on Ethereum needs no hive: refund_to (one
+// that comes back is swapped back to BTC and paid to the sender on Bitcoin).
+func ValidateInstructionFor(instruction string, mainnet bool, chainParams *chaincfg.Params, senderRefunds bool) error {
 	params, err := url.ParseQuery(instruction)
 	if err != nil {
 		return fmt.Errorf("instruction is not valid URL search params: %w", err)
@@ -62,6 +72,18 @@ func ValidateInstruction(instruction string, mainnet bool, chainParams *chaincfg
 	// fails at the gateway (NEW-GW-2).
 	if strings.HasPrefix(addr, "hive:") && !ValidHiveName(strings.TrimPrefix(addr, "hive:")) {
 		return fmt.Errorf("%q is not a name Hive accepts", addr)
+	}
+	if hasSwap && senderRefunds {
+		if refundTo := params.Get("refund_to"); refundTo != "" {
+			// A hive: refund_to is accepted and ignored: the contract refunds the
+			// proven sending address and never credits it on Magi. Refusing it
+			// would break every client that still sends one (Altera before its
+			// BTC_SENDER_REFUNDS_ACTIVE flag) the moment this bot is deployed.
+			if _, ok := ValidRefundTo(refundTo, mainnet, chainParams); !ok {
+				return fmt.Errorf("invalid refund_to %q: leave it out (the sending address is proven) or give this chain's address", refundTo)
+			}
+		}
+		return nil
 	}
 	if hasSwap {
 		refundTo := params.Get("refund_to")

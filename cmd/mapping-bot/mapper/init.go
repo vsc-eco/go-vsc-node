@@ -109,6 +109,11 @@ type Bot struct {
 	// Bitcoin refund addresses to check for a refund to send home (send_home.go).
 	refundWatchMu sync.Mutex
 	refundWatch   map[string]*refundWatchEntry
+	// pendingSenders: swap deposits mapped without a sender proof
+	// (prove_sender.go), proven after the block.
+	pendingSenders senderProofs
+	// senderProbe: whether the deployed contract takes proveSender.
+	senderProbe senderProofProbe
 	sendHomeMu    sync.Mutex // one keeper pass at a time
 }
 

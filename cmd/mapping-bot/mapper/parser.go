@@ -179,6 +179,11 @@ func (b *Bot) ParseBlock(
 				}
 				b.L.Debug("instruction address found", "instruction", target.Instruction, "generation", target.Generation)
 				if observed.Has(tx.TxID(), i) {
+					// Mapped already (perhaps by someone else, without a sender
+					// proof): a swap held for its sender is proven after the block.
+					if isSwapInstruction(target.Instruction) {
+						b.pendingSenders.add(tx)
+					}
 					break
 				}
 				matchedTxIndices[txIndex] = append(matchedTxIndices[txIndex], target.Instruction)
