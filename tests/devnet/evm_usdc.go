@@ -26,9 +26,31 @@ var mockUSDCBin string
 // SendTx signs and sends an EIP-1559 tx from key and returns its receipt,
 // whatever its status. A nil `to` deploys data as a contract.
 func (a *Anvil) SendTx(ctx context.Context, key *ecdsa.PrivateKey, to *ethcommon.Address, data []byte, gas uint64) (*ethtypes.Receipt, error) {
-	nonce, err := a.cli.PendingNonceAt(ctx, cryptoPubkeyAddr(key))
+	from := cryptoPubkeyAddr(key)
+	nonce, err := a.cli.PendingNonceAt(ctx, from)
 	if err != nil {
 		return nil, fmt.Errorf("nonce: %w", err)
+	}
+	// GLAM-1 (harness): every call site's gas number was sized before
+	// Glamsterdam's state-creation pricing (EIP-8037). anvil applies the
+	// SEPOLIA schedule for evmChainID 11155111 -- hardFork "Amsterdam", where
+	// creating state costs far more -- so those numbers silently became too
+	// small and the call reverts with status 0, which reads as a contract bug:
+	//
+	//	deploy MockUSDC              3,000,000 -> needs 5,074,566
+	//	mint to a fresh address        100,000 -> needs   240,528
+	//	transfer to a fresh address    100,000 -> needs   147,491
+	//	approve                        100,000 -> needs   134,602
+	//
+	// (On a 31337 anvil the same deploy is 748,042, which is why this only
+	// shows up on the EVM waves.) Take the caller's number as a FLOOR and
+	// prefer twice the estimate, so a later repricing does not break them all
+	// again. A call that is MEANT to revert cannot be estimated; an estimate
+	// failure keeps the caller's gas so the revert is still observed.
+	if est, eerr := a.cli.EstimateGas(ctx, ethereum.CallMsg{From: from, To: to, Data: data}); eerr == nil {
+		if want := est * 2; want > gas {
+			gas = want
+		}
 	}
 	tx, err := ethtypes.SignTx(ethtypes.NewTx(&ethtypes.DynamicFeeTx{
 		ChainID: a.ChainID, Nonce: nonce, GasTipCap: big.NewInt(1e9), GasFeeCap: big.NewInt(20e9),
