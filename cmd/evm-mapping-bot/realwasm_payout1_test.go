@@ -555,10 +555,11 @@ func TestRealWasm_PAYOUT1_EthereumDepositSwap(t *testing.T) {
 		if h := ct.StateGet(rwBridge, "a-system:owed-home-eth"); h != "50000000000000000" {
 			t.Fatalf("owed-home hold %q, want the 0.05 ETH", h)
 		}
-		// The keeper's call, as send_home.go builds it.
-		payload, _ := json.Marshal(owedHomeCall("eth|" + did))
-		var raw string
-		_ = json.Unmarshal(payload, &raw)
+		// The keeper's call exactly as send_home.go sends it: the plain query
+		// string (the bridge's url.ParseQuery input). This test once encoded it
+		// as JSON and decoded it back, so it never saw that the bot sent the
+		// JSON form, which fails on chain (devnet 11-22).
+		raw := owedHomeCall("eth|" + did)
 		rwHeaderAt(ct, 103, &fakeChain{}, rwBlockTime)
 		ct.Deposit("hive:keeper-bot", 1_000_000, ledgerDb.AssetHbd) // the bot holds RC (a withdrawal is over the free 10k)
 		ct.StateSet(rwBridge, "rl-hive:keeper-bot", "1") // the bridge's bot sends owed refunds

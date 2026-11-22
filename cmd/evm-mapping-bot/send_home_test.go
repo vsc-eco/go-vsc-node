@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -41,11 +41,14 @@ func shPayloads(t *testing.T, l2 *fakeL2) []string {
 	var out []string
 	for _, c := range submittedCalls(t, l2) {
 		if c.Action == "sendHome" {
-			var s string
-			if err := json.Unmarshal([]byte(c.Payload), &s); err != nil {
-				t.Fatalf("sendHome payload %q is not a JSON string", c.Payload)
+			// The bridge parses the raw input with url.ParseQuery: a JSON
+			// string (quoted, & as &) fails on chain while a dry run
+			// passes it (devnet 11-22: every owed refund failed).
+			q, err := url.ParseQuery(c.Payload)
+			if err != nil || !strings.HasPrefix(q.Get("address"), "0x") || len(q.Get("address")) != 42 {
+				t.Fatalf("sendHome payload %q is not the plain query string the bridge parses", c.Payload)
 			}
-			out = append(out, s)
+			out = append(out, c.Payload)
 		}
 	}
 	return out

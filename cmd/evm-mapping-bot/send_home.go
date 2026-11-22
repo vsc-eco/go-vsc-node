@@ -153,8 +153,12 @@ func sendHomeOwed(ctx context.Context, gql *vscGraphQL, submitter *l2Submitter, 
 				slog.Warn("sendHome keeper: gas estimate failed; the bridge's default gas limit is used", "entry", e, "err", err)
 			}
 		}
-		raw, _ := json.Marshal(payload)
-		sim, simErr := gql.simulateContractCall(ctx, did, cfg.ContractID, "sendHome", string(raw))
+		// The bridge reads sendHome's input as a plain query string
+		// (url.ParseQuery): sent as a JSON string it would arrive with its quotes
+		// and every refund would fail on chain ("needs an Ethereum address"),
+		// while the dry run, which unwraps a JSON string, passes (devnet 11-22).
+		raw := json.RawMessage(payload)
+		sim, simErr := gql.simulateContractCall(ctx, did, cfg.ContractID, "sendHome", payload)
 		if simErr == nil && !sim.Success && sim.Err != "gas_limit_hit" {
 			if s.refusedAt.IsZero() {
 				s.refusedAt = now
