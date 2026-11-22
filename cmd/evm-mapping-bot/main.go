@@ -4423,6 +4423,8 @@ func runOnce(
 	}
 	sendHomeOwed(ctx, gql, submitter, cfg, owedGas)
 	retryHeldReturns(ctx, gql, submitter, cfg)
+	// AUTO-ROLL: roll the head withdrawal when it cannot mine (auto_roll.go).
+	rollStuckHead(ctx, gql, submitter, cfg, l1For(rpc))
 
 	// RP-9: store the headers deposits and confirmations wait on; tell the
 	// operator when a proof is needed.

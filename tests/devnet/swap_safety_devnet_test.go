@@ -270,6 +270,7 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 	prS8HivePaidPayoutRefused(t, x, check)
 	prS9EthereumDepositSwapOwedHome(t, x, check)
 	prS10RolledPayoutResent(t, x, check)
+	prS11BotRollsAPricedOutPayout(t, x, check)
 
 	// S7: nothing stays on a contract account.
 	for _, acct := range []string{"contract:" + cid, "contract:" + x.router, ssHold} {

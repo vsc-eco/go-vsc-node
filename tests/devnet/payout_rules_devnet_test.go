@@ -9,6 +9,7 @@
 package devnet
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -412,4 +413,74 @@ func prFundReserve(t *testing.T, x *dex3) {
 		t.Fatalf("the to_reserve top-up was not mapped: gr %q", e.stateStr("gr"))
 	}
 	t.Logf("gas reserve funded: %s wei", e.stateStr("gr"))
+}
+
+// prS11BotRollsAPricedOutPayout (AUTO-ROLL, THORChain's unstuck): a payout
+// signed while the bot is down, then Ethereum's base fee held above its fee cap
+// past the 1,200-block window. The bot comes back, sees the head cannot mine,
+// rolls it itself (nobody else calls rollWithdrawal here), and the payout is
+// sent again: the recipient is paid, less the re-send's own gas.
+func prS11BotRollsAPricedOutPayout(t *testing.T, x *dex3, check prCheck) {
+	b := x.b
+	ctx, e := b.ctx, b.e
+	start := devnetNow()
+	recipient := ethCrypto.PubkeyToAddress(mustKey(t).PublicKey)
+	if err := b.botPoll(30*time.Minute, func() bool { return e.stateStr("n") != "" && e.stateStr("n") == e.stateStr("np") }); err != nil {
+		check(false, "S11 earlier withdrawals confirmed before the bot goes down (n %q, np %q)", e.stateStr("n"), e.stateStr("np"))
+		return
+	}
+	b.botMu.Lock()
+	b.bot.Stop()
+	b.oldLogs = append(b.oldLogs, b.bot.Logs()...)
+	b.botMu.Unlock()
+	nonce, _ := strconv.ParseUint(e.stateStr("np"), 10, 64)
+	instr := fmt.Sprintf(`{"type":"swap","version":"1.0.0","asset_in":"hbd","asset_out":"eth","amount_in":"2000","min_amount_out":"1","recipient":"%s","destination_chain":"ETH"}`,
+		strings.ToLower(recipient.Hex()))
+	x.call(x.router, "execute", instr, hbdAllow(2000), 60_000)
+	key := "d-" + strconv.FormatUint(nonce, 10)
+	var ps struct {
+		Amount json.Number `json:"amount"`
+		Payout bool        `json:"payout"`
+		Rolled bool        `json:"rolled"`
+	}
+	read := func() bool { return json.Unmarshal([]byte(e.stateStr(key)), &ps) == nil }
+	err := pollUntil(ctx, evmL2Wait, func() bool { return read() && ps.Payout })
+	check(err == nil, "S11 payout issued at nonce %d (%s)", nonce, e.stateStr(key))
+	if err != nil {
+		b.restartBotFromStopped()
+		return
+	}
+	first, _ := new(big.Int).SetString(ps.Amount.String(), 10)
+	// Past the window (the 1,200 blocks + anvil finality), with the header planted.
+	if err := b.anvil.Mine(ctx, 1300); err != nil {
+		t.Fatal(err)
+	}
+	fin, err := b.anvil.Finalized(ctx)
+	if err == nil {
+		err = e.plantFinalized(b.anvil, fin)
+	}
+	check(err == nil, "S11 L1 header past the roll window planted: %v", err)
+	// A gas spike that outlasts the window: the base fee held at 60 gwei, above
+	// the payout's ~2 gwei fee cap, until the bot has rolled it.
+	spikeCtx, stopSpike := context.WithCancel(ctx)
+	defer stopSpike()
+	go func() {
+		spike := big.NewInt(60e9)
+		for spikeCtx.Err() == nil {
+			_ = b.anvil.rpc.CallContext(spikeCtx, nil, "anvil_setNextBlockBaseFeePerGas", "0x"+spike.Text(16))
+			devnetSleep(500 * time.Millisecond)
+		}
+	}()
+	before := b.l1Balance(recipient)
+	b.restartBotFromStopped()
+	err = b.botPoll(20*time.Minute, func() bool { return read() && ps.Rolled })
+	check(err == nil, "S11 the bot rolled the priced-out payout itself (%s after the swap)", devnetSince(start).Round(time.Second))
+	stopSpike()
+	if err != nil {
+		return
+	}
+	err = b.botPoll(40*time.Minute, func() bool { return b.l1Balance(recipient).Cmp(before) > 0 })
+	paid := new(big.Int).Sub(b.l1Balance(recipient), before)
+	check(err == nil && paid.Sign() > 0 && paid.Cmp(first) < 0, "S11 USER: the recipient got %s wei after the bot's roll (first send %s; the re-send paid its own gas at the spiked price), %s after the swap", paid, first, devnetSince(start).Round(time.Second))
+	check(len(prHeld(e)) == 0, "S11 nothing held (%v)", prHeld(e))
 }
