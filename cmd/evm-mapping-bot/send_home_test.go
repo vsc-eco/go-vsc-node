@@ -257,3 +257,42 @@ func TestSendHomeKeeper_OwedETHSendCarriesItsGasLimit(t *testing.T) {
 		}
 	}
 }
+
+// A held return waiting on the price must not be left asleep for an hour: its
+// dry run is free (a simulate, no RC, nothing submitted) and the price it waits
+// for moves with every trade. Devnet S8 lost minutes to a 16-minute sleep after
+// the pool had already moved the favourable way.
+func TestHeldReturnKeeper_BackoffStaysShort(t *testing.T) {
+	l2, gql, sub, cfg := shWorld(t)
+	lastHeldReturnsAt, heldReturnState, heldReturnsCursor = time.Time{}, map[uint64]*sendHomeEntry{}, 0
+	l2.set("vsc1bridge", "phrh", "0")
+	l2.set("vsc1bridge", "phrt", "1")
+	l2.set("vsc1bridge", "phr-0", `{"t":"hive:alice","a":"eth","d":"5","ra":"hbd","m":"7","h":1}`)
+	l2.sim = func(string) map[string]any {
+		return map[string]any{"success": false, "err": "x", "err_msg": "slippage tolerance exceeded", "rc_used": 3000}
+	}
+	// Twelve refusals: unclamped doubling from a minute would be ~68 hours.
+	for i := 0; i < 12; i++ {
+		lastHeldReturnsAt = time.Time{}
+		if s := heldReturnState[0]; s != nil {
+			s.nextTry = time.Time{}
+		}
+		retryHeldReturns(context.Background(), gql, sub, cfg)
+	}
+	s := heldReturnState[0]
+	if s == nil {
+		t.Fatal("the keeper kept no state for the refused return")
+	}
+	if s.backoff != heldReturnsBackoffMax {
+		t.Fatalf("backoff %s, want the cap %s", s.backoff, heldReturnsBackoffMax)
+	}
+	if s.backoff >= sendHomeBackoffMax {
+		t.Fatalf("backoff %s is the generic sendHome ceiling; a held return waits on a price, not on a chain", s.backoff)
+	}
+	// And nothing was submitted: a refused dry run spends no RC.
+	for _, c := range submittedCalls(t, l2) {
+		if c.Action == "retryPayoutReturn" {
+			t.Fatalf("sent after a refused dry run: %s", c.Payload)
+		}
+	}
+}
