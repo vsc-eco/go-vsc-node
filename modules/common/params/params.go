@@ -617,6 +617,17 @@ type ConsensusParams struct {
 	// mapping contract that refunds to refund_to, then Altera's
 	// DEPOSIT_SWAP_REFUNDS_ACTIVE), and with Altera's swapCalc switching to the
 	// same rule at the same height (its quotes set min_amount_out).
+	// ALSO REQUIRED FIRST: dex-router-v2's payout-return floor must measure the
+	// pool's real round-trip cost (returnMin/newReturnFloor), not the trader's
+	// pre-slip input less returnSlipBps. Without slip parity the 1% total-fee
+	// clamp kept a round trip inside that 5% allowance; parity removes the clamp,
+	// so any swap large against its pool costs MORE to round-trip than the floor
+	// permits and a refused payout's refund can never be swapped back — it sits
+	// in the hold, flat for a day (PayoutFloorFor) and then decaying 5%/day
+	// (PayoutFloorDays). Devnet SWAP-SAFETY S8: 2 HBD against 50 HBD of depth
+	// costs 7.67%, the old floor allowed 5.00%, and the floor was unfillable the
+	// moment it was written. Pinned without a devnet by
+	// contracts/dex-router-v2/return_floor_test.go.
 	PendulumSlipParityHeight uint64 `json:"pendulumSlipParityHeight,omitempty"`
 
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
@@ -1202,6 +1213,19 @@ type OracleParams struct {
 	// at that height stop agreeing, as at any consensus upgrade. A bridge with
 	// no height is never a consensus input, and a node refuses to start with
 	// one (ValidateEvmBridges).
+	//
+	// DEPLOY ORDER (GLAM-1, any Glamsterdam-priced chain): the bridge owner MUST
+	// set the default ETH payout gas limit with setETHGasLimit (ETHGasLimitKey,
+	// "egl", an Operational proposal) BEFORE the bridge pays anyone. The payout
+	// gas falls back to the unmap's own gas_limit, then egl, then
+	// constants.ETHTransferGas = 21,000 — and 21,000 only pays a transfer to an
+	// account that ALREADY EXISTS. Under EIP-8037 state-creation pricing a
+	// transfer that CREATES its recipient costs ~207,000, so with egl unset every
+	// swap payout to a fresh wallet mines status 0 and loses its fee (the value
+	// is held/refunded, so nothing is stolen). Live on Sepolia since 2026-10-06;
+	// no mainnet date yet. Devnet SWAP-SAFETY S10/S11 failed exactly this way
+	// while S9 passed, because S9 pays the depositor, an address that exists.
+	// 250,000 is the value the harness and the contract default both use.
 	EvmBridgeFromHeight map[string]uint64 `json:"evmBridgeFromHeight,omitempty"`
 
 	// Deprecated: use ChainContracts["BTC"] instead.
