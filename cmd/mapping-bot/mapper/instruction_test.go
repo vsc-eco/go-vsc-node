@@ -66,3 +66,27 @@ func TestValidHiveName(t *testing.T) {
 		t.Error("a deposit to a name Hive refuses must be refused")
 	}
 }
+
+// SENDER-REFUND-1: for the BTC contract (it proves senders) refund_to is
+// optional and an Ethereum payout needs no hive: refund_to; a hive: refund_to
+// is accepted and ignored (the contract refunds the proven sender), so a client
+// still sending one keeps working. Other chains keep the rules.
+func TestValidateInstruction_SenderRefunds(t *testing.T) {
+	eth := "swap_to=did:pkh:eip155:1:0x00000000000000000000000000000000000000e2&swap_asset_out=eth&destination_chain=ETH&min_amount_out=1"
+	hive := "swap_to=hive:alice&swap_asset_out=hbd&destination_chain=HIVE&min_amount_out=1"
+	btcAddr := "bc1qf87mytrp3dj9sm2y2yensj3g454n3p6k2t6sr5"
+	for _, ok := range []string{eth, hive, eth + "&refund_to=" + btcAddr, eth + "&payout_gas_limit=25200",
+		hive + "&refund_to=hive:alice", eth + "&refund_to=hive:alice"} {
+		if err := ValidateInstructionFor(ok, true, &chaincfg.MainNetParams, true); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{hive + "&refund_to=hive:ab.cde", hive + "&refund_to=tb1qnotmainnet", "swap_to=0xabc&swap_asset_out=eth"} {
+		if err := ValidateInstructionFor(bad, true, &chaincfg.MainNetParams, true); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if err := ValidateInstructionFor(eth, true, &chaincfg.MainNetParams, false); err == nil {
+		t.Error("a chain without sender proofs accepted a swap with no refund_to")
+	}
+}

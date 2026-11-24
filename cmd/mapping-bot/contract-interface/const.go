@@ -31,6 +31,11 @@ const AbandonedSweepPrefix = "sa" + DirPathDelimiter
 // (constants.RefundablePrefix). Decimal string; absent when nothing is waiting.
 const RefundablePrefix = "rf" + DirPathDelimiter
 
+// SenderPendingPrefix ("sph-"+txid:vout) marks a held deposit waiting for a
+// proof of its sender (SENDER-REFUND-1, constants.SenderPendingPrefix):
+// proveSender sends it home to the sending address.
+const SenderPendingPrefix = "sph" + DirPathDelimiter
+
 const PrimaryPublicKeyStateKey = "pubkey"
 const BackupPublicKeyStateKey = "backupkey"
 

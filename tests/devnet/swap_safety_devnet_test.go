@@ -149,6 +149,7 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 	}
 	x := newBothEnvDEX3(t, 230*time.Minute, opts...)
 	x.setup()
+	prFundReserve(t, x) // payouts borrow their gas gap from it (mainnet's is funded)
 	b := x.b
 	d, ctx, cid, e := b.d, b.ctx, b.v.cid, b.e
 	// Deposit swaps need the router on the BTC contract (owner, node 1).
@@ -184,9 +185,10 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 	check(paid >= lo && paid <= hi, "S1 Hive payout %d milli-HBD for 0.001 BTC (want [%d, %d], parity %v)", paid, lo, hi, parity)
 	check(x.sats(ssSender) == 0, "S1 nothing refunded when the swap completes (%d)", x.sats(ssSender))
 
-	// S2: the swap cannot meet its minimum: back to the sender's hive: account.
-	ssDeposit(t, x, "swap_to=hive%3Amagi.test2&swap_asset_out=hbd&destination_chain=HIVE&min_amount_out="+impossible+"&refund_to=hive%3Amagi.test3", 50_000)
-	check(x.ssWaitSats(ssSender, 50_000, 3*time.Minute), "S2 failed swap refunded to refund_to (sender has %d sats)", x.sats(ssSender))
+	// S2 (SENDER-REFUND-1): the swap cannot meet its minimum; the sender is
+	// proven, so the BTC goes back to the address that sent it on Bitcoin (a
+	// hive: refund_to is no longer credited on Magi).
+	prS2BitcoinSenderRefund(t, x, check)
 
 	// S3: refund to the sender's own Bitcoin address, returned on Bitcoin by a
 	// third party's sendHome.
@@ -260,11 +262,22 @@ func TestSwapSafety_EveryRefundPathTogether(t *testing.T) {
 		check(werr == nil && got.Cmp(new(big.Int).Div(bbEth(9), big.NewInt(10))) > 0, "S6 %s wei back at the sending address (deposit 1 ETH less fees)", got)
 	}
 
+	// The final payout rules on the EVM side: the router wired on the bridge
+	// the way mainnet must (timelocked), a refused Hive-paid payout held and
+	// swapped back by the bot only, a failed Ethereum deposit swap sent home by
+	// the bot only, and a stuck payout rolled and sent again.
+	prS0WireRouter(t, x, check)
+	prS8HivePaidPayoutRefused(t, x, check)
+	prS9EthereumDepositSwapOwedHome(t, x, check)
+	prS10RolledPayoutResent(t, x, check)
+	prS11BotRollsAPricedOutPayout(t, x, check)
+
 	// S7: nothing stays on a contract account.
 	for _, acct := range []string{"contract:" + cid, "contract:" + x.router, ssHold} {
 		check(x.sats(acct) == 0, "S7 BTC contract: %s holds %d sats", acct, x.sats(acct))
 	}
-	for _, k := range []string{"a-contract:" + x.router + "-eth", "a-contract:" + x.router + "-usdc", "a-contract:" + e.amID + "-eth"} {
+	for _, k := range []string{"a-contract:" + x.router + "-eth", "a-contract:" + x.router + "-usdc", "a-contract:" + e.amID + "-eth",
+		"a-system:payout-return-eth", "a-system:payout-return-usdc", "a-system:owed-home-eth"} {
 		v := strings.SplitN(e.stateStr(k), "|", 2)[0]
 		check(v == "" || v == "0", "S7 EVM bridge: %s = %q", k, v)
 	}

@@ -13,9 +13,9 @@ const withdrawalRollWindow = 1200
 
 // B-7: a withdrawal that never settles (TSS never signed it, nobody broadcast
 // it, or it is priced out) holds every later one behind it, and nothing said
-// so. The bot does not roll or re-price it itself: rolling one that was about
-// to mine turns a payout into a refund, so that stays the operator's call.
-// headWithdrawalAlarm only reports it: the head withdrawal (nonce "n") that has
+// so. The bot rolls one that is priced out (auto_roll.go, THORChain's unstuck);
+// one that could still mine, or that TSS never signed, stays the operator's.
+// headWithdrawalAlarm reports it: the head withdrawal (nonce "n") that has
 // not settled withdrawalRollWindow L1 blocks after it was queued, with what can
 // move it. It reads state and sends nothing. "" means no alarm.
 func headWithdrawalAlarm(ctx context.Context, gql *vscGraphQL, contractID string) string {

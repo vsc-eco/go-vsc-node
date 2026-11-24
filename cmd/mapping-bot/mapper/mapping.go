@@ -118,6 +118,7 @@ func (b *Bot) HandleMap(
 			b.recordFailedTx(ctx, "map-too-large-"+btcTxId, "map", tx)
 			continue
 		}
+		b.proveSenderBeforeMap(ctx, foundTxs[i])
 		if _, err := b.callWithRetry(ctx, tx, "map", broadcastRetryAttempts); err == nil {
 			b.recordDeposits(ctx, foundTxs[i].Instructions)
 			b.watchRefunds(foundTxs[i].Instructions)
@@ -151,8 +152,10 @@ func (b *Bot) HandleMap(
 	}
 
 	b.setLastBlock(blockHeight)
-	// After the cursor moved, on its own budget: a deposit swap refunded to a
-	// Bitcoin address goes back on Bitcoin (send_home.go).
+	// After the cursor moved, on its own budget: the senders of swap deposits
+	// mapped without one (prove_sender.go), then refunds to Bitcoin addresses go
+	// back on Bitcoin (send_home.go).
+	b.proveHeldSenders(context.Background())
 	b.sendHomeRefunds(context.Background())
 	return true
 }
@@ -238,6 +241,7 @@ func (b *Bot) HandleExistingTxs(chainAddress string) {
 				b.L.Warn("could not marshal historical transaction", "err", err)
 				continue
 			}
+			b.proveSenderBeforeMap(ctx, tx)
 			if _, err := b.callWithRetry(ctx, json.RawMessage(jsonBytes), "map", broadcastRetryAttempts); err != nil {
 				b.L.Error("historical map call failed", "err", err)
 			} else {

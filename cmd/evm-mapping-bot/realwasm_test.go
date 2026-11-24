@@ -42,7 +42,7 @@ import (
 )
 
 const (
-	rwBridge   = "vsc1RWbridge"
+	rwBridge   = "vsc1Bnuikc8sJii5baG5gmxno4V2xTW7joi2vu" // a valid contract id: the DEX router checks it
 	rwVerifier = "vsc1RWverifier"
 	rwRelayer  = "hive:relayer"
 )

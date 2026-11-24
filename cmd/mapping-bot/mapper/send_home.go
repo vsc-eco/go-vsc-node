@@ -104,6 +104,18 @@ func refundAddressOf(instruction string, b *Bot) string {
 	return RefundChainAddress(rt, params)
 }
 
+// watchRefundAddress puts one Bitcoin address (a proven sender) on the watch.
+func (b *Bot) watchRefundAddress(addr string) {
+	b.refundWatchMu.Lock()
+	defer b.refundWatchMu.Unlock()
+	if b.refundWatch == nil {
+		b.refundWatch = map[string]*refundWatchEntry{}
+	}
+	if _, ok := b.refundWatch[addr]; !ok {
+		b.refundWatch[addr] = &refundWatchEntry{passes: refundWatchPasses}
+	}
+}
+
 // watchRefunds puts the Bitcoin refund addresses of mapped instructions on the watch.
 func (b *Bot) watchRefunds(instructions []string) {
 	b.refundWatchMu.Lock()
