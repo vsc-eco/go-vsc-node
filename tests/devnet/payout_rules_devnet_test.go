@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,19 @@ import (
 )
 
 type prCheck func(ok bool, format string, a ...any)
+
+// prPayWait is the budget for the final "the recipient was paid" poll. The
+// default is the real one; PR_PAY_WAIT (a Go duration) shortens it for a
+// diagnostic run, where the evidence wanted is the L1 dump that follows the
+// poll, not another hour of waiting for a payment that is not coming.
+func prPayWait(def time.Duration) time.Duration {
+	if v := os.Getenv("PR_PAY_WAIT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return def
+}
 
 // prMerkleBranch is the Bitcoin merkle branch of txids[idx] (display hex), as
 // the BTC contract reads it: each sibling's 32 bytes in internal order.
@@ -207,6 +221,36 @@ func prS0WireRouter(t *testing.T, x *dex3, check prCheck) {
 	}
 	err := x.b.botPoll(10*time.Minute, func() bool { return e.stateStr("routerid") == x.router })
 	check(err == nil, "S0 EVM bridge routerid %q, want %s", e.stateStr("routerid"), x.router)
+
+	// GLAM-1: configure the bridge's ETH payout gas limit, which no devnet wave
+	// ever did. The bridge signs an ETH payout at the unmap's gas_limit, else the
+	// owner-set default (ETHGasLimitKey, an operational proposal), else
+	// constants.ETHTransferGas = 21,000. 21,000 pays a transfer to an account
+	// that ALREADY EXISTS; under Glamsterdam's state-creation pricing (EIP-8037)
+	// a transfer that creates its recipient costs ~207,000 on Sepolia, and this
+	// devnet's anvil runs chain id 11155111, for which anvil applies exactly that
+	// schedule. So an unconfigured bridge signs every payout to a new address too
+	// cheap: it runs out of gas and mines with status 0.
+	//
+	// That is what failed S10 and S11 of the 2026-11-23 runs, and the L1 dump
+	// (prL1VaultTxs) is unambiguous — every value-bearing payout from the vault
+	// mined with status 0x0 while both 0-value roll self-transfers, which go to
+	// the vault itself (an account that exists), mined with status 0x1:
+	//
+	//	vault nonce 0x2 to 0xb2310494… value 18354819632724312 status 0x0
+	//	vault nonce 0x4 to 0xe9a97960… value 17024137108805723 status 0x0
+	//
+	// S9 passing in the same suite is the control: it pays the DEPOSITOR back,
+	// an address that exists because it sent the deposit, and 21,000 covers it.
+	//
+	// This is configuration, not a contract bug — but it is configuration a real
+	// deployment on any Glamsterdam-priced chain MUST do, or every swap payout to
+	// a fresh wallet reverts and loses its fee. It belongs in the deploy order.
+	if err := e.proposeExecute("setETHGasLimit", `{"gas_limit":250000}`); err != nil {
+		t.Fatalf("setETHGasLimit on the EVM bridge: %v", err)
+	}
+	err = x.b.botPoll(10*time.Minute, func() bool { return e.stateStr("egl") == "250000" })
+	check(err == nil, "S0 EVM bridge ETH payout gas limit %q, want 250000 (GLAM-1)", e.stateStr("egl"))
 }
 
 // prHeld lists the held returns (phr-<id> from phrh to phrt).
@@ -375,8 +419,9 @@ func prS10RolledPayoutResent(t *testing.T, x *dex3, check prCheck) {
 	// payout again (TSS-signed), and it broadcasts that.
 	b.restartBotFromStopped()
 	before := b.l1Balance(recipient)
-	err = b.botPoll(60*time.Minute, func() bool { return b.l1Balance(recipient).Cmp(before) > 0 })
+	err = b.botPoll(prPayWait(60*time.Minute), func() bool { return b.l1Balance(recipient).Cmp(before) > 0 })
 	paid := new(big.Int).Sub(b.l1Balance(recipient), before)
+	t.Logf("S10 recipient %s: before %s, now %s", recipient.Hex(), before, b.l1Balance(recipient))
 	check(err == nil && paid.Sign() > 0 && paid.Cmp(first) < 0, "S10 USER: the recipient got %s wei (first send was %s; the re-send paid its own gas), %s after the swap", paid, first, devnetSince(start).Round(time.Second))
 	check(len(prHeld(e)) == 0, "S10 nothing held (%v)", prHeld(e))
 }
@@ -479,8 +524,9 @@ func prS11BotRollsAPricedOutPayout(t *testing.T, x *dex3, check prCheck) {
 	if err != nil {
 		return
 	}
-	err = b.botPoll(40*time.Minute, func() bool { return b.l1Balance(recipient).Cmp(before) > 0 })
+	err = b.botPoll(prPayWait(40*time.Minute), func() bool { return b.l1Balance(recipient).Cmp(before) > 0 })
 	paid := new(big.Int).Sub(b.l1Balance(recipient), before)
+	t.Logf("S11 recipient %s: before %s, now %s", recipient.Hex(), before, b.l1Balance(recipient))
 	check(err == nil && paid.Sign() > 0 && paid.Cmp(first) < 0, "S11 USER: the recipient got %s wei after the bot's roll (first send %s; the re-send paid its own gas at the spiked price), %s after the swap", paid, first, devnetSince(start).Round(time.Second))
 	check(len(prHeld(e)) == 0, "S11 nothing held (%v)", prHeld(e))
 }
