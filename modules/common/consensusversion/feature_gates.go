@@ -1055,3 +1055,24 @@ func WriteIoPriceCutActive(active Version) bool {
 func RcChargeCappedAtLimitActive(active Version) bool {
 	return Version0_15_0Active(active)
 }
+
+// V0_17_0 is the 0.17.0 consensus line (DEPOSIT-REFUND-1). Binaries announce it
+// from the release that sets version.go currentConsensus to 17; every rule on it
+// is inert until the chain floor reaches it.
+var V0_17_0 = Version{Major: 0, Consensus: 17, NonConsensus: 0}
+
+// Version0_17_0Active reports whether the 0.17.0 line is in force given the
+// chain-active consensus version.
+func Version0_17_0Active(active Version) bool {
+	return active.MeetsConsensusMin(V0_17_0)
+}
+
+// FailedTxDepositRefundActive (0.17.0) reports whether a Hive transaction that
+// deposits to the gateway and whose Magi operations fail sends the deposit back
+// to the sender's Hive account (DEPOSIT-REFUND-1; THORChain refunds a failed
+// inbound to its sender). Below the line the deposit stays credited on Magi,
+// apart from the failed call, so settled history re-executes to the same
+// balances. Resolve `active` at the deposit's block height.
+func FailedTxDepositRefundActive(active Version) bool {
+	return Version0_17_0Active(active)
+}

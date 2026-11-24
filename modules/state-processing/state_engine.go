@@ -2928,6 +2928,10 @@ func (se *StateEngine) ExecuteBatch() {
 				break
 			}
 		}
+		if !ok {
+			// DEPOSIT-REFUND-1: after the revert, so the refund is kept.
+			se.refundFailedTxDeposits(ledgerSession, tx)
+		}
 		for _, out := range outputs {
 			se.AppendOutput(out.ContractId, out.Output)
 		}
@@ -2949,6 +2953,46 @@ func (se *StateEngine) ExecuteBatch() {
 	}
 
 	se.TxBatch = make([]TxPacket, 0)
+}
+
+// refundFailedTxDeposits (DEPOSIT-REFUND-1, owner 11-21/22: a failure goes back
+// to its sender; THORChain refunds a failed inbound to its sender): a Hive
+// transaction that deposits to the gateway and whose Magi operations then fail
+// (a contract call that aborts: out of RC, an allowance below the amount, a
+// malformed call) left the deposit on Magi. A deposit is credited when the
+// block is read, outside the transaction's ledger session, so the failure's
+// revert never touched it. From 0.17.0 each of the transaction's Hive deposits
+// goes back to its sender's Hive account as a withdrawal, recorded with the
+// failed transaction (the block's oplog carries every ledger op whatever the
+// transaction's status, so every node applies the same refund). A deposit whose
+// credited account no longer holds it (another transaction of the batch spent
+// it first) is left as it is. Deterministic: tx.Ops order, the deposit's own
+// height for the gate, the session's balances.
+func (se *StateEngine) refundFailedTxDeposits(session ledgerSystem.LedgerSession, tx TxPacket) {
+	for _, op := range tx.Ops {
+		dep, isDeposit := op.(TxDeposit)
+		if !isDeposit || dep.Amount <= 0 || !strings.HasPrefix(dep.From, "hive:") || dep.To == "" {
+			continue
+		}
+		if !consensusversion.FailedTxDepositRefundActive(se.ActiveConsensusVersion(dep.Self.BlockHeight)) {
+			continue
+		}
+		res := session.Withdraw(ledgerSystem.WithdrawParams{
+			Id:          MakeTxId(dep.Self.TxId, dep.Self.OpIndex) + "-refund",
+			From:        dep.To,
+			To:          dep.From,
+			Asset:       dep.Asset,
+			Amount:      dep.Amount,
+			Memo:        "refund: the transaction's Magi operation failed",
+			BIdx:        int64(dep.Self.Index),
+			OpIdx:       int64(dep.Self.OpIndex),
+			BlockHeight: dep.Self.BlockHeight,
+		})
+		if !res.Ok {
+			log.Warn("DEPOSIT-REFUND-1: a failed transaction's deposit could not be refunded",
+				"tx", tx.TxId, "from", dep.From, "credited", dep.To, "asset", dep.Asset, "amount", dep.Amount, "reason", res.Msg)
+		}
+	}
 }
 
 // recordTxFailure stores why a transaction failed in this node's transaction index,
