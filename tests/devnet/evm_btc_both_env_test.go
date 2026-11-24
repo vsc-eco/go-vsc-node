@@ -190,9 +190,12 @@ type bothEnv struct {
 	bot     *Bot
 	botMu   sync.Mutex
 	oldLogs []string
-	userKey *ecdsa.PrivateKey
-	user    string // the user's did:pkh (ETH balance on the bridge, HBD for RC)
-	vault0  ethcommon.Address
+	// balErrAt rate-limits the "L1 balance read failed" line per address.
+	balErrMu sync.Mutex
+	balErrAt map[ethcommon.Address]time.Time
+	userKey  *ecdsa.PrivateKey
+	user     string // the user's did:pkh (ETH balance on the bridge, HBD for RC)
+	vault0   ethcommon.Address
 	// usdc is the MockUSDC registered on the bridge (zero with BB_USDC=0): the
 	// third asset of every BOTH cycle, next to BTC and ETH (owner 11-11: "since
 	// theres usdc eth and btc pool now ... consider every one"). usdcOwner
@@ -868,13 +871,33 @@ func (b *bothEnv) userEth() string {
 func (b *bothEnv) l1Balance(addr ethcommon.Address) *big.Int {
 	var h string
 	if err := b.anvil.rpc.CallContext(b.ctx, &h, "eth_getBalance", addr, "latest"); err != nil {
+		// A dead RPC used to read as "balance 0", which is the same answer as
+		// "the recipient was never paid" — the very thing S10/S11 measure. Say
+		// so instead of answering 0 silently (rate-limited: these run in polls).
+		b.l1BalErr(addr, err)
 		return big.NewInt(0)
 	}
 	v, _ := new(big.Int).SetString(strings.TrimPrefix(h, "0x"), 16)
 	if v == nil {
+		b.l1BalErr(addr, fmt.Errorf("unparsable balance %q", h))
 		return big.NewInt(0)
 	}
 	return v
+}
+
+// l1BalErr logs a balance read that failed, at most once a minute per address,
+// so a 60-minute poll cannot bury the test output in the same line.
+func (b *bothEnv) l1BalErr(addr ethcommon.Address, err error) {
+	b.balErrMu.Lock()
+	defer b.balErrMu.Unlock()
+	if b.balErrAt == nil {
+		b.balErrAt = map[ethcommon.Address]time.Time{}
+	}
+	if last, ok := b.balErrAt[addr]; ok && devnetNow().Sub(last) < time.Minute {
+		return
+	}
+	b.balErrAt[addr] = devnetNow()
+	b.t.Logf("L1 BALANCE READ FAILED for %s: %v (reported as 0)", addr.Hex(), err)
 }
 
 // evmMigrated: the bot's batch is confirmed (no open sweep records) and gen 0

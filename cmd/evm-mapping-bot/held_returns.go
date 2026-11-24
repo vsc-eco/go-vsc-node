@@ -27,6 +27,24 @@ const (
 	heldReturnsPerTick = 3
 	// heldReturnsScan bounds how many ids past the head are read a tick.
 	heldReturnsScan = 32
+	// heldReturnsBackoffMax caps the wait between dry runs of ONE held return.
+	// sendHomeBackoffMax (an hour) is wrong here for two reasons: what a refused
+	// return is waiting for is the PRICE (the bridge keeps the swap's own floor
+	// for the first day), which moves with every trade and not on the keeper's
+	// schedule, and the dry run that checks it is a simulate — it costs no RC
+	// and submits nothing, so waiting longer buys nothing. The per-tick cap and
+	// the moving window bound the load whatever this is.
+	//
+	// Devnet SWAP-SAFETY S8, 2026-11-23: the floor was unfillable, the backoff
+	// doubled 1 -> 2 -> 4 -> 8 -> 16 minutes, and when an unrelated swap finally
+	// moved the pool the favourable way the refund waited out the rest of a
+	// 16-minute sleep before anyone looked again.
+	heldReturnsBackoffMax = 5 * time.Minute
+	// heldReturnsAlertAfter: say so while an operator can still act. The held
+	// floor is flat for constants.PayoutFloorFor (a day) and then decays 5% a
+	// day, so sendHomeAlertAfter's 24 hours first alerts exactly when the
+	// sender starts losing value. An hour of refusals is already abnormal.
+	heldReturnsAlertAfter = time.Hour
 )
 
 var (
@@ -148,11 +166,11 @@ func retryHeldReturns(ctx context.Context, gql *vscGraphQL, submitter *l2Submitt
 			if s.refusedAt.IsZero() {
 				s.refusedAt = now
 			}
-			s.backoff = min(max(2*s.backoff, heldReturnsEvery), sendHomeBackoffMax)
+			s.backoff = min(max(2*s.backoff, heldReturnsEvery), heldReturnsBackoffMax)
 			s.nextTry = now.Add(s.backoff)
-			if !s.alerted && now.Sub(s.refusedAt) >= sendHomeAlertAfter {
+			if !s.alerted && now.Sub(s.refusedAt) >= heldReturnsAlertAfter {
 				s.alerted = true
-				slog.Error("a held payout return could not be swapped back for a day; check the pool, the bot's relayer registration, or let its sender release it (releasePayoutReturn)",
+				slog.Error("a held payout return could not be swapped back for an hour; check the pool, the bot's relayer registration, or let its sender release it (releasePayoutReturn)",
 					"id", id, "to", rec.To, "asset", rec.Asset, "err", sim.Err, "reason", sim.ErrMsg, "ret", sim.Ret)
 			} else {
 				slog.Info("held payout return cannot be swapped back yet; trying again later", "id", id, "reason", sim.ErrMsg, "next", s.backoff)
