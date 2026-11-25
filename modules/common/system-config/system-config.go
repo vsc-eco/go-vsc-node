@@ -541,7 +541,16 @@ func MainnetConfig() SystemConfig {
 			// no keygen replacement and the vault freezes as the committee churns.
 			// Same cutover discipline as BondInclusionActivationHeight above.
 			VaultRotationV2ActivationHeight: 0,
-			BondInclusionSampleCount:        8,
+			// PENDULUM-SLIP-PARITY: 0 = INERT, today's fee math (the 1/16 slip
+			// leg and the 1% total-fee clamp). Deliberately NOT pinned here --
+			// testnet activates first (see TestnetConfig below), and mainnet
+			// needs the witness fleet coordinated onto the release that carries
+			// the height before it is chosen: this is a compile-time consensus
+			// value with no version gate, so a mixed fleet across the height
+			// charges different swap fees and diverges. Pin it only with the
+			// params.go DEPLOY ORDER preconditions satisfied on mainnet.
+			PendulumSlipParityHeight: 0,
+			BondInclusionSampleCount: 8,
 			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
 			// most N NEW members per election so a coordinated cohort maturing on
 			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
@@ -736,7 +745,31 @@ func TestnetConfig() SystemConfig {
 			BondInclusionActivationHeight: 3_870_000,
 			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
 			VaultRotationV2ActivationHeight: 0,
-			BondInclusionSampleCount:        8,
+			// PENDULUM-SLIP-PARITY (00-README-ORDER-AND-SLIP-FEE-ACTIVATION.md,
+			// go-vsc-node #309): from this Hive L1 height the swap fee is
+			// THORChain's rule -- max(full slip fee x^2*Y/(x+X)^2, the 8 bps x m
+			// protocol tier), with NO total-fee clamp. Large swaps pay materially
+			// MORE than before, small ones slightly less.
+			//
+			// TESTNET FIRST. Pinned 2026-11-22 with the testnet L1 head at
+			// ~8,472,460: 8,674,000 is ~201,540 blocks (~7 days at 3s) out, so
+			// every testnet witness has a week to run the release that carries
+			// this value.
+			//
+			// COMPILE-TIME CONSENSUS VALUE, NO VERSION GATE: a fleet split across
+			// this height computes different swap fees and DIVERGES. Do not move
+			// it once the chain is near it, and do not ship a release that
+			// changes it to nodes that already passed it.
+			//
+			// PRECONDITIONS (params.go DEPLOY ORDER), all met on testnet before
+			// the height: deposit swaps must carry min_amount_out -- the BTC
+			// mapping contract that refunds to the sender (utxo-mapping #44) and
+			// Altera's DEPOSIT_SWAP_REFUNDS_ACTIVE (live since 2026-11-17) -- and
+			// Altera's swapCalc must quote the same rule (SLIP_FEE_RULE, shipped
+			// as 'both' so a quote holds under EITHER rule across the height;
+			// move it to 'on' only after the height has passed).
+			PendulumSlipParityHeight: 8_674_000,
+			BondInclusionSampleCount: 8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
