@@ -3,6 +3,7 @@ package devnet
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ import (
 //
 // WHAT IS INJECTED, AND WHY IT IS HONEST
 //
-// A document validator on the faulted node's own `actions` collection rejects
+// A document validator on the faulted node's own `ledger_actions` collection rejects
 // any document with status "complete" (collMod + validationAction "error").
 // ExecuteComplete's UpdateMany then fails with DocumentValidationFailure — the
 // exact production shape: reads keep working, every other collection keeps
@@ -80,6 +81,14 @@ import (
 // Run: go test -v -run TestGatewayPayOnceSettlementFault -timeout 120m ./tests/devnet/
 // Differential against the pre-fix binary: GWPAY_PREFIX=1 GW_OLD_DIR=<pre-fix tree> ...
 
+// gwPayActionsColl is the gateway's action collection. NOT "actions" -- that is a
+// different collection used elsewhere in this harness; the bridge actions the
+// gateway pays from live in "ledger_actions"
+// (modules/db/vsc/ledger/ledger.go:530). Getting this wrong fails with
+// NamespaceNotFound rather than silently arming nothing, which is the only
+// reason the first run of this test did not report a false pass.
+const gwPayActionsColl = "ledger_actions"
+
 // gwPayFaultedNodes is the signing majority that loses the settlement write.
 // 7 of 9 keys carry more than the gateway's ceil(2/3) weight threshold, so a
 // batch they agree on is signable — which is what makes a re-pay possible at
@@ -99,14 +108,24 @@ func gwPayCompletionFault(t *testing.T, d *Devnet, ctx context.Context, nodes []
 	}
 	defer client.Disconnect(ctx)
 	for _, n := range nodes {
+		ndb := client.Database(d.nodeDbName(n))
+		if on {
+			// Mongo creates a collection lazily on first write and collMod on an
+			// absent namespace fails, so create it if this node has not written
+			// an action yet. NamespaceExists is the normal case.
+			if err := ndb.CreateCollection(ctx, gwPayActionsColl); err != nil &&
+				!strings.Contains(err.Error(), "NamespaceExists") {
+				t.Fatalf("ensuring %s.%s exists: %v", d.nodeDbName(n), gwPayActionsColl, err)
+			}
+		}
 		cmd := bson.D{
-			{Key: "collMod", Value: "actions"},
+			{Key: "collMod", Value: gwPayActionsColl},
 			{Key: "validator", Value: bson.D{}},
 			{Key: "validationLevel", Value: "off"},
 		}
 		if on {
 			cmd = bson.D{
-				{Key: "collMod", Value: "actions"},
+				{Key: "collMod", Value: gwPayActionsColl},
 				{Key: "validator", Value: bson.D{
 					{Key: "status", Value: bson.D{{Key: "$ne", Value: "complete"}}},
 				}},
@@ -114,8 +133,13 @@ func gwPayCompletionFault(t *testing.T, d *Devnet, ctx context.Context, nodes []
 				{Key: "validationAction", Value: "error"},
 			}
 		}
-		if err := client.Database(d.nodeDbName(n)).RunCommand(ctx, cmd).Err(); err != nil {
-			t.Fatalf("collMod(actions, fault=%v) on %s: %v", on, d.nodeDbName(n), err)
+		if err := ndb.RunCommand(ctx, cmd).Err(); err != nil {
+			// Clearing a fault on a collection that never existed is a no-op,
+			// not a failure -- this also runs from t.Cleanup.
+			if !on && strings.Contains(err.Error(), "NamespaceNotFound") {
+				continue
+			}
+			t.Fatalf("collMod(%s, fault=%v) on %s: %v", gwPayActionsColl, on, d.nodeDbName(n), err)
 		}
 	}
 	t.Logf("completion-write fault %v on nodes %v", on, nodes)
@@ -134,7 +158,7 @@ func gwPayVerifyFault(t *testing.T, d *Devnet, ctx context.Context, faulted, hea
 	defer client.Disconnect(ctx)
 	probe := bson.M{"id": "gwpay-probe", "status": "pending", "type": "withdraw", "amount": int64(1)}
 	for _, n := range []int{faulted, healthy} {
-		col := client.Database(d.nodeDbName(n)).Collection("actions")
+		col := client.Database(d.nodeDbName(n)).Collection(gwPayActionsColl)
 		if _, err := col.DeleteOne(ctx, bson.M{"id": "gwpay-probe"}); err != nil {
 			t.Fatalf("probe cleanup on %s: %v", d.nodeDbName(n), err)
 		}
@@ -145,8 +169,8 @@ func gwPayVerifyFault(t *testing.T, d *Devnet, ctx context.Context, faulted, hea
 			t.Fatalf("reads must keep working on %s: %v", d.nodeDbName(n), err)
 		}
 	}
-	fCol := client.Database(d.nodeDbName(faulted)).Collection("actions")
-	hCol := client.Database(d.nodeDbName(healthy)).Collection("actions")
+	fCol := client.Database(d.nodeDbName(faulted)).Collection(gwPayActionsColl)
+	hCol := client.Database(d.nodeDbName(healthy)).Collection(gwPayActionsColl)
 	if _, err := fCol.UpdateOne(ctx, bson.M{"id": "gwpay-probe"}, bson.M{"$set": bson.M{"status": "complete"}}); err == nil {
 		t.Fatalf("PRECONDITION FAILED: the completion write still succeeds on faulted %s — the fault never armed", d.nodeDbName(faulted))
 	}
@@ -154,7 +178,7 @@ func gwPayVerifyFault(t *testing.T, d *Devnet, ctx context.Context, faulted, hea
 		t.Fatalf("the completion write must still succeed on healthy %s: %v", d.nodeDbName(healthy), err)
 	}
 	for _, n := range []int{faulted, healthy} {
-		if _, err := client.Database(d.nodeDbName(n)).Collection("actions").DeleteOne(ctx, bson.M{"id": "gwpay-probe"}); err != nil {
+		if _, err := client.Database(d.nodeDbName(n)).Collection(gwPayActionsColl).DeleteOne(ctx, bson.M{"id": "gwpay-probe"}); err != nil {
 			t.Fatalf("probe cleanup on %s: %v", d.nodeDbName(n), err)
 		}
 	}
@@ -170,7 +194,7 @@ func gwPayActionCounts(t *testing.T, d *Devnet, ctx context.Context, node int) m
 		t.Fatalf("mongo: %v", err)
 	}
 	defer client.Disconnect(ctx)
-	cur, err := client.Database(d.nodeDbName(node)).Collection("actions").
+	cur, err := client.Database(d.nodeDbName(node)).Collection(gwPayActionsColl).
 		Find(ctx, bson.M{"type": "withdraw"})
 	if err != nil {
 		t.Fatalf("reading actions on %s: %v", d.nodeDbName(node), err)
