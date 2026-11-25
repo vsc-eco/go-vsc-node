@@ -113,7 +113,10 @@ type LedgerRecord struct {
 type BridgeActions interface {
 	aggregate.Plugin
 	StoreAction(withdraw ActionRecord)
-	ExecuteComplete(actionId *string, ids ...string)
+	// ExecuteComplete marks actions settled. The error is load-bearing: see the
+	// implementation comment -- a dropped completion re-pays the withdrawal
+	// every action tick. Callers must fail-stop on it, not log and continue.
+	ExecuteComplete(actionId *string, ids ...string) error
 	// RevertProcessingToPending re-queues actions stranded in the legacy
 	// "processing" state (removed with the cosigner split-brain fix). One-time,
 	// idempotent rollout heal; a no-op once no action is "processing". Returns

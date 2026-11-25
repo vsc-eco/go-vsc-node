@@ -216,3 +216,75 @@ func TestIndexActions_Conservation_CreditMustLandInAnAccount(t *testing.T) {
 	assert.Len(t, lDb.LedgerRecords["hive:alice"], 2)
 	assert.Len(t, lDb.LedgerRecords["hive:bob"], 1)
 }
+
+// ★ THE DOUBLE-PAY MECHANISM. A withdraw reaches IndexActions only after its L1
+// payout has MINED. The flip to "complete" is the only thing that takes it out
+// of GetPendingActions, which selects purely on status == "pending" — there is
+// no per-withdrawal in-flight lock (c9a86798 added one, cc6b7d33 reverted it
+// because cosigners stranded withdrawals in "processing" when the leader's
+// broadcast failed).
+//
+// So losing this one write re-pays the user every action tick (~60 s) until the
+// DB recovers. The old ExecuteComplete returned nothing and discarded the
+// UpdateMany error, which armed exactly that loop silently. This pins the
+// retry: a transient fault must never leave a PAID action selectable.
+func TestIndexActions_TransientCompleteError_LeavesNoPayableAction(t *testing.T) {
+	ls, _, aDb := newIndexActionsEnv()
+	aDb.Actions["wd1"] = ledgerDb.ActionRecord{
+		Id: "wd1", Amount: 6482, Asset: "hbd", To: "hive:bradleyarrow",
+		Type: "withdraw", Status: "pending",
+	}
+	// The settlement write faults once, then recovers.
+	aDb.CompleteErrs = []error{errors.New("server selection error: context deadline exceeded")}
+
+	ls.IndexActions(
+		ledgerSystem.ActionUpdate{Ops: []string{"wd1"}, ClearedOps: ""},
+		ledgerSystem.ExtraInfo{BlockHeight: 400, ActionId: "tx-wd1"},
+	)
+
+	assert.Equal(t, "complete", aDb.Actions["wd1"].Status,
+		"a transient settlement-write failure must be retried, never swallowed — "+
+			"an action left 'pending' after its payout mined is re-paid every tick")
+	assert.Equal(t, "tx-wd1", aDb.Actions["wd1"].TxId,
+		"the settling action id must be recorded on the retry too")
+}
+
+// Same guarantee on the stake path, where the completion follows a credit write.
+// A fault here used to be invisible: the credit landed, the action stayed
+// selectable, and the gateway re-issued the L1 leg for an already-credited stake.
+func TestIndexActions_TransientCompleteError_StakeStillCompletes(t *testing.T) {
+	ls, lDb, aDb := newIndexActionsEnv()
+	aDb.Actions["st1"] = ledgerDb.ActionRecord{
+		Id: "st1", Amount: 2500, To: "hive:dave", Type: "stake", Status: "pending",
+	}
+	aDb.CompleteErrs = []error{errors.New("write concern error")}
+
+	ls.IndexActions(
+		ledgerSystem.ActionUpdate{Ops: []string{"st1"}, ClearedOps: ""},
+		ledgerSystem.ExtraInfo{BlockHeight: 500, ActionId: "tx-st1"},
+	)
+
+	assert.NotNil(t, creditRow(lDb, "hive:dave", "st1#out"), "credit leg still written")
+	assert.Equal(t, "complete", aDb.Actions["st1"].Status,
+		"completion must be retried after a transient fault, or the credited "+
+			"stake is paid again next tick")
+}
+
+// The error return must be honoured, not just present: an ExecuteComplete that
+// keeps failing must never end with the action marked complete. (The production
+// path blocks until the DB recovers; this asserts the mock contract the two
+// tests above rely on — an injected error mutates nothing.)
+func TestMockExecuteComplete_InjectedErrorMutatesNothing(t *testing.T) {
+	aDb := &test_utils.MockActionsDb{
+		Actions:     map[string]ledgerDb.ActionRecord{},
+		CompletedAt: map[string]int{},
+	}
+	aDb.Actions["x1"] = ledgerDb.ActionRecord{Id: "x1", Type: "withdraw", Status: "pending"}
+	aDb.CompleteErrs = []error{errors.New("boom")}
+
+	err := aDb.ExecuteComplete(nil, "x1")
+
+	assert.Error(t, err, "the failure must be reported, not discarded")
+	assert.Equal(t, "pending", aDb.Actions["x1"].Status,
+		"a failed completion must not half-apply")
+}

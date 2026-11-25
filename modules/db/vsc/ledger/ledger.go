@@ -557,9 +557,39 @@ func (actionsDb *actionsDb) StoreAction(withdraw ActionRecord) {
 	}, findUpdateOpts)
 }
 
-func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
+// ExecuteComplete marks the given actions settled, and RETURNS AN ERROR because
+// losing this one write is the gateway's double-pay bug.
+//
+// GetPendingActions selects purely on status == "pending". There is no
+// per-withdrawal in-flight lock -- that marker was added in c9a86798 and
+// reverted in cc6b7d33 because cosigners marked actions "processing" in their
+// own DB and stranded the withdrawal forever when the leader's broadcast
+// failed. So this status flip is the ONLY thing that stops an action whose L1
+// payout has already mined from being selected and PAID AGAIN on the next
+// action tick (~60 s), and again every tick after that, for as long as the
+// write keeps failing. The 2026-05 mainnet incident (34 duplicate action
+// groups / 68 extra payouts, action 24f87dab paid 9x) is this shape reached by
+// a different route.
+//
+// The previous signature returned nothing and discarded both the UpdateMany
+// result and its error, so a transient Mongo fault at the ingest block armed
+// exactly that loop silently and permanently on the affected node.
+//
+// Callers MUST fail-stop on the error (blockingRetry), never log-and-continue.
+// Fail-stop is also the circuit breaker, with no new state and no marker:
+// hive/block-consumer.ProcessBlock runs the sync block ticks and the state
+// engine on ONE goroutine, so a node blocked on this write processes no further
+// blocks and therefore fires no further gateway action ticks -- it stops
+// signing payouts until its DB recovers. A node that cannot record settlement
+// must not keep paying.
+//
+// A short MatchedCount is deliberately NOT an error here: ids absent from the
+// collection can never be completed by retrying, so returning an error would
+// wedge the node forever. That residue is what the paid-action reconciler in
+// modules/state-processing/action_reconciler.go reports.
+func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) error {
 	if len(ids) == 0 {
-		return
+		return nil
 	}
 	updated := bson.M{
 		"status": "complete",
@@ -567,13 +597,20 @@ func (actionsDb *actionsDb) ExecuteComplete(actionId *string, ids ...string) {
 	if actionId != nil {
 		updated["action_id"] = *actionId
 	}
-	actionsDb.UpdateMany(context.Background(), bson.M{
+	res, err := actionsDb.UpdateMany(context.Background(), bson.M{
 		"id": bson.M{
 			"$in": ids,
 		},
 	}, bson.M{
 		"$set": updated,
 	})
+	if err != nil {
+		return fmt.Errorf("ExecuteComplete(%d action(s)): %w", len(ids), err)
+	}
+	if res == nil {
+		return fmt.Errorf("ExecuteComplete(%d action(s)): nil update result", len(ids))
+	}
+	return nil
 }
 
 // RevertProcessingToPending re-queues any actions left in the legacy

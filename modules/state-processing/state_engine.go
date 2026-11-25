@@ -2168,6 +2168,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		if se.IsLiveSynced(int(block.BlockNumber)) {
 			se.scanNegativeBalances(se.slotStatus.SlotHeight)
 			se.reconcileCompletedActions(se.slotStatus.SlotHeight)
+			se.reconcilePendingActions(se.slotStatus.SlotHeight)
 		}
 
 		se.RcMap = make(map[string]int64)
@@ -3142,7 +3143,14 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		log.Error("consensus_unstake: ledger write failed; leaving actions pending for retry",
 			"epoch", epoch, "count", len(ledgerRecords), "err", err)
 	} else {
-		se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+		// Fail-stop on the completion write for the same reason the payout
+		// write above is conditional: these actions are now PAID (their
+		// consensus_unstake ledger records landed), and the status flip is the
+		// only thing that stops GetPendingActionsByEpoch re-selecting them.
+		// Losing it re-pays the bond.
+		blockingRetry(fmt.Sprintf("consensus_unstake.ExecuteComplete(epoch %d, %d action(s))", epoch, len(completeIds)), func() error {
+			return se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+		})
 	}
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)

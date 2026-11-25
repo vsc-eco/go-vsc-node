@@ -329,13 +329,29 @@ type MockActionsDb struct {
 	CompletedAt map[string]int
 	// LedgerRef, when set, is read to size CompletedAt.
 	LedgerRef *MockLedgerDb
+	// CompleteErrs injects transient ExecuteComplete failures, one per call,
+	// popped off the front. An injected error mutates nothing, exactly as the
+	// real UpdateMany failure does.
+	CompleteErrs []error
 }
 
 func (m *MockActionsDb) StoreAction(action ledgerDb.ActionRecord) {
 	m.Actions[action.Id] = action
 }
 
-func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
+// CompleteErrs lets a test inject transient ExecuteComplete failures: each call
+// pops one error off the front. Without it the double-pay path -- a settlement
+// write that fails, leaving a PAID action "pending" and re-selectable -- has no
+// coverage at all, which is how it survived the 2026-05 incident.
+func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) error {
+	if len(m.CompleteErrs) > 0 {
+		err := m.CompleteErrs[0]
+		m.CompleteErrs = m.CompleteErrs[1:]
+		if err != nil {
+			// Inject the real failure shape: nothing is mutated.
+			return err
+		}
+	}
 	for _, id := range ids {
 		if m.CompletedAt != nil {
 			// Record only the FIRST completion for an id. A later call must not
@@ -360,6 +376,7 @@ func (m *MockActionsDb) ExecuteComplete(actionId *string, ids ...string) {
 			m.Actions[id] = action
 		}
 	}
+	return nil
 }
 
 func (m *MockActionsDb) RevertProcessingToPending() ([]ledgerDb.ActionRecord, error) {

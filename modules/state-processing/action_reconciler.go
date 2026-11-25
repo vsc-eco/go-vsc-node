@@ -77,3 +77,97 @@ func strPtr(s string) *string { return &s }
 func (se *StateEngine) ReconcileCompletedActionsForTest(blockHeight uint64) {
 	se.reconcileCompletedActions(blockHeight)
 }
+
+// StalePendingActionBlocks is how far past its payout window a gateway action
+// may sit "pending" before this node reports it. The gateway action tick runs
+// every ACTION_INTERVAL = 20 Hive blocks, so 1200 is 60 consecutive ticks —
+// far beyond any ordinary batching delay (the per-batch cap is
+// MaxGatewayActionBatch = 100, so clearing a backlog this slowly would need
+// ~6000 queued actions, which is why the backlog size is logged alongside).
+const StalePendingActionBlocks = 1200
+
+// reconcilePendingActions reports gateway actions still "pending" long after
+// the gateway should have paid them.
+//
+// THIS IS THE DETECTOR THE DOUBLE-PAY CLASS NEVER HAD, and it is the half of
+// the problem that no amount of fail-stopping fixes: pay-once rests entirely on
+// one status flip (ExecuteComplete), and every way of losing that flip fails
+// TOWARDS paying again, silently.
+//
+// Why a stale "pending" is the right signal for both failure directions:
+//
+//	re-pay    an action whose L1 payout already mined but whose completion
+//	          write was lost stays "pending" forever, so GetPendingActions
+//	          re-selects it and the gateway pays it AGAIN every tick (~60 s).
+//	          That is the 2026-05 mainnet shape: 34 duplicate action groups,
+//	          68 extra payouts, action 24f87dab paid 9x.
+//	no-pay    an action whose batch never settled (broadcast failure) also
+//	          stays "pending". That is the bradleyarrow shape — 6.482 HBD
+//	          stuck in action 4806e7e3...:3 — which nobody noticed for
+//	          months because nothing looked.
+//
+// The two are indistinguishable from the action record alone, and deliberately
+// so: either one means real value is unsettled and a human must look. What this
+// does NOT do is decide anything. It writes no state, selects nothing, and
+// never fail-stops — including on its own read errors — because a detector that
+// can halt the chain is a worse bug than the one it detects.
+//
+// Note on what cannot reach here: executeActions appends action.Id to
+// executedOps BEFORE its `continue` guards (bad network prefix, unformattable
+// amount), so a skipped-but-batched action is still marked complete at
+// settlement. Those are a separate silent-loss path (completed, never paid) and
+// are invisible to this query by construction; they belong to
+// reconcileCompletedActions' family, not this one.
+//
+// Read-only, non-panicking, never fail-stop.
+func (se *StateEngine) reconcilePendingActions(blockHeight uint64) {
+	if se == nil || se.LedgerState == nil || se.LedgerState.ActionDb == nil {
+		return
+	}
+	if ActionReconcileInterval == 0 || blockHeight%ActionReconcileInterval != 0 {
+		return
+	}
+	if blockHeight <= StalePendingActionBlocks {
+		return
+	}
+	cutoff := blockHeight - StalePendingActionBlocks
+
+	// Exactly the types the gateway action tick selects (multisig.executeActions
+	// actionFilter). consensus_unstake is excluded on purpose: it is paid on an
+	// epoch schedule and is legitimately pending for days, and the POA exit
+	// halt holds it longer still.
+	stale, err := se.LedgerState.ActionDb.GetActionsRange(
+		nil, nil, nil, []string{"withdraw", "stake", "unstake"}, nil,
+		strPtr("pending"), nil, &cutoff, 0, 200)
+	if err != nil {
+		log.Warn("pending-action reconcile: could not read actions",
+			"bh", blockHeight, "cutoff", cutoff, "err", err)
+		return
+	}
+	if len(stale) == 0 {
+		return
+	}
+	// Backlog size makes the batching explanation checkable from the log line
+	// alone: a backlog below MaxGatewayActionBatch cannot be a queueing delay.
+	backlog, err := se.LedgerState.ActionDb.GetPendingActions(blockHeight, "withdraw", "stake", "unstake")
+	backlogN := -1
+	if err == nil {
+		backlogN = len(backlog)
+	}
+	for _, a := range stale {
+		age := uint64(0)
+		if blockHeight > a.BlockHeight {
+			age = blockHeight - a.BlockHeight
+		}
+		log.Error("GATEWAY ACTION STILL PENDING PAST ITS PAYOUT WINDOW — either re-paid every tick or stranded",
+			"action", a.Id, "type", a.Type, "to", a.To, "amount", a.Amount,
+			"asset", a.Asset, "createdAt", a.BlockHeight, "ageBlocks", age,
+			"bh", blockHeight, "pendingBacklog", backlogN)
+	}
+}
+
+// ReconcilePendingActionsForTest exposes the pending-action detector to the
+// black-box test package.
+func (se *StateEngine) ReconcilePendingActionsForTest(blockHeight uint64) {
+	se.reconcilePendingActions(blockHeight)
+}
