@@ -621,6 +621,19 @@ func (ms *MultiSig) keyRotation(bh uint64) (signingPackage, error) {
 	}, nil
 }
 
+// settlementParity reports whether the gateway settlement-parity rules are in
+// force at this Hive block. 0 = INERT, so the batch is built exactly as before
+// until an operator pins a future height. Deterministic in bh, so every
+// cosigner that rebuilds the batch for the same bh reaches the same answer --
+// which is required, since they sign only on a matching txid.
+func (ms *MultiSig) settlementParity(bh uint64) bool {
+	if ms == nil || ms.sconf == nil {
+		return false
+	}
+	h := ms.sconf.ConsensusParams().GatewaySettlementParityHeight
+	return h > 0 && bh >= h
+}
+
 func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	if bh%ACTION_INTERVAL != 0 {
 		return signingPackage{}, errors.New("invalid slot")
@@ -653,17 +666,55 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 	stakeTxCount := 0
 	unstakeTxCount := 0
 	executedOps := make([]string, 0)
+
+	// C (gated): executedOps becomes the vsc.actions header's ops list, and
+	// settlement marks every id in it "complete". The id used to be appended
+	// BEFORE the skip guards below, so a withdrawal the gateway deliberately did
+	// NOT pay still settled as paid -- and because the user's L2 debit already
+	// happened at withdrawal time, that is value gone with nothing left pending
+	// and nothing to retry. The opposite failure to the double-pay, same cause:
+	// the header did not say what actually happened.
+	//
+	// Strictly consensus-affecting, hence the height gate: it changes the
+	// header's CONTENTS, and executedOps POSITIONS are the bit indexes of the
+	// ClearedOps bitmap below (bs.SetBit(&bs, idx, 1)), so a mixed fleet would
+	// compute different cleared sets, different txids, and payouts would stall
+	// until it converged. 0 = INERT everywhere today; see
+	// params.ConsensusParams.GatewaySettlementParityHeight.
+	//
+	// Latent, not live: the only non-"hive:" destination ledgerSession.Withdraw
+	// will mint is eth:/did:pkh: for assets eth and usdc, which are not
+	// core-ledger assets (ledger/types.go: hive, hive_consensus, hbd,
+	// hbd_savings), so GetBalance returns 0 and the withdrawal is refused for
+	// insufficient balance before any action exists. It arms itself the moment
+	// anything credits eth or usdc in the core ledger.
+	settlementParity := ms.settlementParity(bh)
+
 	for _, action := range actions {
 		// ops = append(ops, ms.createWithdrawOps(action)...)
 
-		executedOps = append(executedOps, action.Id)
+		if !settlementParity {
+			executedOps = append(executedOps, action.Id)
+		}
 		if action.Type == "withdraw" {
 			splitTo := strings.Split(action.To, ":")
 			net := splitTo[0]
+			// A destination with no ":" would panic on splitTo[1] and take the
+			// whole gateway tick (and this node's block processing) down.
+			// Unreachable today -- every destination Withdraw mints is prefixed
+			// -- and ungated because a node that panics produces nothing, so
+			// refusing to panic cannot diverge from a node that never did.
+			if len(splitTo) < 2 {
+				log.Error("skipping withdraw action: destination has no network prefix",
+					"action", action.Id, "to", action.To)
+				continue
+			}
 			to := splitTo[1]
 
 			//Safety protection against bad inputs if other protections fail
 			if net != "hive" {
+				log.Error("skipping withdraw action: destination is not a hive account; it will NOT be paid",
+					"action", action.Id, "to", action.To, "settled", !settlementParity)
 				continue
 			}
 			amt := action.Amount
@@ -690,15 +741,24 @@ func (ms *MultiSig) executeActions(bh uint64) (signingPackage, error) {
 			)
 
 			ops = append(ops, op)
+			if settlementParity {
+				executedOps = append(executedOps, action.Id)
+			}
 		}
 
 		if action.Type == "stake" {
 			stakeBal += uint64(action.Amount)
 			stakeTxCount += 1
+			if settlementParity {
+				executedOps = append(executedOps, action.Id)
+			}
 		}
 		if action.Type == "unstake" {
 			unstakeBal += uint64(action.Amount)
 			unstakeTxCount += 1
+			if settlementParity {
+				executedOps = append(executedOps, action.Id)
+			}
 		}
 	}
 

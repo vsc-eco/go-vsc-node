@@ -1,5 +1,11 @@
 package state_engine
 
+import (
+	"encoding/json"
+
+	ledgerSystem "vsc-node/modules/ledger-system"
+)
+
 // ActionReconcileInterval is how often (in Hive blocks) the node checks for
 // bridge actions marked complete whose credit leg never landed. ~1 hour at 3s
 // blocks, matching the negative-balance sweep.
@@ -170,4 +176,37 @@ func (se *StateEngine) reconcilePendingActions(blockHeight uint64) {
 // black-box test package.
 func (se *StateEngine) ReconcilePendingActionsForTest(blockHeight uint64) {
 	se.reconcilePendingActions(blockHeight)
+}
+
+// SettleActionHeader decides whether a mined `vsc.actions` header can be turned
+// into settlement, and with what.
+//
+// A (gated by params.GatewaySettlementParityHeight): the caller used to be a
+// bare `if err == nil` with no else, so a header this node could not decode was
+// skipped SILENTLY -- and because the header is identical on every node, every
+// node skipped it, every node left those actions "pending", and the gateway
+// re-selected and re-paid all of them on the next action tick, every ~60 s,
+// indefinitely. A type change in any field (encoder/decoder skew across a
+// rolling upgrade is the realistic cause) was enough.
+//
+// encoding/json fills the fields it could read before it errors, so a mismatch
+// in `cleared_ops` normally leaves `ops` intact. With parity in force the ops
+// list is therefore settled anyway: an undecodable `cleared_ops` degrades
+// safely, since IndexActions ignores an undecodable bitmap and every unstake
+// then takes the full HBD_UNSTAKE_BLOCKS delay rather than the 1-block neutral
+// path. Paying late is recoverable; paying twice is not.
+//
+// Returns the update, whether to settle, and the decode error (which is
+// returned even when settling, so the caller can log it -- a silent recovery
+// would hide the skew that caused it).
+func SettleActionHeader(raw []byte, parity bool) (ledgerSystem.ActionUpdate, bool, error) {
+	var actionUpdate ledgerSystem.ActionUpdate
+	err := json.Unmarshal(raw, &actionUpdate)
+	if err == nil {
+		return actionUpdate, true, nil
+	}
+	if parity && len(actionUpdate.Ops) > 0 {
+		return actionUpdate, true, err
+	}
+	return actionUpdate, false, err
 }

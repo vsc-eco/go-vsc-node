@@ -38,6 +38,19 @@ func (se *StateEngine) refreshChainConsensusCache() {
 	se.chainConsensusMu.Unlock()
 }
 
+// gatewaySettlementParity reports whether the gateway settlement-parity rules
+// are in force at this Hive block. 0 = INERT, so every network behaves exactly
+// as it did before until an operator pins a future height. See
+// params.ConsensusParams.GatewaySettlementParityHeight for what the three
+// changes are and why they share one gate.
+func (se *StateEngine) gatewaySettlementParity(blockHeight uint64) bool {
+	if se == nil || se.sconf == nil {
+		return false
+	}
+	h := se.sconf.ConsensusParams().GatewaySettlementParityHeight
+	return h > 0 && blockHeight >= h
+}
+
 func (se *StateEngine) chainProcessingSuspended() bool {
 	se.chainConsensusMu.RLock()
 	defer se.chainConsensusMu.RUnlock()
