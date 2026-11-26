@@ -3,6 +3,7 @@ package devnet
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -96,6 +97,38 @@ const gwPayActionsColl = "ledger_actions"
 var gwPayFaultedNodes = []int{1, 2, 3, 4, 5, 6, 7}
 
 func gwPayPreFix() bool { return os.Getenv("GWPAY_PREFIX") != "" }
+
+// gwPayParityHeight pins GatewaySettlementParityHeight for the run, so the
+// GATED half of the fix (A/B/C) is exercised end to end instead of only by unit
+// tests. GWPAY_PARITY=1 uses the default pin; any other value is used verbatim.
+//
+// What this run is FOR: proving the gate does not break ordinary withdrawals.
+// With parity active, change C moves the executedOps append from before the skip
+// guards to the point where the payout op is actually produced. For every
+// withdrawal a devnet run makes -- all "hive:"-prefixed and payable -- that must
+// produce an IDENTICAL header, so pay-once conservation has to hold exactly as it
+// does with the gate at 0. If it does not, C is wrong for the normal path and no
+// height should ever be pinned on mainnet.
+//
+// The pin is deliberately low (every node runs the same binary, so all 9 agree
+// from the same block and no mixed-fleet divergence is possible). That is the
+// OPPOSITE of the mainnet discipline in params.go, where the height must be in
+// the future and the fleet upgraded first; devnet is fresh per run with no
+// history to reindex.
+func gwPayParityHeight() uint64 {
+	v := os.Getenv("GWPAY_PARITY")
+	if v == "" {
+		return 0
+	}
+	if v == "1" {
+		return 40
+	}
+	n, err := strconv.ParseUint(v, 10, 64)
+	if err != nil || n == 0 {
+		return 40
+	}
+	return n
+}
 
 // gwPayCompletionFault makes the settlement write fail (on=true) or work again
 // (on=false) on the given nodes, by rejecting any `actions` document that
@@ -230,10 +263,18 @@ func TestGatewayPayOnceSettlementFault(t *testing.T) {
 	cfg.MagiEnv["VSC_GATEWAY_ROTATION_INTERVAL"] = "20"
 	cfg.MagiEnv["VSC_GATEWAY_ACTION_INTERVAL"] = "20"
 	if old := os.Getenv("GW_OLD_DIR"); old != "" {
+		if gwPayParityHeight() > 0 {
+			t.Fatal("GWPAY_PARITY with GW_OLD_DIR is meaningless: the pre-fix binary has no GatewaySettlementParityHeight field and OldCodeSysconfig uses its own sysconfig, so the fleet would disagree on the header for reasons unrelated to the fault")
+		}
 		cfg.OldCodeSourceDir = old
 		cfg.OldCodeNodes = gwPayFaultedNodes
 		cfg.OldCodeSysconfig = true
 		t.Logf("pre-fix binary from %s on nodes %v", old, gwPayFaultedNodes)
+	}
+	if h := gwPayParityHeight(); h > 0 {
+		cp.GatewaySettlementParityHeight = h
+		t.Logf("GATED PATH ACTIVE: GatewaySettlementParityHeight = %d on all %d nodes -- "+
+			"asserting the parity header pays ordinary withdrawals exactly as the inert one does", h, cfg.Nodes)
 	}
 	d, ctx := startDevnetNoKey(t, cfg, 110*time.Minute)
 	t.Cleanup(func() {
