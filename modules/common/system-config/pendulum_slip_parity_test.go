@@ -22,8 +22,9 @@ import "testing"
 //     change, and never a copy-paste of the testnet value, whose L1 heights are
 //     a different chain's and millions of blocks apart.
 func TestPendulumSlipParityHeight_PerNetwork(t *testing.T) {
-	// Announced for testnet 2026-11-22 (L1 head ~8,472,460, ~7 days out).
-	const testnetHeight = uint64(8_674_000)
+	// Announced for testnet 2026-11-22 at 8,674,000, brought forward
+	// 2026-11-26 to 8,582,000 (L1 head ~8,568,195, ~11.5 h out).
+	const testnetHeight = uint64(8_582_000)
 
 	if got := TestnetConfig().ConsensusParams().PendulumSlipParityHeight; got != testnetHeight {
 		t.Errorf("testnet PendulumSlipParityHeight = %d, want %d. Changing it moves a "+

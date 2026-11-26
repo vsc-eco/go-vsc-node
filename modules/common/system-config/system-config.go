@@ -751,10 +751,11 @@ func TestnetConfig() SystemConfig {
 			// protocol tier), with NO total-fee clamp. Large swaps pay materially
 			// MORE than before, small ones slightly less.
 			//
-			// TESTNET FIRST. Pinned 2026-11-22 with the testnet L1 head at
-			// ~8,472,460: 8,674,000 is ~201,540 blocks (~7 days at 3s) out, so
-			// every testnet witness has a week to run the release that carries
-			// this value.
+			// TESTNET FIRST. Pinned 2026-11-22 at 8,674,000 (~7 days out), then
+			// brought forward 2026-11-26 to 8,582,000 (~11.5 h out from the L1 head
+			// at ~8,568,195) once every testnet witness ran #327: lowering is safe
+			// only while every witness takes this release BEFORE 8,582,000, so it
+			// is checked per witness (witnessNodes git_commit) ahead of the height.
 			//
 			// COMPILE-TIME CONSENSUS VALUE, NO VERSION GATE: a fleet split across
 			// this height computes different swap fees and DIVERGES. Do not move
@@ -768,7 +769,7 @@ func TestnetConfig() SystemConfig {
 			// Altera's swapCalc must quote the same rule (SLIP_FEE_RULE, shipped
 			// as 'both' so a quote holds under EITHER rule across the height;
 			// move it to 'on' only after the height has passed).
-			PendulumSlipParityHeight: 8_674_000,
+			PendulumSlipParityHeight: 8_582_000,
 			BondInclusionSampleCount: 8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
