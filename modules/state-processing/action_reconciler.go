@@ -108,9 +108,16 @@ const StalePendingActionBlocks = 1200
 //	          That is the 2026-05 mainnet shape: 34 duplicate action groups,
 //	          68 extra payouts, action 24f87dab paid 9x.
 //	no-pay    an action whose batch never settled (broadcast failure) also
-//	          stays "pending". That is the bradleyarrow shape — 6.482 HBD
-//	          stuck in action 4806e7e3...:3 — which nobody noticed for
-//	          months because nothing looked.
+//	          stays "pending", and nothing retires it but a later successful
+//	          batch. The 2026-05 bradleyarrow case is the near miss that
+//	          motivates this: 6.482 HBD unsettled for days, found by hand
+//	          because nothing looked. Be precise about it though — that row
+//	          was stranded in "processing" (c9a86798's marker, reverted by
+//	          cc7b6d33), which THIS query would not have seen. With the
+//	          marker gone, the same stranding now presents as a stale
+//	          "pending", which it does see. It settled in the end: paid and
+//	          flipped complete in L1 block 106582844, so it is the shape, not
+//	          a live instance.
 //
 // The two are indistinguishable from the action record alone, and deliberately
 // so: either one means real value is unsettled and a human must look. What this
