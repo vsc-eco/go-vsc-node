@@ -542,6 +542,18 @@ func MainnetConfig() SystemConfig {
 			// Same cutover discipline as BondInclusionActivationHeight above.
 			VaultRotationV2ActivationHeight: 0,
 			BondInclusionSampleCount:        8,
+			// PENDULUM-SLIP-PARITY: from this Hive L1 block the pendulum charges
+			// THORChain's swap fee (max(full slip fee, protocol tier), no 1% total-fee
+			// clamp). COMPILE-TIME CONSENSUS VALUE, NO VERSION GATE: every mainnet
+			// witness must run it before the height, or the fleet splits at the first
+			// swap after it. 112,096,000 is ~Sun 2026-11-29 21:30 CET (head 112,008,791
+			// at 2026-11-26 20:50 CET, 3 s blocks).
+			// DEPLOY ORDER (params.go): the router with the round-trip return floor
+			// (dex-contracts 3c27336) must be active at or before this height and the
+			// EVM bridge update (account-mapping 2d17950) at or after it, so no held
+			// return is ever written under the old fee rule. Broadcast the router
+			// update before height-57,600 and the bridge update after it.
+			PendulumSlipParityHeight: 112_096_000,
 			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
 			// most N NEW members per election so a coordinated cohort maturing on
 			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
