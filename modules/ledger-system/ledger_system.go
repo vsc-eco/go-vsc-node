@@ -1419,7 +1419,12 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 					OpIdx: -1,
 				})
 			})
-			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			// Fail-stop, same as the credit write above. A dropped completion
+			// leaves this action "pending" with its payout already mined, so
+			// the gateway re-selects and re-pays it every action tick.
+			blockingRetry(fmt.Sprintf("IndexActions.ExecuteComplete(stake %s)", id), func() error {
+				return ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			})
 		}
 		if record.Type == "unstake" {
 			var blockDelay uint64
@@ -1445,7 +1450,9 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 					OpIdx:       -1,
 				})
 			})
-			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			blockingRetry(fmt.Sprintf("IndexActions.ExecuteComplete(unstake %s)", id), func() error {
+				return ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			})
 		}
 		if record.Type != "stake" && record.Type != "unstake" {
 			// No credit leg is written here for other action types (withdraw
@@ -1453,7 +1460,17 @@ func (ls *ledgerSystem) IndexActions(actionUpdate ActionUpdate, extraInfo ExtraI
 			// is unconditional — but keep it explicit rather than relying on
 			// falling out of the branch, so adding a type without a credit
 			// cannot silently skip completion.
-			ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			//
+			// ★ THIS IS THE GATEWAY DOUBLE-PAY SITE. A withdraw reaches here
+			// after its L1 payout has mined; this flip to "complete" is the
+			// only thing that takes it out of GetPendingActions. Dropping the
+			// write (the old code discarded the UpdateMany error) re-pays the
+			// user every ~60 s until the DB recovers. Fail-stop: a node that
+			// cannot record settlement stops processing blocks and therefore
+			// stops signing payouts, which is the circuit breaker.
+			blockingRetry(fmt.Sprintf("IndexActions.ExecuteComplete(%s %s)", record.Type, id), func() error {
+				return ls.ActionsDb.ExecuteComplete(&extraInfo.ActionId, id)
+			})
 		}
 	}
 

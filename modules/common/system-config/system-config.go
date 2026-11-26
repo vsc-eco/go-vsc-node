@@ -550,7 +550,11 @@ func MainnetConfig() SystemConfig {
 			// charges different swap fees and diverges. Pin it only with the
 			// params.go DEPLOY ORDER preconditions satisfied on mainnet.
 			PendulumSlipParityHeight: 0,
-			BondInclusionSampleCount: 8,
+			// Gateway settlement parity (A/B/C in params.go). 0 = INERT.
+			// Pin a FUTURE height only once the fleet is upgraded: it changes
+			// both what a vsc.actions header contains and how it is read.
+			GatewaySettlementParityHeight: 0,
+			BondInclusionSampleCount:      8,
 			// F6 churn cap (blocktrades Sybil mitigation, Build Map §5c): admit at
 			// most N NEW members per election so a coordinated cohort maturing on
 			// one boundary enters GRADUATED (a few seats/epoch), never an atomic
@@ -770,7 +774,11 @@ func TestnetConfig() SystemConfig {
 			// as 'both' so a quote holds under EITHER rule across the height;
 			// move it to 'on' only after the height has passed).
 			PendulumSlipParityHeight: 8_582_000,
-			BondInclusionSampleCount: 8,
+			// Gateway settlement parity (A/B/C in params.go). 0 = INERT.
+			// Pin a FUTURE height only once the fleet is upgraded: it changes
+			// both what a vsc.actions header contains and how it is read.
+			GatewaySettlementParityHeight: 0,
+			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -878,7 +886,11 @@ func DevnetConfig() SystemConfig {
 			BondInclusionActivationHeight: 0,
 			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
 			VaultRotationV2ActivationHeight: 0,
-			BondInclusionSampleCount:        8,
+			// Gateway settlement parity (A/B/C in params.go). 0 = INERT.
+			// Pin a FUTURE height only once the fleet is upgraded: it changes
+			// both what a vsc.actions header contains and how it is read.
+			GatewaySettlementParityHeight: 0,
+			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.
@@ -948,7 +960,11 @@ func MocknetConfig() SystemConfig {
 			BondInclusionActivationHeight: 0,
 			// M1.3 vault-rotation-v2: 0 = inert (see mainnet + params.go go-live gate).
 			VaultRotationV2ActivationHeight: 0,
-			BondInclusionSampleCount:        8,
+			// Gateway settlement parity (A/B/C in params.go). 0 = INERT.
+			// Pin a FUTURE height only once the fleet is upgraded: it changes
+			// both what a vsc.actions header contains and how it is read.
+			GatewaySettlementParityHeight: 0,
+			BondInclusionSampleCount:      8,
 			// F6 churn cap: 0 = disabled (no per-election new-member cap). Pin
 			// together with the bond activation height to bound atomic cohort
 			// entry once the gate is live.

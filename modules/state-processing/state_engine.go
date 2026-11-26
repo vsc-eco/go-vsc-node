@@ -776,16 +776,51 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 					}
 				}
 
-				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() &&
-					!se.chainProcessingSuspended() {
-					var actionUpdate ledgerSystem.ActionUpdate
-					err := json.Unmarshal(cj.Json, &actionUpdate)
+				// SETTLEMENT. This is where a mined gateway payout stops being
+				// re-payable: IndexActions flips each listed action to
+				// "complete", and GetPendingActions selects purely on
+				// status == "pending". Every way of NOT reaching IndexActions
+				// here costs settlement for the WHOLE FLEET -- all nodes agree,
+				// so all nodes re-select the paid actions on the next action
+				// tick and pay them again, every ~60 s, indefinitely. Two such
+				// ways existed and are gated off below
+				// (params.GatewaySettlementParityHeight documents all three).
+				if Id == "vsc.actions" && RequiredAuths[0] == se.sconf.GatewayWallet() {
+					settlementParity := se.gatewaySettlementParity(block.BlockNumber)
 
-					if err == nil {
-						se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
-							BlockHeight: block.BlockNumber,
-							ActionId:    tx.TransactionID,
-						})
+					// B: a processing suspension must stop new user intent, not
+					// the bookkeeping that records payouts the gateway is still
+					// making -- and it IS still making them, nothing in
+					// modules/gateway checks suspension. vsc.fr_sync directly
+					// above has no such gate either. Pre-parity behaviour is
+					// preserved exactly.
+					if !settlementParity && se.chainProcessingSuspended() {
+						log.Error("vsc.actions: settlement SKIPPED because chain processing is suspended; these payouts stay pending and the gateway will re-pay them",
+							"txId", tx.TransactionID, "bh", block.BlockNumber)
+					} else {
+						actionUpdate, settle, err := SettleActionHeader(cj.Json, settlementParity)
+						if err != nil {
+							if settle {
+								log.Error("vsc.actions: header decode failed but the ops list survived; settling from it (parity)",
+									"txId", tx.TransactionID, "bh", block.BlockNumber,
+									"ops", len(actionUpdate.Ops), "err", err)
+							} else {
+								// Not recoverable here. Logged loudly because
+								// the consequence is a repeated payout, and
+								// reconcilePendingActions will report every
+								// action this stranded in "pending".
+								log.Error("vsc.actions: UNDECODABLE header -- settlement LOST for every action in it; the gateway will re-pay them each tick",
+									"txId", tx.TransactionID, "bh", block.BlockNumber,
+									"parity", settlementParity, "err", err)
+							}
+						}
+
+						if settle {
+							se.LedgerSystem.IndexActions(actionUpdate, ledgerSystem.ExtraInfo{
+								BlockHeight: block.BlockNumber,
+								ActionId:    tx.TransactionID,
+							})
+						}
 					}
 				}
 
@@ -2168,6 +2203,7 @@ func (se *StateEngine) ProcessBlock(block hive_blocks.HiveBlock) {
 		if se.IsLiveSynced(int(block.BlockNumber)) {
 			se.scanNegativeBalances(se.slotStatus.SlotHeight)
 			se.reconcileCompletedActions(se.slotStatus.SlotHeight)
+			se.reconcilePendingActions(se.slotStatus.SlotHeight)
 		}
 
 		se.RcMap = make(map[string]int64)
@@ -3142,7 +3178,14 @@ func (se *StateEngine) UpdateBalances(startBlock, endBlock uint64) {
 		log.Error("consensus_unstake: ledger write failed; leaving actions pending for retry",
 			"epoch", epoch, "count", len(ledgerRecords), "err", err)
 	} else {
-		se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+		// Fail-stop on the completion write for the same reason the payout
+		// write above is conditional: these actions are now PAID (their
+		// consensus_unstake ledger records landed), and the status flip is the
+		// only thing that stops GetPendingActionsByEpoch re-selecting them.
+		// Losing it re-pays the bond.
+		blockingRetry(fmt.Sprintf("consensus_unstake.ExecuteComplete(epoch %d, %d action(s))", epoch, len(completeIds)), func() error {
+			return se.LedgerState.ActionDb.ExecuteComplete(nil, completeIds...)
+		})
 	}
 	// se.LedgerExecutor.Ls.LedgerDb.StoreLedger(ledgerRecords...)
 	// se.LedgerExecutor.Ls.ActionsDb.ExecuteComplete(nil, completeIds...)

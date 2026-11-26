@@ -630,6 +630,64 @@ type ConsensusParams struct {
 	// contracts/dex-router-v2/return_floor_test.go.
 	PendulumSlipParityHeight uint64 `json:"pendulumSlipParityHeight,omitempty"`
 
+	// GatewaySettlementParityHeight (Hive L1 block) makes the gateway's
+	// settlement bookkeeping say exactly what was paid. 0 = INERT, the safe
+	// default; every network ships 0 until an operator pins a future height.
+	//
+	// Pay-once on the gateway rests on ONE signal: the mined `vsc.actions`
+	// header turning each listed action into status "complete". There is no
+	// per-withdrawal in-flight lock (c9a86798 added one, cc6b7d33 reverted it
+	// because cosigners stranded withdrawals in "processing" when the leader's
+	// broadcast failed), so losing that signal means the action stays "pending",
+	// is re-selected by GetPendingActions every action tick (~60 s), and is PAID
+	// AGAIN -- the 2026-05 mainnet shape, 34 duplicate action groups / 68 extra
+	// payouts. Three of the ways it is lost cannot be fixed node-locally because
+	// they change what the chain records, so they gate here:
+	//
+	//   A  state-processing: a `vsc.actions` header whose JSON fails to decode
+	//      was skipped by a bare `if err == nil`, costing settlement for the
+	//      WHOLE FLEET (every node agrees, so every node re-pays). Gated: if the
+	//      ops list survived the decode error, settle from it anyway. Unknown and
+	//      malformed `cleared_ops` degrades safely -- IndexActions ignores an
+	//      undecodable bitmap and every unstake takes the full delay.
+	//   B  state-processing: settlement was also skipped while the chain was
+	//      processing-suspended, although the gateway keeps paying through a
+	//      suspension and `vsc.fr_sync` right beside it has no such gate.
+	//      A suspension must stop new user intent, not the bookkeeping that
+	//      records payouts already made. Gated: settle regardless of suspension.
+	//      (Latent today -- RecoveryMultisigAccounts is populated nowhere, so
+	//      vsc.recovery_suspend is refused -- but armed by one config line.)
+	//   C  gateway/multisig: executeActions appended an action id to executedOps
+	//      BEFORE its own skip guards (non-"hive:" destination, unformattable
+	//      amount), so a withdrawal the gateway deliberately did NOT pay still
+	//      settled to "complete". The user's L2 debit already happened, so that
+	//      is value gone with nothing pending and nothing to retry -- the
+	//      opposite failure to A and B. Gated: append only where the op is
+	//      produced. (Latent today: the only non-"hive:" destinations are
+	//      eth:/did:pkh: for assets eth and usdc, which are not core-ledger
+	//      assets, so GetBalance returns 0 and the withdrawal is refused for
+	//      insufficient balance. Armed the moment anything credits eth or usdc
+	//      in the core ledger.)
+	//
+	// WHY ONE GATE FOR ALL THREE: B changes how a header is interpreted and C
+	// changes what a header contains. Flipping them apart would have nodes
+	// settling a batch built under the other rule. C also re-indexes
+	// executedOps, whose POSITIONS are the bit indexes of the ClearedOps bitmap
+	// (multisig.go: bs.SetBit(&bs, idx, 1)), so a mixed fleet computes different
+	// cleared sets and different txids and payouts stall until it converges.
+	//
+	// DEPLOY DISCIPLINE: same as BondInclusionActivationHeight -- pin a height
+	// far enough out that every node is upgraded before it, never a height in
+	// the past (a reindex would then replay history under the new rule and
+	// diverge from nodes that did not).
+	//
+	// The node-local half of this bug class is NOT gated and ships
+	// unconditionally: ExecuteComplete returns its error and its callers
+	// fail-stop (ledger.go, ledger_system.go, state_engine.go), and
+	// reconcilePendingActions reports an action left pending past its payout
+	// window. Those change no chain state.
+	GatewaySettlementParityHeight uint64 `json:"gatewaySettlementParityHeight,omitempty"`
+
 	// MaxNewMembersPerElection (audit F6 / THORChain NumberOfNewNodesPerChurn)
 	// caps how many NEW members (accounts not in the previous ratified election)
 	// the bond inclusion gate admits in a single election. The maturity window
